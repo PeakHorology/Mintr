@@ -305,6 +305,19 @@ describe("csgTree", () => {
     expect(kept).toHaveLength(0);
   });
 
+  it("keeps only the sharp stretch of one outline that also crosses a merged face", () => {
+    const mesh = [
+      0, 1, 0, 10, 1, 0, 0, 1, 10,
+      10, 1, 0, 10, 1, 10, 0, 1, 10,
+      0, 1, 0, 0, 0, 0, 10, 1, 0,
+    ];
+    const kept = filterCoplanarDisplayEdges(
+      [{ points: [0, 1, 10, 0, 1, 0, 10, 1, 0] }],
+      mesh,
+    );
+    expect(kept).toEqual([{ points: [0, 1, 0, 10, 1, 0] }]);
+  });
+
   it("hides a leftover diametric seam and keeps the 90-degree rim", () => {
     // Two coplanar top triangles sharing (0,1,0)-(0,1,10), plus a vertical wall on (0,1,0)-(10,1,0).
     const mesh = [

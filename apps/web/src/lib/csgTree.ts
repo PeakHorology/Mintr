@@ -67,18 +67,19 @@ export function hasUsableCsgResultMesh(shape: WorkplaneShape): boolean {
 /**
  * Children the viewport may draw for a group.
  * A group of only holes stays visible so those cutters can still be edited.
- * Once they are grouped with a solid, the cut result is the mesh and the holes leave the scene.
+ * An assembly keeps every child, including holes, because nothing was fused.
+ * Once shapes are fused with a solid, the cut result is the mesh and the holes leave the scene.
  */
 export function viewportGroupChildren(shape: WorkplaneShape): WorkplaneShape[] {
   if (hasUsableImportedMesh(shape)) return [];
   const children = shape.groupedShapes ?? [];
   const op = shape.csg?.op ?? inferCsgOp(shape);
-  const holeAssembly = Boolean(shape.hole) || (op === "assemble" && children.length > 0 && children.every((child) => child.hole));
+  const showHoles = Boolean(shape.hole) || op === "assemble";
   return children.filter((child) => (
     !child.hidden
     && !child.suppressed
     && !child.csg?.suppressed
-    && (holeAssembly || !child.hole)
+    && (showHoles || !child.hole)
   ));
 }
 
@@ -453,6 +454,12 @@ export function isShapeSuppressed(shape: WorkplaneShape): boolean {
 
 const COPLANAR_EDGE_DOT = 0.99;
 const DISPLAY_EDGE_SNAP = 0.08;
+/** A display sample this close to a mesh edge is that edge, not a face interior. */
+const DISPLAY_EDGE_MATCH = 0.45;
+const DISPLAY_EDGE_CELL = 4;
+/** Step off an edge, in the face plane, to see whether the face continues on both sides. */
+const COPLANAR_SPAN_OFFSET = 0.85;
+const COPLANAR_SPAN_TOL = 0.3;
 
 function quantizeDisplayVertex(x: number, y: number, z: number) {
   const q = 1 / DISPLAY_EDGE_SNAP;
@@ -463,11 +470,98 @@ function undirectedDisplayEdgeKey(a: string, b: string) {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
-type MeshEdgeRecord = { nx: number; ny: number; nz: number; sharp: boolean };
+function displayEdgeCell(x: number, y: number, z: number) {
+  return `${Math.floor(x / DISPLAY_EDGE_CELL)},${Math.floor(y / DISPLAY_EDGE_CELL)},${Math.floor(z / DISPLAY_EDGE_CELL)}`;
+}
+
+function pointSegmentDistanceSq(
+  px: number, py: number, pz: number,
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abz = bz - az;
+  const abLenSq = abx * abx + aby * aby + abz * abz;
+  let t = abLenSq > 1e-12 ? ((px - ax) * abx + (py - ay) * aby + (pz - az) * abz) / abLenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const dx = ax + abx * t - px;
+  const dy = ay + aby * t - py;
+  const dz = az + abz * t - pz;
+  return dx * dx + dy * dy + dz * dz;
+}
+
+type MeshEdgeRecord = {
+  nx: number;
+  ny: number;
+  nz: number;
+  sharp: boolean;
+  ax: number;
+  ay: number;
+  az: number;
+  bx: number;
+  by: number;
+  bz: number;
+};
+
+type DisplayTri = {
+  ax: number;
+  ay: number;
+  az: number;
+  bx: number;
+  by: number;
+  bz: number;
+  cx: number;
+  cy: number;
+  cz: number;
+  nx: number;
+  ny: number;
+  nz: number;
+  d: number;
+};
+
+function pointOnDisplayTri(px: number, py: number, pz: number, tri: DisplayTri, normalX: number, normalY: number, normalZ: number) {
+  if (Math.abs(tri.nx * normalX + tri.ny * normalY + tri.nz * normalZ) < COPLANAR_EDGE_DOT) return false;
+  const plane = tri.nx * px + tri.ny * py + tri.nz * pz - tri.d;
+  if (Math.abs(plane) > COPLANAR_SPAN_TOL) return false;
+  const qx = px - tri.nx * plane;
+  const qy = py - tri.ny * plane;
+  const qz = pz - tri.nz * plane;
+  const v0x = tri.cx - tri.ax;
+  const v0y = tri.cy - tri.ay;
+  const v0z = tri.cz - tri.az;
+  const v1x = tri.bx - tri.ax;
+  const v1y = tri.by - tri.ay;
+  const v1z = tri.bz - tri.az;
+  const v2x = qx - tri.ax;
+  const v2y = qy - tri.ay;
+  const v2z = qz - tri.az;
+  const dot00 = v0x * v0x + v0y * v0y + v0z * v0z;
+  const dot01 = v0x * v1x + v0y * v1y + v0z * v1z;
+  const dot02 = v0x * v2x + v0y * v2y + v0z * v2z;
+  const dot11 = v1x * v1x + v1y * v1y + v1z * v1z;
+  const dot12 = v1x * v2x + v1y * v2y + v1z * v2z;
+  const denom = dot00 * dot11 - dot01 * dot01;
+  if (Math.abs(denom) < 1e-12) return false;
+  const inv = 1 / denom;
+  const u = (dot11 * dot02 - dot01 * dot12) * inv;
+  const v = (dot00 * dot12 - dot01 * dot02) * inv;
+  if (u >= -1e-4 && v >= -1e-4 && u + v <= 1 + 1e-4) return true;
+  const cu = Math.max(0, Math.min(1, u));
+  const cv = Math.max(0, Math.min(1 - cu, v));
+  const cx = tri.ax + v1x * cv + v0x * cu;
+  const cy = tri.ay + v1y * cv + v0y * cu;
+  const cz = tri.az + v1z * cv + v0z * cu;
+  const dx = cx - qx;
+  const dy = cy - qy;
+  const dz = cz - qz;
+  return dx * dx + dy * dy + dz * dz <= 0.04 * 0.04;
+}
 
 /**
- * Drop leftover same-plane splits (the diametric knurl seam) while keeping
- * real creases — rim teeth, steps, and hole walls.
+ * Drop leftover same-plane splits (the diametric knurl seam, or the part of a
+ * cylinder circle that runs across a merged top) while keeping real creases.
+ * One CAD edge can be sharp for only part of its length, so the polyline is split.
  */
 export function filterCoplanarDisplayEdges(
   edges: Array<{ points: number[] }>,
@@ -477,12 +571,34 @@ export function filterCoplanarDisplayEdges(
   if (edges.length === 0 || meshPositions.length < 9) return edges;
 
   const records = new Map<string, MeshEdgeRecord>();
+  const grid = new Map<string, MeshEdgeRecord[]>();
+  const triangles: DisplayTri[] = [];
+  const triangleGrid = new Map<string, number[]>();
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
   const c = new THREE.Vector3();
   const ab = new THREE.Vector3();
   const ac = new THREE.Vector3();
   const normal = new THREE.Vector3();
+
+  const indexEdge = (record: MeshEdgeRecord) => {
+    const length = Math.hypot(record.bx - record.ax, record.by - record.ay, record.bz - record.az);
+    const steps = Math.max(1, Math.ceil(length / DISPLAY_EDGE_CELL));
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const key = displayEdgeCell(
+        record.ax + (record.bx - record.ax) * t,
+        record.ay + (record.by - record.ay) * t,
+        record.az + (record.bz - record.az) * t,
+      );
+      const bucket = grid.get(key);
+      if (bucket) {
+        if (!bucket.includes(record)) bucket.push(record);
+      } else {
+        grid.set(key, [record]);
+      }
+    }
+  };
 
   const markTriangle = (ia: number, ib: number, ic: number) => {
     a.fromArray(meshPositions as number[], ia);
@@ -493,16 +609,56 @@ export function filterCoplanarDisplayEdges(
     normal.copy(ab).cross(ac);
     if (normal.lengthSq() <= 1e-14) return;
     normal.normalize();
-    const keys = [
-      quantizeDisplayVertex(a.x, a.y, a.z),
-      quantizeDisplayVertex(b.x, b.y, b.z),
-      quantizeDisplayVertex(c.x, c.y, c.z),
+    const triIndex = triangles.length;
+    triangles.push({
+      ax: a.x, ay: a.y, az: a.z,
+      bx: b.x, by: b.y, bz: b.z,
+      cx: c.x, cy: c.y, cz: c.z,
+      nx: normal.x, ny: normal.y, nz: normal.z,
+      d: normal.x * a.x + normal.y * a.y + normal.z * a.z,
+    });
+    const minX = Math.min(a.x, b.x, c.x);
+    const maxX = Math.max(a.x, b.x, c.x);
+    const minY = Math.min(a.y, b.y, c.y);
+    const maxY = Math.max(a.y, b.y, c.y);
+    const minZ = Math.min(a.z, b.z, c.z);
+    const maxZ = Math.max(a.z, b.z, c.z);
+    for (let ix = Math.floor(minX / DISPLAY_EDGE_CELL); ix <= Math.floor(maxX / DISPLAY_EDGE_CELL); ix += 1) {
+      for (let iy = Math.floor(minY / DISPLAY_EDGE_CELL); iy <= Math.floor(maxY / DISPLAY_EDGE_CELL); iy += 1) {
+        for (let iz = Math.floor(minZ / DISPLAY_EDGE_CELL); iz <= Math.floor(maxZ / DISPLAY_EDGE_CELL); iz += 1) {
+          const key = `${ix},${iy},${iz}`;
+          const bucket = triangleGrid.get(key);
+          if (bucket) bucket.push(triIndex);
+          else triangleGrid.set(key, [triIndex]);
+        }
+      }
+    }
+    const corners = [
+      { x: a.x, y: a.y, z: a.z },
+      { x: b.x, y: b.y, z: b.z },
+      { x: c.x, y: c.y, z: c.z },
     ];
+    const keys = corners.map((corner) => quantizeDisplayVertex(corner.x, corner.y, corner.z));
     for (let i = 0; i < 3; i += 1) {
       const edgeKey = undirectedDisplayEdgeKey(keys[i], keys[(i + 1) % 3]);
       const prev = records.get(edgeKey);
       if (!prev) {
-        records.set(edgeKey, { nx: normal.x, ny: normal.y, nz: normal.z, sharp: false });
+        const start = corners[i];
+        const end = corners[(i + 1) % 3];
+        const record = {
+          nx: normal.x,
+          ny: normal.y,
+          nz: normal.z,
+          sharp: false,
+          ax: start.x,
+          ay: start.y,
+          az: start.z,
+          bx: end.x,
+          by: end.y,
+          bz: end.z,
+        };
+        records.set(edgeKey, record);
+        indexEdge(record);
         continue;
       }
       const dot = Math.abs(prev.nx * normal.x + prev.ny * normal.y + prev.nz * normal.z);
@@ -520,16 +676,124 @@ export function filterCoplanarDisplayEdges(
     }
   }
 
-  return edges.filter((edge) => {
-    if (edge.points.length < 6) return false;
-    for (let i = 0; i + 5 < edge.points.length; i += 3) {
-      const aKey = quantizeDisplayVertex(edge.points[i], edge.points[i + 1], edge.points[i + 2]);
-      const bKey = quantizeDisplayVertex(edge.points[i + 3], edge.points[i + 4], edge.points[i + 5]);
-      if (aKey === bKey) continue;
-      const record = records.get(undirectedDisplayEdgeKey(aKey, bKey));
-      if (!record) continue;
-      if (record.sharp) return true;
+  const matchLimitSq = DISPLAY_EDGE_MATCH * DISPLAY_EDGE_MATCH;
+  const segmentIsSharp = (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) => {
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    const mz = (z0 + z1) / 2;
+    const cx = Math.floor(mx / DISPLAY_EDGE_CELL);
+    const cy = Math.floor(my / DISPLAY_EDGE_CELL);
+    const cz = Math.floor(mz / DISPLAY_EDGE_CELL);
+    let best = Number.POSITIVE_INFINITY;
+    let sharp = false;
+    for (let ox = -1; ox <= 1; ox += 1) {
+      for (let oy = -1; oy <= 1; oy += 1) {
+        for (let oz = -1; oz <= 1; oz += 1) {
+          const bucket = grid.get(`${cx + ox},${cy + oy},${cz + oz}`);
+          if (!bucket) continue;
+          for (const record of bucket) {
+            const distanceSq = pointSegmentDistanceSq(mx, my, mz, record.ax, record.ay, record.az, record.bx, record.by, record.bz);
+            if (distanceSq < best) {
+              best = distanceSq;
+              sharp = record.sharp;
+            }
+          }
+        }
+      }
+    }
+    return best <= matchLimitSq && sharp;
+  };
+
+  const onFace = (px: number, py: number, pz: number, nx: number, ny: number, nz: number) => {
+    const cx = Math.floor(px / DISPLAY_EDGE_CELL);
+    const cy = Math.floor(py / DISPLAY_EDGE_CELL);
+    const cz = Math.floor(pz / DISPLAY_EDGE_CELL);
+    for (let ox = -1; ox <= 1; ox += 1) {
+      for (let oy = -1; oy <= 1; oy += 1) {
+        for (let oz = -1; oz <= 1; oz += 1) {
+          const bucket = triangleGrid.get(`${cx + ox},${cy + oy},${cz + oz}`);
+          if (!bucket) continue;
+          for (const index of bucket) {
+            if (pointOnDisplayTri(px, py, pz, triangles[index], nx, ny, nz)) return true;
+          }
+        }
+      }
     }
     return false;
-  });
+  };
+
+  // A union keeps the cylinder's original circle as one edge. The stretch that
+  // runs across the box top has the same flat face on both sides, which is the
+  // line other CAD programs delete. A real rim has air, or a different face, on one side.
+  const segmentCrossesOpenFace = (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) => {
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    const mz = (z0 + z1) / 2;
+    const tx = x1 - x0;
+    const ty = y1 - y0;
+    const tz = z1 - z0;
+    const cx = Math.floor(mx / DISPLAY_EDGE_CELL);
+    const cy = Math.floor(my / DISPLAY_EDGE_CELL);
+    const cz = Math.floor(mz / DISPLAY_EDGE_CELL);
+    const seen: Array<[number, number, number]> = [];
+    for (let ox = -1; ox <= 1; ox += 1) {
+      for (let oy = -1; oy <= 1; oy += 1) {
+        for (let oz = -1; oz <= 1; oz += 1) {
+          const bucket = triangleGrid.get(`${cx + ox},${cy + oy},${cz + oz}`);
+          if (!bucket) continue;
+          for (const index of bucket) {
+            const tri = triangles[index];
+            if (Math.abs(tri.nx * mx + tri.ny * my + tri.nz * mz - tri.d) > COPLANAR_SPAN_TOL) continue;
+            if (seen.some(([nx, ny, nz]) => Math.abs(nx * tri.nx + ny * tri.ny + nz * tri.nz) >= COPLANAR_EDGE_DOT)) continue;
+            seen.push([tri.nx, tri.ny, tri.nz]);
+            const px = tri.ny * tz - tri.nz * ty;
+            const py = tri.nz * tx - tri.nx * tz;
+            const pz = tri.nx * ty - tri.ny * tx;
+            const plen = Math.hypot(px, py, pz);
+            if (plen < 1e-8) continue;
+            const scale = COPLANAR_SPAN_OFFSET / plen;
+            const oxp = px * scale;
+            const oyp = py * scale;
+            const ozp = pz * scale;
+            if (
+              onFace(mx + oxp, my + oyp, mz + ozp, tri.nx, tri.ny, tri.nz)
+              && onFace(mx - oxp, my - oyp, mz - ozp, tri.nx, tri.ny, tri.nz)
+            ) return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  const kept: Array<{ points: number[] }> = [];
+  for (const edge of edges) {
+    if (edge.points.length < 6) continue;
+    let run: number[] | null = null;
+    const segments = Math.floor(edge.points.length / 3) - 1;
+    const finish = () => {
+      if (run && run.length >= 6) {
+        const unchanged = run.length === edge.points.length && run.every((value, index) => value === edge.points[index]);
+        kept.push(unchanged ? edge : { points: run });
+      }
+      run = null;
+    };
+    for (let i = 0; i < segments; i += 1) {
+      const x0 = edge.points[i * 3];
+      const y0 = edge.points[i * 3 + 1];
+      const z0 = edge.points[i * 3 + 2];
+      const x1 = edge.points[i * 3 + 3];
+      const y1 = edge.points[i * 3 + 4];
+      const z1 = edge.points[i * 3 + 5];
+      if (Math.hypot(x1 - x0, y1 - y0, z1 - z0) < 1e-6) continue;
+      if (segmentIsSharp(x0, y0, z0, x1, y1, z1) && !segmentCrossesOpenFace(x0, y0, z0, x1, y1, z1)) {
+        if (!run) run = [x0, y0, z0];
+        run.push(x1, y1, z1);
+      } else {
+        finish();
+      }
+    }
+    finish();
+  }
+  return kept;
 }

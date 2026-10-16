@@ -25,6 +25,11 @@ export function applyTransparentDragImage(dataTransfer: DataTransfer) {
     transparentDragImage = document.createElement("canvas");
     transparentDragImage.width = 1;
     transparentDragImage.height = 1;
+    transparentDragImage.style.position = "fixed";
+    transparentDragImage.style.left = "-100px";
+    transparentDragImage.style.top = "0";
+    transparentDragImage.style.pointerEvents = "none";
+    document.body.appendChild(transparentDragImage);
   }
   dataTransfer.setDragImage(transparentDragImage, 0, 0);
 }

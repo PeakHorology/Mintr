@@ -87,7 +87,17 @@ export type CadModifierWorkerRequest =
       quality: CadModifierQuality;
       chamferAngle: number;
     }
+  | {
+      type: "hollow";
+      requestId: number;
+      thickness: number;
+      openings: Array<"top" | "bottom" | "front" | "back" | "left" | "right">;
+      corners: "sharp" | "round";
+      cornerRadius: number;
+      quality: CadModifierQuality;
+    }
   | CadThreadPreviewRequest
+  | { type: "refine"; requestId: number; linearDeflection: number; angularDeflection: number }
   | { type: "finalize"; requestId: number }
   | { type: "warmup"; requestId: number }
   | { type: "dispose"; requestId: number };
@@ -113,6 +123,8 @@ export type CadModifierWorkerResponse =
       step?: string;
       displayEdges: CadModifierDisplayEdge[];
       components?: CadModifierComponentMesh[];
+      /** True when this mesh matches the viewport curve, not the fast slider picture. */
+      smooth?: boolean;
     }
   | { type: "previewBrep"; requestId: number; brep: string; componentBreps?: string[] }
   | { type: "disposed"; requestId: number }

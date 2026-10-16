@@ -50,7 +50,7 @@ import { barrelHoleCutDepthMm } from "@/lib/sketchCylinder";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { occtMeshFallbackNotice, selectionSupportsOcctCsg } from "@/lib/stepQuality";
 import { axisAlignedRectFromClosedPath, circleFromClosedPath, orderedSketchPaths, shapeFromSketchProfile } from "@/lib/sketchProfileShape";
-import { cloneAsGroupChild, groupedShape } from "@/lib/editorGroup";
+import { cloneAsGroupChild } from "@/lib/editorGroup";
 import {
   type Cuboid,
   type MeshData,
@@ -564,7 +564,7 @@ export function separateMeshParts(shape: WorkplaneShape) {
 
 export function separablePartCount(shape: WorkplaneShape) {
   if (shape.locked || shape.hole) return 0;
-  if (canSeparateThreadScrew(shape)) return 2;
+  if (shape.kind === "thread") return canSeparateThreadScrew(shape) ? 2 : 0;
   if (shape.groupedShapes?.length && !shape.importedMesh) return shape.groupedShapes.length;
   const mesh = meshForShape(shape);
   return meshFaceComponents(mesh).length;
@@ -614,6 +614,104 @@ export function paddedCutterShape(shape: WorkplaneShape): WorkplaneShape {
   // Exact user dimensions (matches STEP export). Face-hosted sketch holes overshoot
   // along the cut normal at bake time via faceHoleOvershootMm — never grow XY.
   return shape;
+}
+
+/** Faces closer than this are the same skin. A mesh boolean then leaves a sliver. */
+const FLUSH_CUT_FACE_MM = 0.05;
+
+const AXIAL_CUTTER_KINDS = new Set<WorkplaneShape["kind"]>([
+  "box",
+  "cylinder",
+  "cone",
+  "pyramid",
+  "wedge",
+  "polygon",
+  "tube",
+  "ring",
+  "mesh",
+  "sketch",
+  "thread",
+]);
+
+function extentAlong(shape: WorkplaneShape, axis: THREE.Vector3) {
+  const quaternion = shapeRotationQuaternion(shape);
+  const hx = shapeWidth(shape) / 2;
+  const hy = shape.height / 2;
+  const hz = shapeDepth(shape) / 2;
+  const center = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + hy, shape.z);
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  const corner = new THREE.Vector3();
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        corner.set(sx * hx, sy * hy, sz * hz).applyQuaternion(quaternion).add(center);
+        const dot = corner.dot(axis);
+        if (dot < min) min = dot;
+        if (dot > max) max = dot;
+      }
+    }
+  }
+  return { min, max };
+}
+
+function rangesOverlap(a: { min: number; max: number }, b: { min: number; max: number }) {
+  return Math.min(a.max, b.max) - Math.max(a.min, b.min) > 0.01;
+}
+
+/**
+ * A hole whose end face lands on the solid's skin does not punch through a mesh boolean.
+ * Grow that end along the cut axis only — the hole's width and depth stay exact.
+ * Stored dimensions are unchanged; this copy is for the boolean only.
+ */
+export function punchThroughCutter(hole: WorkplaneShape, solids: WorkplaneShape[]): WorkplaneShape {
+  if (!hole.hole || solids.length === 0 || !AXIAL_CUTTER_KINDS.has(hole.kind)) {
+    return hole;
+  }
+  const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(shapeRotationQuaternion(hole));
+  if (axis.lengthSq() < 1e-8) {
+    return hole;
+  }
+  const tangent = new THREE.Vector3()
+    .crossVectors(axis, Math.abs(axis.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0))
+    .normalize();
+  const bitangent = new THREE.Vector3().crossVectors(axis, tangent).normalize();
+  const holeAxis = extentAlong(hole, axis);
+  const holeU = extentAlong(hole, tangent);
+  const holeV = extentAlong(hole, bitangent);
+  let growMin = 0;
+  let growMax = 0;
+  for (const solid of solids) {
+    if (solid.hole || solid.hidden) continue;
+    if (!rangesOverlap(holeU, extentAlong(solid, tangent)) || !rangesOverlap(holeV, extentAlong(solid, bitangent))) {
+      continue;
+    }
+    const solidAxis = extentAlong(solid, axis);
+    const overshoot = faceHoleOvershootMm(Math.max(hole.height, solidAxis.max - solidAxis.min));
+    if (Math.abs(holeAxis.min - solidAxis.min) <= FLUSH_CUT_FACE_MM && holeAxis.max > solidAxis.min + FLUSH_CUT_FACE_MM) {
+      growMin = Math.max(growMin, overshoot);
+    }
+    if (Math.abs(holeAxis.max - solidAxis.max) <= FLUSH_CUT_FACE_MM && holeAxis.min < solidAxis.max - FLUSH_CUT_FACE_MM) {
+      growMax = Math.max(growMax, overshoot);
+    }
+  }
+  if (growMin === 0 && growMax === 0) {
+    return hole;
+  }
+  const height = hole.height + growMin + growMax;
+  const shift = (growMax - growMin) / 2;
+  const center = new THREE.Vector3(hole.x, (hole.elevation ?? 0) + hole.height / 2, hole.z).addScaledVector(axis, shift);
+  return {
+    ...hole,
+    x: center.x,
+    z: center.z,
+    elevation: center.y - height / 2,
+    height,
+  };
+}
+
+export function booleanCutters(holes: WorkplaneShape[], solids: WorkplaneShape[]) {
+  return holes.map((hole) => punchThroughCutter(hole, solids));
 }
 
 export function brushFromShape(shape: WorkplaneShape, cutter = false) {
@@ -1371,7 +1469,8 @@ export function booleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | 
         result.updateMatrixWorld(true);
       });
 
-      holes.forEach((hole) => {
+      const cutters = booleanCutters(holes, solids);
+      cutters.forEach((hole) => {
         result = evaluateBrushDisposing(evaluator, result!, brushFromShape(hole, true), operation);
         result.updateMatrixWorld(true);
       });
@@ -1385,7 +1484,7 @@ export function booleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | 
         continue;
       }
       const resultPositions = positionsFromGeometryDrawRange(result.geometry);
-      if (introducesOpenCutBoundary(resultPositions, sourceMesh, holes.map(paddedCutterShape))) {
+      if (introducesOpenCutBoundary(resultPositions, sourceMesh, cutters)) {
         continue;
       }
       if (!isUsableBooleanGroup(group, sourceTriangleCount, false)) {
@@ -1869,7 +1968,7 @@ export async function manifoldBooleanMeshShape(selection: WorkplaneShape[], opti
   if (sourceMesh.faces.length + cutterTriangleCount > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
     return null;
   }
-  const cutterShapes = holes.map(paddedCutterShape);
+  const cutterShapes = booleanCutters(holes, solids);
   const residualValidationShapes = holes;
   const sourceInteriorTriangles = cutterInteriorTriangleCount(sourceMesh, cutterShapes);
   const sourceTouchedTriangles = cutterTouchedTriangleCount(sourceMesh, cutterShapes);
@@ -1928,7 +2027,7 @@ export async function manifoldBooleanMeshShape(selection: WorkplaneShape[], opti
   try {
     const runtime = await getManifoldRuntime();
     const solid = shapesToManifoldUnion(runtime, solids, created, true);
-    const cutterSolid = shapesToManifoldUnion(runtime, holes.map(paddedCutterShape), created, true);
+    const cutterSolid = shapesToManifoldUnion(runtime, cutterShapes, created, true);
     if (!solid || !cutterSolid) {
       return null;
     }
@@ -1982,6 +2081,13 @@ export async function manifoldUnionMeshShape(selection: WorkplaneShape[]): Promi
     return null;
   }
 
+  // Primitives fuse from exact solids. A triangle-soup union keeps each rim, so the
+  // group still reads as separate objects.
+  if (solidsForUnion.every(shapeHasAnalyticSolid)) {
+    const analytic = await manifoldUnionFromRuntime(selection, solids, solidsForUnion, unionCleanup, mergedSourceMesh.faces.length);
+    if (analytic) return analytic;
+  }
+
   try {
     const outcome = await runManifoldBooleanInWorker({
       op: "union",
@@ -2002,23 +2108,34 @@ export async function manifoldUnionMeshShape(selection: WorkplaneShape[]): Promi
     // Fall through to main-thread Manifold.
   }
 
+  return manifoldUnionFromRuntime(selection, solids, solidsForUnion, unionCleanup, mergedSourceMesh.faces.length);
+}
+
+const ANALYTIC_SOLID_KINDS = new Set(["box", "sphere", "cylinder", "cone"]);
+
+function shapeHasAnalyticSolid(shape: WorkplaneShape) {
+  return ANALYTIC_SOLID_KINDS.has(shape.kind) && !shape.importedMesh && !shape.groupedShapes?.length;
+}
+
+async function manifoldUnionFromRuntime(
+  selection: WorkplaneShape[],
+  solids: WorkplaneShape[],
+  solidsForUnion: WorkplaneShape[],
+  unionCleanup: BooleanCleanupOptions,
+  sourceTriangleCount: number,
+) {
   const created: ManifoldSolid[] = [];
   let result: ManifoldSolid | null = null;
   try {
     const runtime = await getManifoldRuntime();
     result = shapesToManifoldUnion(runtime, solidsForUnion, created, true);
-    if (!result) {
-      return null;
-    }
-    if (result.status() !== "NoError" || result.numTri() < 1) {
+    if (!result || result.status() !== "NoError" || result.numTri() < 1) {
       return null;
     }
     result = refineBooleanManifoldSolid(runtime, result, created);
-
-    const outputMesh = result.getMesh();
-    const positions = manifoldMeshToPositions(outputMesh);
+    const positions = manifoldMeshToPositions(result.getMesh());
     const group = meshPositionsToGroupShape(selection, solids, positions, "grouped-manifold-union", unionCleanup);
-    return isUsableBooleanGroup(group, mergedSourceMesh.faces.length, false) ? group : null;
+    return isUsableBooleanGroup(group, sourceTriangleCount, false) ? group : null;
   } catch {
     return null;
   } finally {
@@ -2251,7 +2368,7 @@ export function importedBooleanMeshShape(selection: WorkplaneShape[]): Workplane
     return null;
   }
 
-  const cutterShapes = holes.map(paddedCutterShape);
+  const cutterShapes = booleanCutters(holes, solids);
   const hasSketchOperand = selection.some(shapeIsSketchOperand) || holes.some(shapeIsSketchHoleMesh);
   // Sketch extrusions bake orientation into mesh positions with zero Euler — don't treat them
   // as axis-aligned STL cutters (coplanar-rescue rotations break those meshes).
@@ -2282,7 +2399,7 @@ export function importedBooleanMeshShape(selection: WorkplaneShape[]): Workplane
       result = new Brush(geometryFromMeshData(mergedSolidMesh));
       result.updateMatrixWorld(true);
 
-      const operationHoles = attempt.rescueCoplanar ? holes.map(coplanarRescueCutterShape) : holes;
+      const operationHoles = attempt.rescueCoplanar ? cutterShapes.map(coplanarRescueCutterShape) : cutterShapes;
       operationHoles.forEach((hole) => {
         result = evaluateBrushDisposing(evaluator, result!, brushFromShape(hole, true), attempt.operation);
         result.updateMatrixWorld(true);
@@ -2295,7 +2412,7 @@ export function importedBooleanMeshShape(selection: WorkplaneShape[]): Workplane
       const hasOpenCutBoundary = introducesOpenCutBoundary(
         resultPositions,
         mergedSolidMesh,
-        operationHoles.map(paddedCutterShape),
+        operationHoles,
       );
       const volumeCleared = hasSketchOperand || clearsImportedCutVolume(result.geometry, sourceCutTriangles, operationHoles);
       if (
@@ -2323,7 +2440,7 @@ export function boxedBooleanMeshShape(selection: WorkplaneShape[]): WorkplaneSha
     return null;
   }
 
-  const cutters = holes.map((hole) => shapeAabb(paddedCutterShape(hole)));
+  const cutters = booleanCutters(holes, solids).map((hole) => shapeAabb(hole));
   const cuboids = solids.flatMap((solid) => cutters.reduce<Cuboid[]>((parts, cutter) => parts.flatMap((part) => subtractCuboid(part, cutter)), [shapeAabb(solid)]));
   if (cuboids.length === 0) {
     return null;
@@ -2380,7 +2497,7 @@ export function aabbBooleanMeshShape(selection: WorkplaneShape[]): WorkplaneShap
   }
 
   const solidBounds = solids.map(meshAabb);
-  const cutterBounds = holes.map((hole) => meshAabb(paddedCutterShape(hole)));
+  const cutterBounds = booleanCutters(holes, solids).map((hole) => meshAabb(hole));
   const cuboids = solidBounds.flatMap((solid) => cutterBounds.reduce<Cuboid[]>((parts, cutter) => parts.flatMap((part) => subtractCuboid(part, cutter)), [solid]));
   if (cuboids.length === 0) {
     return null;
@@ -2431,7 +2548,7 @@ export function hollowClipMeshShape(selection: WorkplaneShape[]): WorkplaneShape
   const solids = selection.filter((shape) => !shape.hole && !shape.locked);
   const holes = selection
     .filter((shape) => shape.hole)
-    .map(paddedCutterShape)
+    .map((shape) => punchThroughCutter(shape, solids))
     .map((shape) => ({ shape, bounds: meshAabb(shape) }));
   if (solids.length === 0 || holes.length === 0) {
     return null;
@@ -3007,17 +3124,19 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
   const boxBooleanSelection = hasSolid && hasHole
     ? expandGroupsForBoxBoolean(groupable).map((shape) => (shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape))
     : [];
-  // Mesh boolean while editing. Exact fuse is rebuilt from the recipe at STEP export.
-  const occtEligible = false;
-  const occtGroup = null;
+  // Group fuses. Exact B-rep when every operand has one; otherwise a mesh union.
+  const occtEligible = hasSolid && selectionSupportsOcctCsg(booleanSelection);
+  const occtGroup = occtEligible
+    ? await occtBooleanMeshShape(booleanSelection, hasHole ? "subtract" : "union")
+    : null;
   const manifoldCutGroup = !occtGroup && hasSolid && hasHole
     ? await manifoldBooleanMeshShape(booleanSelection, { requireImported: false })
     : null;
   const cleanBoxGroup = !occtGroup && !manifoldCutGroup && canUseBoxBoolean(boxBooleanSelection)
     ? boxedBooleanMeshShape(boxBooleanSelection)
     : null;
-  const manifoldUnionGroup = !occtGroup && hasSolid && !hasHole
-    && booleanSelection.filter((shape) => !shape.hole && !shape.locked).length >= 2
+  const solidOperands = booleanSelection.filter((shape) => !shape.hole && !shape.locked);
+  const manifoldUnionGroup = !occtGroup && hasSolid && !hasHole && solidOperands.length >= 2
     ? await manifoldUnionMeshShape(booleanSelection)
     : null;
   const exactImportedGroup = !occtGroup && hasImportedMesh && hasSolid && hasHole
@@ -3027,7 +3146,6 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
     ? booleanMeshShape(booleanSelection)
     : null;
   const cutGroup = exactImportedGroup ?? bvhCutGroup;
-  const solidOperands = booleanSelection.filter((shape) => !shape.hole && !shape.locked);
   const singleColorMeshGroup = !manifoldUnionGroup && solidOperands.length >= 2
     ? mergedMeshShape(solidOperands)
     : null;
@@ -3036,8 +3154,7 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
       cleanBoxGroup ??
       cutGroup
     : manifoldUnionGroup ??
-      singleColorMeshGroup ??
-      groupedShape(groupable));
+      singleColorMeshGroup);
   // Keep the user's selected operands as the CSG tree, not flattened boolean
   // leaves, so Ungroup peels one Group at a time.
   const nestedOperands = groupable.filter((shape) => !shape.locked);

@@ -3,6 +3,10 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { allowPath, findPeakcadArg, registerProjectFileIpc } = require("./projectFile.cjs");
+const { registerUpdateIpc } = require("./updateCheck.cjs");
+const { installCrashReports, openFeedback, openProblemReport, registerCrashReportIpc } = require("./crashReport.cjs");
+
+installCrashReports();
 
 const HOST = "127.0.0.1";
 const APP_PORT = 48173;
@@ -120,6 +124,8 @@ function installFileMenu() {
         role: "help",
         submenu: [
           { label: "About PeakCAD", click: () => showAboutDialog() },
+          { label: "We'd love to hear your feedback", click: () => { void openFeedback(); } },
+          { label: "Report a problem", click: () => { void openProblemReport(); } },
           { type: "separator" },
           { label: "License (GPL-3.0-or-later)", click: () => openLegalFile("LICENSE.txt") },
           { label: "Third-Party Notices", click: () => openLegalFile("THIRD-PARTY-NOTICES.txt") },
@@ -355,13 +361,14 @@ function createWindow(port) {
     if (saveBeforeCloseInFlight) return;
     const choice = dialog.showMessageBoxSync(window, {
       type: "question",
-      buttons: ["Save", "Don't save", "Cancel"],
+      buttons: ["Save file", "Keep in PeakCAD"],
       defaultId: 0,
+      // Esc and the dialog X are not a listed button, so they stay in the project.
       cancelId: 2,
       noLink: true,
       title: "PeakCAD",
-      message: closing ? "Save changes before closing?" : "Save changes before reloading?",
-      detail: "The model is autosaved, but exact STEP for new imports is only kept when you save.",
+      message: closing ? "Save a .peakcad file before closing?" : "Save a .peakcad file before reloading?",
+      detail: "This design stays in PeakCAD either way. Saving writes a .peakcad file you can back up, share, or open from disk.",
     });
     if (choice === 1) {
       event.preventDefault();
@@ -470,6 +477,8 @@ if (!gotSingleInstanceLock) {
       app.setAppUserModelId(APP_USER_MODEL_ID);
     }
     registerProjectFileIpc(app, () => mainWindow);
+    registerUpdateIpc(ipcMain);
+    registerCrashReportIpc(ipcMain);
     installFileMenu();
     return bootstrap();
   }).catch((error) => {

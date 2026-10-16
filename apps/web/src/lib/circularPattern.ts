@@ -258,7 +258,19 @@ export function circularPatternInstances(
   return results;
 }
 
-/** Orbit radius taken from a pivot shape’s footprint (half the longest width/depth). */
+/** Axis point beside the selection so the object is already the first instance on the circle. */
+export function defaultCircularPatternCenter(
+  sources: readonly Pick<WorkplaneShape, "x" | "z" | "width" | "depth" | "size">[],
+): CircularPatternCenter {
+  if (!sources.length) return { x: 0, z: 0 };
+  const cx = sources.reduce((sum, shape) => sum + shape.x, 0) / sources.length;
+  const cz = sources.reduce((sum, shape) => sum + shape.z, 0) / sources.length;
+  const span = Math.max(
+    ...sources.map((shape) => Math.max(shape.width ?? shape.size ?? 0, shape.depth ?? shape.size ?? 0)),
+    20,
+  );
+  return { x: clampPosition(cx - span), z: clampPosition(cz) };
+}
 export function circularPatternRadiusFromShape(shape: Pick<WorkplaneShape, "width" | "depth" | "size" | "radius">) {
   const width = shape.width ?? shape.size ?? 0;
   const depth = shape.depth ?? shape.size ?? 0;

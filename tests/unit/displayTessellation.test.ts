@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  curveSidesForShape,
+  curvedDisplayTessellation,
   DEFAULT_DISPLAY_QUALITY,
   modifierQualityForDisplay,
   resolveHollowCylinderSegments,
@@ -30,6 +32,18 @@ describe("display tessellation", () => {
   it("keeps custom low facet counts for intentional polygons", () => {
     expect(resolveShapeSides("cylinder", 12, "smooth")).toBe(12);
     expect(resolveShapeSides("polygon", 6, "smooth")).toBe(6);
+  });
+
+  it("matches a fillet mesh to the curve already on screen", () => {
+    setActiveDisplayQuality("smooth");
+    expect(curveSidesForShape({ kind: "cylinder", sides: 96 })).toBe(192);
+    expect(curveSidesForShape({ kind: "cylinder", sides: 12 })).toBe(12);
+    expect(curveSidesForShape({ kind: "box" })).toBe(192);
+    expect(curveSidesForShape({ kind: "torus", steps: 64 })).toBe(256);
+    const smooth = curvedDisplayTessellation(1, 192);
+    expect(smooth.angularDeflection).toBeCloseTo((Math.PI * 2) / 192, 8);
+    expect(smooth.linearDeflection).toBeGreaterThanOrEqual(0.02);
+    expect(smooth.linearDeflection).toBeLessThanOrEqual(0.2);
   });
 
   it("keeps deliberate facet counts that collide with another kind's default", () => {

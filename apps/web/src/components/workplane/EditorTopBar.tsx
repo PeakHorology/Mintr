@@ -231,30 +231,40 @@ export function EditorTopBar({
       </div>
 
       <div className="editor-top-bar-right">
-        <PeakTipButton className="editor-top-bar-text" label="Import" description={TOOL_DESCRIPTIONS.import} onClick={onImport}>
-          Import
-        </PeakTipButton>
-        {hasMatchingSavedFile && onSaveProject ? (
-          <PeakTipButton className="editor-top-bar-text" label="Save" description={TOOL_DESCRIPTIONS.saveProject} onClick={onSaveProject}>
-            Save
-          </PeakTipButton>
-        ) : null}
-        {!hasMatchingSavedFile && onSaveProjectAs ? (
-          <PeakTipButton className="editor-top-bar-text" label="Save as" description={TOOL_DESCRIPTIONS.saveProjectAs} onClick={onSaveProjectAs}>
-            Save as
-          </PeakTipButton>
-        ) : null}
-        <PeakTipButton className="editor-top-bar-text" label="Export" description={TOOL_DESCRIPTIONS.export} onClick={onExport}>
-          Export
-        </PeakTipButton>
-        <PeakTipButton
-          className="editor-top-bar-icon"
-          label="Settings"
-          description={TOOL_DESCRIPTIONS.settings}
-          onClick={() => window.dispatchEvent(new Event("sketchforge:open-workspace-settings"))}
-        >
-          <ToolbarSettingsIcon />
-        </PeakTipButton>
+        <div className="editor-file-group" aria-label="File">
+          <div className="toolbar-section-label">File</div>
+          <div className="toolbar-section-tools">
+            <PeakTipButton className="editor-file-action" label="Import" description={TOOL_DESCRIPTIONS.import} onClick={onImport}>
+              Import
+            </PeakTipButton>
+            {hasMatchingSavedFile && onSaveProject ? (
+              <PeakTipButton className="editor-file-action" label="Save" description={TOOL_DESCRIPTIONS.saveProject} onClick={onSaveProject}>
+                Save
+              </PeakTipButton>
+            ) : null}
+            {!hasMatchingSavedFile && onSaveProjectAs ? (
+              <PeakTipButton className="editor-file-action" label="Save as" description={TOOL_DESCRIPTIONS.saveProjectAs} onClick={onSaveProjectAs}>
+                Save as
+              </PeakTipButton>
+            ) : null}
+            <PeakTipButton className="editor-file-action" label="Export" description={TOOL_DESCRIPTIONS.export} onClick={onExport}>
+              Export
+            </PeakTipButton>
+          </div>
+        </div>
+        <div className="editor-file-group" aria-label="Settings">
+          <div className="toolbar-section-label">Settings</div>
+          <div className="toolbar-section-tools">
+            <PeakTipButton
+              className="toolbar-icon"
+              label="Settings"
+              description={TOOL_DESCRIPTIONS.settings}
+              onClick={() => window.dispatchEvent(new Event("sketchforge:open-workspace-settings"))}
+            >
+              <ToolbarSettingsIcon />
+            </PeakTipButton>
+          </div>
+        </div>
       </div>
     </header>
   );

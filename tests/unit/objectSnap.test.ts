@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { faceToFaceTranslation, snapAabbFromShape, snapMovingAabb, unionSnapAabbs } from "@/lib/objectSnap";
+import { faceToFaceMate, layFaceOnWorkplane, snapAabbFromShape, snapMovingAabb, unionSnapAabbs } from "@/lib/objectSnap";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 function box(partial: Partial<WorkplaneShape> & Pick<WorkplaneShape, "id" | "x" | "z">): WorkplaneShape {
@@ -81,22 +81,48 @@ describe("unionSnapAabbs", () => {
   });
 });
 
-describe("faceToFaceTranslation", () => {
-  it("slides one side onto the facing side", () => {
-    const move = faceToFaceTranslation(
-      { point: [5, 5, 0], normal: [1, 0, 0] },
-      { point: [20, 4, 1], normal: [-1, 0, 0] },
+describe("faceToFaceMate", () => {
+  const source = box({ id: "source", x: 0, z: 0, elevation: 0, width: 10, depth: 10, height: 10, rotation: 0 });
+  const target = box({ id: "target", x: 30, z: 4, elevation: 12, width: 10, depth: 20, height: 8, rotation: 0 });
+
+  it("centers the first face on the second, ignoring where on the face you click", () => {
+    const fromCorner = faceToFaceMate(
+      source,
+      { point: [5, 0.2, 4.8], normal: [1, 0, 0] },
+      target,
+      { point: [25, 12.1, -5.5], normal: [-1, 0, 0] },
     );
-    expect(move?.x).toBeCloseTo(15);
-    expect(move?.y).toBeCloseTo(0);
-    expect(move?.z).toBeCloseTo(0);
+    const fromCenter = faceToFaceMate(
+      source,
+      { point: [5, 5, 0], normal: [1, 0, 0] },
+      target,
+      { point: [25, 16, 4], normal: [-1, 0, 0] },
+    );
+    expect(fromCorner).toEqual(fromCenter);
+    expect(fromCenter).toMatchObject({ x: 20, z: 4, elevation: 11, rotationX: 0, rotation: 0, rotationZ: 0 });
   });
 
-  it("ignores a sideways offset and only closes the gap between the sides", () => {
-    const move = faceToFaceTranslation(
-      { point: [5, 0, 0], normal: [1, 0, 0] },
-      { point: [20, 80, -40], normal: [-1, 0, 0] },
+  it("turns the first face onto the second and centers it there", () => {
+    const pose = faceToFaceMate(
+      source,
+      { point: [5, 1, -3], normal: [1, 0, 0] },
+      target,
+      { point: [34, 20, 8], normal: [0, 1, 0] },
     );
-    expect(move).toEqual({ x: 15, y: 0, z: 0 });
+    expect(pose).toMatchObject({ x: 30, z: 4, elevation: 20, rotationX: 0, rotation: 0, rotationZ: 270 });
+  });
+});
+
+describe("layFaceOnWorkplane", () => {
+  const shape = box({ id: "box", x: 4, z: -6, elevation: 8, width: 10, depth: 10, height: 10, rotation: 0 });
+
+  it("turns a side face down and rests it on the workplane", () => {
+    const pose = layFaceOnWorkplane(shape, { point: [9, 12, -4], normal: [1, 0, 0] });
+    expect(pose).toMatchObject({ x: 4, z: -6, elevation: 0, rotationX: 0, rotation: 0, rotationZ: 270 });
+  });
+
+  it("drops a face that is already down onto the workplane", () => {
+    const pose = layFaceOnWorkplane(shape, { point: [4, 8, -6], normal: [0, -1, 0] });
+    expect(pose).toMatchObject({ x: 4, z: -6, elevation: 0, rotationX: 0, rotation: 0, rotationZ: 0 });
   });
 });

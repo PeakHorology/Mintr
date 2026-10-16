@@ -4,6 +4,7 @@ import { Ellipsis } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import {
   ToolbarAlignIcon,
+  ToolbarAssemblyIcon,
   ToolbarChamferIcon,
   ToolbarCircularPatternIcon,
   ToolbarCopyIcon,
@@ -11,11 +12,16 @@ import {
   ToolbarDuplicateIcon,
   ToolbarDuplicateRepeatIcon,
   ToolbarFilletIcon,
+  ToolbarHollowIcon,
+  ToolbarSplitIcon,
   ToolbarGroupIcon,
+  ToolbarHistoryIcon,
   ToolbarIntersectionIcon,
   ToolbarMirrorIcon,
   ToolbarPasteIcon,
   ToolbarRedoIcon,
+  ToolbarLayFlatIcon,
+  ToolbarSnapGridIcon,
   ToolbarTrashIcon,
   ToolbarUngroupIcon,
   ToolbarUndoIcon,
@@ -41,6 +47,7 @@ type ToolDef = {
 
 type ToolSection = {
   title: string;
+  accent: "history" | "clipboard" | "combine" | "modify" | "arrange";
   tools: ToolDef[];
 };
 
@@ -194,7 +201,8 @@ function OverflowToolRow({
           return null;
         }
         return (
-          <div key={section.title} className="toolbar-section compact toolbar-section--no-label" aria-label={section.title}>
+          <div key={section.title} className={`toolbar-section compact toolbar-group-${section.accent}`} aria-label={section.title}>
+            <div className="toolbar-section-label">{section.title}</div>
             <div className="toolbar-section-tools">
               {shown.map((tool) => (
                 <ToolbarButton key={tool.label} tool={tool} />
@@ -218,27 +226,36 @@ function OverflowToolRow({
           </button>
           {menuOpen ? (
             <div ref={menuRef} className="toolbar-overflow-menu" role="menu" aria-label="More tools">
-              {overflow.map((tool) => {
-                const Icon = tool.icon;
+              {sections.map((section) => {
+                const hidden = section.tools.filter((tool) => !visible.has(tool.label));
+                if (hidden.length === 0) return null;
                 return (
-                  <button
-                    key={tool.label}
-                    type="button"
-                    role="menuitem"
-                    className={`${tool.enabled ? "" : "disabled"} ${tool.active ? "active" : ""}`}
-                    aria-disabled={!tool.enabled}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      if (!tool.enabled) {
-                        return;
-                      }
-                      tool.action();
-                      setMenuOpen(false);
-                    }}
-                  >
-                    <Icon className={tool.iconClassName} />
-                    <span>{tool.label}</span>
-                  </button>
+                  <div key={section.title} className="toolbar-overflow-menu-group" role="group" aria-label={section.title}>
+                    <div className={`toolbar-overflow-menu-label toolbar-group-${section.accent}`}>{section.title}</div>
+                    {hidden.map((tool) => {
+                      const Icon = tool.icon;
+                      return (
+                        <button
+                          key={tool.label}
+                          type="button"
+                          role="menuitem"
+                          className={`${tool.enabled ? "" : "disabled"} ${tool.active ? "active" : ""}`}
+                          aria-disabled={!tool.enabled}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            if (!tool.enabled) {
+                              return;
+                            }
+                            tool.action();
+                            setMenuOpen(false);
+                          }}
+                        >
+                          <Icon className={tool.iconClassName} />
+                          <span>{tool.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 );
               })}
             </div>
@@ -278,18 +295,27 @@ export function EditorModeStrip({
     <OverflowToolRow
       sections={[
         {
-          title: "Edit",
+          title: "History",
+          accent: "history",
           tools: [
             { label: "Undo", description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: Boolean(canUndo), shortcut: shortcutLabel(hotkeys, "undo") },
             { label: "Redo", description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: Boolean(canRedo), shortcut: shortcutLabel(hotkeys, "redo") },
-            ...(onCopy
-              ? [{ label: "Copy", description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: Boolean(canCopy), shortcut: shortcutLabel(hotkeys, "copy") }]
-              : []),
-            ...(onPaste
-              ? [{ label: "Paste", description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: Boolean(canPaste), shortcut: shortcutLabel(hotkeys, "paste") }]
-              : []),
           ],
         },
+        ...((onCopy || onPaste)
+          ? [{
+            title: "Clipboard",
+            accent: "clipboard" as const,
+            tools: [
+              ...(onCopy
+                ? [{ label: "Copy", description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: Boolean(canCopy), shortcut: shortcutLabel(hotkeys, "copy") }]
+                : []),
+              ...(onPaste
+                ? [{ label: "Paste", description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: Boolean(canPaste), shortcut: shortcutLabel(hotkeys, "paste") }]
+                : []),
+            ],
+          }]
+          : []),
       ]}
     />
   );
@@ -299,14 +325,19 @@ export function EditorViewportToolbar({
   cluster = "all",
   canUndo,
   canRedo,
+  historyActive,
   hasClipboard,
   hasSelection,
   canGroup,
   canIntersect,
   canUngroup,
   alignMode,
+  snapActive,
+  layFlatActive,
   canAlign,
   canEdgeModify,
+  hollowActive,
+  splitActive,
   edgeModifierKind,
   circularPatternActive,
   canCircularPattern,
@@ -319,30 +350,41 @@ export function EditorViewportToolbar({
   onDuplicateAndRepeat,
   onDelete,
   onUndo,
+  onHistory,
   onRedo,
   onGroup,
+  onAssemble,
   onUngroup,
   onIntersect,
   onAlign,
+  onSnap,
+  onLayFlat,
   onMirror,
   onCircularPattern,
   onLinearPattern,
   onChamfer,
   onFillet,
+  onHollow,
+  onSplit,
 }: {
   cluster?: "all" | "edit" | "modify";
   toolbarMode?: ToolbarMode;
   onToolbarModeChange?: (mode: ToolbarMode) => void;
   canUndo: boolean;
   canRedo: boolean;
+  historyActive: boolean;
   hasClipboard: boolean;
   hasSelection: boolean;
   canGroup: boolean;
   canIntersect: boolean;
   canUngroup: boolean;
   alignMode: boolean;
+  snapActive: boolean;
+  layFlatActive: boolean;
   canAlign: boolean;
   canEdgeModify: boolean;
+  hollowActive: boolean;
+  splitActive: boolean;
   edgeModifierKind: CadModifierKind | null;
   circularPatternActive: boolean;
   canCircularPattern: boolean;
@@ -355,55 +397,82 @@ export function EditorViewportToolbar({
   onDuplicateAndRepeat: () => void;
   onDelete: () => void;
   onUndo: () => void;
+  onHistory: () => void;
   onRedo: () => void;
   onGroup: () => void;
+  onAssemble: () => void;
   onUngroup: () => void;
   onIntersect: () => void;
   onAlign: () => void;
+  onSnap: () => void;
+  onLayFlat: () => void;
   onMirror: () => void;
   onCircularPattern: () => void;
   onLinearPattern: () => void;
   onChamfer: () => void;
   onFillet: () => void;
+  onHollow: () => void;
+  onSplit: () => void;
 }) {
   const hotkeys = useHotkeyBindings();
 
-  const editSection: ToolSection = {
-    title: "Edit",
+  const historySection: ToolSection = {
+    title: "History",
+    accent: "history",
     tools: [
-        { label: "Undo", description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: canUndo, shortcut: shortcutLabel(hotkeys, "undo"), disabledReason: "Nothing to undo" },
-        { label: "Redo", description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: canRedo, shortcut: shortcutLabel(hotkeys, "redo"), disabledReason: "Nothing to redo" },
-        { label: "Copy", description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "copy"), disabledReason: "Select a shape first" },
-        { label: "Paste", description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: hasClipboard, shortcut: shortcutLabel(hotkeys, "paste"), disabledReason: "Nothing to paste" },
-        { label: "Duplicate", description: TOOL_DESCRIPTIONS.duplicate, icon: ToolbarDuplicateIcon, action: onDuplicate, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicate"), disabledReason: "Select a shape first" },
-        { label: "Duplicate and repeat", description: TOOL_DESCRIPTIONS.duplicateRepeat, icon: ToolbarDuplicateRepeatIcon, action: onDuplicateAndRepeat, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicateRepeat"), disabledReason: "Select a shape first" },
-        { label: "Delete", description: TOOL_DESCRIPTIONS.delete, icon: ToolbarTrashIcon, action: onDelete, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "delete"), disabledReason: "Select a shape first" },
+      { label: "Undo", description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: canUndo, shortcut: shortcutLabel(hotkeys, "undo"), disabledReason: "Nothing to undo" },
+      { label: "History", description: TOOL_DESCRIPTIONS.history, icon: ToolbarHistoryIcon, action: onHistory, enabled: true, active: historyActive },
+      { label: "Redo", description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: canRedo, shortcut: shortcutLabel(hotkeys, "redo"), disabledReason: "Nothing to redo" },
+    ],
+  };
+  const clipboardSection: ToolSection = {
+    title: "Clipboard",
+    accent: "clipboard",
+    tools: [
+      { label: "Copy", description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "copy"), disabledReason: "Select a shape first" },
+      { label: "Paste", description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: hasClipboard, shortcut: shortcutLabel(hotkeys, "paste"), disabledReason: "Nothing to paste" },
+      { label: "Duplicate", description: TOOL_DESCRIPTIONS.duplicate, icon: ToolbarDuplicateIcon, action: onDuplicate, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicate"), disabledReason: "Select a shape first" },
+      { label: "Duplicate and repeat", description: TOOL_DESCRIPTIONS.duplicateRepeat, icon: ToolbarDuplicateRepeatIcon, action: onDuplicateAndRepeat, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicateRepeat"), disabledReason: "Select a shape first" },
+      { label: "Delete", description: TOOL_DESCRIPTIONS.delete, icon: ToolbarTrashIcon, action: onDelete, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "delete"), disabledReason: "Select a shape first" },
     ],
   };
   const combineSection: ToolSection = {
     title: "Combine",
+    accent: "combine",
     tools: [
-        { label: "Group", description: TOOL_DESCRIPTIONS.group, icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup, shortcut: shortcutLabel(hotkeys, "group"), disabledReason: "Select two or more shapes to group" },
-        { label: "Ungroup", description: TOOL_DESCRIPTIONS.ungroup, icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup, shortcut: shortcutLabel(hotkeys, "ungroup"), disabledReason: "Select a grouped shape to ungroup" },
-        { label: "Intersect", description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select a solid and a hole shape" },
+      { label: "Group", description: TOOL_DESCRIPTIONS.group, icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup, shortcut: shortcutLabel(hotkeys, "group"), disabledReason: "Select two or more shapes to group" },
+      { label: "Tie", description: TOOL_DESCRIPTIONS.assembly, icon: ToolbarAssemblyIcon, action: onAssemble, enabled: canGroup, disabledReason: "Select two or more shapes to tie together" },
+      { label: "Ungroup", description: TOOL_DESCRIPTIONS.ungroup, icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup, shortcut: shortcutLabel(hotkeys, "ungroup"), disabledReason: "Select a grouped shape to ungroup" },
+      { label: "Intersect", description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select a solid and a hole shape" },
     ],
   };
   const modifySection: ToolSection = {
     title: "Modify",
+    accent: "modify",
     tools: [
-        { label: "Align", description: TOOL_DESCRIPTIONS.align, icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode, shortcut: shortcutLabel(hotkeys, "align"), disabledReason: "Select two or more shapes to align" },
-        { label: "Mirror", description: TOOL_DESCRIPTIONS.mirror, icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode, shortcut: shortcutLabel(hotkeys, "mirror"), disabledReason: "Select a shape first" },
-        { label: "Circular pattern", description: TOOL_DESCRIPTIONS.pattern, icon: ToolbarCircularPatternIcon, action: onCircularPattern, enabled: canCircularPattern || circularPatternActive, active: circularPatternActive, shortcut: shortcutLabel(hotkeys, "pattern"), disabledReason: "Select an unlocked shape first" },
-        { label: "Linear pattern", description: TOOL_DESCRIPTIONS.linearPattern, icon: ToolbarLinearPatternIcon, action: onLinearPattern, enabled: canLinearPattern || linearPatternActive, active: linearPatternActive, disabledReason: "Select an unlocked shape first" },
-        { label: "Chamfer", description: TOOL_DESCRIPTIONS.chamfer, icon: ToolbarChamferIcon, action: onChamfer, enabled: canEdgeModify, active: edgeModifierKind === "chamfer", shortcut: shortcutLabel(hotkeys, "chamfer"), disabledReason: "Select a single unlocked shape first" },
-        { label: "Fillet", description: TOOL_DESCRIPTIONS.fillet, icon: ToolbarFilletIcon, action: onFillet, enabled: canEdgeModify, active: edgeModifierKind === "fillet", shortcut: shortcutLabel(hotkeys, "fillet"), disabledReason: "Select a single unlocked shape first" },
+      { label: "Chamfer", description: TOOL_DESCRIPTIONS.chamfer, icon: ToolbarChamferIcon, action: onChamfer, enabled: canEdgeModify, active: edgeModifierKind === "chamfer", shortcut: shortcutLabel(hotkeys, "chamfer"), disabledReason: "Select a single unlocked shape first" },
+      { label: "Fillet", description: TOOL_DESCRIPTIONS.fillet, icon: ToolbarFilletIcon, action: onFillet, enabled: canEdgeModify, active: edgeModifierKind === "fillet", shortcut: shortcutLabel(hotkeys, "fillet"), disabledReason: "Select a single unlocked shape first" },
+      { label: "Hollow", description: TOOL_DESCRIPTIONS.hollow, icon: ToolbarHollowIcon, action: onHollow, enabled: canEdgeModify, active: hollowActive, disabledReason: "Select a single unlocked shape first" },
+      { label: "Split", description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canEdgeModify || splitActive, active: splitActive, disabledReason: "Select a single unlocked shape first" },
+    ],
+  };
+  const arrangeSection: ToolSection = {
+    title: "Arrange",
+    accent: "arrange",
+    tools: [
+      { label: "Align", description: TOOL_DESCRIPTIONS.align, icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode, shortcut: shortcutLabel(hotkeys, "align"), disabledReason: "Select two or more shapes to align" },
+      { label: "Snap", description: TOOL_DESCRIPTIONS.snap, icon: ToolbarSnapGridIcon, action: onSnap, enabled: true, active: snapActive },
+      { label: "Lay flat", description: TOOL_DESCRIPTIONS.layFlat, icon: ToolbarLayFlatIcon, action: onLayFlat, enabled: true, active: layFlatActive },
+      { label: "Mirror", description: TOOL_DESCRIPTIONS.mirror, icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode, shortcut: shortcutLabel(hotkeys, "mirror"), disabledReason: "Select a shape first" },
+      { label: "Circular pattern", description: TOOL_DESCRIPTIONS.pattern, icon: ToolbarCircularPatternIcon, action: onCircularPattern, enabled: canCircularPattern || circularPatternActive, active: circularPatternActive, shortcut: shortcutLabel(hotkeys, "pattern"), disabledReason: "Select an unlocked shape first" },
+      { label: "Linear pattern", description: TOOL_DESCRIPTIONS.linearPattern, icon: ToolbarLinearPatternIcon, action: onLinearPattern, enabled: canLinearPattern || linearPatternActive, active: linearPatternActive, disabledReason: "Select an unlocked shape first" },
     ],
   };
 
   const sections =
-    cluster === "edit" ? [editSection]
-      : cluster === "modify" ? [combineSection, modifySection]
-        : [editSection, combineSection, modifySection];
+    cluster === "edit" ? [historySection, clipboardSection]
+      : cluster === "modify" ? [combineSection, modifySection, arrangeSection]
+        : [historySection, clipboardSection, combineSection, modifySection, arrangeSection];
 
   return <OverflowToolRow sections={sections} align={cluster === "modify" ? "end" : "start"} />;
 }

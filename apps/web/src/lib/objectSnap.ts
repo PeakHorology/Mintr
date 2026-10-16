@@ -1,4 +1,6 @@
+import * as THREE from "three";
 import { worldAabb } from "@/lib/shapeBounds";
+import { cleanRotationDegrees, mirrorSign, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 export const OBJECT_SNAP_DEFAULT_TOLERANCE = 1.5;
@@ -183,25 +185,102 @@ export type FaceSnapSample = {
   normal: [number, number, number];
 };
 
-/** Slide the first side onto the second along the side’s axis, so the faces meet and do not pass through. */
-export function faceToFaceTranslation(source: FaceSnapSample, target: FaceSnapSample): { x: number; y: number; z: number } | null {
-  const sourceAxis = dominantAxisIndex(source.normal);
-  const targetAxis = dominantAxisIndex(target.normal);
-  if (sourceAxis === null || targetAxis === null) return null;
-  const axis = sourceAxis === targetAxis ? sourceAxis : targetAxis;
-  const delta = clean(target.point[axis] - source.point[axis]);
-  if (axis === 0) return { x: delta, y: 0, z: 0 };
-  if (axis === 1) return { x: 0, y: delta, z: 0 };
-  return { x: 0, y: 0, z: delta };
+export type FaceMatePose = {
+  x: number;
+  z: number;
+  elevation: number;
+  rotationX: number;
+  rotation: number;
+  rotationZ: number;
+};
+
+type FaceMateBody = Pick<WorkplaneShape, "x" | "z" | "height" | "rotation" | "width" | "depth" | "size"> & Partial<Pick<WorkplaneShape, "elevation" | "rotationX" | "rotationZ" | "mirrorX" | "mirrorY" | "mirrorZ">>;
+
+/**
+ * Turn the first shape so the chosen faces point at each other, then move it
+ * until that face is centered on the second face. Where on the face you click
+ * only chooses the face.
+ */
+export function faceToFaceMate(
+  sourceShape: FaceMateBody,
+  source: FaceSnapSample,
+  targetShape: FaceMateBody,
+  target: FaceSnapSample,
+): FaceMatePose | null {
+  const sourceNormal = unitVector(source.normal);
+  const targetNormal = unitVector(target.normal);
+  const sourceFace = sourceNormal ? faceCenter(sourceShape, sourceNormal) : null;
+  const targetFace = targetNormal ? faceCenter(targetShape, targetNormal) : null;
+  if (!sourceNormal || !targetNormal || !sourceFace || !targetFace) return null;
+  const center = new THREE.Vector3(sourceShape.x, (sourceShape.elevation ?? 0) + sourceShape.height / 2, sourceShape.z);
+  const current = shapeQuaternion(sourceShape);
+  const turn = new THREE.Quaternion().setFromUnitVectors(
+    sourceNormal,
+    targetNormal.clone().negate(),
+  );
+  const next = turn.clone().multiply(current);
+  const landed = sourceFace.clone().sub(center).applyQuaternion(turn).add(center);
+  const shift = targetFace.clone().sub(landed);
+  const euler = new THREE.Euler().setFromQuaternion(next, "XYZ");
+  return {
+    x: clean(sourceShape.x + shift.x),
+    z: clean(sourceShape.z + shift.z),
+    elevation: clean((sourceShape.elevation ?? 0) + shift.y),
+    rotationX: cleanRotationDegrees(THREE.MathUtils.radToDeg(euler.x)),
+    rotation: cleanRotationDegrees(THREE.MathUtils.radToDeg(euler.y)),
+    rotationZ: cleanRotationDegrees(THREE.MathUtils.radToDeg(euler.z)),
+  };
 }
 
-function dominantAxisIndex(normal: [number, number, number]): 0 | 1 | 2 | null {
-  const ax = Math.abs(normal[0]);
-  const ay = Math.abs(normal[1]);
-  const az = Math.abs(normal[2]);
-  const largest = Math.max(ax, ay, az);
-  if (largest < 1e-8) return null;
-  if (ax === largest) return 0;
-  if (ay === largest) return 1;
-  return 2;
+function shapeQuaternion(shape: FaceMateBody) {
+  return new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(shape.rotationX ?? 0),
+    THREE.MathUtils.degToRad(shape.rotation),
+    THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
+    "XYZ",
+  ));
+}
+
+/** Center of the side the normal points out of, in world space. */
+function faceCenter(shape: FaceMateBody, worldNormal: THREE.Vector3) {
+  const rotation = shapeQuaternion(shape);
+  const scale = new THREE.Vector3(mirrorSign(shape.mirrorX), mirrorSign(shape.mirrorY), mirrorSign(shape.mirrorZ));
+  const localNormal = worldNormal.clone().applyQuaternion(rotation.clone().invert()).multiply(scale);
+  const ax = Math.abs(localNormal.x);
+  const ay = Math.abs(localNormal.y);
+  const az = Math.abs(localNormal.z);
+  const axis = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+  if (Math.max(ax, ay, az) < 1e-8) return null;
+  const sign = Math.sign(localNormal.getComponent(axis)) || 1;
+  const half = [shapeWidth(shape) / 2, shape.height / 2, shapeDepth(shape) / 2];
+  const local = new THREE.Vector3();
+  local.setComponent(axis, sign * half[axis]);
+  const center = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z);
+  return local.multiply(scale).applyQuaternion(rotation).add(center);
+}
+
+/** Turn the shape so this face points down, then rest that face on the workplane. */
+export function layFaceOnWorkplane(shape: FaceMateBody, face: FaceSnapSample): FaceMatePose | null {
+  const normal = unitVector(face.normal);
+  if (!normal) return null;
+  const center = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z);
+  const current = shapeQuaternion(shape);
+  const turn = new THREE.Quaternion().setFromUnitVectors(normal, new THREE.Vector3(0, -1, 0));
+  const next = turn.clone().multiply(current);
+  const landed = new THREE.Vector3(...face.point).sub(center).applyQuaternion(turn).add(center);
+  const euler = new THREE.Euler().setFromQuaternion(next, "XYZ");
+  return {
+    x: shape.x,
+    z: shape.z,
+    elevation: clean((shape.elevation ?? 0) - landed.y),
+    rotationX: cleanRotationDegrees(THREE.MathUtils.radToDeg(euler.x)),
+    rotation: cleanRotationDegrees(THREE.MathUtils.radToDeg(euler.y)),
+    rotationZ: cleanRotationDegrees(THREE.MathUtils.radToDeg(euler.z)),
+  };
+}
+
+function unitVector(value: [number, number, number]) {
+  const vector = new THREE.Vector3(...value);
+  if (vector.lengthSq() < 1e-12) return null;
+  return vector.normalize();
 }

@@ -24,6 +24,8 @@ export type EditorHistoryEntry = {
   estimatedBytes: number;
   /** Large mesh payloads keyed by shape path (see compactHistoryShape). */
   meshVault?: EditorHistoryMeshVault;
+  /** Short name of the change, when the editor recorded one. */
+  label?: string;
 };
 
 export type EditorHistoryState = {
@@ -326,7 +328,7 @@ function estimateHistoryEntryBytes(shapes: WorkplaneShape[], vault: EditorHistor
   return bytes;
 }
 
-export function editorHistoryEntry(shapes: WorkplaneShape[], selectedIds: string[]): EditorHistoryEntry {
+export function editorHistoryEntry(shapes: WorkplaneShape[], selectedIds: string[], label?: string): EditorHistoryEntry {
   const liveCanonical = shapes.map(canonicalizeShape);
   // Fingerprint the live scene before stripping meshes so undo dedupe stays accurate.
   const signature = serializedSceneSignature(liveCanonical);
@@ -339,6 +341,7 @@ export function editorHistoryEntry(shapes: WorkplaneShape[], selectedIds: string
     fingerprint: signature.fingerprint,
     estimatedBytes: estimateHistoryEntryBytes(canonicalShapes, vault),
     ...(Object.keys(vault).length ? { meshVault: vault } : {}),
+    ...(label?.trim() ? { label: label.trim() } : {}),
   };
 }
 
@@ -368,6 +371,12 @@ export function appendEditorHistorySnapshot(entries: EditorHistoryEntry[], reque
   return { entries: nextEntries, index: nextEntries.length - 1, changed: true };
 }
 
+export function historyStepLabel(entry: Pick<EditorHistoryEntry, "label">, index: number) {
+  const label = entry.label?.trim();
+  if (label) return label;
+  return index === 0 ? "Start" : `Step ${index + 1}`;
+}
+
 export function hydrateEditorHistoryState(
   currentShapes: WorkplaneShape[],
   storedEntries: EditorHistoryEntry[] | undefined,
@@ -395,6 +404,7 @@ export function hydrateEditorHistoryState(
           fingerprint: entry.fingerprint,
           estimatedBytes: entry.estimatedBytes,
           ...(entry.meshVault ? { meshVault: entry.meshVault } : {}),
+          ...(typeof entry.label === "string" && entry.label.trim() ? { label: entry.label.trim() } : {}),
         } satisfies EditorHistoryEntry;
       }
       return editorHistoryEntry(

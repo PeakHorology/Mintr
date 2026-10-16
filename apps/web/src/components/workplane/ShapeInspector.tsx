@@ -3,6 +3,7 @@
 import { ChevronDown, ChevronUp, LockKeyhole, LockKeyholeOpen, Split, X } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { ToolbarHideSelectedIcon } from "@/components/icons";
+import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
@@ -23,8 +24,9 @@ import {
   MAX_THREAD_SIDES,
   MIN_THREAD_CLEARANCE,
   MIN_THREAD_SIDES,
+  threadNutSize,
 } from "@/lib/metricThreadSolid";
-import { METRIC_COARSE_THREADS, type MetricThreadDesignation } from "@/lib/metricThreads";
+import { THREAD_SIZE_OPTIONS, type ThreadSeries } from "@/lib/metricThreads";
 import { resolveShapeSides, resolveShapeSteps } from "@/lib/displayTessellation";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, conePatchForFootprint, conePatchForRadii, coneTopRadius } from "@/lib/workplaneShapes";
 import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
@@ -42,8 +44,26 @@ import type { GridSize, MeasurementAccuracy, WorkplaneShape, WorkplaneWorkspaceS
 
 const MAX_SHAPE_STEPS = 128;
 
-const METRIC_THREAD_OPTIONS = METRIC_COARSE_THREADS.map((entry) => entry.designation);
-const THREAD_STYLE_OPTIONS = ["Screw", "Hole cutter"] as const;
+const THREAD_SERIES_OPTIONS = ["Metric", "UNC", "UNF", "Pipe (G)", "Custom"] as const;
+const THREAD_ROLE_OPTIONS = ["Rod", "Screw", "Nut", "Tapped hole"] as const;
+const THREAD_HEAD_OPTIONS = ["Cylinder", "Countersunk", "Hex"] as const;
+const THREAD_HAND_OPTIONS = ["Right", "Left"] as const;
+const THREAD_PROFILE_OPTIONS = ["V", "Whitworth", "Trapezoid", "Round"] as const;
+
+function threadSeriesLabel(series: ThreadSeries) {
+  if (series === "unc") return "UNC";
+  if (series === "unf") return "UNF";
+  if (series === "g") return "Pipe (G)";
+  if (series === "custom") return "Custom";
+  return "Metric";
+}
+
+function threadRoleLabel(role: string | undefined, style: string | undefined, part: string | undefined) {
+  if (role === "screw") return "Screw";
+  if (role === "nut") return "Nut";
+  if (role === "bore" || style === "hole" || part === "threads") return "Tapped hole";
+  return "Rod";
+}
 
 const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
 const MIN_SHAPE_SIZE = 0.01;
@@ -143,72 +163,153 @@ function withNameProperty(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate,
 
 function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
   if (shape.kind === "thread") {
-    const designation = (shape.threadSpec?.designation ?? "M6") as MetricThreadDesignation;
-    const part = shape.threadSpec?.part ?? "screw";
-    const styleLabel = shape.threadSpec?.style === "hole" || part === "threads" ? "Hole cutter" : "Screw";
-    const showStyle = part === "screw" || part === "threads" || shape.threadSpec?.style === "hole";
-    const showClearance = styleLabel === "Hole cutter" || part === "threads";
+    const designation = shape.threadSpec?.designation ?? "M6";
+    const series = shape.threadSpec?.series ?? (designation === "Custom" ? "custom" : THREAD_SIZE_OPTIONS.find((entry) => entry.id === designation)?.series ?? "metric");
+    const role = threadRoleLabel(shape.threadSpec?.role, shape.threadSpec?.style, shape.threadSpec?.part);
+    const head = shape.threadSpec?.head === "countersunk" ? "Countersunk" : shape.threadSpec?.head === "hex" ? "Hex" : "Cylinder";
+    const hand = shape.threadSpec?.hand === "left" ? "Left" : "Right";
+    const profile = shape.threadSpec?.profile === "whitworth"
+      ? "Whitworth"
+      : shape.threadSpec?.profile === "trapezoid"
+        ? "Trapezoid"
+        : shape.threadSpec?.profile === "round"
+          ? "Round"
+          : "V";
+    const sizes = THREAD_SIZE_OPTIONS.filter((entry) => entry.series === (series === "custom" ? "metric" : series)).map((entry) => entry.label);
     const nextSpec = (patch: Partial<NonNullable<WorkplaneShape["threadSpec"]>>) => ({
-      designation: shape.threadSpec?.designation ?? designation,
+      designation,
       majorDiameter: shape.threadSpec?.majorDiameter ?? 6,
       pitch: shape.threadSpec?.pitch ?? 1,
       style: shape.threadSpec?.style ?? "screw",
-      clearance: shape.threadSpec?.clearance ?? (showClearance ? DEFAULT_THREAD_CLEARANCE : 0),
+      clearance: shape.threadSpec?.clearance ?? 0,
       part: shape.threadSpec?.part ?? "screw",
+      role: shape.threadSpec?.role ?? (role === "Tapped hole" ? "bore" : "rod"),
+      head: shape.threadSpec?.head ?? "cylinder",
+      hand: shape.threadSpec?.hand ?? "right",
+      series,
+      profile: shape.threadSpec?.profile ?? "v",
+      chamfer: shape.threadSpec?.chamfer ?? 0.3,
+      length: shape.threadSpec?.length ?? shape.height,
       ...patch,
     });
+    const length = shape.threadSpec?.length ?? shape.height;
     return [
       {
         type: "select",
-        label: "Metric size",
-        value: designation,
-        options: [...METRIC_THREAD_OPTIONS],
+        label: "Kind",
+        value: role,
+        options: [...THREAD_ROLE_OPTIONS],
         onChange: (next) => {
-          const preset = METRIC_COARSE_THREADS.find((entry) => entry.designation === next);
+          const tapped = next === "Tapped hole";
+          const nut = next === "Nut";
+          const screw = next === "Screw";
+          const alreadyLoose = shape.threadSpec?.role === "nut" || shape.threadSpec?.role === "bore";
+          const major = shape.threadSpec?.majorDiameter ?? 6;
           onUpdate({
             threadSpec: nextSpec({
-              designation: next,
-              majorDiameter: preset?.majorDiameter ?? shape.threadSpec?.majorDiameter ?? 6,
-              pitch: preset?.pitch ?? shape.threadSpec?.pitch ?? 1,
+              role: tapped ? "bore" : nut ? "nut" : screw ? "screw" : "rod",
+              style: tapped ? "hole" : "screw",
+              part: tapped ? "threads" : "screw",
+              clearance: tapped || nut
+                ? (alreadyLoose ? (shape.threadSpec?.clearance ?? 0.4) : 0.4)
+                : 0,
+              length: nut ? threadNutSize(major).height : length,
+            }),
+            hole: tapped,
+            color: tapped ? "#b8c2cc" : fallbackSolidColor(shape),
+            height: nut ? threadNutSize(major).height : shape.height,
+          });
+        },
+      },
+      ...(role === "Screw"
+        ? [{
+            type: "select" as const,
+            label: "Head",
+            value: head,
+            options: [...THREAD_HEAD_OPTIONS],
+            onChange: (next: string) => onUpdate({
+              threadSpec: nextSpec({
+                head: next === "Countersunk" ? "countersunk" : next === "Hex" ? "hex" : "cylinder",
+              }),
+            }),
+          }]
+        : []),
+      {
+        type: "select",
+        label: "Series",
+        value: threadSeriesLabel(series),
+        options: [...THREAD_SERIES_OPTIONS],
+        onChange: (next) => {
+          const nextSeries: ThreadSeries = next === "UNC" ? "unc" : next === "UNF" ? "unf" : next === "Pipe (G)" ? "g" : next === "Custom" ? "custom" : "metric";
+          const first = THREAD_SIZE_OPTIONS.find((entry) => entry.series === (nextSeries === "custom" ? "metric" : nextSeries));
+          onUpdate({
+            threadSpec: nextSpec({
+              series: nextSeries,
+              designation: nextSeries === "custom" ? "Custom" : first?.id ?? designation,
+              majorDiameter: nextSeries === "custom" ? shape.threadSpec?.majorDiameter ?? 6 : first?.majorDiameter,
+              pitch: nextSeries === "custom" ? shape.threadSpec?.pitch ?? 1 : first?.pitch,
             }),
           });
         },
       },
-      ...(showStyle && part !== "shaft"
-        ? [{
+      ...(series === "custom"
+        ? [
+            { label: "Diameter", value: shape.threadSpec?.majorDiameter ?? 6, min: 1, max: 80, step: 0.1, onChange: (majorDiameter: number) => onUpdate({ threadSpec: nextSpec({ series: "custom", designation: "Custom", majorDiameter }) }) },
+            { label: "Pitch", value: shape.threadSpec?.pitch ?? 1, min: 0.2, max: 8, step: 0.05, onChange: (pitch: number) => onUpdate({ threadSpec: nextSpec({ series: "custom", designation: "Custom", pitch }) }) },
+          ]
+        : [{
             type: "select" as const,
-            label: "Style",
-            value: styleLabel,
-            options: [...THREAD_STYLE_OPTIONS],
+            label: "Size",
+            value: sizes.includes(designation) ? designation : sizes[0],
+            options: sizes,
             onChange: (next: string) => {
-              const hole = next === "Hole cutter";
+              const preset = THREAD_SIZE_OPTIONS.find((entry) => entry.label === next);
               onUpdate({
                 threadSpec: nextSpec({
-                  style: hole ? "hole" : "screw",
-                  part: hole ? "threads" : "screw",
-                  // Clearance only applies to hole cutters; screws always use nominal size.
-                  clearance: hole
-                    ? Math.max(shape.threadSpec?.clearance ?? 0, DEFAULT_THREAD_CLEARANCE)
-                    : 0,
+                  designation: preset?.id ?? next,
+                  majorDiameter: preset?.majorDiameter,
+                  pitch: preset?.pitch,
+                  series: preset?.series ?? series,
                 }),
-                hole,
-                color: hole ? "#b8c2cc" : fallbackSolidColor(shape),
               });
             },
-          }]
-        : []),
-      ...(showClearance
+          }]),
+      {
+        type: "select",
+        label: "Hand",
+        value: hand,
+        options: [...THREAD_HAND_OPTIONS],
+        onChange: (next) => onUpdate({ threadSpec: nextSpec({ hand: next === "Left" ? "left" : "right" }) }),
+      },
+      {
+        type: "select",
+        label: "Profile",
+        value: profile,
+        options: [...THREAD_PROFILE_OPTIONS],
+        onChange: (next) => onUpdate({
+          threadSpec: nextSpec({
+            profile: next === "Whitworth" ? "whitworth" : next === "Trapezoid" ? "trapezoid" : next === "Round" ? "round" : "v",
+          }),
+        }),
+      },
+      ...(role === "Nut" || role === "Tapped hole"
         ? [{
             label: "Clearance",
             value: shape.threadSpec?.clearance ?? DEFAULT_THREAD_CLEARANCE,
             min: MIN_THREAD_CLEARANCE,
             max: MAX_THREAD_CLEARANCE,
             step: 0.05,
-            onChange: (clearance: number) => onUpdate({
-              threadSpec: nextSpec({ clearance }),
-            }),
+            onChange: (clearance: number) => onUpdate({ threadSpec: nextSpec({ clearance }) }),
           }]
         : []),
+      {
+        label: "Chamfer",
+        value: shape.threadSpec?.chamfer ?? 0.3,
+        min: 0,
+        max: 2,
+        step: 0.05,
+        onChange: (chamfer) => onUpdate({ threadSpec: nextSpec({ chamfer }) }),
+      },
       {
         label: "Sides",
         value: shape.sides ?? DEFAULT_THREAD_SIDES,
@@ -218,11 +319,14 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
         onChange: (sides) => onUpdate({ sides: Math.round(sides) }),
       },
       {
-        label: "Height",
-        value: shape.height,
+        label: role === "Nut" ? "Thickness" : "Length",
+        value: length,
         min: MIN_SHAPE_SIZE,
         max: 160,
-        onChange: (height) => onUpdate({ height }),
+        onChange: (nextLength) => onUpdate({
+          height: nextLength,
+          threadSpec: nextSpec({ length: nextLength }),
+        }),
       },
     ];
   }
@@ -574,7 +678,7 @@ export function ShapeInspector({
           aria-pressed={!inspectTarget.hole}
           aria-expanded={colorOpen}
         >
-          <span className="large-solid-swatch" style={{ "--swatch": solidColor } as CSSProperties} />
+          <ShapeModeMark kind={inspectTarget.kind} color={solidColor} sides={inspectTarget.sides} />
           <span>Solid</span>
         </button>
         <button
@@ -586,7 +690,7 @@ export function ShapeInspector({
           disabled={locked}
           aria-pressed={inspectTarget.hole}
         >
-          <span className="large-hole-swatch" />
+          <ShapeModeMark kind={inspectTarget.kind} hole sides={inspectTarget.sides} />
           <span>Hole</span>
         </button>
       </div>
@@ -830,7 +934,7 @@ export function ShapeInspector({
             <div className="csg-feature-list" id={`features-${shape.id}`}>
               <div className="csg-feature-meta">
                 <span className="csg-feature-op">
-                  {csgOp === "assemble" ? "assembly" : csgOp === "subtract" ? "cut" : csgOp === "union" ? "union" : csgOp === "intersect" ? "intersect" : "group"}
+                  {csgOp === "assemble" ? "tie" : csgOp === "subtract" ? "cut" : csgOp === "union" ? "union" : csgOp === "intersect" ? "intersect" : "group"}
                 </span>
                 <span className="csg-feature-tip">
                   {csgOp === "assemble"

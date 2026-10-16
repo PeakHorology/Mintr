@@ -86,15 +86,34 @@ function stepTextFromSolid(brep: Brep, solid: unknown) {
   };
 }
 
+type SeatFrame = { axis: [number, number, number]; angle: number; translation: THREE.Vector3 };
+
+/** Live solid when meshing on this thread, or STEP text captured before a coarser worker mesh. */
+type ExactSource =
+  | { kind: "solid"; brep: Brep; part: unknown }
+  | { kind: "text"; text: string };
+
+export type StepImportProgress = {
+  index: number;
+  total: number;
+  name: string;
+  phase: "mesh" | "place";
+};
+
+export type StepImportHooks = {
+  onProgress?: (progress: StepImportProgress) => void;
+  /** Bodies received so far, in their relative layout, before the final lay-flat. */
+  onPreview?: (shapes: WorkplaneShape[]) => void;
+};
+
+const ZERO_SEAT: SeatFrame = { axis: [1, 0, 0], angle: 0, translation: new THREE.Vector3() };
+
 /**
  * Build the editor shape for one seated body: local mesh XZ-centred with y ≥ 0, placed at
  * x = 10 + cx, z = −10 + cz, elevation = minY in the assembly's floor-seated frame.
+ * `exact` is null for a preview that will be replaced by the seated import.
  */
-function shapeFromSeatedBody(
-  brep: Brep,
-  body: SeatedBody,
-  seat: { axis: [number, number, number]; angle: number; translation: THREE.Vector3 },
-): WorkplaneShape {
+function shapeFromSeatedBody(body: SeatedBody, seat: SeatFrame, exact: ExactSource | null): WorkplaneShape {
   const { bounds } = body;
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cz = (bounds.minZ + bounds.maxZ) / 2;
@@ -141,56 +160,45 @@ function shapeFromSeatedBody(
     hidden: false,
   };
 
-  // The kernel solid in the same local frame as `local`: seat rotation about the origin, then
-  // the recentering translation, composed only when an export first asks for it.
-  const { part } = body;
-  registerPendingImportedBrep(shape.importedMesh!, () => {
-    let solid = part;
-    if (Math.abs(seat.angle) > 1e-6) {
-      solid = brep.rotate(solid as never, seat.angle, { axis: seat.axis });
-    }
-    if (Math.hypot(cx, bounds.minY, cz) > 1e-12) {
-      solid = brep.translate(solid as never, [-cx, -bounds.minY, -cz]);
-    }
-    return stepTextFromSolid(brep, solid)();
-  });
+  if (exact && (exact.kind === "solid" || exact.text) && shape.importedMesh) {
+    const recenter: [number, number, number] = [-cx, -bounds.minY, -cz];
+    registerPendingImportedBrep(shape.importedMesh, () => bakeExactSource(exact, seat, recenter));
+  }
   return shape;
 }
 
-export async function importedShapesFromStep(fileName: string, buffer: ArrayBuffer): Promise<WorkplaneShape[]> {
-  const brep = await loadBrepWithOcct();
-  const imported = await brep.importSTEP(new Blob([buffer]));
-  if (!imported.ok) {
-    throw new Error(`Could not read STEP: ${String(imported.error.message ?? imported.error)}`);
+function bakeExactSource(exact: ExactSource, seat: SeatFrame, recenter: [number, number, number]) {
+  if (exact.kind === "solid") {
+    return (async () => {
+      let solid = exact.part;
+      if (Math.abs(seat.angle) > 1e-6) {
+        solid = exact.brep.rotate(solid as never, seat.angle, { axis: seat.axis });
+      }
+      if (Math.hypot(recenter[0], recenter[1], recenter[2]) > 1e-12) {
+        solid = exact.brep.translate(solid as never, recenter);
+      }
+      return stepTextFromSolid(exact.brep, solid)();
+    })();
   }
+  // Coarse display meshing can crash a later export of that same solid, so the worker
+  // captured this text first. Replaying it uses the window kernel, which did not mesh it.
+  return (async () => {
+    if (!exact.text) return undefined;
+    const brep = await loadBrepWithOcct();
+    const imported = await brep.importSTEP(new Blob([exact.text]));
+    if (!imported.ok) return undefined;
+    let solid: unknown = imported.value;
+    if (Math.abs(seat.angle) > 1e-6) {
+      solid = brep.rotate(solid as never, seat.angle, { axis: seat.axis });
+    }
+    if (Math.hypot(recenter[0], recenter[1], recenter[2]) > 1e-12) {
+      solid = brep.translate(solid as never, recenter);
+    }
+    return stepTextFromSolid(brep, solid)();
+  })();
+}
 
-  // STEP/CAD space is Z-up; the editor is Y-up. −90° about X maps CAD +Z to +Y.
-  const flipped = brep.rotate(imported.value, -90, { axis: [1, 0, 0] });
-  const solids = brep.getSolids(flipped as never);
-  const stem = fileStem(fileName);
-  const parts: Array<{ name: string; part: unknown }> = solids.length > 1
-    ? solids.map((part, index) => ({ name: `${stem} ${index + 1}`, part }))
-    : [{ name: stem, part: flipped }];
-
-  // Tessellate each body exactly once, indexed. The lay-flat seat and the floor/centre
-  // translation are derived from these meshes, so the assembly is never meshed as a whole.
-  const tessellated: Array<{ name: string; part: unknown; tess: Tessellation }> = [];
-  for (const { name, part } of parts) {
-    const tess = brep.mesh(part as never) as Tessellation;
-    if (usableTessellation(tess)) tessellated.push({ name, part, tess });
-  }
-  if (tessellated.length === 0) {
-    throw new Error("STEP file has no solid geometry to import");
-  }
-
-  const rotation = seatRotationForIndexedMeshes(
-    tessellated.map(({ tess }) => ({ positions: tess.vertices, indices: tess.triangles })),
-  );
-  const { axis, angle } = quaternionToAxisAngleDegrees(rotation);
-  const rotate = Math.abs(angle) > 1e-6 ? rotation : null;
-  const bodies = tessellated.map(({ name, part, tess }) => seatBody(name, part, tess, rotate));
-
-  // Floor-seat the whole assembly (min Y at 0) and centre it in X/Z.
+function assemblyTranslation(bodies: SeatedBody[]) {
   const assembly = emptyBounds();
   for (const { bounds } of bodies) {
     assembly.minX = Math.min(assembly.minX, bounds.minX);
@@ -200,12 +208,183 @@ export async function importedShapesFromStep(fileName: string, buffer: ArrayBuff
     assembly.minZ = Math.min(assembly.minZ, bounds.minZ);
     assembly.maxZ = Math.max(assembly.maxZ, bounds.maxZ);
   }
-  const translation = new THREE.Vector3(
+  return new THREE.Vector3(
     -(assembly.minX + assembly.maxX) / 2,
     -assembly.minY,
     -(assembly.minZ + assembly.maxZ) / 2,
   );
-  return bodies.map((body) => shapeFromSeatedBody(brep, body, { axis, angle, translation }));
+}
+
+function placeShape(shape: WorkplaneShape, body: SeatedBody, translation: THREE.Vector3): WorkplaneShape {
+  const { bounds } = body;
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cz = (bounds.minZ + bounds.maxZ) / 2;
+  const x = 10 + cx + translation.x;
+  const z = -10 + cz + translation.z;
+  const elevation = bounds.minY + translation.y;
+  if (shape.x === x && shape.z === z && shape.elevation === elevation) return shape;
+  return { ...shape, x, z, elevation };
+}
+
+type CollectedBody = { name: string; tess: Tessellation; exact: ExactSource };
+
+function shapesFromCollected(collected: CollectedBody[], hooks?: StepImportHooks): WorkplaneShape[] {
+  hooks?.onProgress?.({
+    index: collected.length,
+    total: collected.length,
+    name: "Placing parts…",
+    phase: "place",
+  });
+  const rotation = seatRotationForIndexedMeshes(
+    collected.map(({ tess }) => ({ positions: tess.vertices, indices: tess.triangles })),
+  );
+  const { axis, angle } = quaternionToAxisAngleDegrees(rotation);
+  const rotate = Math.abs(angle) > 1e-6 ? rotation : null;
+  const bodies = collected.map(({ name, tess }) => seatBody(name, null, tess, rotate));
+  const translation = assemblyTranslation(bodies);
+  const seat = { axis, angle, translation };
+  return bodies.map((body, index) => shapeFromSeatedBody(body, seat, collected[index].exact));
+}
+
+type StepWorkerMessage =
+  | { type: "progress"; requestId: number; index: number; total: number; name: string }
+  | { type: "body"; requestId: number; index: number; total: number; name: string; stepText: string; vertices: Float32Array; normals: Float32Array; triangles: Uint32Array }
+  | { type: "done"; requestId: number; total: number }
+  | { type: "error"; requestId: number; message: string };
+
+let stepWorker: Worker | null = null;
+let stepRequestSerial = 0;
+const importListeners = new Map<number, (message: StepWorkerMessage) => void>();
+
+function failPendingStepWork(message: string) {
+  const pending = [...importListeners.values()];
+  importListeners.clear();
+  for (const listener of pending) listener({ type: "error", requestId: -1, message });
+}
+
+function ensureStepWorker(): Worker {
+  if (stepWorker) return stepWorker;
+  const worker = new Worker(new URL("../workers/stepImport.worker.ts", import.meta.url), { type: "module" });
+  worker.onmessage = (event: MessageEvent<StepWorkerMessage>) => {
+    const message = event.data;
+    importListeners.get(message.requestId)?.(message);
+  };
+  worker.onerror = () => {
+    stepWorker = null;
+    failPendingStepWork("STEP import stopped unexpectedly");
+  };
+  stepWorker = worker;
+  return worker;
+}
+
+function previewCollector(hooks?: StepImportHooks) {
+  const bodies: SeatedBody[] = [];
+  const shapes: WorkplaneShape[] = [];
+  return {
+    add(name: string, tess: Tessellation) {
+      if (!hooks?.onPreview) return;
+      const body = seatBody(name, null, tess, null);
+      bodies.push(body);
+      shapes.push(shapeFromSeatedBody(body, ZERO_SEAT, null));
+      const translation = assemblyTranslation(bodies);
+      hooks.onPreview(shapes.map((shape, index) => placeShape(shape, bodies[index], translation)));
+    },
+  };
+}
+
+async function collectedFromWorker(fileName: string, buffer: ArrayBuffer, hooks?: StepImportHooks): Promise<CollectedBody[]> {
+  const worker = ensureStepWorker();
+  const requestId = ++stepRequestSerial;
+  const preview = previewCollector(hooks);
+  const collected: CollectedBody[] = [];
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => importListeners.delete(requestId);
+    importListeners.set(requestId, (message) => {
+      if (message.type === "error") {
+        finish();
+        reject(new Error(message.message));
+        return;
+      }
+      if (message.type === "progress") {
+        hooks?.onProgress?.({ index: message.index, total: message.total, name: message.name, phase: "mesh" });
+        return;
+      }
+      if (message.type === "body") {
+        const tess = { vertices: message.vertices, normals: message.normals, triangles: message.triangles };
+        if (!usableTessellation(tess)) return;
+        collected.push({
+          name: message.name,
+          tess,
+          exact: { kind: "text", text: message.stepText.trim() },
+        });
+        preview.add(message.name, tess);
+        return;
+      }
+      if (message.type === "done") {
+        finish();
+        resolve();
+      }
+    });
+    worker.postMessage({ type: "import", requestId, fileName, buffer }, [buffer]);
+  });
+  return collected;
+}
+
+async function collectedOnMain(fileName: string, buffer: ArrayBuffer, hooks?: StepImportHooks): Promise<CollectedBody[]> {
+  const brep = await loadBrepWithOcct();
+  const imported = await brep.importSTEP(new Blob([buffer]));
+  if (!imported.ok) {
+    throw new Error(`Could not read STEP: ${String(imported.error.message ?? imported.error)}`);
+  }
+  const flipped = brep.rotate(imported.value, -90, { axis: [1, 0, 0] });
+  const solids = brep.getSolids(flipped as never);
+  const stem = fileStem(fileName);
+  const parts: Array<{ name: string; part: unknown }> = solids.length > 1
+    ? solids.map((part, index) => ({ name: `${stem} ${index + 1}`, part }))
+    : [{ name: stem, part: flipped }];
+  const preview = previewCollector(hooks);
+  const collected: CollectedBody[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const { name, part } = parts[index];
+    hooks?.onProgress?.({ index: index + 1, total: parts.length, name, phase: "mesh" });
+    if (hooks?.onProgress || hooks?.onPreview) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+    // Default mesh quality on this thread. A coarser chord corrupts later exports in the same
+    // kernel; the browser worker captures exact STEP first, then meshes more coarsely.
+    const tess = brep.mesh(part as never) as Tessellation;
+    if (!usableTessellation(tess)) continue;
+    collected.push({ name, tess, exact: { kind: "solid", brep, part } });
+    preview.add(name, tess);
+  }
+  return collected;
+}
+
+async function finishImport(collected: CollectedBody[], hooks?: StepImportHooks) {
+  if (collected.length === 0) {
+    throw new Error("STEP file has no solid geometry to import");
+  }
+  return shapesFromCollected(collected, hooks);
+}
+
+export async function importedShapesFromStep(
+  fileName: string,
+  buffer: ArrayBuffer,
+  hooks?: StepImportHooks,
+): Promise<WorkplaneShape[]> {
+  // Tests and any environment without a window mesh on this thread. The browser hands each
+  // body to a worker so the window can keep drawing parts as they finish.
+  if (typeof window !== "undefined" && typeof Worker !== "undefined") {
+    try {
+      ensureStepWorker();
+    } catch {
+      return finishImport(await collectedOnMain(fileName, buffer, hooks), hooks);
+    }
+    return finishImport(await collectedFromWorker(fileName, buffer, hooks), hooks);
+  }
+  return finishImport(await collectedOnMain(fileName, buffer, hooks), hooks);
 }
 
 export async function importedShapeFromStep(fileName: string, buffer: ArrayBuffer): Promise<WorkplaneShape> {

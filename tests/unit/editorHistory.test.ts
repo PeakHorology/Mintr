@@ -7,6 +7,7 @@ import {
   expandHistoryShapes,
   historyShapeMissingTessellation,
   historyShapeNeedsRemesh,
+  historyStepLabel,
   hydrateEditorHistoryState,
   MAX_EDITOR_HISTORY_BYTES,
   MAX_EDITOR_HISTORY_ENTRIES,
@@ -240,5 +241,13 @@ describe("editor history snapshots", () => {
     const restored = expandHistoryShapes(entry.shapes, entry.meshVault);
     expect(restored[0].importedMesh?.positions).toEqual(shape.importedMesh?.positions);
     expect(restored[0].importedMesh?.brepStep).toBe("ISO-10303-21;");
+  });
+
+  it("keeps a step name through a saved history entry", () => {
+    const entry = editorHistoryEntry([box()], [], "Tied 2 shapes");
+    const hydrated = hydrateEditorHistoryState([box()], [entry], 0);
+    expect(hydrated.entries[0].label).toBe("Tied 2 shapes");
+    expect(historyStepLabel(hydrated.entries[0], 0)).toBe("Tied 2 shapes");
+    expect(historyStepLabel(editorHistoryEntry([box()], []), 0)).toBe("Start");
   });
 });

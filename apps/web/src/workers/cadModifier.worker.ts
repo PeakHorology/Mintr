@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { shellSolid } from "@/lib/cadShell";
 import type { OcctKernel, ShapeHandle } from "occt-wasm";
 import type {
   CadCylindricalFace,
@@ -36,6 +37,7 @@ const OCCT_WASM_URL = `${CAD_MODIFIER_RUNTIME_BASE}/occt-wasm.wasm`;
 let kernelPromise: Promise<OcctKernel> | null = null;
 let baseShape: ShapeHandle | null = null;
 let baseSolids: ShapeHandle[] = [];
+let baseVolumes: number[] = [];
 let edgeHandles: ShapeHandle[] = [];
 let edgeOwners: number[] = [];
 let cylindricalFaceHandles: ShapeHandle[] = [];
@@ -85,6 +87,7 @@ function releaseSession(cad: OcctKernel) {
   }
   baseShape = null;
   baseSolids = [];
+  baseVolumes = [];
   edgeHandles = [];
   edgeOwners = [];
   cylindricalFaceHandles = [];
@@ -189,16 +192,16 @@ function edgeAngle(cad: OcctKernel, points: number[], faceHashes: number[], face
   if (planarA && planarB) return { angle: dihedralAngle(planarA, planarB), boundary: false, manifold: true };
   for (const offset of edgeAngleSampleOffsets(points.length)) {
     const point = { x: points[offset], y: points[offset + 1], z: points[offset + 2] };
-    try {
-      const a = orientedFaceNormal(cad, faceA, point);
-      const b = orientedFaceNormal(cad, faceB, point);
+  try {
+    const a = orientedFaceNormal(cad, faceA, point);
+    const b = orientedFaceNormal(cad, faceB, point);
       return { angle: dihedralAngle(a, b), boundary: false, manifold: true };
-    } catch {
+  } catch {
       // Wireframe samples often miss a face at a seam or a vertex. Try the next one.
     }
   }
-  return { angle: 0, boundary: false, manifold: false };
-}
+    return { angle: 0, boundary: false, manifold: false };
+  }
 
 function weldMeshCoordinate(value: number) {
   return Math.round(value * 1000) / 1000;
@@ -589,15 +592,15 @@ export function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart): Sh
     ]) {
       try {
         let candidate = build();
-        candidate = cad.fixShape(candidate);
+      candidate = cad.fixShape(candidate);
         const solids = cad.isSolid(candidate) ? [candidate] : cad.getSubShapes(candidate, "solid");
         if (solids.length === 1) {
           candidate = solids[0];
-          if (cad.isSolid(candidate)) candidate = cad.healSolid(candidate, tolerance);
-          candidate = cad.fixFaceOrientations(candidate);
-          candidate = cad.removeDegenerateEdges(candidate);
-          candidate = cad.unifySameDomain(candidate);
-          if (cad.isSolid(candidate) && cadShapeIsValid(cad, candidate)) return candidate;
+      if (cad.isSolid(candidate)) candidate = cad.healSolid(candidate, tolerance);
+      candidate = cad.fixFaceOrientations(candidate);
+      candidate = cad.removeDegenerateEdges(candidate);
+      candidate = cad.unifySameDomain(candidate);
+      if (cad.isSolid(candidate) && cadShapeIsValid(cad, candidate)) return candidate;
         } else if (solids.length > 1) {
           const healed = solids.map((solid) => {
             let next = cad.healSolid(solid, tolerance);
@@ -610,8 +613,8 @@ export function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart): Sh
             return cad.makeCompound(healed);
           }
         }
-      } catch {
-        // Try the next tolerance. Curved tessellations can need looser vertex sewing.
+    } catch {
+      // Try the next tolerance. Curved tessellations can need looser vertex sewing.
       }
     }
   }
@@ -1073,9 +1076,11 @@ function applyRemovingTreatment(
   kind: CadModifierKind,
   amount: number,
   chamferAngle: number,
+  knownVolume?: number,
 ) {
   if (edges.length === 0) return cad.copy(solid);
-  const before = shapeVolume(cad, solid);
+  // The untouched solid's volume does not change while the size slider moves.
+  const before = knownVolume && knownVolume > 0 ? knownVolume : shapeVolume(cad, solid);
   try {
     const treated = treat(solid, edges);
     // A convex fillet or chamfer removes material. That is the common click,
@@ -1136,16 +1141,16 @@ function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number, s
     const planarNormals = new Map<number, { x: number; y: number; z: number } | null>();
     const faceAreaByHash = new Map<number, number>();
     if (suppressTreatmentDetailEdges) {
-      faces.forEach((face) => {
-        const hash = cad.hashCode(face, HASH_UPPER_BOUND);
-        let area = 0;
-        try {
-          area = Math.abs(cad.getSurfaceArea(face));
-        } catch {
-          area = 0;
-        }
-        faceAreaByHash.set(hash, area);
-      });
+    faces.forEach((face) => {
+      const hash = cad.hashCode(face, HASH_UPPER_BOUND);
+      let area = 0;
+      try {
+        area = Math.abs(cad.getSurfaceArea(face));
+      } catch {
+        area = 0;
+      }
+      faceAreaByHash.set(hash, area);
+    });
     }
     const treatmentAreaLimit = suppressTreatmentDetailEdges ? treatmentDetailFaceAreaLimit([...faceAreaByHash.values()]) : 0;
     const adjacentFaces = parseEdgeFaceMap(cad.edgeToFaceMap(shape, HASH_UPPER_BOUND));
@@ -1224,9 +1229,25 @@ function tessellationOptions(quality: CadModifierQuality, amount: number) {
 }
 
 function previewTessellationOptions(amount: number) {
-  // Interactive preview only. Flats stay flat; the new fillet stays visibly round
-  // without re-faceting every existing curve at the finer apply tolerance.
+  // Fast picture while the slider is moving. The resting preview and Apply
+  // replace it with a mesh that matches the original curve.
   return { linearDeflection: Math.max(0.16, amount / 4), angularDeflection: 0.32 };
+}
+
+const MAX_SMOOTH_TRIANGLES = 180_000;
+
+function tessellateForCurve(cad: OcctKernel, shape: ShapeHandle, linearDeflection: number, angularDeflection: number) {
+  let linear = Math.max(0.01, linearDeflection);
+  let angular = Math.max(0.02, angularDeflection);
+  let mesh = cad.tessellate(shape, { linearDeflection: linear, angularDeflection: angular });
+  let attempts = 0;
+  while (mesh.triangleCount > MAX_SMOOTH_TRIANGLES && attempts < 3) {
+    angular = Math.min(0.16, angular * 1.75);
+    linear = Math.min(0.25, linear * 1.75);
+    mesh = cad.tessellate(shape, { linearDeflection: linear, angularDeflection: angular });
+    attempts += 1;
+  }
+  return mesh;
 }
 
 function copyCadMesh(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; triangleCount: number }) {
@@ -1606,6 +1627,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       const collected = collectEdges(activeCad, baseShape, request.sharpAngle, Boolean(request.suppressTreatmentDetailEdges), true);
       edgeHandles = collected.handles;
       baseSolids = activeCad.isSolid(baseShape) ? [baseShape] : activeCad.getSubShapes(baseShape, "solid");
+      baseVolumes = baseSolids.map((solid) => shapeVolume(activeCad, solid));
       if (baseSolids.length === 0) throw new Error("The selected group contains no closed solid components");
       const ownerEdgeHandles = baseSolids.map((solid) => activeCad.getSubShapes(solid, "edge"));
       try {
@@ -1687,6 +1709,68 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         brep = "";
       }
       post({ type: "previewBrep", requestId: request.requestId, brep });
+      return;
+    }
+    if (request.type === "hollow") {
+      if (baseShape === null || baseSolids.length === 0) throw new Error("Prepare an object before hollowing it");
+      const componentResults: ShapeHandle[] = [];
+      let result: ShapeHandle | null = null;
+      try {
+        for (const solid of baseSolids) {
+          componentResults.push(shellSolid(
+            activeCad,
+            solid,
+            request.thickness,
+            request.openings,
+            request.corners ?? "sharp",
+            request.cornerRadius,
+          ));
+        }
+        result = componentResults.length === 1 ? componentResults[0] : activeCad.makeCompound(componentResults);
+        const options = previewTessellationOptions(request.thickness);
+        const probed = activeCad.tessellate(result, options);
+        if (!probed.triangleCount) throw new Error("The walls cannot be this thick for this body. Choose a thinner wall.");
+        const mesh = copyCadMesh(probed);
+        let brep = "";
+        try {
+          brep = activeCad.toBREP(result);
+        } catch {
+          brep = "";
+        }
+        const kept = componentResults.length === 1 ? result : activeCad.copy(result);
+        if (accumulatedShape && accumulatedShape !== kept) {
+          try { activeCad.release(accumulatedShape); } catch { /* released with the session */ }
+        }
+        accumulatedShape = kept;
+        post(
+          {
+            type: "preview",
+            requestId: request.requestId,
+            positions: mesh.positions,
+            normals: mesh.normals,
+            indices: mesh.indices,
+            triangleCount: mesh.triangleCount,
+            brep,
+            displayEdges: [],
+          },
+          [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer],
+        );
+      } finally {
+        componentResults.forEach((component) => {
+          if (component !== accumulatedShape) activeCad.release(component);
+        });
+        if (result !== null && result !== accumulatedShape && componentResults.length > 1) activeCad.release(result);
+      }
+      return;
+    }
+    if (request.type === "refine") {
+      if (!accumulatedShape) throw new Error("Preview an edge before smoothing it");
+      const mesh = copyCadMesh(tessellateForCurve(activeCad, accumulatedShape, request.linearDeflection, request.angularDeflection));
+      if (!mesh.triangleCount) throw new Error("The smoothed edge treatment had no surface");
+      post(
+        { type: "preview", requestId: request.requestId, positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, triangleCount: mesh.triangleCount, brep: "", displayEdges: [], smooth: true },
+        [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer],
+      );
       return;
     }
     if (request.type !== "preview") {
@@ -1772,9 +1856,9 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         const treat = (target: ShapeHandle, edges: ShapeHandle[]) => (
           edges.length === 0
             ? activeCad.copy(target)
-            : request.kind === "fillet"
+          : request.kind === "fillet"
               ? activeCad.fillet(target, edges, request.amount)
-              : Math.abs(request.chamferAngle - 45) < 0.001
+            : Math.abs(request.chamferAngle - 45) < 0.001
                 ? activeCad.chamfer(target, edges, request.amount)
                 : activeCad.chamferDistAngle(target, edges, request.amount, request.chamferAngle)
         );
@@ -1786,6 +1870,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
           request.kind,
           request.amount,
           request.chamferAngle,
+          baseVolumes[owner],
         ));
       }
       }

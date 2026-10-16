@@ -1,6 +1,6 @@
 {
   "name": "peakcad",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "private": true,
   "license": "GPL-3.0-or-later",
   "author": "PeakHorologyLLC",
@@ -33,6 +33,7 @@
     "prepare:desktop-icon": "node scripts/prepare-desktop-icon.mjs"
   },
   "dependencies": {
+    "@formspree/react": "^3.0.0",
     "@tailwindcss/postcss": "^4.1.8",
     "@types/three": "^0.184.1",
     "brepjs": "^18.118.0",

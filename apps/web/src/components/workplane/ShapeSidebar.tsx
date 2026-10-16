@@ -3,7 +3,7 @@
 import { useRef, useState, type MutableRefObject } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
-import { beginShapeAssetDrag, endShapeAssetDrag } from "@/lib/shapeAssetDrag";
+import { beginShapeAssetDrag, endShapeAssetDrag, applyTransparentDragImage } from "@/lib/shapeAssetDrag";
 import { PeakTipButton, usePeakContextHelp } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import type { ShapeAsset, WorkplaneShape } from "@/types/sketchforge";
@@ -97,8 +97,7 @@ function ShapeToolButton({
         event.dataTransfer.effectAllowed = "copy";
         event.dataTransfer.setData("application/x-sketchforge-shape", JSON.stringify(shape));
         beginShapeAssetDrag(shape);
-        const rect = event.currentTarget.getBoundingClientRect();
-        event.dataTransfer.setDragImage(event.currentTarget, event.clientX - rect.left, event.clientY - rect.top);
+        applyTransparentDragImage(event.dataTransfer);
       }}
       onDragEnd={() => {
         endShapeAssetDrag();
@@ -215,7 +214,7 @@ export function ShapeSidebar({
                   >
                     <span className="object-list-swatch" style={{ background: shape.hole ? "transparent" : shape.color }} data-hole={shape.hole ? "true" : undefined} />
                     <span className="object-list-name">{shape.name || "Untitled"}</span>
-                    {isAssembly ? <span className="object-list-badge">Assembly</span> : isCsgBody ? <span className="object-list-badge">Group</span> : null}
+                    {isAssembly ? <span className="object-list-badge">Tie</span> : isCsgBody ? <span className="object-list-badge">Group</span> : null}
                     {shape.hole ? <span className="object-list-badge">Hole</span> : null}
                     {shape.hidden ? <span className="object-list-badge">Hidden</span> : null}
                     {shape.locked ? <span className="object-list-badge">Locked</span> : null}

@@ -26,7 +26,7 @@ type EdgeHistoryOption = {
   removesNewerCount: number;
 };
 
-function EdgeModifierSlider({
+export function EdgeModifierSlider({
   label,
   value,
   min,

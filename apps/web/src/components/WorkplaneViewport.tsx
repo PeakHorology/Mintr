@@ -10,9 +10,10 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
 import { ShapeInspector, SnapGridControl, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
-import { ToolbarDropToWorkplaneIcon, ToolbarSnapGridIcon } from "@/components/icons";
-import { objectSnapTolerance, snapAabbFromShape, snapMovingAabb, unionSnapAabbs, type ObjectSnapResult } from "@/lib/objectSnap";
+import { ToolbarDropToWorkplaneIcon } from "@/components/icons";
+import { objectSnapTolerance, snapAabbFromShape, snapMovingAabb, unionSnapAabbs, type FaceMatePose, type ObjectSnapResult } from "@/lib/objectSnap";
 import { buildPickBvh, raycastPickBvh, type PickBvh, type PickTriangle } from "@/lib/meshPickBvh";
+import { rotateHandleRect, separateDimensionLabels } from "@/lib/overlayLabelSeparation";
 import { shapeYawDegrees } from "@/lib/shapeBounds";
 import {
   antipodeThroughAxis,
@@ -74,6 +75,7 @@ import {
 import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
+import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
 import { filterCoplanarDisplayEdges, hasUsableCsgResultMesh, viewportGroupChildren } from "@/lib/csgTree";
 import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, fallbackSolidColor, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, roofPatchForHeight, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { sphereTessellation } from "@/lib/sphereTessellation";
@@ -131,6 +133,7 @@ import { hardwareProfile, resolvePixelRatio } from "@/lib/desktopHardware";
 import { projectShapesFingerprint } from "@/lib/editorHistory";
 import { endShapeAssetDrag, getShapeAssetDrag } from "@/lib/shapeAssetDrag";
 import { makeShapeFromAsset } from "@/lib/shapeCatalog";
+import { createThreadShape } from "@/lib/threadShape";
 import { DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
 import {
   DEFAULT_LIGHT_VIEWPORT_BACKGROUND,
@@ -255,7 +258,8 @@ export type WorkplaneViewportProps = {
   circularPatternMode?: boolean;
   circularPatternCenter?: { x: number; z: number } | null;
   circularPatternRadius?: number;
-  onCircularPatternPivotPick?: (shapeId: string) => void;
+  /** Click on the workplane places the circular pattern center. */
+  onCircularPatternCenterPick?: (point: { x: number; z: number }) => void;
   /** When true, left-click picks a face (or workplane) to start a sketch. */
   sketchFacePickMode?: boolean;
   onSketchPlanePicked?: (plane: SketchPlane) => void;
@@ -295,12 +299,18 @@ export type WorkplaneViewportProps = {
   /** Lets the editor dismiss the degree box (and bake) before toolbar actions. */
   rotationEditApiRef?: MutableRefObject<{ dismiss: () => void } | null>;
   onDropToWorkplane?: () => void;
-  onSnapSelection?: () => void;
   faceSnapActive?: boolean;
   /** The side already chosen. Stays highlighted until the shapes move. */
   faceSnapSource?: { shapeId: string; point: [number, number, number]; normal: [number, number, number] } | null;
   onFaceSnapPick?: (pick: { shapeId: string; point: [number, number, number]; normal: [number, number, number] }) => void;
-  faceSnapMotionRef?: MutableRefObject<((shapeId: string, delta: { x: number; y: number; z: number }, done: () => void) => void) | null>;
+  faceSnapMotionRef?: MutableRefObject<((shapeId: string, pose: FaceMatePose, done: () => void) => void) | null>;
+  /** Gold plane showing where Split will cut. */
+  splitPlane?: {
+    origin: [number, number, number];
+    normal: [number, number, number];
+    width: number;
+    height: number;
+  } | null;
   /** Floated in the shape-inspector column so width/alignment stay matched. */
   inspectorDock?: ReactNode;
   /** Top of the inspector column (fillet / chamfer panel). */
@@ -1766,23 +1776,11 @@ function shapeCenter(shape: WorkplaneShape) {
 function shapeLocalExtents(shape: WorkplaneShape) {
   const children = viewportGroupChildren(shape);
   if (shape.groupedShapes?.some((child) => child.hole) && children.length > 0 && !hasUsableCsgResultMesh(shape)) {
-    let maxX = 0;
-    let maxY = 0;
-    let maxZ = 0;
-    for (const child of children) {
-      const ext = {
-        x: shapeWidth(child) / 2,
-        y: child.height / 2,
-        z: shapeDepth(child) / 2,
-      };
-      maxX = Math.max(maxX, Math.abs(child.x) + ext.x);
-      maxY = Math.max(maxY, Math.abs((child.elevation ?? 0) + ext.y) + ext.y);
-      maxZ = Math.max(maxZ, Math.abs(child.z) + ext.z);
-    }
+    const extents = drawnAssemblyHalfExtents(shape, children);
     return {
-      x: Math.max(MIN_SHAPE_SIZE / 2, maxX),
-      y: Math.max(MIN_SHAPE_SIZE / 2, maxY),
-      z: Math.max(MIN_SHAPE_SIZE / 2, maxZ),
+      x: Math.max(MIN_SHAPE_SIZE / 2, extents.x),
+      y: Math.max(MIN_SHAPE_SIZE / 2, extents.y),
+      z: Math.max(MIN_SHAPE_SIZE / 2, extents.z),
     };
   }
   return {
@@ -2348,7 +2346,7 @@ export function WorkplaneViewport({
   circularPatternMode = false,
   circularPatternCenter = null,
   circularPatternRadius = 0,
-  onCircularPatternPivotPick,
+  onCircularPatternCenterPick,
   sketchFacePickMode = false,
   onSketchPlanePicked,
   onSketchFacePickRejected,
@@ -2383,10 +2381,10 @@ export function WorkplaneViewport({
   viewNudgeAxesRef,
   rotationEditApiRef,
   onDropToWorkplane,
-  onSnapSelection,
   faceSnapActive = false,
   faceSnapSource = null,
   onFaceSnapPick,
+  splitPlane = null,
   faceSnapMotionRef,
   inspectorDock,
   inspectorDockTop,
@@ -2516,7 +2514,7 @@ export function WorkplaneViewport({
   const circularPatternModeRef = useRef(circularPatternMode);
   const circularPatternCenterRef = useRef(circularPatternCenter);
   const circularPatternRadiusRef = useRef(circularPatternRadius);
-  const onCircularPatternPivotPickRef = useRef(onCircularPatternPivotPick);
+  const onCircularPatternCenterPickRef = useRef(onCircularPatternCenterPick);
   const sketchFacePickModeRef = useRef(sketchFacePickMode);
   const onSketchPlanePickedRef = useRef(onSketchPlanePicked);
   const onSketchFacePickRejectedRef = useRef(onSketchFacePickRejected);
@@ -2959,13 +2957,13 @@ export function WorkplaneViewport({
   const wasCircularPatternModeRef = useRef(false);
   useEffect(() => {
     circularPatternModeRef.current = circularPatternMode;
-    onCircularPatternPivotPickRef.current = onCircularPatternPivotPick;
+    onCircularPatternCenterPickRef.current = onCircularPatternCenterPick;
     // Cancel only on enter — preview/radius rebuilds must not kill Properties or gizmos.
     if (circularPatternMode && !wasCircularPatternModeRef.current) {
       cancelActiveInteraction();
     }
     wasCircularPatternModeRef.current = circularPatternMode;
-  }, [cancelActiveInteraction, circularPatternMode, onCircularPatternPivotPick]);
+  }, [cancelActiveInteraction, circularPatternMode, onCircularPatternCenterPick]);
 
   useEffect(() => {
     circularPatternCenterRef.current = circularPatternCenter;
@@ -4438,7 +4436,7 @@ export function WorkplaneViewport({
       if (!shape) continue;
       if (hit.face) {
         const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
-        const snapped = axisNormal(normal);
+        const snapped = faceSnapNormal(normal);
         if (!snapped) continue;
         return {
           shapeId,
@@ -4496,8 +4494,48 @@ export function WorkplaneViewport({
   }, [faceSnapActive, faceSnapSource]);
 
   useEffect(() => {
+    const state = threeRef.current;
+    if (!state) return;
+    const name = "split-plane-preview";
+    const previous = state.scene.getObjectByName(name);
+    if (previous) {
+      state.scene.remove(previous);
+      previous.traverse((child) => {
+        if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+          child.geometry.dispose();
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          materials.forEach((material) => material.dispose());
+        }
+      });
+    }
+    if (!splitPlane) {
+      state.needsRender = true;
+      return;
+    }
+    const geometry = new THREE.PlaneGeometry(Math.max(8, splitPlane.width), Math.max(8, splitPlane.height));
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xc6a15b,
+      transparent: true,
+      opacity: 0.38,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const plane = new THREE.Mesh(geometry, material);
+    plane.name = name;
+    plane.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...splitPlane.normal).normalize());
+    plane.position.set(splitPlane.origin[0], splitPlane.origin[1], splitPlane.origin[2]);
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry),
+      new THREE.LineBasicMaterial({ color: 0x4a3414 }),
+    );
+    plane.add(edges);
+    state.scene.add(plane);
+    state.needsRender = true;
+  }, [splitPlane]);
+
+  useEffect(() => {
     if (!faceSnapMotionRef) return;
-    faceSnapMotionRef.current = (shapeId, delta, done) => {
+    faceSnapMotionRef.current = (shapeId, pose, done) => {
       const state = threeRef.current;
       const object = state ? findShapeObject(state, shapeId) : null;
       const shape = shapesRef.current.find((item) => item.id === shapeId);
@@ -4507,19 +4545,22 @@ export function WorkplaneViewport({
       }
       syncFaceSnapHighlight(state, FACE_SNAP_HOVER_NAME, null, null, 0);
       syncFaceSnapHighlight(state, FACE_SNAP_LOCK_NAME, null, null, 0);
-      const startX = shape.x;
-      const startZ = shape.z;
-      const startElevation = shape.elevation ?? 0;
+      const start = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z);
+      const end = new THREE.Vector3(pose.x, pose.elevation + shape.height / 2, pose.z);
+      const startQuaternion = object.quaternion.clone();
+      const endQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(pose.rotationX),
+        THREE.MathUtils.degToRad(pose.rotation),
+        THREE.MathUtils.degToRad(pose.rotationZ),
+        "XYZ",
+      ));
       const started = performance.now();
       const tick = (now: number) => {
-        const t = Math.min(1, (now - started) / 150);
+        const t = Math.min(1, (now - started) / 180);
         const eased = 1 - (1 - t) ** 3;
-        applyShapePose(object, {
-          ...shape,
-          x: startX + delta.x * eased,
-          z: startZ + delta.z * eased,
-          elevation: startElevation + delta.y * eased,
-        });
+        object.position.lerpVectors(start, end, eased);
+        object.quaternion.slerpQuaternions(startQuaternion, endQuaternion, eased);
+        object.updateMatrixWorld(true);
         state.needsRender = true;
         if (t < 1) requestAnimationFrame(tick);
         else done();
@@ -4532,7 +4573,7 @@ export function WorkplaneViewport({
   }, [faceSnapMotionRef]);
 
   const handlePointerDown = useCallback(
-    async (event: ReactPointerEvent<HTMLDivElement>) => {
+    (event: ReactPointerEvent<HTMLDivElement>) => {
       const state = threeRef.current;
       if (!state) {
         return;
@@ -4541,13 +4582,14 @@ export function WorkplaneViewport({
         return;
       }
       const host = event.currentTarget;
+      // A large STEP import used to await a paint here so the "Selecting…" wheel could
+      // show first. That yields the gesture: pointer moves arrive before the drag exists,
+      // so the part never follows the mouse. Arrow keys never take this path.
       const heavyPick = importedTriangleTotal(shapesRef.current) > HEAVY_SCENE_TRIANGLES;
       if (heavyPick) {
         busyLabelRef.current = "Selecting…";
         busyUntilRef.current = performance.now() + 4000;
         flushSync(() => setBusyLabel("Selecting…"));
-        await afterNextPaint();
-        if (!threeRef.current) return;
       }
       pickCacheRef.current = null;
       if (faceSnapActiveRef.current) {
@@ -4590,15 +4632,12 @@ export function WorkplaneViewport({
         return;
       }
 
-      if (circularPatternModeRef.current && !circularPatternCenterRef.current) {
-        // Allow resize/height handles so dimensions stay editable; empty clicks pick the pivot.
+      if (circularPatternModeRef.current) {
         const patternHandle = pickTransformHandle(event.clientX, event.clientY);
         if (!patternHandle) {
           event.preventDefault();
-          const id = pickShape(event.clientX, event.clientY);
-          if (id) {
-            onCircularPatternPivotPickRef.current?.(id);
-          }
+          const point = toPlanePoint(event.clientX, event.clientY);
+          if (point) onCircularPatternCenterPickRef.current?.(point);
           return;
         }
       }
@@ -5282,14 +5321,30 @@ export function WorkplaneViewport({
   );
 
   useEffect(() => {
+    const onDragStart = (event: globalThis.DragEvent) => {
+      if (!getShapeAssetDrag()) return;
+      updateAssetPlacementPreview(event.clientX, event.clientY);
+    };
+    const onDragOver = (event: globalThis.DragEvent) => {
+      if (!getShapeAssetDrag()) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      updateAssetPlacementPreview(event.clientX, event.clientY);
+    };
     const onDragEnd = () => {
       setAssetDragOver(false);
       clearAssetPlacementPreview();
       endShapeAssetDrag();
     };
+    window.addEventListener("dragstart", onDragStart);
+    window.addEventListener("dragover", onDragOver);
     window.addEventListener("dragend", onDragEnd);
-    return () => window.removeEventListener("dragend", onDragEnd);
-  }, [clearAssetPlacementPreview]);
+    return () => {
+      window.removeEventListener("dragstart", onDragStart);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragend", onDragEnd);
+    };
+  }, [clearAssetPlacementPreview, updateAssetPlacementPreview]);
 
   const resetView = useCallback(() => {
     const state = threeRef.current;
@@ -5908,17 +5963,6 @@ export function WorkplaneViewport({
             <ToolbarDropToWorkplaneIcon />
           </PeakTipButton>
         ) : null}
-        {onSnapSelection ? (
-          <PeakTipButton
-            className={`workplane-viewport-bar-snap ${faceSnapActive ? "active" : ""}`}
-            label="Snap"
-            description={TOOL_DESCRIPTIONS.snap}
-            aria-pressed={faceSnapActive}
-            onClick={onSnapSelection}
-          >
-            <ToolbarSnapGridIcon />
-          </PeakTipButton>
-        ) : null}
       </div>
 
       {settingsOpen ? (
@@ -6290,43 +6334,57 @@ function syncFaceSnapHighlight(
 
 function faceSnapQuadPositions(
   shape: WorkplaneShape,
-  point: [number, number, number],
+  _point: [number, number, number],
   normal: [number, number, number],
 ): Float32Array {
-  const box = snapAabbFromShape(shape);
-  const ax = Math.abs(normal[0]);
-  const ay = Math.abs(normal[1]);
-  const az = Math.abs(normal[2]);
+  const worldNormal = new THREE.Vector3(...normal);
+  if (worldNormal.lengthSq() < 1e-12) return new Float32Array(18);
+  worldNormal.normalize();
+  const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(shape.rotationX ?? 0),
+    THREE.MathUtils.degToRad(shape.rotation),
+    THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
+    "XYZ",
+  ));
+  const localNormal = worldNormal.clone().applyQuaternion(rotation.clone().invert());
+  localNormal.x *= mirrorSign(shape.mirrorX);
+  localNormal.y *= mirrorSign(shape.mirrorY);
+  localNormal.z *= mirrorSign(shape.mirrorZ);
+  const ax = Math.abs(localNormal.x);
+  const ay = Math.abs(localNormal.y);
+  const az = Math.abs(localNormal.z);
   const axis = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
-  const sign = Math.sign(normal[axis]) || 1;
-  const plane = point[axis] + sign * 0.45;
-  const pad = 0.8;
-  const x0 = box.minX - pad;
-  const x1 = box.maxX + pad;
-  const y0 = box.minY - pad;
-  const y1 = box.maxY + pad;
-  const z0 = box.minZ - pad;
-  const z1 = box.maxZ + pad;
-  const corners = axis === 0
-    ? [[plane, y0, z0], [plane, y1, z0], [plane, y1, z1], [plane, y0, z1]]
-    : axis === 1
-      ? [[x0, plane, z0], [x1, plane, z0], [x1, plane, z1], [x0, plane, z1]]
-      : [[x0, y0, plane], [x1, y0, plane], [x1, y1, plane], [x0, y1, plane]];
+  const sign = Math.sign(localNormal.getComponent(axis)) || 1;
+  const half = [shapeWidth(shape) / 2, shape.height / 2, shapeDepth(shape) / 2];
+  const span = [0, 1, 2].filter((item) => item !== axis);
+  const center = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z);
+  const scale = new THREE.Vector3(mirrorSign(shape.mirrorX), mirrorSign(shape.mirrorY), mirrorSign(shape.mirrorZ));
+  const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => {
+    const local = new THREE.Vector3();
+    local.setComponent(axis, sign * half[axis]);
+    local.setComponent(span[0], u * half[span[0]]);
+    local.setComponent(span[1], v * half[span[1]]);
+    return local.multiply(scale).applyQuaternion(rotation).add(center).addScaledVector(worldNormal, 0.35);
+  });
   return new Float32Array([
-    ...corners[0], ...corners[1], ...corners[2],
-    ...corners[0], ...corners[2], ...corners[3],
+    ...corners[0].toArray(), ...corners[1].toArray(), ...corners[2].toArray(),
+    ...corners[0].toArray(), ...corners[2].toArray(), ...corners[3].toArray(),
   ]);
 }
 
-function axisNormal(normal: THREE.Vector3): [number, number, number] | null {
-  const ax = Math.abs(normal.x);
-  const ay = Math.abs(normal.y);
-  const az = Math.abs(normal.z);
+function faceSnapNormal(normal: THREE.Vector3): [number, number, number] | null {
+  if (normal.lengthSq() < 1e-12) return null;
+  const unit = normal.clone().normalize();
+  const ax = Math.abs(unit.x);
+  const ay = Math.abs(unit.y);
+  const az = Math.abs(unit.z);
   const largest = Math.max(ax, ay, az);
-  if (largest < 1e-8) return null;
-  if (ax === largest) return [Math.sign(normal.x) || 1, 0, 0];
-  if (ay === largest) return [0, Math.sign(normal.y) || 1, 0];
-  return [0, 0, Math.sign(normal.z) || 1];
+  if (largest > 0.985) {
+    if (ax === largest) return [Math.sign(unit.x) || 1, 0, 0];
+    if (ay === largest) return [0, Math.sign(unit.y) || 1, 0];
+    return [0, 0, Math.sign(unit.z) || 1];
+  }
+  return [unit.x, unit.y, unit.z];
 }
 
 function rememberCameraHoldPose(state: ThreeState) {
@@ -7091,8 +7149,6 @@ function makeDimensionMark(
   const railOffset = 5.8;
   const extensionOverrun = 1.4;
   const labelOffset = 3.2;
-  // Keep footprint size readouts below the green rotate bows so they stay clickable.
-  const screenLabelNudgeY = axis === "width" || axis === "depth" ? 26 : 0;
   const railFrom = project(fromWorld.clone().add(outwardAxis.clone().multiplyScalar(railOffset)));
   const railTo = project(toWorld.clone().add(outwardAxis.clone().multiplyScalar(railOffset)));
   const extensionFrom = project(fromWorld.clone().add(outwardAxis.clone().multiplyScalar(railOffset + extensionOverrun)));
@@ -7122,7 +7178,7 @@ function makeDimensionMark(
     e2x2: extensionTo.x,
     e2y2: extensionTo.y,
     labelX: labelPoint.x,
-    labelY: labelPoint.y + screenLabelNudgeY,
+    labelY: labelPoint.y,
   };
 }
 
@@ -7413,6 +7469,11 @@ function syncTransformOverlay(
       title: "Rotate (yaw)",
     },
   ];
+  const rotateObstacles = rotateHandles.map(rotateHandleRect);
+  const labelViewport = { width: rect.width, height: rect.height };
+  for (const marks of Object.values(dimensionMarks)) {
+    separateDimensionLabels(marks, rotateObstacles, labelViewport);
+  }
   const planeRadius = 154;
   /** Screen-space circle so the protractor stays readable from every camera angle. */
   const makeBillboardPlaneView = (centerWorld: THREE.Vector3): RotationPlaneView => {
@@ -8130,7 +8191,16 @@ function syncAssetPlacementPreview(
 
   if (needsRebuild) {
     clearAssetPlacementPreviewObject(state);
-    const draft = makeShapeFromAsset(asset, { x, z, elevation });
+    const draft = asset.kind === "thread"
+      ? createThreadShape({
+          point: { x, z, elevation },
+          base: {
+            id: "asset-preview-thread",
+            name: asset.name,
+            color: asset.color,
+          },
+        })
+      : makeShapeFromAsset(asset, { x, z, elevation });
     preview = createShapeObject(draft, false);
     preview.name = ASSET_PLACEMENT_PREVIEW_NAME;
     preview.userData.assetKind = asset.kind;
@@ -8405,18 +8475,6 @@ function importedTriangleTotal(shapes: WorkplaneShape[]): number {
   return total;
 }
 
-function afterNextPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    const fallback = window.setTimeout(resolve, 250);
-    window.requestAnimationFrame(() => {
-      window.setTimeout(() => {
-        window.clearTimeout(fallback);
-        resolve();
-      }, 0);
-    });
-  });
-}
-
 /** Precise triangle tests on a reduced watch movement lock the window. The box is enough to select it. */
 function raycastImportedBounds(this: THREE.Mesh, raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) {
   const geometry = this.geometry;
@@ -8548,11 +8606,12 @@ function addMesh(
 }
 
 function addCadDisplayEdges(group: THREE.Group, shape: WorkplaneShape, color: string, opacity: number) {
-  if (!shape.cadDisplayEdges?.length) return false;
+  if (!shape.cadDisplayEdges?.length || !shape.importedMesh) return false;
+  // Compare in the baked mesh frame. Resizing happens once, when the line is drawn.
   const edges = filterCoplanarDisplayEdges(
     shape.cadDisplayEdges,
-    resizedImportedMeshPositions(shape),
-    shape.importedMesh?.indices,
+    shape.importedMesh.positions,
+    shape.importedMesh.indices,
   );
   if (edges.length === 0) return false;
   const material = new THREE.LineBasicMaterial({

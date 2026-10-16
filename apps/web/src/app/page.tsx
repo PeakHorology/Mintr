@@ -1,7 +1,8 @@
 "use client";
 
-import { ArrowLeft, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { ArrowLeft, CircleArrowUp, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from "react";
+import { rememberProblem } from "@/lib/problemReport";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
 import { preloadCadModifierWorker } from "@/lib/cadModifierPreload";
 import { loadBrepWithOcct } from "@/lib/brepKernel";
@@ -858,6 +859,23 @@ export default function Home() {
   projectShapesByIdRef.current = projectShapesById;
   dashboardOrderRef.current = dashboardOrder;
   activeProjectIdRef.current = activeProjectId;
+
+  useEffect(() => {
+    const onError = (event: ErrorEvent) => {
+      rememberProblem(`window error: ${event.message}`);
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason instanceof Error ? event.reason.message : String(event.reason ?? "");
+      rememberProblem(`unhandled rejection: ${reason}`);
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, []);
+
   const createAndOpenProjectRef = useRef<(name?: string) => void>(() => undefined);
   /** Set only while an editor is mounted; asks before leaving a project with unsaved changes. */
   const editorLeaveGuardRef = useRef<EditorLeaveGuard | null>(null);
@@ -2411,6 +2429,27 @@ export default function Home() {
   );
 }
 
+const UPDATE_DISMISS_KEY = "peakcad-update-dismissed";
+
+type DesktopUpdateOffer = {
+  version: string;
+  current: string;
+  notes: string[];
+  portable: boolean;
+  canInstall: boolean;
+};
+
+function desktopUpdateApi() {
+  if (typeof window === "undefined") return null;
+  return (window as Window & {
+    peakcadUpdate?: {
+      check: () => Promise<DesktopUpdateOffer | null>;
+      openDownload: () => Promise<unknown>;
+      install: () => Promise<unknown>;
+    };
+  }).peakcadUpdate ?? null;
+}
+
 function Dashboard({
   dashboardNotice,
   dashboardOrder,
@@ -2505,6 +2544,24 @@ function Dashboard({
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
   const [appWorkspace, setAppWorkspace] = useState<WorkplaneWorkspaceSettings>(() => loadGlobalWorkspaceDefaults().workspace);
   const [appSnap, setAppSnap] = useState<GridSize>(() => loadGlobalWorkspaceDefaults().snap);
+  const [updateOffer, setUpdateOffer] = useState<DesktopUpdateOffer | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState("");
+
+  useEffect(() => {
+    const api = desktopUpdateApi();
+    if (!api) return;
+    let cancel = false;
+    void api.check().then((offer) => {
+      if (cancel || !offer) return;
+      if (window.localStorage.getItem(UPDATE_DISMISS_KEY) === offer.version) return;
+      setUpdateOffer(offer);
+    }).catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -3467,6 +3524,62 @@ function Dashboard({
             <Plus size={20} strokeWidth={2.6} />
             <span>New design</span>
           </button>
+          {updateOffer ? (
+            <div className="dashboard-update">
+              <button
+                className="dashboard-update-button"
+                type="button"
+                aria-label={`PeakCAD ${updateOffer.version} is ready`}
+                aria-expanded={updateOpen}
+                title={`PeakCAD ${updateOffer.version} is ready`}
+                onClick={() => setUpdateOpen((open) => !open)}
+              >
+                <CircleArrowUp size={20} strokeWidth={2.4} />
+              </button>
+              {updateOpen ? (
+                <div className="dashboard-update-panel" role="dialog" aria-label={`Update to PeakCAD ${updateOffer.version}`}>
+                  <strong>PeakCAD {updateOffer.version} is ready</strong>
+                  <ul>
+                    {updateOffer.notes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                  {updateError ? <p className="dashboard-update-error">{updateError}</p> : null}
+                  <div className="dashboard-update-actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.localStorage.setItem(UPDATE_DISMISS_KEY, updateOffer.version);
+                        setUpdateOffer(null);
+                        setUpdateOpen(false);
+                      }}
+                    >
+                      Later
+                    </button>
+                    <button
+                      type="button"
+                      disabled={updateBusy}
+                      onClick={() => {
+                        const api = desktopUpdateApi();
+                        if (!api) return;
+                        setUpdateBusy(true);
+                        setUpdateError("");
+                        const action = updateOffer.canInstall ? api.install() : api.openDownload();
+                        void action.then(() => {
+                          if (!updateOffer.canInstall) setUpdateOpen(false);
+                        }).catch((error: unknown) => {
+                          setUpdateError(error instanceof Error ? error.message : "PeakCAD couldn't download the update. Nothing was installed.");
+                          setUpdateBusy(false);
+                        });
+                      }}
+                    >
+                      {updateBusy ? "Downloading…" : updateOffer.canInstall ? "Download and install" : "Download"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {!settingsOpen ? (
             <button className="dashboard-topbar-settings" type="button" aria-label="Settings" title="Settings" onClick={onOpenSettings}>
               <Settings size={20} strokeWidth={2.4} />
@@ -3620,12 +3733,12 @@ function Dashboard({
                   {libraryProjects.length > 0 ? (
                     <div className="library-band">
                       <div className="dashboard-subsection-header">
-                        <h2>Designs</h2>
+                        <h2>All Designs</h2>
                         <span>
                           {libraryProjects.length} {libraryProjects.length === 1 ? "design" : "designs"}
                         </span>
                       </div>
-                      <div className={`${libraryGridClass} project-grid-projects`} aria-label="Designs">
+                      <div className={`${libraryGridClass} project-grid-projects`} aria-label="All Designs">
                         {libraryProjects.map((project) => renderProjectCard(project))}
                       </div>
                     </div>

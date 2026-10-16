@@ -1,5 +1,32 @@
 # Changelog
 
+Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes.ts` when a version ships. Settings → Updates reads that file.
+
+## Unreleased
+
+## 1.0.4
+
+- PeakCAD can tell you when a new version is ready.
+- Report a problem sends a note. A crash report can be included, without your design.
+- Threads can be a rod, a screw with a head, a nut, or a tapped hole. Inch and pipe sizes are included.
+- Split cuts one object into two along a line you place.
+- Hollow can leave inside corners sharp or round them.
+- Snap turns the first face onto the second and centers it there.
+- Lay flat turns a chosen face down onto the workplane.
+- A fillet or chamfer on a round part stays as smooth as that part. The size slider stays quick while you drag.
+- Union outlines drop coplanar seams so fused solids read like one part.
+
+## 1.0.3
+
+- History opens under the History button. Slide through earlier steps and restore the one you want.
+- Tie keeps shapes separate and moves them together. Group still fuses them into one solid.
+- Hollow turns a solid into walls of one thickness.
+- Tools are grouped into History, Clipboard, Combine, Modify, and Arrange. Import, Save, and Export sit together, and Settings has its own place.
+- Large STEP files open part by part, and you can drag those parts with the mouse again.
+- A hole that lines up flush with a part cuts all the way through. A hole still cuts a group of imported parts.
+- Measurement labels stay clear of the rotate handles, and grouped holes show their real height.
+- The fillet and chamfer slider skips sizes you already moved past.
+
 ## 1.0.2
 
 - Fillets and chamfers keep merged flat faces, skip a full edge walk when adding another edge, and draw every highlight from one line.

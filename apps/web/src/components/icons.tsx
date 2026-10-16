@@ -111,6 +111,16 @@ export function ToolbarUndoIcon(props: IconProps) {
   );
 }
 
+export function ToolbarHistoryIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M12 7.2V12l2.6 1.8" />
+      <path d="M6 7.2V4.8H8.4" />
+      <path d="M6.4 7.4A6.6 6.6 0 1 1 5.6 13" />
+    </CadGlyph>
+  );
+}
+
 export function ToolbarRedoIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
@@ -216,6 +226,16 @@ export function ToolbarGroupIcon(props: IconProps) {
   );
 }
 
+export function ToolbarAssemblyIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <rect x="3" y="4" width="7.5" height="7.5" rx="1.2" />
+      <circle cx="16.2" cy="16.2" r="3.6" />
+      <path d="M7 11.5v2.2a3.2 3.2 0 0 0 3.2 3.2H13" />
+    </CadGlyph>
+  );
+}
+
 export function ToolbarUngroupIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
@@ -264,6 +284,25 @@ export function ToolbarChamferIcon(props: IconProps) {
       <path d="M4 20V8h7" />
       <path d="M11 8l7 7" />
       <path d="M18 15v5H4" />
+    </CadGlyph>
+  );
+}
+
+export function ToolbarSplitIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4 19.5V7.5h7.2" />
+      <path d="M12.8 7.5H20v12H4" />
+      <path d="M12 4.5v15" />
+    </CadGlyph>
+  );
+}
+
+export function ToolbarHollowIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4.5 18.5V8.5h15v10" />
+      <path d="M8 15.5V11h8v4.5" />
     </CadGlyph>
   );
 }
@@ -324,6 +363,17 @@ export function ToolbarPreserveEdgeIcon(props: IconProps) {
       <path d="M17 29h13M17 25v8M30 25v8" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
       <path d="M18 17a7 7 0 0 1 7-7" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
     </svg>
+  );
+}
+
+export function ToolbarLayFlatIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M3 19.5h18" />
+      <rect x="6.5" y="13" width="11" height="6" rx="0.8" />
+      <path d="M16.5 7.2a4.2 4.2 0 0 0-5.6.6" />
+      <path d="m10.2 6.4.4 2.4 2.3-.6" />
+    </CadGlyph>
   );
 }
 

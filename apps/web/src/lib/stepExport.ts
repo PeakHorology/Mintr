@@ -122,10 +122,12 @@ export function resolveImportedSolidScale(shape: AxisExtents, step: AxisExtents)
 
 /**
  * Fuse/cut leftover same-plane faces into one face. Without this, overlapping
- * boxes (knurls, radial hubs) stay a starburst of intersection seams.
+ * boxes (knurls, radial hubs) and a cylinder sitting on a box keep the original
+ * circle drawn across the merged top.
  */
 const BOOLEAN_UNIFY = {
   fuzzyValue: 1e-4,
+  simplify: true,
 } as const;
 
 function solidExtents(brep: Brep, solid: BrepSolid): AxisExtents | null {

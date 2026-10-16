@@ -146,6 +146,50 @@ export function resolveHoleRadialSegments(radiusMm: number, quality: DisplayQual
   return Math.min(cap, Math.max(floor, Math.ceil(Math.max(0.01, radiusMm) * density)));
 }
 
+type CurveSideSource = {
+  kind: ShapeKind;
+  sides?: number;
+  steps?: number;
+  groupedShapes?: CurveSideSource[];
+};
+
+/** How many facets around the curve the viewport already uses for this solid. */
+export function curveSidesForShape(shape: CurveSideSource | null, quality: DisplayQuality = getActiveDisplayQuality()) {
+  const fallback = defaultSidesForKind("cylinder", quality) ?? 128;
+  if (!shape) return fallback;
+  const own = curveSidesOf(shape, quality);
+  const nested = (shape.groupedShapes ?? []).reduce((max, child) => Math.max(max, curveSidesOf(child, quality)), 0);
+  return Math.max(own, nested) || fallback;
+}
+
+function curveSidesOf(shape: CurveSideSource, quality: DisplayQuality) {
+  if (shape.kind === "sphere" || shape.kind === "halfSphere") {
+    const steps = resolveShapeSteps(shape.kind, shape.steps, quality) ?? defaultStepsForKind(shape.kind, quality) ?? 32;
+    return Math.max(8, steps * 2);
+  }
+  if (shape.kind === "torus") {
+    const steps = resolveShapeSteps(shape.kind, shape.steps, quality) ?? defaultStepsForKind(shape.kind, quality) ?? 48;
+    return Math.max(24, steps * 4);
+  }
+  if (isCurvedTessellationKind(shape.kind)) {
+    return resolveShapeSides(shape.kind, shape.sides, quality) ?? defaultSidesForKind("cylinder", quality) ?? 128;
+  }
+  return 0;
+}
+
+/**
+ * Tessellation that keeps a filleted or chamfered curve as round as the solid
+ * it was applied to. Linear sag stays loose so flat faces do not fill with triangles.
+ */
+export function curvedDisplayTessellation(amount: number, sides: number) {
+  const safeSides = Math.max(8, Math.min(512, Math.round(sides)));
+  const safeAmount = Number.isFinite(amount) && amount > 0 ? amount : 1;
+  return {
+    linearDeflection: Math.max(0.02, Math.min(0.2, safeAmount / 6)),
+    angularDeflection: (Math.PI * 2) / safeSides,
+  };
+}
+
 export function modifierQualityForDisplay(quality: DisplayQuality = getActiveDisplayQuality()): CadModifierQuality {
   if (quality === "draft") return "draft";
   if (quality === "smooth") return "ultra";

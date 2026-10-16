@@ -43,3 +43,16 @@ contextBridge.exposeInMainWorld("peakcadFile", {
     };
   },
 });
+
+contextBridge.exposeInMainWorld("peakcadUpdate", {
+  check: () => ipcRenderer.invoke("peakcad:update-check"),
+  openDownload: () => ipcRenderer.invoke("peakcad:update-open"),
+  install: () => ipcRenderer.invoke("peakcad:update-install"),
+});
+
+contextBridge.exposeInMainWorld("peakcadReport", {
+  note: (message) => ipcRenderer.send("peakcad:crash-note", message),
+  open: () => ipcRenderer.invoke("peakcad:report-problem"),
+  feedback: () => ipcRenderer.invoke("peakcad:send-feedback"),
+  text: () => ipcRenderer.invoke("peakcad:crash-text"),
+});

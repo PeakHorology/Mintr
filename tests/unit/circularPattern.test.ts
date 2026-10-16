@@ -8,6 +8,7 @@ import {
   clampCircularPatternCount,
   clampCircularPatternRadius,
   clampCircularPatternRotation,
+  defaultCircularPatternCenter,
   patternPolarAngle,
   patternRadius,
   patternYawDegrees,
@@ -157,6 +158,18 @@ describe("circularPatternInstances", () => {
 
   it("suggests a starting radius from source distance", () => {
     expect(circularPatternSuggestedRadius([box({ id: "a", x: 30, z: 0 })], { x: 0, z: 0 })).toBe(30);
+  });
+
+  it("places the center beside the object so the original stays put", () => {
+    const source = box({ id: "a", x: 0, z: 0, width: 20, depth: 20, elevation: 4 });
+    const center = defaultCircularPatternCenter([source]);
+    const radius = circularPatternSuggestedRadius([source], center);
+    const instances = circularPatternInstances([source], center, 6, { radius });
+    expect(instances[0].x).toBeCloseTo(source.x);
+    expect(instances[0].z).toBeCloseTo(source.z);
+    expect(instances[0].elevation).toBe(4);
+    expect(instances).toHaveLength(6);
+    expect(new Set(instances.map((shape) => `${shape.x.toFixed(2)},${shape.z.toFixed(2)}`)).size).toBe(6);
   });
 
   it("uses the pivot footprint radius when starting a pattern", () => {

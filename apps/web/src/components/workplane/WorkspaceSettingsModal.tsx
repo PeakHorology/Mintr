@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FolderDown, Grid3X3, Info, Keyboard, Palette, Ruler, X } from "lucide-react";
+import { BookOpen, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Ruler, ScrollText, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import {
@@ -21,13 +21,15 @@ import {
 import { normalizeScaleForUnits, scaleOptionsForUnits, WORKSPACE_UNIT_OPTIONS } from "@/lib/measurementUnits";
 import { TOOL_DESCRIPTIONS, TOOL_INDEX, TOOL_INDEX_CATEGORIES } from "@/lib/toolDescriptions";
 import { DISPLAY_QUALITY_OPTIONS } from "@/lib/displayTessellation";
+import { HelpFeedbackForm } from "@/components/workplane/HelpFeedbackForm";
+import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
 import { loadUiTheme, setUiTheme, type UiTheme } from "@/lib/uiTheme";
 import { DEFAULT_WORKPLANE_WORKSPACE } from "@/lib/workplaneSettings";
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
-type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "files" | "tools" | "hotkeys" | "about";
+type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "files" | "tools" | "hotkeys" | "updates" | "help" | "about";
 type WorkspaceSettingsContext = "project" | "app";
 type LegalDocumentId = "license" | "notices" | "offer";
 
@@ -303,6 +305,14 @@ export function WorkspaceSettingsModal({
             <button className={activeSection === "hotkeys" ? "active" : ""} aria-current={activeSection === "hotkeys" ? "page" : undefined} onClick={() => setActiveSection("hotkeys")}>
               <Keyboard size={18} />
               <span>Hotkeys</span>
+            </button>
+            <button className={activeSection === "updates" ? "active" : ""} aria-current={activeSection === "updates" ? "page" : undefined} onClick={() => setActiveSection("updates")}>
+              <ScrollText size={18} />
+              <span>Updates</span>
+            </button>
+            <button className={activeSection === "help" ? "active" : ""} aria-current={activeSection === "help" ? "page" : undefined} onClick={() => setActiveSection("help")}>
+              <LifeBuoy size={18} />
+              <span>Help/Feedback</span>
             </button>
             <button className={activeSection === "about" ? "active" : ""} aria-current={activeSection === "about" ? "page" : undefined} onClick={() => setActiveSection("about")}>
               <Info size={18} />
@@ -649,6 +659,50 @@ export function WorkspaceSettingsModal({
                 </>
               ) : null}
 
+              {activeSection === "updates" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Updates</strong>
+                    <span>What changed in each version.</span>
+                  </div>
+                  <div className="workspace-updates">
+                    {UNRELEASED_NOTES.length > 0 ? (
+                      <section className="workspace-update">
+                        <h3>Since {RELEASE_NOTES[0]?.version ?? "the last release"}</h3>
+                        <ul>
+                          {UNRELEASED_NOTES.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    ) : null}
+                    {RELEASE_NOTES.map((release) => (
+                      <section className="workspace-update" key={release.version}>
+                        <h3>
+                          {release.version}
+                          {PEAKCAD_VERSION === release.version ? <span>Current</span> : null}
+                        </h3>
+                        <ul>
+                          {release.items.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+
+              {activeSection === "help" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Help/Feedback</strong>
+                    <span>Tell us what you think, or describe a problem. Your design is not sent.</span>
+                  </div>
+                  <HelpFeedbackForm version={PEAKCAD_VERSION} />
+                </>
+              ) : null}
+
               {activeSection === "about" ? (
                 <>
                   <div className="workspace-section-heading">
@@ -698,10 +752,12 @@ export function WorkspaceSettingsModal({
             <div className="workspace-modal-footer">
               {activeSection === "hotkeys" ? (
                 <span>Hotkeys save as you change them. L is Align in geometry and Line in a sketch; D is Drop vs Dimension.</span>
-              ) : activeSection === "tools" || activeSection === "files" || activeSection === "about" ? (
+              ) : activeSection === "tools" || activeSection === "files" || activeSection === "about" || activeSection === "help" ? (
                 <span>
                   {activeSection === "tools"
                     ? "Tool help is a reference only — it does not change project defaults."
+                    : activeSection === "help"
+                      ? "Your design is not included. A problem report can add a saved crash note."
                     : activeSection === "about"
                       ? "The desktop app also ships LICENSE.txt, THIRD-PARTY-NOTICES.txt, and SOURCE-OFFER.txt in its install folder, and under Help in the menu bar."
                       : "Download folder is remembered on this computer."}

@@ -310,10 +310,20 @@ export type WorkplaneShape = {
     pitch: number;
     /** screw = fastener; hole = clearance cutter for a receiving hole. */
     style?: "screw" | "hole";
-    /** Radial clearance in mm for hole cutters. */
+    /** Radial clearance in mm for nuts and tapped holes. */
     clearance?: number;
     /** screw | shaft | threads after Separate. */
     part?: "screw" | "shaft" | "threads";
+    /** rod, headed screw, nut, or tapped hole. */
+    role?: "rod" | "screw" | "nut" | "bore";
+    head?: "cylinder" | "countersunk" | "hex";
+    hand?: "right" | "left";
+    series?: "metric" | "unc" | "unf" | "g" | "custom";
+    profile?: "v" | "whitworth" | "trapezoid" | "round";
+    /** 45° chamfer at the thread ends, in mm. */
+    chamfer?: number;
+    /** Threaded length, or nut thickness. The shape height includes a screw head. */
+    length?: number;
   };
   threadFeatures?: ThreadFeature[];
   threadHistory?: ThreadHistoryEntry[];

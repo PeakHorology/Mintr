@@ -96,6 +96,33 @@ export function pollSketchForgeMcpCommand(editorId: string) {
   return queue?.shift() ?? null;
 }
 
+/** Hold the request until a command arrives, so the editor is not opening a new connection several times a second. */
+export function waitForSketchForgeMcpCommand(editorId: string, waitMs: number, signal?: AbortSignal) {
+  const immediate = pollSketchForgeMcpCommand(editorId);
+  if (immediate || waitMs <= 0 || signal?.aborted) {
+    return Promise.resolve(immediate);
+  }
+  return new Promise<SketchForgeMcpCommand | null>((resolve) => {
+    const started = Date.now();
+    let settled = false;
+    const finish = (command: SketchForgeMcpCommand | null) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(command);
+    };
+    const onAbort = () => finish(null);
+    signal?.addEventListener("abort", onAbort);
+    const timer = setInterval(() => {
+      const command = pollSketchForgeMcpCommand(editorId);
+      if (command || Date.now() - started >= waitMs || signal?.aborted) {
+        finish(command);
+      }
+    }, 40);
+  });
+}
+
 export function completeSketchForgeMcpCommand(editorId: string, result: SketchForgeMcpCommandResult) {
   const state = store();
   const pending = state.pending.get(result.commandId);

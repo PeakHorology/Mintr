@@ -61,6 +61,102 @@ export function metricThreadMinorDiameter(majorDiameter: number, pitch: number) 
   return Math.max(0.1, majorDiameter - 1.082532 * pitch);
 }
 
+export type ThreadSeries = "metric" | "unc" | "unf" | "g" | "custom";
+
+export type ThreadSizeOption = {
+  id: string;
+  label: string;
+  series: Exclude<ThreadSeries, "custom">;
+  majorDiameter: number;
+  /** Axial pitch in millimetres. Inch and pipe sizes store 25.4 / TPI. */
+  pitch: number;
+};
+
+function inchSize(label: string, series: "unc" | "unf", majorDiameter: number, threadsPerInch: number): ThreadSizeOption {
+  return {
+    id: label,
+    label,
+    series,
+    majorDiameter,
+    pitch: 25.4 / threadsPerInch,
+  };
+}
+
+function pipeSize(label: string, majorDiameter: number, threadsPerInch: number): ThreadSizeOption {
+  return {
+    id: label,
+    label,
+    series: "g",
+    majorDiameter,
+    pitch: 25.4 / threadsPerInch,
+  };
+}
+
+/** ASME B1.1 coarse inch threads, #4 through 1 inch. */
+export const UNC_THREADS: readonly ThreadSizeOption[] = [
+  inchSize("#4-40 UNC", "unc", 2.845, 40),
+  inchSize("#6-32 UNC", "unc", 3.505, 32),
+  inchSize("#8-32 UNC", "unc", 4.166, 32),
+  inchSize("#10-24 UNC", "unc", 4.826, 24),
+  inchSize("1/4-20 UNC", "unc", 6.35, 20),
+  inchSize("5/16-18 UNC", "unc", 7.938, 18),
+  inchSize("3/8-16 UNC", "unc", 9.525, 16),
+  inchSize("1/2-13 UNC", "unc", 12.7, 13),
+  inchSize("5/8-11 UNC", "unc", 15.875, 11),
+  inchSize("3/4-10 UNC", "unc", 19.05, 10),
+  inchSize("1-8 UNC", "unc", 25.4, 8),
+];
+
+/** ASME B1.1 fine inch threads, #4 through 1 inch. */
+export const UNF_THREADS: readonly ThreadSizeOption[] = [
+  inchSize("#4-48 UNF", "unf", 2.845, 48),
+  inchSize("#6-40 UNF", "unf", 3.505, 40),
+  inchSize("#8-36 UNF", "unf", 4.166, 36),
+  inchSize("#10-32 UNF", "unf", 4.826, 32),
+  inchSize("1/4-28 UNF", "unf", 6.35, 28),
+  inchSize("5/16-24 UNF", "unf", 7.938, 24),
+  inchSize("3/8-24 UNF", "unf", 9.525, 24),
+  inchSize("1/2-20 UNF", "unf", 12.7, 20),
+  inchSize("5/8-18 UNF", "unf", 15.875, 18),
+  inchSize("3/4-16 UNF", "unf", 19.05, 16),
+  inchSize("1-12 UNF", "unf", 25.4, 12),
+];
+
+/** ISO 228-1 parallel pipe threads. The name is the pipe, not the thread diameter. */
+export const G_PIPE_THREADS: readonly ThreadSizeOption[] = [
+  pipeSize("G1/16", 7.723, 28),
+  pipeSize("G1/8", 9.728, 28),
+  pipeSize("G1/4", 13.157, 19),
+  pipeSize("G3/8", 16.662, 19),
+  pipeSize("G1/2", 20.955, 14),
+  pipeSize("G3/4", 26.441, 14),
+  pipeSize("G1", 33.249, 11),
+  pipeSize("G1-1/8", 37.897, 11),
+  pipeSize("G1-1/4", 41.91, 11),
+  pipeSize("G1-1/2", 47.803, 11),
+  pipeSize("G2", 59.614, 11),
+  pipeSize("G2-1/2", 75.184, 11),
+  pipeSize("G3", 87.884, 11),
+  pipeSize("G4", 113.03, 11),
+];
+
+export const THREAD_SIZE_OPTIONS: readonly ThreadSizeOption[] = [
+  ...METRIC_COARSE_THREADS.map((entry) => ({
+    id: entry.designation,
+    label: entry.designation,
+    series: "metric" as const,
+    majorDiameter: entry.majorDiameter,
+    pitch: entry.pitch,
+  })),
+  ...UNC_THREADS,
+  ...UNF_THREADS,
+  ...G_PIPE_THREADS,
+];
+
+export function findThreadSize(id: string): ThreadSizeOption | undefined {
+  return THREAD_SIZE_OPTIONS.find((entry) => entry.id === id);
+}
+
 export function findMetricThread(designation: string): MetricThreadSpec | undefined {
   return METRIC_COARSE_THREADS.find((entry) => entry.designation === designation);
 }

@@ -2,7 +2,10 @@ import type { GridSize, ShapeKind, WorkplaneWorkspaceSettings } from "@/types/sk
 
 export const SKETCHFORGE_MCP_ROUTE = "/api/sketchforge-mcp";
 export const SKETCHFORGE_MCP_STALE_MS = 6500;
-export const SKETCHFORGE_MCP_POLL_MS = 220;
+/** Pause between assistant polls. The request itself waits on the server. */
+export const SKETCHFORGE_MCP_POLL_MS = 80;
+/** How long one poll may sit open waiting for a command before returning empty. */
+export const SKETCHFORGE_MCP_POLL_WAIT_MS = 1200;
 
 export type SketchForgeMcpViewFace = "current" | "home" | "top" | "bottom" | "front" | "back" | "right" | "left";
 
@@ -112,6 +115,7 @@ export type SketchForgeMcpHeartbeatPayload = {
 export type SketchForgeMcpPollPayload = {
   type: "poll";
   editorId: string;
+  waitMs?: number;
 };
 
 export type SketchForgeMcpResultPayload = {

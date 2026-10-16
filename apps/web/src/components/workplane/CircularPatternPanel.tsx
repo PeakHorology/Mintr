@@ -297,11 +297,9 @@ function RotationControl({
 
 export function CircularPatternPanel({
   sourceCount,
-  pivotName,
   count,
   radiusMm,
   rotationDeg,
-  hasPivot,
   canApply,
   workspace,
   onCountChange,
@@ -314,11 +312,9 @@ export function CircularPatternPanel({
   editing = false,
 }: {
   sourceCount: number;
-  pivotName: string | null;
   count: number;
   radiusMm: number;
   rotationDeg: number;
-  hasPivot: boolean;
   canApply: boolean;
   workspace: WorkplaneWorkspaceSettings;
   onCountChange: (count: number) => void;
@@ -345,11 +341,7 @@ export function CircularPatternPanel({
       <div className="edge-modifier-header">
         <div>
           <strong>{editing ? "Edit circular pattern" : "Circular pattern"}</strong>
-          <p>
-            {hasPivot
-              ? `Orbit around ${pivotName ?? "pivot"} · ${count} total`
-              : "Click a shape to orbit around"}
-          </p>
+          <p>{count} around the center</p>
         </div>
         <button type="button" className="icon-button" aria-label="Cancel circular pattern" onClick={onCancel}>
           <X size={16} />
@@ -358,31 +350,28 @@ export function CircularPatternPanel({
 
       <div className="edge-modifier-meta">
         <span>{sourceCount} source{sourceCount === 1 ? "" : "s"}</span>
-        <span>{hasPivot ? `Pivot: ${pivotName}` : "No pivot"}</span>
+        <span>Click the workplane to move the center</span>
       </div>
 
       <RadiusControl
         value={radiusMm}
         workspace={workspace}
-        disabled={!hasPivot}
         onChange={onRadiusChange}
       />
 
       <CountControl
         value={count}
-        disabled={!hasPivot}
         onChange={onCountChange}
       />
 
       <RotationControl
         value={rotationDeg}
-        disabled={!hasPivot}
         onChange={onRotationChange}
       />
 
       {hintOpen ? (
         <p className="edge-modifier-hint">
-          Pick a pivot shape — the pattern centers on it and starts at its radius. Drag the sliders (or type values) to adjust. Rotation snaps to 0°, 90°, 180°, or 270°. Copies sit on the pivot’s top, face the center, and count includes the original.
+          The original stays as the first copy. The rest are spaced evenly around the center and face it. Click the workplane to move the center. Count includes the original. Rotation adds 0°, 90°, 180°, or 270°.
         </p>
       ) : null}
 
