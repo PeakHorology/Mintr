@@ -5,6 +5,8 @@ import { DEFAULT_LIGHT_VIEWPORT_BACKGROUND } from "@/lib/uiTheme";
 
 export const DEFAULT_SNAP_GRID: GridSize = "1.0 mm";
 export const GLOBAL_WORKSPACE_DEFAULT_STORAGE_KEY = "peakcad:workspaceDefault";
+/** This computer's PeakCAD Pro choice. It is not stored per project. */
+export const PEAKCAD_PRO_STORAGE_KEY = "peakcad:pro";
 
 export type WorkspaceDefaultsBundle = {
   workspace: WorkplaneWorkspaceSettings;
@@ -26,9 +28,10 @@ export const DEFAULT_WORKPLANE_WORKSPACE: WorkplaneWorkspaceSettings = {
   scale: "1:1 (millimeters)",
   accuracy: 2,
   displayQuality: DEFAULT_DISPLAY_QUALITY,
+  peakcadPro: false,
 };
 
-const snapGridOptions: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
+const snapGridOptions: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
 
 function numberOrDefault(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -72,7 +75,58 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
     scale: normalizeScaleForUnits(units, stringOrDefault(candidate.scale, fallback.scale)),
     accuracy: accuracyOrDefault(candidate.accuracy, fallback.accuracy),
     displayQuality: displayQualityOrDefault(candidate.displayQuality, fallback.displayQuality),
+    peakcadPro: resolvePeakcadPro(candidate.peakcadPro, fallback.peakcadPro),
   };
+}
+
+/**
+ * PeakCAD Pro follows the person, not the file. In the browser the saved
+ * computer-wide choice wins over whatever a project document says.
+ */
+function resolvePeakcadPro(candidate: unknown, fallback: boolean) {
+  if (typeof window === "undefined") {
+    return booleanOrDefault(candidate, fallback);
+  }
+  return loadPeakcadPro();
+}
+
+/** True when the user has opted into advanced modeling tools. */
+export function peakcadProEnabled(settings: Pick<WorkplaneWorkspaceSettings, "peakcadPro"> | null | undefined) {
+  if (typeof window !== "undefined") return loadPeakcadPro();
+  return settings?.peakcadPro === true;
+}
+
+export function loadPeakcadPro(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const stored = window.localStorage.getItem(PEAKCAD_PRO_STORAGE_KEY);
+    if (stored === "1" || stored === "0") return stored === "1";
+    const migrated = migratedPeakcadPro();
+    savePeakcadPro(migrated);
+    return migrated;
+  } catch {
+    return false;
+  }
+}
+
+export function savePeakcadPro(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PEAKCAD_PRO_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {
+    // The choice still applies in memory for this session.
+  }
+}
+
+function migratedPeakcadPro() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(GLOBAL_WORKSPACE_DEFAULT_STORAGE_KEY) ?? "null") as {
+      workspace?: { peakcadPro?: unknown };
+    } | null;
+    return parsed?.workspace?.peakcadPro === true;
+  } catch {
+    return false;
+  }
 }
 
 export function workplaneSettingsFingerprint(workspace: WorkplaneWorkspaceSettings, snapGrid: GridSize) {
@@ -103,6 +157,7 @@ export function loadGlobalWorkspaceDefaults(): WorkspaceDefaultsBundle {
 export function saveGlobalWorkspaceDefaults(workspace: WorkplaneWorkspaceSettings, snap: GridSize) {
   if (typeof window === "undefined") return;
   try {
+    if (typeof workspace.peakcadPro === "boolean") savePeakcadPro(workspace.peakcadPro);
     const bundle: WorkspaceDefaultsBundle = {
       workspace: normalizeWorkspaceSettings(workspace),
       snap: normalizeSnapGrid(snap, DEFAULT_SNAP_GRID),

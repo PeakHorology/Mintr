@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import {
   resolveHollowCylinderSegments,
@@ -369,41 +370,204 @@ export function createBooleanHollowCylinderGeometry(width: number, height: numbe
   return geometry;
 }
 
-export function createBooleanTextGeometry(shape: WorkplaneShape) {
+const TEXT_LAYOUT_SIZE = 20;
+const textLayoutCache = new Map<string, { laidWidth: number; inkHeight: number }>();
+
+function layoutTextGlyphs(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">, extrusion: number) {
   const text = (shape.text ?? "TEXT").trim() || " ";
   const bevel = clampNumber(shape.bevel ?? 0, 0, 8);
   const fontName = shape.font ?? DEFAULT_TEXT_FONT;
-  const geometry = new TextGeometry(text, {
-    font: resolveTextFont(fontName),
-    size: 20,
-    depth: shape.height,
-    curveSegments: textFontCurveSegments(fontName),
-    bevelEnabled: bevel > 0,
-    bevelThickness: bevel * 0.22,
-    bevelSize: bevel * 0.16,
-    bevelSegments: Math.max(1, shape.segments ?? 0),
+  const font = resolveTextFont(fontName);
+  const curveSegments = textFontCurveSegments(fontName);
+  const glyphs = font.data.glyphs as Record<string, { ha?: number; o?: string } | undefined>;
+  const layoutScale = TEXT_LAYOUT_SIZE / font.data.resolution;
+  const chars = Array.from(text);
+  const pieces: { geometry: THREE.BufferGeometry; center: number }[] = [];
+  let cursor = 0;
+  let inkHeight = 1;
+
+  chars.forEach((char) => {
+    const glyph = glyphs[char] ?? glyphs["?"];
+    const advance = (glyph?.ha ?? font.data.resolution) * layoutScale;
+    if (char !== " " && glyph?.o) {
+      const geometry = new TextGeometry(char, {
+        font,
+        size: TEXT_LAYOUT_SIZE,
+        depth: extrusion,
+        curveSegments,
+        bevelEnabled: bevel > 0,
+        bevelThickness: bevel * 0.22,
+        bevelSize: bevel * 0.16,
+        bevelSegments: Math.max(1, shape.segments ?? 0),
+      });
+      geometry.computeBoundingBox();
+      const box = geometry.boundingBox;
+      if (box && geometry.getAttribute("position")?.count) {
+        inkHeight = Math.max(inkHeight, box.max.y - box.min.y);
+        pieces.push({ geometry, center: cursor + (box.min.x + box.max.x) / 2 });
+      } else {
+        geometry.dispose();
+      }
+    }
+    cursor += advance;
   });
+
+  return { laidWidth: Math.max(1, cursor), inkHeight, pieces };
+}
+
+/** Advance width and cap height of the text, in the same units the mesh is fitted with. */
+export function textLayoutMetrics(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">) {
+  const bevel = clampNumber(shape.bevel ?? 0, 0, 8);
+  const key = `${shape.font ?? DEFAULT_TEXT_FONT}|${bevel}|${shape.segments ?? 0}|${(shape.text ?? "TEXT").trim() || " "}`;
+  const cached = textLayoutCache.get(key);
+  if (cached) return cached;
+  const layout = layoutTextGlyphs(shape, 1);
+  layout.pieces.forEach((piece) => piece.geometry.dispose());
+  const metrics = { laidWidth: layout.laidWidth, inkHeight: layout.inkHeight };
+  textLayoutCache.set(key, metrics);
+  return metrics;
+}
+
+function roundTextSize(value: number) {
+  return Math.max(0.01, Number(value.toFixed(3)));
+}
+
+/** Letter height that fills the shape when the line is `width` long. */
+export function matchedTextDepth(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">, width: number) {
+  const { laidWidth, inkHeight } = textLayoutMetrics(shape);
+  return roundTextSize((width * inkHeight) / laidWidth);
+}
+
+/** Line length that fills the shape when the letters are `depth` tall. */
+export function matchedTextWidth(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">, depth: number) {
+  const { laidWidth, inkHeight } = textLayoutMetrics(shape);
+  return roundTextSize((depth * laidWidth) / Math.max(0.001, inkHeight));
+}
+
+/**
+ * Keep text letters undistorted. Changing the width updates the letter height
+ * so the glyphs fill the shape, and changing the letter height updates the width.
+ */
+export function withMatchedTextFootprint(shape: WorkplaneShape, patch: Partial<WorkplaneShape>): Partial<WorkplaneShape> {
+  if (shape.kind !== "text") return patch;
+  const next = { ...shape, ...patch };
+  const previousWidth = shapeWidth(shape);
+  const previousDepth = shapeDepth(shape);
+  const nextWidth = shapeWidth(next);
+  const nextDepth = shapeDepth(next);
+  const contentChanged = patch.text !== undefined || patch.font !== undefined || patch.bevel !== undefined;
+  const widthMoved = Math.abs(nextWidth - previousWidth) > 1e-4 || contentChanged;
+  const depthMoved = Math.abs(nextDepth - previousDepth) > 1e-4;
+  if (!widthMoved && !depthMoved) return patch;
+
+  const widthScale = nextWidth / Math.max(0.001, previousWidth);
+  const depthScale = nextDepth / Math.max(0.001, previousDepth);
+  const driveFromWidth = !depthMoved || (widthMoved && Math.abs(widthScale - 1) >= Math.abs(depthScale - 1));
+  const width = driveFromWidth ? nextWidth : matchedTextWidth(next, nextDepth);
+  const depth = driveFromWidth ? matchedTextDepth(next, width) : nextDepth;
+  return {
+    ...patch,
+    width,
+    depth,
+    size: roundTextSize(Math.max(width, depth)),
+  };
+}
+
+export function createBooleanTextGeometry(shape: WorkplaneShape) {
+  const { laidWidth, inkHeight, pieces } = layoutTextGlyphs(shape, shape.height);
+
+  if (!pieces.length) {
+    const blank = new THREE.BufferGeometry();
+    blank.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3));
+    return blank;
+  }
+
+  const fit = Math.min(shapeWidth(shape) / laidWidth, shapeDepth(shape) / inkHeight);
+  const textWidth = laidWidth * fit;
+  const mid = laidWidth / 2;
+  const upDown = shape.textCircumference ?? 0;
+  const wrap = shape.textWrap ?? 0;
+
+  const geometries = pieces.map((piece) => {
+    const geometry = piece.geometry;
+    geometry.scale(fit, fit, 1);
+    layTextFaceUp(geometry);
+    poseGlyph(geometry, (piece.center - mid) * fit, textWidth, upDown, wrap);
+    return geometry;
+  });
+
+  const merged = geometries.length === 1 ? geometries[0] : mergeGeometries(geometries, false);
+  if (!merged) return geometries[0];
+  if (merged !== geometries[0]) {
+    geometries.forEach((geometry) => geometry.dispose());
+  }
+  seatGeometry(merged, { centerX: true, minY: true, centerZ: true });
+  merged.computeVertexNormals();
+  return merged;
+}
+
+/** Lay one extruded glyph face-up, centered, with its back on the workplane. */
+function layTextFaceUp(geometry: THREE.BufferGeometry) {
+  geometry.rotateX(-Math.PI / 2);
+  seatGeometry(geometry, { centerX: true, minY: true, centerZ: true });
+}
+
+function seatGeometry(
+  geometry: THREE.BufferGeometry,
+  mode: { centerX?: boolean; minY?: boolean; centerZ?: boolean; minZ?: boolean },
+) {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (!box) return;
+  geometry.translate(
+    mode.centerX ? -(box.min.x + box.max.x) / 2 : 0,
+    mode.minY ? -box.min.y : 0,
+    mode.minZ ? -box.min.z : mode.centerZ ? -(box.min.z + box.max.z) / 2 : 0,
+  );
+}
+
+/**
+ * Move a whole letter onto the curve. Vertices stay rigid, so strokes do not stretch.
+ * Up/down bows the line across the page. Letters stay face-up and yaw to follow it.
+ * In/out bends a rod run through the letters, so they turn with the rod as it wraps.
+ */
+function poseGlyph(
+  geometry: THREE.BufferGeometry,
+  along: number,
+  textWidth: number,
+  upDown: number,
+  wrap: number,
+) {
+  const upTurn = Math.min(100, Math.abs(upDown)) / 100;
+  const wrapTurn = Math.min(100, Math.abs(wrap)) / 100;
+  const upInward = upDown > 0;
+  const wrapInward = wrap > 0;
+  const upRadius = upTurn > 0 ? textWidth / (upTurn * Math.PI * 2) : 0;
+  const wrapRadius = wrapTurn > 0 ? textWidth / (wrapTurn * Math.PI * 2) : 0;
+  const upAngle = upRadius ? along / upRadius : 0;
+  const wrapAngle = wrapRadius ? along / wrapRadius : 0;
 
   geometry.computeBoundingBox();
   const box = geometry.boundingBox;
-  if (box) {
-    const textWidth = Math.max(1, box.max.x - box.min.x);
-    const textDepth = Math.max(1, box.max.y - box.min.y);
-    const scale = Math.min(shapeWidth(shape) / textWidth, shapeDepth(shape) / textDepth);
-    geometry.scale(scale, scale, 1);
-  }
+  const pivotY = box ? (box.min.y + box.max.y) / 2 : 0;
+  let x = along;
+  let y = 0;
+  let z = 0;
 
-  geometry.rotateX(-Math.PI / 2);
-  geometry.computeBoundingBox();
-  const rotatedBox = geometry.boundingBox;
-  if (rotatedBox) {
-    geometry.translate(
-      -(rotatedBox.min.x + rotatedBox.max.x) / 2,
-      -rotatedBox.min.y,
-      -(rotatedBox.min.z + rotatedBox.max.z) / 2,
-    );
+  if (upTurn > 0) {
+    geometry.rotateY(upInward ? -upAngle : upAngle);
+    x = Math.sin(upAngle) * upRadius;
+    z = upInward ? upRadius * (1 - Math.cos(upAngle)) : upRadius * (Math.cos(upAngle) - 1);
   }
-  return geometry;
+  if (wrapTurn > 0) {
+    const bend = wrapInward ? wrapAngle : -wrapAngle;
+    geometry.translate(0, -pivotY, 0);
+    geometry.rotateZ(bend);
+    geometry.translate(0, pivotY, 0);
+    x = Math.sin(wrapAngle) * wrapRadius;
+    y = wrapInward ? wrapRadius * (1 - Math.cos(wrapAngle)) : wrapRadius * (Math.cos(wrapAngle) - 1);
+  }
+  geometry.translate(x, y, z);
 }
 
 export function geometryMeshForShape(shape: WorkplaneShape): MeshData | null {

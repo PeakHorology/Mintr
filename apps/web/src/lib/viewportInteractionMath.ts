@@ -47,9 +47,6 @@ export function snapStep(size: GridSize) {
   if (size === "Off") {
     return 0;
   }
-  if (size === "Brick") {
-    return 8;
-  }
   return Number.parseFloat(size) || 1;
 }
 
@@ -283,6 +280,8 @@ export function rulerShapeTopologyKey(shape: WorkplaneShape): string {
     rightAngle: shape.rightAngle,
     text: shape.text,
     font: shape.font,
+    textCircumference: shape.textCircumference,
+    textWrap: shape.textWrap,
     mesh: [positions.length, positionSample],
     brep: [brep.length, brepSample],
     treatments: shape.edgeTreatments,

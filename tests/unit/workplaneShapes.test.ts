@@ -283,6 +283,39 @@ describe("workplane shape helpers", () => {
     expect(scaled.topRadius).toBeCloseTo(40, 5);
   });
 
+  it("keeps a typed cone length and scales the base radius with it", () => {
+    const cone = shape({
+      kind: "cone",
+      width: 20,
+      depth: 20,
+      size: 20,
+      height: 20,
+      baseRadius: 10,
+      topRadius: 0,
+    });
+    const patched = canonicalizeShape({ ...cone, ...conePatchForFootprint(cone, cone.width ?? 20, 63) });
+    expect(patched.depth).toBeCloseTo(63, 5);
+    expect(patched.width).toBeCloseTo(20, 5);
+    expect(patched.baseRadius).toBeCloseTo(31.5, 5);
+    expect(patched.topRadius).toBeCloseTo(0, 5);
+  });
+
+  it("grows a cone footprint only when the ring fits on neither axis", () => {
+    const cone = shape({
+      kind: "cone",
+      width: 20,
+      depth: 20,
+      size: 20,
+      height: 20,
+      baseRadius: 40,
+      topRadius: 0,
+    });
+    const patched = canonicalizeShape(cone);
+    expect(patched.width).toBeCloseTo(80, 5);
+    expect(patched.depth).toBeCloseTo(80, 5);
+    expect(patched.baseRadius).toBe(40);
+  });
+
   it("scales cone radii from a single-axis footprint edit", () => {
     const cone = shape({
       kind: "cone",

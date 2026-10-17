@@ -141,12 +141,14 @@ export function dispatchSketchForgeMcpCommand({
   action,
   params = {},
   timeoutMs = 15000,
+  clientName,
 }: {
   editorId?: string;
   editorNumber?: number;
   action: SketchForgeMcpCommandName;
   params?: Record<string, unknown>;
   timeoutMs?: number;
+  clientName?: string;
 }) {
   prune();
   const state = store();
@@ -157,7 +159,15 @@ export function dispatchSketchForgeMcpCommand({
     return Promise.resolve({
       commandId: "",
       ok: false,
-      error: typeof editorNumber === "number" ? `No open SketchForge editor ${editorNumber}` : "No matching open SketchForge editor",
+      error: typeof editorNumber === "number" ? `No open PeakCAD project ${editorNumber}` : "No open PeakCAD project",
+      completedAt: Date.now(),
+    } satisfies SketchForgeMcpCommandResult);
+  }
+  if (editor.modelsEnabled === false) {
+    return Promise.resolve({
+      commandId: "",
+      ok: false,
+      error: "Models are turned off in PeakCAD Settings",
       completedAt: Date.now(),
     } satisfies SketchForgeMcpCommandResult);
   }
@@ -166,6 +176,7 @@ export function dispatchSketchForgeMcpCommand({
     id: createCommandId(),
     action,
     params,
+    clientName,
     createdAt: Date.now(),
   };
   const queue = state.queues.get(editor.editorId) ?? [];
@@ -181,7 +192,7 @@ export function dispatchSketchForgeMcpCommand({
         error: `Timed out waiting for SketchForge editor ${editor.editorNumber}`,
         completedAt: Date.now(),
       });
-    }, Math.max(1000, Math.min(timeoutMs, 60000)));
+    }, Math.max(1000, Math.min(timeoutMs, 180000)));
     state.pending.set(command.id, { editorId: editor.editorId, resolve, timer });
   });
 }

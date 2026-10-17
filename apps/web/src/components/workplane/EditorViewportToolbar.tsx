@@ -51,8 +51,10 @@ type ToolSection = {
   tools: ToolDef[];
 };
 
-const TOOL_SLOT_PX = 38;
-const MORE_SLOT_PX = 38;
+const ICON_PX = 32;
+const SECTION_CHROME_PX = 8;
+const SECTION_GAP_PX = 6;
+const MORE_SLOT_PX = 32;
 
 /** Live hotkey bindings so toolbar tooltips reflect any user remaps. */
 function useHotkeyBindings(): HotkeyBindings {
@@ -110,26 +112,70 @@ function ToolbarButton({ tool }: { tool: ToolDef }) {
   );
 }
 
-function pickVisibleLabels(tools: ToolDef[], availablePx: number): string[] {
+function sectionLabelWidth(host: HTMLElement, title: string): number {
+  const probe = document.createElement("div");
+  probe.className = "toolbar-section-label";
+  probe.textContent = title;
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.pointerEvents = "none";
+  probe.style.width = "max-content";
+  probe.style.flex = "none";
+  host.appendChild(probe);
+  const width = Math.ceil(probe.getBoundingClientRect().width) + 2;
+  probe.remove();
+  return width;
+}
+
+function clusterWidth(sections: ToolSection[], visible: Set<string>, labelWidth: (title: string) => number, includeMore: boolean): number {
+  let width = 0;
+  let groups = 0;
+  let shown = 0;
+  let total = 0;
+  for (const section of sections) {
+    total += section.tools.length;
+    const count = section.tools.filter((tool) => visible.has(tool.label)).length;
+    shown += count;
+    if (count === 0) continue;
+    const icons = SECTION_CHROME_PX + count * ICON_PX;
+    width += Math.max(icons, labelWidth(section.title));
+    groups += 1;
+  }
+  if (groups > 1) width += (groups - 1) * SECTION_GAP_PX;
+  if (includeMore && shown < total) width += (groups > 0 ? SECTION_GAP_PX : 0) + MORE_SLOT_PX;
+  return width;
+}
+
+/** Room left in the toolbar column after the logo, file, and settings groups. */
+function availableClusterWidth(host: HTMLElement): number {
+  const column = host.closest(".editor-top-bar-left, .editor-top-bar-right");
+  if (!(column instanceof HTMLElement)) return host.clientWidth;
+  const style = getComputedStyle(column);
+  const gap = Number.parseFloat(style.columnGap || style.gap) || 0;
+  let used = 0;
+  for (const child of Array.from(column.children)) {
+    if (!(child instanceof HTMLElement) || child === host || child.contains(host)) continue;
+    used += child.getBoundingClientRect().width;
+  }
+  const gapCount = Math.max(0, column.children.length - 1);
+  return Math.max(0, column.clientWidth - used - gap * gapCount);
+}
+
+function pickVisibleLabels(sections: ToolSection[], availablePx: number, labelWidth: (title: string) => number): string[] {
+  const tools = sections.flatMap((section) => section.tools);
   const labels = tools.map((tool) => tool.label);
-  const allWidth = labels.length * TOOL_SLOT_PX;
-  if (allWidth <= availablePx) {
+  const all = new Set(labels);
+  if (clusterWidth(sections, all, labelWidth, false) <= availablePx) {
     return labels;
   }
-  const slots = Math.max(0, Math.floor((availablePx - MORE_SLOT_PX) / TOOL_SLOT_PX));
-  if (slots >= labels.length) {
-    return labels;
+  const visible = new Set(labels);
+  for (let index = labels.length - 1; index >= 0; index -= 1) {
+    if (clusterWidth(sections, visible, labelWidth, true) <= availablePx) break;
+    if (tools[index]?.active) continue;
+    visible.delete(labels[index]);
   }
-  const visible = new Set(labels.slice(0, slots));
-  for (const tool of tools) {
-    if (!tool.active || visible.has(tool.label)) {
-      continue;
-    }
-    const victim = [...visible].reverse().find((label) => !tools.find((candidate) => candidate.label === label)?.active);
-    if (victim) {
-      visible.delete(victim);
-      visible.add(tool.label);
-    }
+  for (let index = labels.length - 1; index >= 0 && clusterWidth(sections, visible, labelWidth, true) > availablePx; index -= 1) {
+    visible.delete(labels[index]);
   }
   return labels.filter((label) => visible.has(label));
 }
@@ -155,11 +201,15 @@ function OverflowToolRow({
       return;
     }
     const measure = () => {
-      setVisibleLabels(pickVisibleLabels(tools, host.clientWidth));
+      const labelWidth = (title: string) => sectionLabelWidth(host, title);
+      const next = pickVisibleLabels(sections, availableClusterWidth(host), labelWidth);
+      setVisibleLabels((current) => (current.length === next.length && current.every((label, index) => label === next[index]) ? current : next));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(host);
+    const column = host.closest(".editor-top-bar-left, .editor-top-bar-right");
+    if (column instanceof HTMLElement && column !== host) observer.observe(column);
     return () => observer.disconnect();
     // tools is rebuilt each render; fingerprint captures layout-relevant changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -7,23 +7,23 @@ description: Control a live local SketchForge editor through its MCP server. Use
 
 ## Quick Start
 
-Use this skill only with a local SketchForge app running in development mode.
+Use this skill with PeakCAD open on this computer. The desktop app listens on localhost. A checkout can also use `npm run dev`.
 
-1. Start SketchForge from the repo:
+1. Open a project in PeakCAD. Settings → Models must be on.
+
+2. Start the MCP server. Installed PeakCAD:
 
 ```bash
-npm run dev
+PeakCAD.exe --mcp
 ```
 
-2. Open an editor tab at `http://localhost:3000/?editor=1`.
-
-3. Configure your MCP client to start the stdio server:
+From a checkout:
 
 ```bash
 node scripts/sketchforge-mcp-server.mjs
 ```
 
-The MCP server talks to the app through `/api/sketchforge-mcp`. Open editor tabs heartbeat into that route and receive commands from it. The packaged desktop app and static export intentionally return 404 for the MCP route.
+The server talks to the open project. Changing the design asks the user to allow it. Tool names start with `peakcad_`. The older `sketchforge_` names still work.
 
 ## Client Compatibility
 
@@ -59,7 +59,10 @@ Useful tools:
 - `sketchforge_import_mesh`: import STL-style mesh data into the editor.
 - `sketchforge_update_object`: set exact dimensions, position, color, name, hole state, and `rotation`/`rotationX`/`rotationZ`.
 - `sketchforge_align_objects`: align two or more ids using the same logic as the editor Alignment button.
-- `sketchforge_group_objects`: group selected ids using the normal SketchForge group/boolean path.
+- `peakcad_group_objects`: fuse ids into one solid. `peakcad_tie_objects` keeps them separate and moves them together. `peakcad_ungroup_objects` unwraps one level.
+- `peakcad_intersect_objects`, `peakcad_mirror_objects`, `peakcad_circular_pattern`, and `peakcad_linear_pattern` use the same editor actions.
+- `peakcad_duplicate_objects`, `peakcad_hide_objects`, `peakcad_drop_objects`, `peakcad_undo`, and `peakcad_redo`.
+- `peakcad_sketch` draws rectangle, circle, polygon, slot, arc, line, and the other sketch tools, then extrudes or revolves. Pass `hostShapeId` to sketch on a face. `peakcad_set_sketch_dimension` changes a dimension on a sketch that already exists.
 - `sketchforge_boolean_cut`: pass `solidIds` and `holeIds`; the result replaces the operands.
 - `sketchforge_ungroup_objects`: restore grouped children while preserving edited child geometry.
 - `sketchforge_separate_parts`: split disconnected parts in one object.
@@ -89,4 +92,4 @@ Do not rely only on numeric scene data when the user asked for a physical object
 
 ## Safety
 
-This bridge is local-development only. If a command fails, call `sketchforge_inspect_errors` before retrying. For geometry operations that can be expensive, set a larger `timeoutMs` on the tool call.
+The bridge stays on this computer. If a command fails, call `peakcad_inspect_errors` before retrying. For geometry operations that can be expensive, set a larger `timeoutMs` on the tool call.

@@ -12,6 +12,21 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.0.5",
+    items: [
+      "Export can open the part in the slicer on this computer. OrcaSlicer, Bambu Studio, PrusaSlicer, and SuperSlicer receive a 3MF. Cura receives an STL.",
+      "Download 3MF stays available, and Settings can point Export at a different slicer.",
+      "X-ray view cuts the picture along X, Y, or Z so you can look inside. The part stays whole, and exports are unchanged.",
+      "The project name sits in the center of the toolbar. Geometry and Sketch hang underneath it, and Import and Export open under their own buttons.",
+      "Tools stay on the toolbar until the window is tight. Extra tools move into More, which stays on the screen.",
+      "PeakCAD Pro is a switch for this computer. Sketch constraints stay off until you turn it on.",
+      "Text can bow up and down, or in and out, and the letters stay face-up.",
+      "A cone keeps the length you type, and the base follows that length.",
+      "Brick is no longer a snap-grid size.",
+      "A model can connect to the open project from the desktop app.",
+    ],
+  },
+  {
     version: "1.0.4",
     items: [
       "PeakCAD can tell you when a new version is ready.",

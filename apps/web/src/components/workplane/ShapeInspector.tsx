@@ -65,7 +65,7 @@ function threadRoleLabel(role: string | undefined, style: string | undefined, pa
   return "Rod";
 }
 
-const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
+const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
 const MIN_SHAPE_SIZE = 0.01;
 const SOLID_COLORS = [
   "#d41721",
@@ -104,6 +104,9 @@ type RangePropertyConfig = {
   min: number;
   max: number;
   step?: number;
+  hint?: string;
+  /** Draw a center mark and snap the thumb to 0. */
+  centerDetent?: boolean;
   onChange: (value: number) => void;
 };
 
@@ -523,6 +526,26 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
       },
       { type: "select", label: "Font", value: shape.font ?? DEFAULT_TEXT_FONT, options: [...TEXT_FONT_OPTIONS], onChange: (font) => onUpdate({ font }) },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 40, onChange: setHeight },
+      {
+        label: "Up/Down",
+        value: shape.textCircumference ?? 0,
+        min: -100,
+        max: 100,
+        step: 1,
+        centerDetent: true,
+        hint: "Bows the line up and down. Letters stay face-up and follow the curve. 0 is flat, 100 is a full circle. Left bows outward, right bows inward.",
+        onChange: (textCircumference) => onUpdate({ textCircumference: textCircumference === 0 ? undefined : textCircumference }),
+      },
+      {
+        label: "In/Out",
+        value: shape.textWrap ?? 0,
+        min: -100,
+        max: 100,
+        step: 1,
+        centerDetent: true,
+        hint: "Bends a rod through the letters so the line wraps in and out. Letters stay rigid and turn with the rod. 0 is flat, 100 is a full circle. Left bows outward, right bows inward.",
+        onChange: (textWrap) => onUpdate({ textWrap: textWrap === 0 ? undefined : textWrap }),
+      },
       { label: "Bevel", value: shape.bevel ?? 0, min: 0, max: 8, onChange: (bevel) => onUpdate({ bevel }) },
       { label: "Segments", value: shape.segments ?? 0, min: 0, max: 24, step: 1, onChange: (segments) => onUpdate({ segments: Math.round(segments) }) },
     ];
@@ -1100,6 +1123,8 @@ function RangeProperty({
   min,
   max,
   step = 0.01,
+  hint,
+  centerDetent,
   workspace,
   disabled,
   onChange,
@@ -1125,17 +1150,21 @@ function RangeProperty({
     }
   }, [accuracy, controlStep, controlValue, editing]);
   const toModelValue = (nextValue: number) => isLength ? displayToMillimeters(nextValue, workspace) : nextValue;
+  const withCenterDetent = (nextValue: number) => {
+    const bounded = allowsAboveSliderMax ? Math.max(min, nextValue) : clamp(nextValue, min, max);
+    return centerDetent && Math.abs(bounded) <= 3 ? 0 : bounded;
+  };
   const commitDraft = () => {
     const next = Number(draft);
     const finiteNext = Number.isFinite(next) ? next : controlValue;
-    const nextModelValue = toModelValue(finiteNext);
-    onChange(allowsAboveSliderMax ? Math.max(min, nextModelValue) : clamp(nextModelValue, min, max));
+    onChange(withCenterDetent(toModelValue(finiteNext)));
     setEditing(false);
   };
   const handleSliderChange = (nextValue: number) => {
     const next = clamp(Number.isFinite(nextValue) ? nextValue : controlMin, controlMin, controlMax);
-    onChange(clamp(toModelValue(next), min, max));
-    setDraft(formatPropertyNumber(next, accuracy, controlStep));
+    const modelValue = withCenterDetent(toModelValue(next));
+    onChange(modelValue);
+    setDraft(formatPropertyNumber(isLength ? millimetersToDisplay(modelValue, workspace) : modelValue, accuracy, controlStep));
   };
   return (
     <label className="range-property" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
@@ -1169,7 +1198,7 @@ function RangeProperty({
           {unit ? <span className="range-value-unit">{unit}</span> : null}
         </span>
       </span>
-      <div className="range-control">
+      <div className={`range-control${centerDetent ? " has-center-index" : ""}`}>
         <input
           type="range"
           min={controlMin}
@@ -1183,6 +1212,7 @@ function RangeProperty({
           onChange={(event) => handleSliderChange(Number(event.currentTarget.value))}
         />
       </div>
+      {hint ? <span className="range-property-hint">{hint}</span> : null}
     </label>
   );
 }

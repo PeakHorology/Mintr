@@ -212,29 +212,10 @@ export function EditorTopBar({
             {logo}
           </div>
         )}
-        <span className="editor-top-bar-wordmark">PeakCAD</span>
-        <div className="editor-top-bar-divider" aria-hidden="true" />
-        <EditorProjectTitle
-          projectName={projectName ?? DEFAULT_PROJECT_NAME}
-          onProjectNameChange={onProjectNameChange}
-        />
-      </div>
-
-      <div className="editor-top-bar-tools">
-        <div className="toolbar-overflow">
-          <div className="toolbar-overflow-left">{leftTools}</div>
-          <div className="toolbar-overflow-center">
-            <EditorModeTabs toolbarMode={toolbarMode} onToolbarModeChange={onToolbarModeChange} />
-          </div>
-          <div className="toolbar-overflow-right">{rightTools}</div>
-        </div>
-      </div>
-
-      <div className="editor-top-bar-right">
         <div className="editor-file-group" aria-label="File">
           <div className="toolbar-section-label">File</div>
           <div className="toolbar-section-tools">
-            <PeakTipButton className="editor-file-action" label="Import" description={TOOL_DESCRIPTIONS.import} onClick={onImport}>
+            <PeakTipButton className="editor-file-action" label="Import" description={TOOL_DESCRIPTIONS.import} data-toolbar-tool="Import" onClick={onImport}>
               Import
             </PeakTipButton>
             {hasMatchingSavedFile && onSaveProject ? (
@@ -247,11 +228,27 @@ export function EditorTopBar({
                 Save as
               </PeakTipButton>
             ) : null}
-            <PeakTipButton className="editor-file-action" label="Export" description={TOOL_DESCRIPTIONS.export} onClick={onExport}>
+            <PeakTipButton className="editor-file-action" label="Export" description={TOOL_DESCRIPTIONS.export} data-toolbar-tool="Export" onClick={onExport}>
               Export
             </PeakTipButton>
           </div>
         </div>
+        {leftTools ? <div className="editor-top-bar-tools editor-top-bar-tools--edit">{leftTools}</div> : null}
+      </div>
+
+      <div className="editor-top-bar-title">
+        <EditorProjectTitle
+          projectName={projectName ?? DEFAULT_PROJECT_NAME}
+          onProjectNameChange={onProjectNameChange}
+        />
+      </div>
+
+      <div className="editor-mode-notch">
+        <EditorModeTabs toolbarMode={toolbarMode} onToolbarModeChange={onToolbarModeChange} />
+      </div>
+
+      <div className="editor-top-bar-right">
+        {rightTools ? <div className="editor-top-bar-tools editor-top-bar-tools--modify">{rightTools}</div> : null}
         <div className="editor-file-group" aria-label="Settings">
           <div className="toolbar-section-label">Settings</div>
           <div className="toolbar-section-tools">

@@ -479,3 +479,93 @@ export const DEFAULT_SKETCH_POLYGON_SIDES = 6;
 export const MIN_SKETCH_POLYGON_SIDES = 3;
 export const MAX_SKETCH_POLYGON_SIDES = 16;
 export const DEFAULT_SKETCH_STAR_POINTS = 5;
+
+/** Open chain, or a closed loop when `closed` is set and there are at least three points. */
+export function polylineSketchGeometry(
+  points: Array<{ x: number; z: number }>,
+  closed = false,
+): Pick<SketchProfile, "points" | "segments"> | null {
+  if (points.length < 2) return null;
+  if (closed && points.length >= 3) return closedLineRing(points);
+  const ids = points.map(() => createLocalId("sketch-point"));
+  return {
+    points: points.map((point, index) => ({ id: ids[index], x: point.x, z: point.z, mode: "corner" as const })),
+    segments: ids.slice(0, -1).map((startId, index) => ({
+      id: createLocalId("sketch-segment"),
+      startId,
+      endId: ids[index + 1],
+      kind: "line" as const,
+    })),
+  };
+}
+
+function sketchNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function sketchPoint(value: unknown, fallbackX = 0, fallbackZ = 0) {
+  if (value && typeof value === "object" && "x" in value && "z" in value) {
+    const point = value as { x: unknown; z: unknown };
+    return { x: sketchNumber(point.x, fallbackX), z: sketchNumber(point.z, fallbackZ) };
+  }
+  return { x: fallbackX, z: fallbackZ };
+}
+
+function cornerBox(spec: Record<string, unknown>) {
+  const x = sketchNumber(spec.x);
+  const z = sketchNumber(spec.z);
+  const width = Math.abs(sketchNumber(spec.width ?? spec.size, 20));
+  const depth = Math.abs(sketchNumber(spec.depth ?? spec.width ?? spec.size, width));
+  return {
+    origin: { x: x - width / 2, z: z - depth / 2 },
+    corner: { x: x + width / 2, z: z + depth / 2 },
+  };
+}
+
+/** One sketch-tool profile, in sketch coordinates (x across, z back). */
+export function geometryForSketchPart(spec: Record<string, unknown>): Pick<SketchProfile, "points" | "segments"> | null {
+  const kind = typeof spec.kind === "string" ? spec.kind : "";
+  const center = { x: sketchNumber(spec.x), z: sketchNumber(spec.z) };
+  if (kind === "circle") {
+    const radius = sketchNumber(spec.radius ?? spec.size, 0);
+    if (radius < 0.25) return null;
+    return circleSketchGeometry(center, radius);
+  }
+  if (kind === "rectangle" || kind === "square" || kind === "roundedRect" || kind === "slot" || kind === "ellipse") {
+    const box = cornerBox(spec);
+    if (kind === "square") return squareSketchGeometry(box.origin, box.corner);
+    if (kind === "roundedRect") return roundedRectangleSketchGeometry(box.origin, box.corner);
+    if (kind === "slot") return slotSketchGeometry(box.origin, box.corner);
+    if (kind === "ellipse") return ellipseSketchGeometry(box.origin, box.corner);
+    return rectangleSketchGeometry(box.origin, box.corner);
+  }
+  if (kind === "polygon" || kind === "triangle") {
+    const radius = sketchNumber(spec.radius ?? spec.size, 10);
+    const sides = kind === "triangle" ? 3 : sketchNumber(spec.sides, 6);
+    return regularPolygonSketchGeometry(center, { x: center.x + radius, z: center.z }, sides);
+  }
+  if (kind === "star") {
+    const radius = sketchNumber(spec.radius ?? spec.size, 10);
+    return starSketchGeometry(center, { x: center.x + radius, z: center.z }, sketchNumber(spec.sides, 5));
+  }
+  if (kind === "arc") {
+    return arcSketchGeometry(
+      sketchPoint(spec.start),
+      sketchPoint(spec.end, 10, 0),
+      sketchPoint(spec.through, 5, 5),
+    );
+  }
+  if (kind === "line" || kind === "polyline") {
+    const points = Array.isArray(spec.points) ? spec.points.map((point) => sketchPoint(point)) : [];
+    return polylineSketchGeometry(points, spec.closed === true);
+  }
+  return null;
+}
+
+export function composeSketchProfile(parts: Array<Pick<SketchProfile, "points" | "segments">>): SketchProfile {
+  return {
+    points: parts.flatMap((part) => part.points),
+    segments: parts.flatMap((part) => part.segments),
+    images: [],
+  };
+}

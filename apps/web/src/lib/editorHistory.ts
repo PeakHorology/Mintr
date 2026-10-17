@@ -90,6 +90,8 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     rightAngle: shape.rightAngle,
     text: shape.text,
     font: shape.font,
+    textCircumference: shape.textCircumference,
+    textWrap: shape.textWrap,
     locked: shape.locked || undefined,
     hidden: shape.hidden || undefined,
     construction: shape.construction || undefined,

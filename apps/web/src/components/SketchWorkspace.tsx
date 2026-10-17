@@ -143,7 +143,6 @@ type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 function snapStep(size: GridSize) {
   if (size === "Off") return 0;
-  if (size === "Brick") return 8;
   return Number.parseFloat(size) || 1;
 }
 

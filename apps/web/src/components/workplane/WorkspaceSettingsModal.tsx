@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Ruler, ScrollText, X } from "lucide-react";
+import { BookOpen, Bot, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Ruler, ScrollText, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import {
@@ -22,14 +22,16 @@ import { normalizeScaleForUnits, scaleOptionsForUnits, WORKSPACE_UNIT_OPTIONS } 
 import { TOOL_DESCRIPTIONS, TOOL_INDEX, TOOL_INDEX_CATEGORIES } from "@/lib/toolDescriptions";
 import { DISPLAY_QUALITY_OPTIONS } from "@/lib/displayTessellation";
 import { HelpFeedbackForm } from "@/components/workplane/HelpFeedbackForm";
+import { ModelBridgeSettings } from "@/components/workplane/ModelBridgeSettings";
 import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
+import { SlicerSettingsFields } from "@/components/workplane/SlicerSettingsFields";
 import { loadUiTheme, setUiTheme, type UiTheme } from "@/lib/uiTheme";
-import { DEFAULT_WORKPLANE_WORKSPACE } from "@/lib/workplaneSettings";
+import { DEFAULT_WORKPLANE_WORKSPACE, savePeakcadPro } from "@/lib/workplaneSettings";
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
-type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "files" | "tools" | "hotkeys" | "updates" | "help" | "about";
+type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
 type WorkspaceSettingsContext = "project" | "app";
 type LegalDocumentId = "license" | "notices" | "offer";
 
@@ -60,7 +62,7 @@ function saveDownloadFolder(value: string) {
   }
 }
 
-const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
+const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
 const MIN_WORKSPACE_SIZE = 60;
 const MAX_WORKSPACE_SIZE = 2000;
 const MIN_GRID_BLOCK_SIZE = 1;
@@ -92,6 +94,7 @@ const SETTING_TIPS = {
   blockSize: "Custom spacing between grid lines when Grid block size is set to Custom.",
   makeDefault: "Save these settings as the default for this project.",
   makeDefaultApp: "Save these settings as the default for new projects.",
+  peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
   uiTheme: "Switch PeakCAD’s chrome between light and dark. Applies to the dashboard and editor.",
   downloadFolder: "Local folder used for exported files and downloads on this computer.",
 } as const;
@@ -306,6 +309,10 @@ export function WorkspaceSettingsModal({
               <Keyboard size={18} />
               <span>Hotkeys</span>
             </button>
+            <button className={activeSection === "models" ? "active" : ""} aria-current={activeSection === "models" ? "page" : undefined} onClick={() => setActiveSection("models")}>
+              <Bot size={18} />
+              <span>Models</span>
+            </button>
             <button className={activeSection === "updates" ? "active" : ""} aria-current={activeSection === "updates" ? "page" : undefined} onClick={() => setActiveSection("updates")}>
               <ScrollText size={18} />
               <span>Updates</span>
@@ -328,6 +335,15 @@ export function WorkspaceSettingsModal({
                     <strong>Appearance</strong>
                     <span>Adjust the canvas and navigation behavior.</span>
                   </div>
+                  <WorkspaceToggle
+                    label="PeakCAD Pro"
+                    tip={SETTING_TIPS.peakcadPro}
+                    checked={workspace.peakcadPro}
+                    onChange={(peakcadPro) => {
+                      savePeakcadPro(peakcadPro);
+                      patchWorkspace({ peakcadPro });
+                    }}
+                  />
                   <WorkspaceSelect
                     label="Theme"
                     tip={SETTING_TIPS.uiTheme}
@@ -530,6 +546,7 @@ export function WorkspaceSettingsModal({
                       aria-label="Download folder path"
                     />
                   </PeakTipLabel>
+                  <SlicerSettingsFields />
                 </>
               ) : null}
 
@@ -658,6 +675,8 @@ export function WorkspaceSettingsModal({
                   </div>
                 </>
               ) : null}
+
+              {activeSection === "models" ? <ModelBridgeSettings /> : null}
 
               {activeSection === "updates" ? (
                 <>

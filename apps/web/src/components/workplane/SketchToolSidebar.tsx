@@ -240,15 +240,37 @@ export function SketchFinishToolbar({
   );
 }
 
+const PEAKCAD_PRO_SKETCH_TOOLS = new Set<SketchTool>([
+  "dimension",
+  "constrain-h",
+  "constrain-v",
+  "constrain-equal",
+  "constrain-parallel",
+  "constrain-perp",
+  "constrain-tangent",
+  "constrain-symmetry",
+  "constrain-coincident",
+  "constrain-midpoint",
+  "constrain-fix",
+  "constrain-concentric",
+]);
+
+/** Sketch tools that stay hidden until PeakCAD Pro is on. */
+export function isPeakcadProSketchTool(tool: SketchTool) {
+  return PEAKCAD_PRO_SKETCH_TOOLS.has(tool);
+}
+
 /** Left rail while sketching: select, inspect, constrain, modify. */
 export function SketchUtilitySidebar({
   sketchTool,
   onSketchTool,
   onSketchImage,
+  proEnabled,
 }: {
   sketchTool: SketchTool;
   onSketchTool: (tool: SketchTool) => void;
   onSketchImage: () => void;
+  proEnabled: boolean;
 }) {
   return (
     <aside className="editor-tool-sidebar sketch-utility-sidebar" aria-label="Sketch utility tools">
@@ -275,6 +297,7 @@ export function SketchUtilitySidebar({
             </SketchToolButton>
           </div>
         </section>
+        {proEnabled ? (
         <section className="editor-tool-sidebar-section">
           <div className="editor-tool-sidebar-header">Inspect</div>
           <div className="editor-tool-sidebar-list">
@@ -283,6 +306,8 @@ export function SketchUtilitySidebar({
             </SketchToolButton>
           </div>
         </section>
+        ) : null}
+        {proEnabled ? (
         <section className="editor-tool-sidebar-section">
           <div className="editor-tool-sidebar-header">Constraints</div>
           <div className="editor-tool-sidebar-list">
@@ -321,6 +346,7 @@ export function SketchUtilitySidebar({
             </SketchToolButton>
           </div>
         </section>
+        ) : null}
         <section className="editor-tool-sidebar-section">
           <div className="editor-tool-sidebar-header">Modify</div>
           <div className="editor-tool-sidebar-list">

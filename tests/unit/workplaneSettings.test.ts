@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 import { formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay, normalizeScaleForUnits, scaleOptionsForUnits } from "@/lib/measurementUnits";
-import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
+import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, GLOBAL_WORKSPACE_DEFAULT_STORAGE_KEY, normalizeSnapGrid, normalizeWorkspaceSettings, PEAKCAD_PRO_STORAGE_KEY, peakcadProEnabled, savePeakcadPro, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("workplane settings helpers", () => {
   it("accepts known snap grid values and falls back for unknown values", () => {
@@ -57,6 +61,49 @@ describe("workplane settings helpers", () => {
     expect(normalizeWorkspaceSettings({ accuracy: 9 }, fallback).accuracy).toBe(fallback.accuracy);
     expect(normalizeWorkspaceSettings({}, fallback).displayQuality).toBe(fallback.displayQuality);
     expect(normalizeWorkspaceSettings({ displayQuality: "ultra" as never }, fallback).displayQuality).toBe(fallback.displayQuality);
+    expect(DEFAULT_WORKPLANE_WORKSPACE.peakcadPro).toBe(false);
+    expect(peakcadProEnabled(normalizeWorkspaceSettings({}, fallback))).toBe(false);
+    expect(peakcadProEnabled(normalizeWorkspaceSettings({ peakcadPro: true }, fallback))).toBe(true);
+    expect(normalizeWorkspaceSettings({ peakcadPro: "yes" as never }, fallback).peakcadPro).toBe(false);
+  });
+
+  it("keeps PeakCAD Pro as one choice for every project on this computer", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value); },
+        removeItem: (key: string) => { store.delete(key); },
+      },
+    });
+
+    const beginnerProject = { peakcadPro: false };
+    const proProject = { peakcadPro: true };
+    expect(normalizeWorkspaceSettings(proProject).peakcadPro).toBe(false);
+    expect(store.get(PEAKCAD_PRO_STORAGE_KEY)).toBe("0");
+
+    savePeakcadPro(true);
+    expect(normalizeWorkspaceSettings(beginnerProject).peakcadPro).toBe(true);
+    expect(peakcadProEnabled({ peakcadPro: false })).toBe(true);
+
+    savePeakcadPro(false);
+    expect(normalizeWorkspaceSettings(proProject).peakcadPro).toBe(false);
+  });
+
+  it("adopts a PeakCAD Pro choice already saved with workspace defaults", () => {
+    const store = new Map<string, string>([
+      [GLOBAL_WORKSPACE_DEFAULT_STORAGE_KEY, JSON.stringify({ workspace: { peakcadPro: true }, snap: "1.0 mm" })],
+    ]);
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value); },
+        removeItem: (key: string) => { store.delete(key); },
+      },
+    });
+
+    expect(normalizeWorkspaceSettings({ peakcadPro: false }).peakcadPro).toBe(true);
+    expect(store.get(PEAKCAD_PRO_STORAGE_KEY)).toBe("1");
   });
 
   it("keeps scale options in the selected unit family", () => {

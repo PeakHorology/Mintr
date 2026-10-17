@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { Brush, Evaluator, HOLLOW_INTERSECTION } from "three-bvh-csg";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
+import { createBooleanTextGeometry } from "@/lib/editorShapeMesh";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
 import { ShapeInspector, SnapGridControl, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
 import { ToolbarDropToWorkplaneIcon } from "@/components/icons";
@@ -38,6 +38,7 @@ import {
   type ShapeAxes,
 } from "@/lib/rulerAlignment";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
+import { XrayViewPanel } from "@/components/workplane/XrayViewPanel";
 import { WorkplaneDimensionsControl } from "@/components/workplane/WorkplaneDimensionsControl";
 import { WorkplaneEmptyCoach } from "@/components/workplane/WorkplaneEmptyCoach";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
@@ -81,7 +82,7 @@ import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBas
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
-import { xrayHeightBounds } from "@/lib/xraySection";
+import { xrayAxisBounds, xrayClipping, xraySpanCenter, type XrayAxis } from "@/lib/xraySection";
 import type { SketchForgeMcpViewFace } from "@/lib/sketchforgeMcpProtocol";
 import {
   cameraFacingTiltAxis,
@@ -134,7 +135,6 @@ import { projectShapesFingerprint } from "@/lib/editorHistory";
 import { endShapeAssetDrag, getShapeAssetDrag } from "@/lib/shapeAssetDrag";
 import { makeShapeFromAsset } from "@/lib/shapeCatalog";
 import { createThreadShape } from "@/lib/threadShape";
-import { DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
 import {
   DEFAULT_LIGHT_VIEWPORT_BACKGROUND,
   resolveViewportBackground,
@@ -355,8 +355,14 @@ export type ThreeState = {
   modifierLayer: THREE.Group;
   xrayLayer: THREE.Group;
   clippingPlane: THREE.Plane;
-  xrayEnabled: boolean;
-  xrayHeight: number;
+  xray: {
+    enabled: boolean;
+    axis: XrayAxis;
+    position: number;
+    keepLow: boolean;
+    showPlane: boolean;
+    planeSize: number;
+  };
   raycaster: THREE.Raycaster;
   pointer: THREE.Vector2;
   dragPlane: THREE.Plane;
@@ -416,23 +422,22 @@ function captureSceneImage(state: ThreeState, options: CaptureSceneImageOptions 
   const hideOverlays = options.hideOverlays !== false;
   const overlayLayers = [state.workplaneLayer, state.helperLayer, state.modifierLayer, state.xrayLayer];
   const previousVisibility = overlayLayers.map((layer) => layer.visible);
-  const previousXrayEnabled = state.xrayEnabled;
-  const previousXrayHeight = state.xrayHeight;
+  const previousXray = { ...state.xray };
   if (hideOverlays) {
     for (const layer of overlayLayers) {
       layer.visible = false;
     }
   }
   try {
-    if (hideOverlays && previousXrayEnabled) {
-      applyXrayClipping(state, false, previousXrayHeight);
+    if (hideOverlays && previousXray.enabled) {
+      applyXrayClipping(state, { enabled: false });
     }
     state.camera.updateMatrixWorld();
     state.renderer.render(state.scene, state.camera);
     return state.renderer.domElement.toDataURL("image/png");
   } finally {
-    if (hideOverlays && previousXrayEnabled) {
-      applyXrayClipping(state, true, previousXrayHeight);
+    if (hideOverlays && previousXray.enabled) {
+      applyXrayClipping(state, previousXray);
     }
     if (hideOverlays) {
       overlayLayers.forEach((layer, index) => {
@@ -2417,7 +2422,10 @@ export function WorkplaneViewport({
   const [rulerMoveMode, setRulerMoveMode] = useState(false);
   const [rulerToolsOpen, setRulerToolsOpen] = useState(false);
   const [xrayEnabled, setXrayEnabled] = useState(false);
-  const [xrayHeight, setXrayHeight] = useState(40);
+  const [xrayAxis, setXrayAxis] = useState<XrayAxis>("y");
+  const [xrayPosition, setXrayPosition] = useState(10);
+  const [xrayKeepLow, setXrayKeepLow] = useState(true);
+  const [xrayShowPlane, setXrayShowPlane] = useState(true);
   const [xrayControlsOpen, setXrayControlsOpen] = useState(false);
   const [cameraControlsCollapsed, setCameraControlsCollapsed] = useState(false);
   const [inspectorPanelOpen, setInspectorPanelOpen] = useState(true);
@@ -2633,6 +2641,18 @@ export function WorkplaneViewport({
     setWorkspace((current) => (
       workplaneSettingsFingerprint(current, normalizedSnap) === fingerprint ? current : normalizedWorkspace
     ));
+    // The unsaved editor reloads this blob whenever the viewport remounts (for
+    // example after leaving a sketch). Keep the live settings in it.
+    if (workspaceSettingsKeyRef.current === "local-workplane") {
+      try {
+        window.localStorage.setItem(
+          `${WORKSPACE_DEFAULTS_STORAGE_PREFIX}local-workplane`,
+          JSON.stringify({ workspace: normalizedWorkspace, snap: normalizedSnap }),
+        );
+      } catch {
+        // The in-memory settings still apply until the page reloads.
+      }
+    }
     onWorkspaceSettingsChange?.({ workspace: normalizedWorkspace, snap: normalizedSnap });
   }, [onWorkspaceSettingsChange]);
 
@@ -5518,33 +5538,48 @@ export function WorkplaneViewport({
     closeRulerTools();
   }, [closeRulerTools]);
 
-  const xrayBounds = useMemo(() => xrayHeightBounds(shapes), [shapes]);
+  const xrayBounds = useMemo(
+    () => xrayAxisBounds(shapes, xrayAxis, selectedIds),
+    [selectedIds, shapes, xrayAxis],
+  );
+  const xrayPlaneSize = useMemo(() => {
+    const spans = (["x", "y", "z"] as const).map((axis) => xrayAxisBounds(shapes, axis, selectedIds));
+    const longest = spans.reduce((size, span) => Math.max(size, span.max - span.min), 80);
+    return Math.max(longest, 80) * 1.25;
+  }, [selectedIds, shapes]);
 
   useEffect(() => {
-    setXrayHeight((current) => Math.min(xrayBounds.max, Math.max(xrayBounds.min, current)));
+    setXrayPosition((current) => {
+      if (current < xrayBounds.min || current > xrayBounds.max) return xraySpanCenter(xrayBounds);
+      return current;
+    });
   }, [xrayBounds.max, xrayBounds.min]);
 
   useEffect(() => {
-    applyXrayClipping(threeRef.current, xrayEnabled, xrayHeight);
-  }, [xrayEnabled, xrayHeight]);
-
-  const toggleXrayEnabled = useCallback(() => {
-    setXrayEnabled((enabled) => {
-      const next = !enabled;
-      if (next) {
-        setXrayControlsOpen(true);
-        setRulerToolsOpen(false);
-        const bounds = xrayHeightBounds(shapesRef.current);
-        setXrayHeight((current) => {
-          if (current > bounds.min && current < bounds.max) {
-            return current;
-          }
-          return Math.round(bounds.min + (bounds.max - bounds.min) * 0.55);
-        });
-      }
-      return next;
+    applyXrayClipping(threeRef.current, {
+      enabled: xrayEnabled,
+      axis: xrayAxis,
+      position: xrayPosition,
+      keepLow: xrayKeepLow,
+      showPlane: xrayShowPlane,
+      planeSize: xrayPlaneSize,
     });
-  }, []);
+  }, [xrayAxis, xrayEnabled, xrayKeepLow, xrayPlaneSize, xrayPosition, xrayShowPlane]);
+
+  const openXrayView = useCallback(() => {
+    if (xrayControlsOpen) {
+      setXrayControlsOpen(false);
+      setXrayEnabled(false);
+      return;
+    }
+    setRulerToolsOpen(false);
+    setXrayControlsOpen(true);
+    if (!xrayEnabled) {
+      const bounds = xrayAxisBounds(shapesRef.current, xrayAxis, selectedIdsRef.current);
+      setXrayPosition(xraySpanCenter(bounds));
+      setXrayEnabled(true);
+    }
+  }, [xrayAxis, xrayControlsOpen, xrayEnabled]);
 
   const handleRulerPointPointerDown = useCallback(
     (event: ReactPointerEvent<SVGCircleElement>, pointId: string) => {
@@ -5773,42 +5808,39 @@ export function WorkplaneViewport({
             <div className="xray-control-group">
               <PeakTipButton
                 className={`xray-trigger ${xrayEnabled || xrayControlsOpen ? "active" : ""}`}
-                label="Interior X-ray"
+                label="X-ray view"
                 description={TOOL_DESCRIPTIONS.xray}
                 aria-pressed={xrayEnabled}
                 aria-expanded={xrayControlsOpen}
                 aria-controls="xray-tool-popover"
-                onClick={() => {
-                  if (xrayEnabled || xrayControlsOpen) {
-                    setXrayEnabled(false);
-                    setXrayControlsOpen(false);
-                    return;
-                  }
-                  toggleXrayEnabled();
-                }}
+                onClick={openXrayView}
               >
                 <ScanEye size={24} strokeWidth={2.2} aria-hidden="true" />
               </PeakTipButton>
               {xrayControlsOpen ? (
-                <div id="xray-tool-popover" className="xray-tool-popover" aria-label="Interior X-ray controls">
-                  <PeakTipButton className={xrayEnabled ? "active" : ""} label={xrayEnabled ? "Turn off X-ray" : "Turn on X-ray"} description={TOOL_DESCRIPTIONS.xrayToggle} aria-pressed={xrayEnabled} onClick={toggleXrayEnabled}>
-                    <ScanEye size={18} strokeWidth={2.3} aria-hidden="true" />
-                  </PeakTipButton>
-                  <label className="xray-height-control">
-                    <span className="xray-height-label">Cut</span>
-                    <input
-                      type="range"
-                      min={xrayBounds.min}
-                      max={xrayBounds.max}
-                      step={0.5}
-                      value={Math.min(xrayBounds.max, Math.max(xrayBounds.min, xrayHeight))}
-                      disabled={!xrayEnabled}
-                      aria-label="Cutting plane height"
-                      onChange={(event) => setXrayHeight(Number(event.target.value))}
-                    />
-                    <span className="xray-height-value">{formatMeasure(xrayHeight, workspace)}</span>
-                  </label>
-                </div>
+                <XrayViewPanel
+                  enabled={xrayEnabled}
+                  axis={xrayAxis}
+                  position={xrayPosition}
+                  keepLow={xrayKeepLow}
+                  showPlane={xrayShowPlane}
+                  bounds={xrayBounds}
+                  workspace={workspace}
+                  onEnabledChange={setXrayEnabled}
+                  onAxisChange={(axis) => {
+                    setXrayAxis(axis);
+                    setXrayPosition(xraySpanCenter(xrayAxisBounds(shapesRef.current, axis, selectedIdsRef.current)));
+                  }}
+                  onPositionChange={(position) => {
+                    setXrayPosition(Math.min(xrayBounds.max, Math.max(xrayBounds.min, position)));
+                  }}
+                  onKeepLowChange={setXrayKeepLow}
+                  onShowPlaneChange={setXrayShowPlane}
+                  onClose={() => {
+                    setXrayEnabled(false);
+                    setXrayControlsOpen(false);
+                  }}
+                />
               ) : null}
             </div>
           </>
@@ -6150,8 +6182,14 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     modifierLayer,
     xrayLayer,
     clippingPlane,
-    xrayEnabled: false,
-    xrayHeight: 40,
+    xray: {
+      enabled: false,
+      axis: "y",
+      position: 40,
+      keepLow: true,
+      showPlane: true,
+      planeSize: Math.max(WORKPLANE_WIDTH, WORKPLANE_DEPTH) * 1.15,
+    },
     raycaster,
     pointer,
     dragPlane,
@@ -6721,7 +6759,7 @@ function syncCutPreviewOverlays(state: ThreeState, shapes: WorkplaneShape[]) {
   const visibleShapes = shapes.filter((shape) => !shape.hidden);
   const holeCount = visibleShapes.reduce((count, shape) => count + (shape.hole ? 1 : 0), 0);
   if (holeCount === 0) {
-    applyXrayClipping(state, state.xrayEnabled, state.xrayHeight);
+    applyXrayClipping(state);
     return;
   }
   const cutFrames = shapeCutPreviewFrames(state, visibleShapes);
@@ -6731,7 +6769,7 @@ function syncCutPreviewOverlays(state: ThreeState, shapes: WorkplaneShape[]) {
     .filter((frame): frame is CutPreviewShapeFrame => Boolean(frame));
 
   if (solidFrames.length === 0) {
-    applyXrayClipping(state, state.xrayEnabled, state.xrayHeight);
+    applyXrayClipping(state);
     return;
   }
 
@@ -6744,7 +6782,7 @@ function syncCutPreviewOverlays(state: ThreeState, shapes: WorkplaneShape[]) {
       addCutPreviewOverlays(state, holeFrame, solidFrames);
     }
   });
-  applyXrayClipping(state, state.xrayEnabled, state.xrayHeight);
+  applyXrayClipping(state);
 }
 
 /** Debounce CSG cut-preview so fingerprint rebuilds don't hitch the main thread. */
@@ -6850,7 +6888,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   }
 
   rebuildSelectionHelpers(state, shapes, selectedIds);
-  applyXrayClipping(state, state.xrayEnabled, state.xrayHeight);
+  applyXrayClipping(state);
   // autoUpdate is off, so a fresh scene has no shadow map until this runs.
   // Without it, MeshStandardMaterials stay blank until the first drag ends.
   markShadowsDirty(state);
@@ -6880,13 +6918,30 @@ function applyMaterialClipping(material: THREE.Material | THREE.Material[], plan
   }
 }
 
-function syncXrayHelper(state: ThreeState, enabled: boolean, height: number) {
+function placeXrayPlane(object: THREE.Object3D, axis: XrayAxis, position: number) {
+  object.position.set(0, 0, 0);
+  object.rotation.set(0, 0, 0);
+  if (axis === "x") {
+    object.rotation.y = Math.PI / 2;
+    object.position.x = position;
+    return;
+  }
+  if (axis === "z") {
+    object.position.z = position;
+    return;
+  }
+  object.rotation.x = -Math.PI / 2;
+  object.position.y = position;
+}
+
+function syncXrayHelper(state: ThreeState) {
   disposeChildren(state.xrayLayer);
-  if (!enabled) {
+  const { enabled, showPlane, axis, position, planeSize } = state.xray;
+  if (!enabled || !showPlane) {
     return;
   }
 
-  const size = Math.max(WORKPLANE_WIDTH, WORKPLANE_DEPTH) * 1.15;
+  const size = Math.max(planeSize, 80);
   const geometry = new THREE.PlaneGeometry(size, size);
   const fill = new THREE.Mesh(
     geometry,
@@ -6899,8 +6954,7 @@ function syncXrayHelper(state: ThreeState, enabled: boolean, height: number) {
       toneMapped: false,
     }),
   );
-  fill.rotation.x = -Math.PI / 2;
-  fill.position.y = height;
+  placeXrayPlane(fill, axis, position);
   fill.name = "XrayPlaneFill";
   fill.renderOrder = 980;
 
@@ -6914,32 +6968,31 @@ function syncXrayHelper(state: ThreeState, enabled: boolean, height: number) {
       toneMapped: false,
     }),
   );
-  outline.rotation.x = -Math.PI / 2;
-  outline.position.y = height;
+  placeXrayPlane(outline, axis, position);
   outline.name = "XrayPlaneOutline";
   outline.renderOrder = 981;
 
   state.xrayLayer.add(fill, outline);
 }
 
-function applyXrayClipping(state: ThreeState | null, enabled: boolean, height: number) {
+function applyXrayClipping(state: ThreeState | null, next?: Partial<ThreeState["xray"]>) {
   if (!state) {
     return;
   }
 
-  const wasEnabled = state.xrayEnabled;
-  state.xrayEnabled = enabled;
-  state.xrayHeight = height;
+  const wasEnabled = state.xray.enabled;
+  if (next) Object.assign(state.xray, next);
+  const { enabled } = state.xray;
   state.needsRender = true;
-  // New meshes are created without clipping planes. While the section view stays off,
+  // New meshes are created without clipping planes. While the cut stays off,
   // walking every material on each rebuild only repeats that empty assignment.
   if (!enabled && !wasEnabled) {
     return;
   }
 
-  // Keep geometry below the plane; discard everything above (drop-down cut).
-  state.clippingPlane.normal.set(0, -1, 0);
-  state.clippingPlane.constant = height;
+  const clip = xrayClipping(state.xray.axis, state.xray.position, state.xray.keepLow);
+  state.clippingPlane.normal.set(clip.normal[0], clip.normal[1], clip.normal[2]);
+  state.clippingPlane.constant = clip.constant;
   const planes = enabled ? [state.clippingPlane] : [];
 
   const applyToLayer = (layer: THREE.Group) => {
@@ -6954,7 +7007,7 @@ function applyXrayClipping(state: ThreeState | null, enabled: boolean, height: n
   applyToLayer(state.shapeLayer);
   applyToLayer(state.helperLayer);
   applyToLayer(state.modifierLayer);
-  syncXrayHelper(state, enabled, height);
+  syncXrayHelper(state);
 }
 
 const MODIFIER_EDGE_IDLE = new THREE.Color("#17b7e5");
@@ -7092,7 +7145,7 @@ function rebuildModifierEdges(state: ThreeState | null, edges: CadModifierEdge[]
   showModifierEdgeHover(batch, hoverId);
   state.modifierLayer.add(lines, hover);
   state.modifierLayer.userData.modifierEdgeBatch = batch;
-  applyXrayClipping(state, state.xrayEnabled, state.xrayHeight);
+  applyXrayClipping(state);
   state.needsRender = true;
 }
 
@@ -8763,41 +8816,7 @@ function setComplexEdgeVisibility(object: THREE.Object3D, visible: boolean) {
 }
 
 function addTextShape(group: THREE.Group, material: THREE.MeshStandardMaterial, shape: WorkplaneShape) {
-  const text = (shape.text ?? "TEXT").trim() || " ";
-  const bevel = clamp(shape.bevel ?? 0, 0, 8);
-  const fontName = shape.font ?? DEFAULT_TEXT_FONT;
-  const geometry = new TextGeometry(text, {
-    font: resolveTextFont(fontName),
-    size: 20,
-    depth: shape.height,
-    curveSegments: textFontCurveSegments(fontName),
-    bevelEnabled: bevel > 0,
-    bevelThickness: bevel * 0.22,
-    bevelSize: bevel * 0.16,
-    bevelSegments: Math.max(1, shape.segments ?? 0),
-  });
-
-  geometry.computeBoundingBox();
-  const box = geometry.boundingBox;
-  if (box) {
-    const textWidth = Math.max(1, box.max.x - box.min.x);
-    const textDepth = Math.max(1, box.max.y - box.min.y);
-    const scale = Math.min(shapeWidth(shape) / textWidth, shapeDepth(shape) / textDepth);
-    geometry.scale(scale, scale, 1);
-  }
-
-  geometry.rotateX(-Math.PI / 2);
-  geometry.computeBoundingBox();
-  const rotatedBox = geometry.boundingBox;
-  if (rotatedBox) {
-    geometry.translate(
-      -(rotatedBox.min.x + rotatedBox.max.x) / 2,
-      -rotatedBox.min.y,
-      -(rotatedBox.min.z + rotatedBox.max.z) / 2,
-    );
-  }
-
-  addMesh(group, geometry, material, shape);
+  addMesh(group, createBooleanTextGeometry(shape), material, shape);
 }
 
 function putGeometryOnBase(geometry: THREE.BufferGeometry) {

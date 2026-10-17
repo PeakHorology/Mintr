@@ -223,41 +223,68 @@
 
 .sketch-create-menu-item {
   display: flex;
-  flex: 1 1 0;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 12px 14px;
-  color: var(--peak-charcoal);
-  background: var(--tile-hover);
-  border: 1px solid var(--peak-border);
-  border-radius: var(--radius-lg);
+  gap: 4px;
+  min-width: 108px;
+  min-height: 78px;
+  padding: 8px 10px 7px;
+  color: var(--peak-text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: var(--text-xs);
-  font-weight: 800;
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.sketch-create-menu-item span {
+  color: var(--peak-text-muted);
 }
 
 .sketch-create-menu-item.primary {
-  color: var(--action-text);
-  background: var(--action-surface);
-  border-color: var(--action-surface-hover);
+  color: var(--accent-text);
 }
 
-.sketch-create-menu-item:hover:not(.disabled) {
-  transform: translateY(-1px);
+.sketch-create-menu-item.primary span {
+  color: var(--accent-text);
 }
 
-.sketch-create-menu-item.disabled {
-  opacity: 0.45;
+.sketch-create-menu-item:hover:not(:disabled) {
+  color: var(--ink-strong);
+  background: var(--control-surface);
+  border-color: var(--control-border-strong);
+  box-shadow: inset 0 1px 0 var(--chrome-inset-highlight), var(--elevation-sm);
+}
+
+.sketch-create-menu-item:hover:not(:disabled) span {
+  color: var(--ink);
+}
+
+.sketch-create-menu-item:disabled {
+  color: var(--ink-disabled);
   cursor: default;
+}
+
+.sketch-create-menu-item:disabled .sketch-create-menu-icon {
+  opacity: 0.38;
+}
+
+.sketch-create-menu-item:disabled span {
+  color: var(--ink-disabled);
 }
 
 .sketch-create-menu-icon {
   width: 36px;
   height: 36px;
-  object-fit: contain;
   pointer-events: none;
 }
 
@@ -301,7 +328,7 @@
 
 .sketch-revolve-prompt {
   position: absolute;
-  top: calc(var(--editor-viewport-toolbar-height) + 12px);
+  top: calc(var(--editor-viewport-toolbar-height) + var(--editor-mode-notch-height) + 12px);
   left: 50%;
   z-index: calc(var(--z-overlay) + 5);
   display: flex;
@@ -1878,12 +1905,18 @@
 
 .xray-tool-popover {
   position: absolute;
-  top: 2px;
+  top: auto;
+  bottom: 0;
   left: calc(100% + 10px);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
-  padding: 6px 10px 6px 4px;
+  width: 248px;
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  padding: 10px;
+  color: var(--ink-strong);
   background: var(--glass-surface-strong);
   border: 1px solid var(--control-border-strong);
   border-radius: var(--radius-lg);
@@ -1892,18 +1925,107 @@
   animation: ruler-tools-in 130ms ease-out;
 }
 
+.xray-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.xray-view-header strong {
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.xray-view-header strong::after {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 2px;
+  margin-top: 3px;
+  border-radius: 1px;
+  background: #c6a15b;
+}
+
 .camera-controls .xray-tool-popover button {
-  width: 35px;
-  height: 35px;
-  border-radius: var(--radius-md);
-  flex: 0 0 auto;
+  width: auto;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.camera-controls .xray-tool-popover button:hover {
+  transform: none;
+}
+
+.camera-controls .xray-tool-popover .xray-view-close {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  color: var(--ink-muted);
+  border-radius: 999px;
+}
+
+.xray-view-note,
+.xray-view-side {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.xray-view-axes,
+.xray-view-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.xray-view-axes button,
+.xray-view-actions button,
+.xray-view-toggle {
+  flex: 1 1 auto;
+}
+
+.camera-controls .xray-tool-popover button:disabled {
+  color: var(--ink-disabled);
+  cursor: default;
+}
+
+.xray-view-position {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.xray-view-position input {
+  width: 72px;
+  height: 28px;
+  padding: 0 6px;
+  color: var(--ink-strong);
+  background: var(--control-surface-sunken);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.xray-view-unit {
+  color: var(--ink-muted);
 }
 
 .xray-height-control {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 168px;
+  min-width: 0;
   color: var(--ink-strong);
   font-size: var(--text-xs);
   font-weight: 600;
@@ -1911,7 +2033,9 @@
 }
 
 .xray-height-control input[type="range"] {
-  width: 110px;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   cursor: pointer;
 }
 

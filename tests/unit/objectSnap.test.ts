@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { faceToFaceMate, layFaceOnWorkplane, snapAabbFromShape, snapMovingAabb, unionSnapAabbs } from "@/lib/objectSnap";
+import { faceSampleForSide, faceToFaceMate, layFaceOnWorkplane, snapAabbFromShape, snapMovingAabb, unionSnapAabbs } from "@/lib/objectSnap";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 function box(partial: Partial<WorkplaneShape> & Pick<WorkplaneShape, "id" | "x" | "z">): WorkplaneShape {
@@ -124,5 +124,13 @@ describe("layFaceOnWorkplane", () => {
   it("drops a face that is already down onto the workplane", () => {
     const pose = layFaceOnWorkplane(shape, { point: [4, 8, -6], normal: [0, -1, 0] });
     expect(pose).toMatchObject({ x: 4, z: -6, elevation: 0, rotationX: 0, rotation: 0, rotationZ: 0 });
+  });
+});
+
+describe("faceSampleForSide", () => {
+  it("points the top face up from the top of the box", () => {
+    const sample = faceSampleForSide(box({ id: "box", x: 4, z: -6, elevation: 8, width: 10, depth: 10, height: 10 }), "top");
+    expect(sample?.normal[1]).toBeCloseTo(1);
+    expect(sample?.point[1]).toBeCloseTo(18);
   });
 });

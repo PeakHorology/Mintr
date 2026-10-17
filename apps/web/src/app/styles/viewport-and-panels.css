@@ -977,6 +977,13 @@
   white-space: nowrap;
 }
 
+.range-property-hint {
+  color: var(--muted-strong);
+  font-size: var(--text-sm);
+  font-weight: 450;
+  line-height: 1.35;
+}
+
 .range-value-control {
   display: flex;
   flex: 0 0 auto;
@@ -1140,6 +1147,19 @@
   align-items: center;
   height: 24px;
   padding: 0 3px;
+}
+
+.range-control.has-center-index::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  z-index: 1;
+  width: 2px;
+  height: 14px;
+  background: var(--ink-soft);
+  border-radius: 1px;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .range-control input[type="range"] {

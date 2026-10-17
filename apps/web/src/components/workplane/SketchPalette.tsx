@@ -21,6 +21,7 @@ export function SketchPalette({
   onPatchSettings,
   onRemoveConstraint,
   onToggleConstructionMode,
+  proEnabled,
 }: {
   doc: SketchDoc;
   status: SketchDefinitionStatus;
@@ -28,6 +29,7 @@ export function SketchPalette({
   conflicts: string[];
   focusMode: "3d" | "2d";
   selectedProfileCount: number;
+  proEnabled: boolean;
   onToggleFocusMode: () => void;
   onPatchSettings: (patch: Partial<SketchDoc["settings"]>) => void;
   onRemoveConstraint: (constraintId: string) => void;
@@ -37,13 +39,13 @@ export function SketchPalette({
     <aside className="sketch-palette" aria-label="Sketch palette">
       <header className="sketch-palette-header">
         <strong>Sketch</strong>
-        <span className={`sketch-palette-status status-${status}`}>{STATUS_LABEL[status]}</span>
+        {proEnabled ? <span className={`sketch-palette-status status-${status}`}>{STATUS_LABEL[status]}</span> : null}
       </header>
       <div className="sketch-palette-meta">
-        <span>DOF {dof}</span>
+        {proEnabled ? <span>DOF {dof}</span> : null}
         <span>{selectedProfileCount} profile{selectedProfileCount === 1 ? "" : "s"} selected</span>
       </div>
-      {conflicts.length ? (
+      {proEnabled && conflicts.length ? (
         <ul className="sketch-palette-conflicts">
           {conflicts.map((conflict) => {
             const constraint = doc.constraints.find((entry) => entry.id === conflict);
@@ -55,22 +57,26 @@ export function SketchPalette({
         </ul>
       ) : null}
       <div className="sketch-palette-toggles">
-        <label>
-          <input
-            type="checkbox"
-            checked={doc.settings.showConstraints}
-            onChange={(event) => onPatchSettings({ showConstraints: event.target.checked })}
-          />
-          Constraints
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={doc.settings.showDimensions}
-            onChange={(event) => onPatchSettings({ showDimensions: event.target.checked })}
-          />
-          Dimensions
-        </label>
+        {proEnabled ? (
+          <label>
+            <input
+              type="checkbox"
+              checked={doc.settings.showConstraints}
+              onChange={(event) => onPatchSettings({ showConstraints: event.target.checked })}
+            />
+            Constraints
+          </label>
+        ) : null}
+        {proEnabled ? (
+          <label>
+            <input
+              type="checkbox"
+              checked={doc.settings.showDimensions}
+              onChange={(event) => onPatchSettings({ showDimensions: event.target.checked })}
+            />
+            Dimensions
+          </label>
+        ) : null}
         <label>
           <input
             type="checkbox"
@@ -93,7 +99,7 @@ export function SketchPalette({
           {focusMode === "2d" ? "Sketch in 3D view" : "Focus 2D"}
         </button>
       </div>
-      {doc.settings.showConstraints && doc.constraints.length > 0 ? (
+      {proEnabled && doc.settings.showConstraints && doc.constraints.length > 0 ? (
         <section className="sketch-palette-list" aria-label="Constraints">
           <div className="sketch-palette-list-title">Constraints</div>
           <ul>
@@ -108,7 +114,7 @@ export function SketchPalette({
           </ul>
         </section>
       ) : null}
-      {doc.settings.showDimensions && doc.dimensions.length > 0 ? (
+      {proEnabled && doc.settings.showDimensions && doc.dimensions.length > 0 ? (
         <section className="sketch-palette-list" aria-label="Dimensions">
           <div className="sketch-palette-list-title">Dimensions</div>
           <ul>

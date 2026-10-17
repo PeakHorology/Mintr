@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("peakcadDesktop", true);
 
+contextBridge.exposeInMainWorld("peakcadModels", {
+  session: () => ipcRenderer.invoke("peakcad:model-session"),
+});
+
 let saveBeforeCloseHandler = null;
 let saveBeforeCloseToken = 0;
 
@@ -42,6 +46,12 @@ contextBridge.exposeInMainWorld("peakcadFile", {
       if (saveBeforeCloseToken === token) saveBeforeCloseHandler = null;
     };
   },
+});
+
+contextBridge.exposeInMainWorld("peakcadSlicer", {
+  detect: () => ipcRenderer.invoke("peakcad:slicer-detect"),
+  open: (payload) => ipcRenderer.invoke("peakcad:slicer-open", payload),
+  choose: () => ipcRenderer.invoke("peakcad:slicer-choose"),
 });
 
 contextBridge.exposeInMainWorld("peakcadUpdate", {

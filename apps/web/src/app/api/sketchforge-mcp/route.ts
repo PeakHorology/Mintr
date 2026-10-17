@@ -53,7 +53,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 export async function GET(request: Request) {
   const blocked = localOnly(request);
   if (blocked) return blocked;
-  noteSketchForgeMcpClient();
+  // The settings page reads this route. Only an external model client should wake the editor.
+  if (!request.headers.get("sec-fetch-site")) {
+    noteSketchForgeMcpClient();
+  }
   return NextResponse.json({ editors: listSketchForgeMcpEditors() });
 }
 
@@ -112,6 +115,7 @@ export async function POST(request: Request) {
       action: body.action,
       params: isObject(body.params) ? body.params : {},
       timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+      clientName: typeof body.clientName === "string" ? body.clientName : undefined,
     });
     return NextResponse.json(result, { status: result.ok ? 200 : 504 });
   }

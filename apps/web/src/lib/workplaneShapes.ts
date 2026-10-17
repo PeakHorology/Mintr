@@ -318,14 +318,16 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
     mirrorZ: shape.mirrorZ || undefined,
   };
   if (shape.kind === "cone") {
-    // Ensure overall footprint can contain the larger ring (do not force square —
-    // elliptical cones from Length/Width edits are preserved).
+    // Grow only when the larger ring fits on neither axis. A Length or Width
+    // edit scales the radii and may leave an ellipse; inflating both axes
+    // would overwrite the size the user just typed.
     const maxR = coneMaxRadius(next);
     const width = shapeWidth(next);
     const depth = shapeDepth(next);
-    const minHalf = Math.min(width, depth) / 2;
-    if (maxR > minHalf + 1e-6) {
-      const grow = maxR / Math.max(0.001, minHalf);
+    const halfW = width / 2;
+    const halfD = depth / 2;
+    if (maxR > halfW + 1e-6 && maxR > halfD + 1e-6) {
+      const grow = maxR / Math.max(0.001, Math.min(halfW, halfD));
       const nextWidth = width * grow;
       const nextDepth = depth * grow;
       next.width = nextWidth;
@@ -376,6 +378,8 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.rightAngle === b.rightAngle &&
     a.text === b.text &&
     a.font === b.font &&
+    a.textCircumference === b.textCircumference &&
+    a.textWrap === b.textWrap &&
     a.importedMesh === b.importedMesh &&
     a.imagePlate === b.imagePlate &&
     a.sketchProfile === b.sketchProfile &&

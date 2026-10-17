@@ -70,6 +70,7 @@ export type SketchForgeMcpEditorSummary = {
   notice: string;
   lastError: string | null;
   lastSeen: number;
+  modelsEnabled?: boolean;
 };
 
 export type SketchForgeMcpCommandName =
@@ -90,12 +91,32 @@ export type SketchForgeMcpCommandName =
   | "inspect_errors"
   | "capture_image"
   | "edit_sketch"
-  | "set_sketch_dimension";
+  | "set_sketch_dimension"
+  | "hollow"
+  | "split"
+  | "snap_faces"
+  | "lay_flat"
+  | "create_thread"
+  | "export_step"
+  | "tie_objects"
+  | "intersect_objects"
+  | "mirror_objects"
+  | "circular_pattern"
+  | "linear_pattern"
+  | "duplicate_objects"
+  | "hide_objects"
+  | "drop_objects"
+  | "undo"
+  | "redo"
+  | "reduce_mesh"
+  | "export_model"
+  | "sketch";
 
 export type SketchForgeMcpCommand = {
   id: string;
   action: SketchForgeMcpCommandName;
   params: Record<string, unknown>;
+  clientName?: string;
   createdAt: number;
 };
 
@@ -131,6 +152,7 @@ export type SketchForgeMcpDispatchPayload = {
   action: SketchForgeMcpCommandName;
   params?: Record<string, unknown>;
   timeoutMs?: number;
+  clientName?: string;
 };
 
 export type SketchForgeMcpApiPayload =

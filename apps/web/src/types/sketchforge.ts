@@ -31,7 +31,7 @@ export type ShapeAsset = {
   hole?: boolean;
 };
 
-export type GridSize = "Off" | "0.1 mm" | "0.25 mm" | "0.5 mm" | "1.0 mm" | "2.0 mm" | "5.0 mm" | "Brick";
+export type GridSize = "Off" | "0.1 mm" | "0.25 mm" | "0.5 mm" | "1.0 mm" | "2.0 mm" | "5.0 mm";
 export type MeasurementAccuracy = 1 | 2 | 3;
 /** Viewport / CSG curve density. Smooth is the default for PeakCAD. */
 export type DisplayQuality = "draft" | "standard" | "smooth";
@@ -51,6 +51,11 @@ export type WorkplaneWorkspaceSettings = {
   scale: string;
   accuracy: MeasurementAccuracy;
   displayQuality: DisplayQuality;
+  /**
+   * Advanced tools such as sketch constraints. The live value is this
+   * computer's global choice; a project file does not turn it on or off.
+   */
+  peakcadPro: boolean;
 };
 
 export type AlignAxis = "x" | "y" | "z";
@@ -264,6 +269,10 @@ export type WorkplaneShape = {
   rightAngle?: number;
   text?: string;
   font?: string;
+  /** Face-up bow across the page. 0 is flat, ±100 is a full circle. Negative bows outward, positive bows inward. */
+  textCircumference?: number;
+  /** Rod bent through the letters. 0 is flat, ±100 is a full circle. Letters turn with the rod. Negative bows outward, positive bows inward. */
+  textWrap?: number;
   importedMesh?: {
     positions: number[];
     /** Optional indexed triangles into `positions` (shared verts). Prefer when present. */

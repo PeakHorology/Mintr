@@ -259,6 +259,33 @@ function faceCenter(shape: FaceMateBody, worldNormal: THREE.Vector3) {
   return local.multiply(scale).applyQuaternion(rotation).add(center);
 }
 
+const FACE_SIDE_LOCAL: Record<"top" | "bottom" | "front" | "back" | "left" | "right", [number, number, number]> = {
+  right: [1, 0, 0],
+  left: [-1, 0, 0],
+  top: [0, 1, 0],
+  bottom: [0, -1, 0],
+  front: [0, 0, 1],
+  back: [0, 0, -1],
+};
+
+/** Outward face on an axis-aligned side, in world space, including the shape's rotation. */
+export function faceSampleForSide(
+  shape: FaceMateBody,
+  side: keyof typeof FACE_SIDE_LOCAL,
+): FaceSnapSample | null {
+  const rotation = shapeQuaternion(shape);
+  const scale = new THREE.Vector3(mirrorSign(shape.mirrorX), mirrorSign(shape.mirrorY), mirrorSign(shape.mirrorZ));
+  const worldNormal = new THREE.Vector3(...FACE_SIDE_LOCAL[side]).multiply(scale).applyQuaternion(rotation);
+  if (worldNormal.lengthSq() < 1e-8) return null;
+  worldNormal.normalize();
+  const center = faceCenter(shape, worldNormal);
+  if (!center) return null;
+  return {
+    point: [center.x, center.y, center.z],
+    normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+  };
+}
+
 /** Turn the shape so this face points down, then rest that face on the workplane. */
 export function layFaceOnWorkplane(shape: FaceMateBody, face: FaceSnapSample): FaceMatePose | null {
   const normal = unitVector(face.normal);
