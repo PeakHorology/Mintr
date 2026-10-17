@@ -1350,20 +1350,21 @@ export function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: nu
       return { id, points, ...recovered, curveType, surfaceTypes, faceAreas, skipTreatment };
     }).filter((edge) => edge.points.length >= 6);
     const edges: CollectedCadEdge[] = collectedEdges.map((edge) => {
-      const classified = toClassificationInput(edge);
-      const display = !edge.skipTreatment && (treatmentAreaLimit > 0
+      const { skipTreatment, ...geometry } = edge;
+      const classified = toClassificationInput(geometry);
+      const display = !skipTreatment && (treatmentAreaLimit > 0
         ? isModifierDisplayCadEdge(classified, treatmentAreaLimit)
         : isDisplayCadEdge(classified));
       return {
-        ...edge,
+        ...geometry,
         display,
-        selectable: !edge.skipTreatment && isSelectableModifierEdge(classified) && (treatmentAreaLimit <= 0 || display),
+        selectable: !skipTreatment && isSelectableModifierEdge(classified) && (treatmentAreaLimit <= 0 || display),
       };
     });
     const selectableEdgeIds = edges.filter((edge) => edge.selectable && edge.angle + 1e-3 >= sharpAngle).map((edge) => edge.id);
     const displayEdges = cadDisplayEdgesFromCollected(edges);
     keepEdgeHandles = retainEdgeHandles;
-    return { handles, edges: edges.map(({ curveType: _curveType, surfaceTypes: _surfaceTypes, faceAreas: _faceAreas, skipTreatment: _skipTreatment, ...edge }) => edge), selectableEdgeIds, displayEdges };
+    return { handles, edges: edges.map(({ curveType: _curveType, surfaceTypes: _surfaceTypes, faceAreas: _faceAreas, ...edge }) => edge), selectableEdgeIds, displayEdges };
   } finally {
     releaseHandles(cad, faces);
     if (!keepEdgeHandles) releaseHandles(cad, handles);

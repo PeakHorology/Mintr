@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { WorkplaneShape } from "@/types/sketchforge";
+import type { CadPrimitiveFrame, WorkplaneShape } from "@/types/sketchforge";
 import type { CadModifierPrimitivePart } from "@/lib/cadModifierTypes";
 import { coneBaseRadius, coneMaxRadius, coneTopRadius, mirrorSign, resizedImportedCoordinates, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 
@@ -285,13 +285,14 @@ function bakeCadDisplayEdgesForShape(shape: WorkplaneShape, frame: BakedCadMetad
   return bakedEdges.length > 0 ? bakedEdges : undefined;
 }
 
-function bakeCadPrimitiveFrameForShapeTransform(shape: WorkplaneShape, frame: BakedCadMetadataFrame) {
+function bakeCadPrimitiveFrameForShapeTransform(shape: WorkplaneShape, frame: BakedCadMetadataFrame): CadPrimitiveFrame | undefined {
   // Cylinders were left out here, so baking a transform silently cost a cylinder its exact identity
-  // and it exported faceted while an equivalent box stayed exact.
+  // and it exported faceted while an equivalent box stayed exact. A cone needs two radii, which
+  // this frame cannot store, so it stays out and the live cone path keeps the exact solid.
   const primitive = cadModifierPrimitiveForBakedShape(shape)
     ?? cadModifierPrimitiveForAnalyticBox(shape)
     ?? cadModifierPrimitiveForAnalyticCylinder(shape);
-  if (!primitive) {
+  if (!primitive || (primitive.kind !== "box" && primitive.kind !== "cylinder")) {
     return undefined;
   }
 
