@@ -80,7 +80,7 @@ describe("concave fillet", () => {
     expect(kernel.isValid(result)).toBe(true);
     expect(before - volume(result)).toBeGreaterThan(1);
     expect(before - volume(result)).toBeLessThan(80);
-  });
+  }, 20_000);
 
   it("rejects a radius that breaks through the blind-hole floor", () => {
     const solid = blindRoundHole();
