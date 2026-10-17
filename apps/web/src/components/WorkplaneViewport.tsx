@@ -6184,7 +6184,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     clippingPlane,
     xray: {
       enabled: false,
-      axis: "y",
+      axis: "y" as const,
       position: 40,
       keepLow: true,
       showPlane: true,
