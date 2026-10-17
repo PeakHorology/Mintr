@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { WorkplaneShape } from "@/types/sketchforge";
 import type { CadModifierPrimitivePart } from "@/lib/cadModifierTypes";
-import { mirrorSign, resizedImportedCoordinates, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import { coneBaseRadius, coneMaxRadius, coneTopRadius, mirrorSign, resizedImportedCoordinates, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 
 export type BakedCadMetadataFrame = {
   centerX: number;
@@ -108,6 +108,45 @@ export function cadModifierPrimitiveForAnalyticCylinder(shape: WorkplaneShape): 
     radius,
     height,
     transform: isIdentityCadTransform(transform) ? undefined : transform,
+  };
+}
+
+/**
+ * Native cones as exact OCCT solids. A display cone is a 128-sided mesh, and
+ * filleting that ring of short lines fails. `makeCone` keeps each rim as one
+ * circle. An elliptical footprint scales that circle after the cone is built.
+ */
+export function cadModifierPrimitiveForAnalyticCone(shape: WorkplaneShape): CadModifierPrimitivePart | null {
+  if (shape.kind !== "cone" || shape.groupedShapes?.length || shape.cadBrep || shape.importedMesh) {
+    return null;
+  }
+
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  if (!allFinitePositive([width, depth, height])) {
+    return null;
+  }
+
+  const maxRadius = Math.max(coneMaxRadius(shape), 1e-6);
+  const baseRadius = Math.max(0, coneBaseRadius(shape) * (width / 2) / maxRadius);
+  const topRadius = Math.max(0, coneTopRadius(shape) * (width / 2) / maxRadius);
+  if (baseRadius <= 1e-6 && topRadius <= 1e-6) {
+    return null;
+  }
+
+  const elliptical = Math.abs(width - depth) >= 1e-4;
+  // A circular cone is invariant about yaw. An ellipse has to keep it.
+  // The stretch stays off this matrix so a fillet can blend the circle first.
+  const transform = analyticPrimitiveTransform(shape, height, elliptical ? (shape.rotation ?? 0) : 0);
+  const sectionScale = elliptical ? depth / width : undefined;
+  return {
+    kind: "cone",
+    baseRadius,
+    topRadius,
+    height,
+    transform: isIdentityCadTransform(transform) ? undefined : transform,
+    ...(sectionScale ? { sectionScale } : {}),
   };
 }
 

@@ -15,6 +15,8 @@ import type {
   CadModifierWorkerResponse,
 } from "@/lib/cadModifierTypes";
 import {
+  isAnalyticConeSeam,
+  isDegenerateCurve,
   isDisplayCadEdge,
   isModifierDisplayCadEdge,
   isSelectableModifierEdge,
@@ -48,6 +50,8 @@ let accumulatedEdgeIds: number[] = [];
 let accumulatedKind: CadModifierKind | null = null;
 let accumulatedAmount = Number.NaN;
 let accumulatedChamferAngle = Number.NaN;
+let coneFilletPrimitive: Extract<CadModifierPrimitivePart, { kind: "cone" }> | null = null;
+let coneFilletEdgeMap: number[] | null = null;
 
 type CollectedCadEdgeGeometry = Omit<CadModifierEdge, "display" | "selectable"> & {
   curveType: string;
@@ -98,6 +102,8 @@ function releaseSession(cad: OcctKernel) {
   accumulatedKind = null;
   accumulatedAmount = Number.NaN;
   accumulatedChamferAngle = Number.NaN;
+  coneFilletPrimitive = null;
+  coneFilletEdgeMap = null;
 }
 
 function cadShapeIsValid(cad: OcctKernel, shape: ShapeHandle) {
@@ -254,13 +260,59 @@ function isIdentityCadTransform(transform: number[]) {
   return transform.every((value, index) => Math.abs(value - identity[index]) < 1e-9);
 }
 
+/** Rigid motion and uniform scale. A stretched cone is not one of these. */
+export function cadTransformIsSimilarity(transform: number[]) {
+  const columns = [
+    [transform[0], transform[4], transform[8]],
+    [transform[1], transform[5], transform[9]],
+    [transform[2], transform[6], transform[10]],
+  ];
+  const lengths = columns.map((column) => Math.hypot(column[0], column[1], column[2]));
+  if (lengths.some((length) => length < 1e-9)) return false;
+  const scale = lengths[0];
+  if (lengths.some((length) => Math.abs(length - scale) > 1e-6 * Math.max(1, scale))) return false;
+  const dot = (left: number[], right: number[]) => left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+  const limit = 1e-5 * scale * scale;
+  return Math.abs(dot(columns[0], columns[1])) <= limit
+    && Math.abs(dot(columns[1], columns[2])) <= limit
+    && Math.abs(dot(columns[0], columns[2])) <= limit;
+}
+
+/** Scale local Z first, then the rigid placement. Column 2 of a row-major 3x4 matrix. */
+export function placementWithSectionScale(rigid: number[] | undefined, sectionScale: number) {
+  if (!rigid) return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, sectionScale, 0];
+  return [
+    rigid[0], rigid[1], rigid[2] * sectionScale, rigid[3],
+    rigid[4], rigid[5], rigid[6] * sectionScale, rigid[7],
+    rigid[8], rigid[9], rigid[10] * sectionScale, rigid[11],
+  ];
+}
+
+function applyRowMajorPoint(matrix: number[], point: { x: number; y: number; z: number }) {
+  return {
+    x: matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
+    y: matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
+    z: matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
+  };
+}
+
 function applyCadTransform(cad: OcctKernel, shape: ShapeHandle, transform: number[] | undefined) {
   if (!isCadTransform(transform) || isIdentityCadTransform(transform)) return shape;
+  // The plain transform turns a non-uniform scale into one average scale, which
+  // rounds an elliptical cone. Stretch has to go through the general transform.
+  if (!cadTransformIsSimilarity(transform)) {
+    return cad.generalTransform(shape, transform);
+  }
   try {
     return cad.transform(shape, transform);
   } catch {
     return cad.generalTransform(shape, transform);
   }
+}
+
+function orientPrimitiveUp(cad: OcctKernel, solid: ShapeHandle) {
+  // OCCT cylinders and cones are Z-up from z=0..height. Rotate −90° about X into SketchForge Y-up.
+  return cad.rotate(solid, { point: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 } }, -Math.PI / 2);
 }
 
 function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimitivePart) {
@@ -270,12 +322,41 @@ function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimit
     if (![radius, height].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error("The selected cylinder has invalid dimensions");
     }
-    // OCCT cylinders are Z-up from z=0..height; rotate −90° about X into SketchForge Y-up.
-    let solid = cad.makeCylinder(radius, height);
-    solid = cad.rotate(solid, { point: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 } }, -Math.PI / 2);
+    const solid = orientPrimitiveUp(cad, cad.makeCylinder(radius, height));
     const transformed = applyCadTransform(cad, solid, primitive.transform);
     if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
       throw new Error("The selected cylinder could not be prepared as a valid CAD solid");
+    }
+    return transformed;
+  }
+  if (primitive.kind === "cone") {
+    const baseRadius = primitive.baseRadius;
+    const topRadius = primitive.topRadius;
+    const height = primitive.height;
+    const radii = [baseRadius, topRadius].filter((value) => Number.isFinite(value) && value >= 0);
+    if (radii.length !== 2 || !(height > 0) || Math.max(baseRadius, topRadius) <= 1e-6) {
+      throw new Error("The selected cone has invalid dimensions");
+    }
+    // Equal radii are a cylinder. OCCT rejects a cone with no taper.
+    const built = Math.abs(baseRadius - topRadius) <= 1e-6
+      ? cad.makeCylinder(Math.max(baseRadius, topRadius), height)
+      : cad.makeCone(baseRadius, topRadius, height);
+    let solid = orientPrimitiveUp(cad, built);
+    try {
+      const cleaned = cad.removeDegenerateEdges(solid);
+      if (cleaned !== solid && cad.isSolid(cleaned) && cadShapeIsValid(cad, cleaned)) {
+        solid = cleaned;
+      }
+    } catch {
+      // A pointed tip can leave a zero-radius circle. Edge collection skips it.
+    }
+    const sectionScale = primitive.sectionScale;
+    const placement = sectionScale && Math.abs(sectionScale - 1) > 1e-6
+      ? placementWithSectionScale(primitive.transform, sectionScale)
+      : primitive.transform;
+    const transformed = applyCadTransform(cad, solid, placement);
+    if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
+      throw new Error("The selected cone could not be prepared as a valid CAD solid");
     }
     return transformed;
   }
@@ -655,6 +736,73 @@ function reconstructParts(cad: OcctKernel, parts: CadModifierMeshPart[]) {
     throw new Error("The grouped solid could not be repaired into valid topology");
   }
   return result;
+}
+
+function captureStretchedConeFillet(cad: OcctKernel, parts: CadModifierMeshPart[]) {
+  coneFilletPrimitive = null;
+  coneFilletEdgeMap = null;
+  if (parts.length !== 1 || parts[0].hole) return;
+  const primitive = parts[0].primitive;
+  if (!primitive || primitive.kind !== "cone" || !primitive.sectionScale || Math.abs(primitive.sectionScale - 1) < 1e-4) return;
+  const host = reconstructPrimitiveSolid(cad, { ...primitive, sectionScale: undefined });
+  const hostEdges = cad.getSubShapes(host, "edge");
+  try {
+    if (hostEdges.length === 0 || hostEdges.length !== edgeHandles.length) return;
+    const placement = placementWithSectionScale(primitive.transform, primitive.sectionScale);
+    const tolerance = Math.max(0.75, Math.max(primitive.baseRadius, primitive.topRadius) * 0.03);
+    for (let index = 0; index < hostEdges.length; index += 1) {
+      const placed = applyRowMajorPoint(placement, edgeCurveSample(cad, hostEdges[index]).sample);
+      const shown = edgeCurveSample(cad, edgeHandles[index]).sample;
+      const gap = Math.hypot(placed.x - shown.x, placed.y - shown.y, placed.z - shown.z);
+      if (gap > tolerance) return;
+    }
+    coneFilletPrimitive = primitive;
+    coneFilletEdgeMap = hostEdges.map((_, index) => index);
+  } finally {
+    try { cad.release(host); } catch { /* The circle is rebuilt for each size. */ }
+  }
+}
+
+function stretchedConeTreatment(
+  cad: OcctKernel,
+  edgeIds: number[],
+  kind: CadModifierKind,
+  amount: number,
+  chamferAngle: number,
+) {
+  const primitive = coneFilletPrimitive;
+  const edgeMap = coneFilletEdgeMap;
+  const sectionScale = primitive?.sectionScale;
+  if (!primitive || !edgeMap || !sectionScale) return null;
+  const host = reconstructPrimitiveSolid(cad, { ...primitive, sectionScale: undefined });
+  const hostEdges = cad.getSubShapes(host, "edge");
+  if (hostEdges.length !== edgeMap.length) {
+    try { cad.release(host); } catch { /* Rebuilt only when the circle still lines up. */ }
+    return null;
+  }
+  const selected = edgeIds.map((id) => hostEdges[edgeMap[id]]);
+  if (selected.some((edge) => !edge)) {
+    try { cad.release(host); } catch { /* Rebuilt only when the circle still lines up. */ }
+    return null;
+  }
+  const treat = (target: ShapeHandle, edges: ShapeHandle[]) => (
+    edges.length === 0
+      ? cad.copy(target)
+      : kind === "fillet"
+        ? cad.fillet(target, edges, amount)
+        : Math.abs(chamferAngle - 45) < 0.001
+          ? cad.chamfer(target, edges, amount)
+          : cad.chamferDistAngle(target, edges, amount, chamferAngle)
+  );
+  const treated = applyRemovingTreatment(cad, host, selected, treat, kind, amount, chamferAngle);
+  const placed = applyCadTransform(cad, treated, placementWithSectionScale(primitive.transform, sectionScale));
+  if (treated !== host) {
+    try { cad.release(host); } catch { /* The circle was copied into the fillet. */ }
+  }
+  if (placed !== treated) {
+    try { cad.release(treated); } catch { /* The stretch keeps its own solid. */ }
+  }
+  return placed;
 }
 
 function shapeVolume(cad: OcctKernel, shape: ShapeHandle) {
@@ -1132,7 +1280,7 @@ function releaseHandles(cad: OcctKernel, handles: ShapeHandle[]) {
   });
 }
 
-function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number, suppressTreatmentDetailEdges = false, retainEdgeHandles = false) {
+export function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number, suppressTreatmentDetailEdges = false, retainEdgeHandles = false) {
   const handles = cad.getSubShapes(shape, "edge");
   const faces = cad.getSubShapes(shape, "face");
   let keepEdgeHandles = false;
@@ -1185,6 +1333,13 @@ function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number, s
       } catch {
         curveType = "unknown";
       }
+      let curveLength = Number.POSITIVE_INFINITY;
+      try {
+        curveLength = cad.curveLength(handle);
+      } catch {
+        curveLength = Number.POSITIVE_INFINITY;
+      }
+      const skipTreatment = isDegenerateCurve(curveLength) || isAnalyticConeSeam({ curveType, surfaceTypes });
       const recovered = recoveredHoleRimClassification({
         curveType,
         surfaceTypes,
@@ -1192,23 +1347,23 @@ function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number, s
         manifold: classification.manifold,
         boundary: classification.boundary,
       });
-      return { id, points, ...recovered, curveType, surfaceTypes, faceAreas };
+      return { id, points, ...recovered, curveType, surfaceTypes, faceAreas, skipTreatment };
     }).filter((edge) => edge.points.length >= 6);
     const edges: CollectedCadEdge[] = collectedEdges.map((edge) => {
       const classified = toClassificationInput(edge);
-      const display = treatmentAreaLimit > 0
+      const display = !edge.skipTreatment && (treatmentAreaLimit > 0
         ? isModifierDisplayCadEdge(classified, treatmentAreaLimit)
-        : isDisplayCadEdge(classified);
+        : isDisplayCadEdge(classified));
       return {
         ...edge,
         display,
-        selectable: isSelectableModifierEdge(classified) && (treatmentAreaLimit <= 0 || display),
+        selectable: !edge.skipTreatment && isSelectableModifierEdge(classified) && (treatmentAreaLimit <= 0 || display),
       };
     });
     const selectableEdgeIds = edges.filter((edge) => edge.selectable && edge.angle + 1e-3 >= sharpAngle).map((edge) => edge.id);
     const displayEdges = cadDisplayEdgesFromCollected(edges);
     keepEdgeHandles = retainEdgeHandles;
-    return { handles, edges: edges.map(({ curveType: _curveType, surfaceTypes: _surfaceTypes, faceAreas: _faceAreas, ...edge }) => edge), selectableEdgeIds, displayEdges };
+    return { handles, edges: edges.map(({ curveType: _curveType, surfaceTypes: _surfaceTypes, faceAreas: _faceAreas, skipTreatment: _skipTreatment, ...edge }) => edge), selectableEdgeIds, displayEdges };
   } finally {
     releaseHandles(cad, faces);
     if (!keepEdgeHandles) releaseHandles(cad, handles);
@@ -1626,6 +1781,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       baseShape = reconstructParts(activeCad, request.parts);
       const collected = collectEdges(activeCad, baseShape, request.sharpAngle, Boolean(request.suppressTreatmentDetailEdges), true);
       edgeHandles = collected.handles;
+      captureStretchedConeFillet(activeCad, request.parts);
       baseSolids = activeCad.isSolid(baseShape) ? [baseShape] : activeCad.getSubShapes(baseShape, "solid");
       baseVolumes = baseSolids.map((solid) => shapeVolume(activeCad, solid));
       if (baseSolids.length === 0) throw new Error("The selected group contains no closed solid components");
@@ -1781,9 +1937,12 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
     const componentResults: ShapeHandle[] = [];
     let result: ShapeHandle | null = null;
     try {
+      const stretched = stretchedConeTreatment(activeCad, request.edgeIds, request.kind, request.amount, request.chamferAngle);
+      if (stretched) componentResults.push(stretched);
       const addedIds = request.edgeIds.filter((id) => !accumulatedEdgeIds.includes(id));
       const selectionShrunk = accumulatedEdgeIds.some((id) => !request.edgeIds.includes(id));
-      const canAddOntoPrevious = !selectionShrunk
+      const canAddOntoPrevious = !stretched
+        && !selectionShrunk
         && addedIds.length > 0
         && accumulatedShape !== null
         && accumulatedEdgeIds.length > 0

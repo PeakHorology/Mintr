@@ -7,7 +7,7 @@ import {
 } from "@/lib/sketchCylinder";
 import { sketchPlaneFromFaceHit, type SketchVec3 } from "@/lib/sketchPlane";
 import type { SketchFaceLoop } from "@/lib/sketchFaceReference";
-import { shapeDepth, shapeWidth, coneBaseRadius, coneTopRadius } from "@/lib/workplaneShapes";
+import { shapeDepth, shapeWidth, coneVisibleProfile } from "@/lib/workplaneShapes";
 import type { SketchCylinderSurface, SketchPlane, WorkplaneShape } from "@/types/sketchforge";
 
 const PLANAR_NORMAL_DOT = 0.92;
@@ -116,11 +116,12 @@ function discCapClassification(
   if (fromCenter.lengthSq() > 1e-10 && worldNormal.dot(fromCenter) < 0) {
     worldNormal.negate();
   }
+  const profile = coneVisibleProfile(shape);
   const radius =
     shape.kind === "cone"
       ? localYSign > 0
-        ? coneTopRadius(shape)
-        : coneBaseRadius(shape)
+        ? profile.topX
+        : profile.baseX
       : Math.min(shapeWidth(shape), shapeDepth(shape)) / 2;
   const plane = sketchPlaneFromFaceHit(
     { x: worldOrigin.x, y: worldOrigin.y, z: worldOrigin.z },

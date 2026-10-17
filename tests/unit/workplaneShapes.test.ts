@@ -6,9 +6,12 @@ import {
   cleanRotationDegrees,
   coneBaseRadius,
   coneMaxRadius,
+  coneIsFreeRange,
   conePatchForFootprint,
   conePatchForRadii,
+  conePatchForStandardMode,
   coneTopRadius,
+  coneVisibleProfile,
   roofPatchForFootprint,
   roofPatchForHeight,
   coneUnitBaseScale,
@@ -283,9 +286,28 @@ describe("workplane shape helpers", () => {
     expect(scaled.topRadius).toBeCloseTo(40, 5);
   });
 
-  it("keeps a typed cone length and scales the base radius with it", () => {
+  it("keeps a free-range length when the width is edited afterward", () => {
+    let cone = shape({
+      kind: "cone",
+      coneFreeRange: true,
+      width: 20,
+      depth: 20,
+      size: 20,
+      height: 20,
+      baseRadius: 10,
+      topRadius: 0,
+    });
+    cone = canonicalizeShape({ ...cone, ...conePatchForRadii(cone, 0, 15) });
+    cone = canonicalizeShape({ ...cone, ...conePatchForFootprint(cone, cone.width, 50) });
+    const widened = canonicalizeShape({ ...cone, ...conePatchForFootprint(cone, 40, cone.depth) });
+    expect(widened.depth).toBeCloseTo(50, 5);
+    expect(widened.width).toBeCloseTo(40, 5);
+  });
+
+  it("keeps a typed free-range length and scales the base radius with it", () => {
     const cone = shape({
       kind: "cone",
+      coneFreeRange: true,
       width: 20,
       depth: 20,
       size: 20,
@@ -298,6 +320,44 @@ describe("workplane shape helpers", () => {
     expect(patched.width).toBeCloseTo(20, 5);
     expect(patched.baseRadius).toBeCloseTo(31.5, 5);
     expect(patched.topRadius).toBeCloseTo(0, 5);
+  });
+
+  it("keeps a standard cone circular when one side of the outline changes", () => {
+    const cone = shape({
+      kind: "cone",
+      width: 20,
+      depth: 20,
+      size: 20,
+      height: 20,
+      baseRadius: 10,
+      topRadius: 4,
+    });
+    const patched = conePatchForFootprint(cone, cone.width ?? 20, 40);
+    expect(patched.width).toBe(40);
+    expect(patched.depth).toBe(40);
+    expect(patched.baseRadius).toBeCloseTo(20, 5);
+    expect(patched.topRadius).toBeCloseTo(8, 5);
+    expect(coneIsFreeRange(cone)).toBe(false);
+    expect(coneIsFreeRange({ ...cone, width: 20, depth: 63 })).toBe(true);
+  });
+
+  it("returns a free-range cone to one circle", () => {
+    const cone = shape({
+      kind: "cone",
+      coneFreeRange: true,
+      width: 20,
+      depth: 40,
+      size: 40,
+      height: 20,
+      baseRadius: 10,
+      topRadius: 0,
+    });
+    const standard = conePatchForStandardMode(cone);
+    expect(standard.coneFreeRange).toBeUndefined();
+    expect(standard.width).toBeCloseTo(40, 5);
+    expect(standard.depth).toBeCloseTo(40, 5);
+    expect(standard.baseRadius).toBeCloseTo(20, 5);
+    expect(standard.topRadius).toBeCloseTo(0, 5);
   });
 
   it("grows a cone footprint only when the ring fits on neither axis", () => {
@@ -319,6 +379,7 @@ describe("workplane shape helpers", () => {
   it("scales cone radii from a single-axis footprint edit", () => {
     const cone = shape({
       kind: "cone",
+      coneFreeRange: true,
       width: 40,
       depth: 40,
       size: 40,
@@ -331,6 +392,9 @@ describe("workplane shape helpers", () => {
     expect(scaled.depth).toBe(40);
     expect(scaled.baseRadius).toBeCloseTo(21, 5);
     expect(scaled.topRadius).toBeCloseTo(30, 5);
+    const profile = coneVisibleProfile({ ...cone, ...scaled });
+    expect(profile.baseZ).toBeCloseTo(14, 5);
+    expect(profile.topZ).toBeCloseTo(20, 5);
   });
 
   it("scales a triangle height with width so the base angles stay put", () => {

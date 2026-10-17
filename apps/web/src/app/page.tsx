@@ -1,12 +1,14 @@
 "use client";
 
-import { ArrowLeft, CircleArrowUp, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { ArrowLeft, CircleArrowUp, Download, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from "react";
 import { rememberProblem } from "@/lib/problemReport";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
 import { preloadCadModifierWorker } from "@/lib/cadModifierPreload";
 import { loadBrepWithOcct } from "@/lib/brepKernel";
 import { IntroCoach } from "@/components/workplane/IntroCoach";
+import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
+import { toolbarShapeAssets } from "@/lib/shapeCatalog";
 import { hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry } from "@/lib/editorHistory";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
 import { hardwareProfile } from "@/lib/desktopHardware";
@@ -811,6 +813,10 @@ export default function Home() {
     if (typeof window === "undefined") return false;
     return new URLSearchParams(window.location.search).get("editor") === "1";
   });
+  const [updateOffer, setUpdateOffer] = useState<DesktopUpdateOffer | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [startupUpdateBusy, setStartupUpdateBusy] = useState(false);
+  const [startupUpdateError, setStartupUpdateError] = useState("");
   const [view, setView] = useState<AppView>("dashboard");
   const [editorStarted, setEditorStarted] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -859,6 +865,21 @@ export default function Home() {
   projectShapesByIdRef.current = projectShapesById;
   dashboardOrderRef.current = dashboardOrder;
   activeProjectIdRef.current = activeProjectId;
+
+  useEffect(() => {
+    const api = desktopUpdateApi();
+    if (!api) return;
+    let cancel = false;
+    setUpdateChecking(true);
+    void api.check().then((offer) => {
+      if (!cancel) setUpdateOffer(offer);
+    }).catch(() => undefined).finally(() => {
+      if (!cancel) setUpdateChecking(false);
+    });
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
@@ -2229,6 +2250,58 @@ export default function Home() {
         >
           {startupReady ? "Start Modeling" : "Getting ready…"}
         </button>
+        <div className="startup-update" aria-live="polite">
+          {updateChecking ? (
+            <p className="startup-update-status">
+              <span className="startup-update-cube" aria-hidden="true">
+                <span className="startup-update-cube-spin">
+                  <span /><span /><span /><span /><span /><span />
+                </span>
+              </span>
+              Checking for updates
+            </p>
+          ) : null}
+          {updateOffer ? (
+            <section className="startup-update-card" aria-label={`PeakCAD ${updateOffer.version} is ready`}>
+              <header className="startup-update-head">
+                <span className="startup-update-kicker">New build</span>
+                <strong>PeakCAD {updateOffer.version}</strong>
+                <span className="startup-update-ready">Ready when you are</span>
+              </header>
+              <ul>
+                {updateOffer.notes.map((note, index) => {
+                  const shape = toolbarShapeAssets[index % toolbarShapeAssets.length];
+                  return (
+                    <li key={note}>
+                      <ShapeModeMark kind={shape.kind} color={shape.color} />
+                      <span>{note}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              {startupUpdateError ? <p className="startup-update-error">{startupUpdateError}</p> : null}
+              <button
+                className="startup-update-download"
+                type="button"
+                disabled={startupUpdateBusy}
+                onClick={() => {
+                  const api = desktopUpdateApi();
+                  if (!api) return;
+                  setStartupUpdateBusy(true);
+                  setStartupUpdateError("");
+                  const action = updateOffer.canInstall ? api.install() : api.openDownload();
+                  void action.catch((error: unknown) => {
+                    setStartupUpdateError(error instanceof Error ? error.message : "PeakCAD couldn't download the update. Nothing was installed.");
+                    setStartupUpdateBusy(false);
+                  });
+                }}
+              >
+                <Download size={16} strokeWidth={2.4} aria-hidden="true" />
+                {startupUpdateBusy ? "Downloading…" : "Download update"}
+              </button>
+            </section>
+          ) : null}
+        </div>
       </main>
     );
   }
@@ -2275,6 +2348,11 @@ export default function Home() {
           onSetFolderHero={setFolderHero}
           onSortModeChange={setSortMode}
           onViewModeChange={setViewMode}
+          updateOffer={updateOffer}
+          onDismissUpdate={() => {
+            if (updateOffer) window.localStorage.setItem(UPDATE_DISMISS_KEY, updateOffer.version);
+            setUpdateOffer(null);
+          }}
           unlockedFolderIds={unlockedFolderIds}
           folderAccessRequest={folderAccessRequest}
           onUnlockFolderSession={unlockFolderSession}
@@ -2484,6 +2562,8 @@ function Dashboard({
   onSetFolderHero,
   onSortModeChange,
   onViewModeChange,
+  updateOffer,
+  onDismissUpdate,
   unlockedFolderIds,
   folderAccessRequest,
   onUnlockFolderSession,
@@ -2526,6 +2606,8 @@ function Dashboard({
   onSetFolderHero: (folderId: string, projectId: string) => void;
   onSortModeChange: (value: string) => void;
   onViewModeChange: (value: ViewMode) => void;
+  updateOffer: DesktopUpdateOffer | null;
+  onDismissUpdate: () => void;
   unlockedFolderIds: readonly string[];
   folderAccessRequest: FolderAccessRequest | null;
   onUnlockFolderSession: (folderId: string) => void;
@@ -2544,24 +2626,9 @@ function Dashboard({
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
   const [appWorkspace, setAppWorkspace] = useState<WorkplaneWorkspaceSettings>(() => loadGlobalWorkspaceDefaults().workspace);
   const [appSnap, setAppSnap] = useState<GridSize>(() => loadGlobalWorkspaceDefaults().snap);
-  const [updateOffer, setUpdateOffer] = useState<DesktopUpdateOffer | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState("");
-
-  useEffect(() => {
-    const api = desktopUpdateApi();
-    if (!api) return;
-    let cancel = false;
-    void api.check().then((offer) => {
-      if (cancel || !offer) return;
-      if (window.localStorage.getItem(UPDATE_DISMISS_KEY) === offer.version) return;
-      setUpdateOffer(offer);
-    }).catch(() => undefined);
-    return () => {
-      cancel = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -3549,8 +3616,7 @@ function Dashboard({
                     <button
                       type="button"
                       onClick={() => {
-                        window.localStorage.setItem(UPDATE_DISMISS_KEY, updateOffer.version);
-                        setUpdateOffer(null);
+                        onDismissUpdate();
                         setUpdateOpen(false);
                       }}
                     >

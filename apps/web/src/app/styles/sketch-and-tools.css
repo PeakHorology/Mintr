@@ -1621,7 +1621,7 @@
   margin: 0;
   appearance: none;
   background: transparent;
-  cursor: pointer;
+  cursor: default;
 }
 
 .sketch-image-range > input[type="range"]::-webkit-slider-runnable-track {
@@ -1639,6 +1639,7 @@
   border: 2px solid var(--peak-blue-hover);
   border-radius: var(--radius-pill);
   box-shadow: var(--elevation-sm);
+  cursor: grab;
 }
 
 .sketch-image-position-field {

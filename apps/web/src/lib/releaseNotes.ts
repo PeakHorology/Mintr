@@ -12,6 +12,17 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.0.6",
+    items: [
+      "The start screen checks for an update. When one is ready, the changelog sits under Start Modeling with a button to download it. Start Modeling still opens your projects.",
+      "A cone can take a fillet or a chamfer.",
+      "A new cone is a standard cone: bottom radius, top radius, and height. Free range opens length and width for an oval cone.",
+      "An oval cone stays oval through a fillet or chamfer, and that fillet is much faster.",
+      "Changing the width of a free-range cone keeps the length you already set.",
+      "A dimension slider moves only when you drag its button. A click on the track leaves the number alone.",
+    ],
+  },
+  {
     version: "1.0.5",
     items: [
       "Export can open the part in the slicer on this computer. OrcaSlicer, Bambu Studio, PrusaSlicer, and SuperSlicer receive a 3MF. Cura receives an STL.",

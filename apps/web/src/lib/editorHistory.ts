@@ -86,6 +86,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     segments: shape.segments,
     topRadius: shape.topRadius,
     baseRadius: shape.baseRadius,
+    coneFreeRange: shape.coneFreeRange || undefined,
     leftAngle: shape.leftAngle,
     rightAngle: shape.rightAngle,
     text: shape.text,

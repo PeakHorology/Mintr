@@ -1168,7 +1168,7 @@
   margin: 0;
   appearance: none;
   background: transparent;
-  cursor: pointer;
+  cursor: default;
 }
 
 .range-control input[type="range"]::-webkit-slider-runnable-track {
@@ -1187,6 +1187,11 @@
   border: 2px solid var(--peak-blue);
   border-radius: var(--radius-pill);
   box-shadow: var(--elevation-sm);
+  cursor: grab;
+}
+
+.range-control input[type="range"]:active::-webkit-slider-thumb {
+  cursor: grabbing;
 }
 
 .range-control input[type="range"]::-moz-range-track {
@@ -1208,6 +1213,7 @@
   border: 2px solid var(--peak-blue);
   border-radius: var(--radius-pill);
   box-shadow: var(--elevation-sm);
+  cursor: grab;
 }
 
 .inspector-header-icon:hover,

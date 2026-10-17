@@ -38,5 +38,7 @@ sha512: abcdef==
       "PeakCAD 1.0.5",
       "History opens under its button.",
     ]);
+    const longNotes = ["# PeakCAD 1.0.6", ...Array.from({ length: 20 }, (_, index) => `- Note ${index + 1}`)].join("\n");
+    expect(plainNotes(longNotes)).toHaveLength(16);
   });
 });

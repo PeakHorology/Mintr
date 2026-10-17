@@ -263,6 +263,8 @@ export type WorkplaneShape = {
   segments?: number;
   topRadius?: number;
   baseRadius?: number;
+  /** When set, a cone keeps Length and Width as well as the two radii. */
+  coneFreeRange?: boolean;
   /** Triangle/roof left slope angle in degrees from horizontal. */
   leftAngle?: number;
   /** Triangle/roof right slope angle in degrees from horizontal. */

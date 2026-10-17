@@ -88,7 +88,7 @@ import {
   withCsgMeta,
 } from "@/lib/csgTree";
 import type { CsgOp } from "@/types/sketchforge";
-import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForBakedShape } from "@/lib/cadBakeMetadata";
+import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCone, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForBakedShape } from "@/lib/cadBakeMetadata";
 import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
 import {
   CAD_MODIFIER_MAX_SHARP_ANGLE,
@@ -668,6 +668,7 @@ function shapeHasTransformToBake(shape: WorkplaneShape) {
 function cadModifierPrimitiveForShape(shape: WorkplaneShape): CadModifierPrimitivePart | null {
   return cadModifierPrimitiveForBakedShape(shape)
     ?? cadModifierPrimitiveForAnalyticCylinder(shape)
+    ?? cadModifierPrimitiveForAnalyticCone(shape)
     ?? (shapeHasTransformToBake(shape) ? cadModifierPrimitiveForAnalyticBox(shape) : null)
     ?? cadModifierPrimitiveForAnalyticBox(shape);
 }

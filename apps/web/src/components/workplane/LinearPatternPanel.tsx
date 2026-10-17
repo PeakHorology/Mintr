@@ -11,6 +11,7 @@ import {
   clampLinearPatternSpacing,
   linearPatternInstanceCount,
 } from "@/lib/linearPattern";
+import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import {
   displayStepFromMillimeters,
   displayToMillimeters,
@@ -79,13 +80,12 @@ function CountControl({
         </span>
       </span>
       <div className="range-control">
-        <input
-          type="range"
+        <ThumbRangeInput
           min={LINEAR_PATTERN_MIN_COUNT}
           max={LINEAR_PATTERN_MAX_COUNT}
           step={1}
           value={sliderValue}
-          onChange={(event) => onChange(clampLinearPatternCount(Number(event.currentTarget.value)))}
+          onValueChange={(next) => onChange(clampLinearPatternCount(next))}
         />
       </div>
     </label>
@@ -160,13 +160,12 @@ function SpacingControl({
         </span>
       </span>
       <div className="range-control">
-        <input
-          type="range"
+        <ThumbRangeInput
           min={controlMin}
           max={controlMax}
           step={controlStep}
           value={sliderValue}
-          onChange={(event) => onChange(clampLinearPatternSpacing(displayToMillimeters(Number(event.currentTarget.value), workspace)))}
+          onValueChange={(next) => onChange(clampLinearPatternSpacing(displayToMillimeters(next, workspace)))}
         />
       </div>
     </label>

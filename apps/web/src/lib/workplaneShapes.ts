@@ -48,6 +48,39 @@ export function coneMaxRadius(shape: Pick<WorkplaneShape, "baseRadius" | "topRad
   return Math.max(coneBaseRadius(shape), coneTopRadius(shape));
 }
 
+/** Radii of the cone the viewport actually draws, in millimeters. */
+export type ConeProfile = {
+  baseX: number;
+  baseZ: number;
+  topX: number;
+  topZ: number;
+};
+
+/**
+ * The base and top sizes after the footprint scale. Stored radii and Length/Width
+ * are not those sizes on their own: the larger ring is fitted to the footprint,
+ * and the other ring follows.
+ */
+export function coneVisibleProfile(shape: Pick<WorkplaneShape, "baseRadius" | "topRadius" | "width" | "depth" | "size">): ConeProfile {
+  const maxRadius = Math.max(coneMaxRadius(shape), 1e-9);
+  const halfWidth = Math.max(0, shapeWidth(shape) / 2);
+  const halfDepth = Math.max(0, shapeDepth(shape) / 2);
+  const base = Math.max(0, coneBaseRadius(shape)) / maxRadius;
+  const top = Math.max(0, coneTopRadius(shape)) / maxRadius;
+  return {
+    baseX: base * halfWidth,
+    baseZ: base * halfDepth,
+    topX: top * halfWidth,
+    topZ: top * halfDepth,
+  };
+}
+
+/** A cone with Length and Width, or an older cone that is already oval. */
+export function coneIsFreeRange(shape: Pick<WorkplaneShape, "coneFreeRange" | "width" | "depth" | "size">) {
+  if (shape.coneFreeRange) return true;
+  return Math.abs(shapeWidth(shape) - shapeDepth(shape)) >= 1e-4;
+}
+
 /**
  * Unit-frustum top scale for mesh/CSG: larger ring maps to 1, then width/depth
  * scale the overall footprint (same pattern as cylinders).
@@ -72,8 +105,8 @@ export function coneLocalHalfExtents(shape: Pick<WorkplaneShape, "baseRadius" | 
 }
 
 /**
- * After editing top/base radii, set overall Length/Width to the circular
- * footprint of the larger ring. Use Length/Width controls to scale or squash.
+ * Standard cone: the two radii are the solid, and the footprint stays a circle
+ * around the larger one.
  */
 export function conePatchForRadii(
   _shape: Pick<WorkplaneShape, "baseRadius" | "topRadius" | "width" | "depth" | "size">,
@@ -92,22 +125,44 @@ export function conePatchForRadii(
   };
 }
 
+/** Leave Free range and keep a circle as large as the wider end of each ring. */
+export function conePatchForStandardMode(shape: Pick<WorkplaneShape, "baseRadius" | "topRadius" | "width" | "depth" | "size">): Partial<WorkplaneShape> {
+  const profile = coneVisibleProfile(shape);
+  const base = Math.max(profile.baseX, profile.baseZ, 0.001);
+  const top = Math.max(profile.topX, profile.topZ, 0);
+  return { ...conePatchForRadii(shape, top, base), coneFreeRange: undefined };
+}
+
 /**
- * Scale the whole cone when overall Length/Width change (workplane or properties).
- * Radii follow the dominant axis scale so Top/Base stay in sync with the solid.
+ * Outline edit. A standard cone stays circular and the radii follow. Free range
+ * keeps the typed length or width and scales the radii with the axis that moved.
  */
 export function conePatchForFootprint(
-  shape: Pick<WorkplaneShape, "baseRadius" | "topRadius" | "width" | "depth" | "size" | "height">,
+  shape: Pick<WorkplaneShape, "coneFreeRange" | "baseRadius" | "topRadius" | "width" | "depth" | "size" | "height">,
   nextWidth: number,
   nextDepth: number,
 ): Partial<WorkplaneShape> {
+  if (!coneIsFreeRange(shape)) {
+    const oldDiameter = Math.max(shapeWidth(shape), shapeDepth(shape), 0.001);
+    const widthChanged = Math.abs(nextWidth - shapeWidth(shape));
+    const depthChanged = Math.abs(nextDepth - shapeDepth(shape));
+    const diameter = Math.max(0.001, widthChanged >= depthChanged ? nextWidth : nextDepth);
+    const scale = diameter / oldDiameter;
+    return {
+      width: diameter,
+      depth: diameter,
+      size: diameter,
+      topRadius: Math.max(0, coneTopRadius(shape) * scale),
+      baseRadius: Math.max(0.001, coneBaseRadius(shape) * scale),
+    };
+  }
+
   const oldW = Math.max(0.001, shapeWidth(shape));
   const oldD = Math.max(0.001, shapeDepth(shape));
   const width = Math.max(0.001, nextWidth);
   const depth = Math.max(0.001, nextDepth);
   const scaleW = width / oldW;
   const scaleD = depth / oldD;
-  // Prefer the axis that actually changed (corner drags keep both equal).
   const scale = Math.abs(scaleW - 1) >= Math.abs(scaleD - 1) - 1e-12 ? scaleW : scaleD;
   return {
     width,
@@ -326,7 +381,9 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
     const depth = shapeDepth(next);
     const halfW = width / 2;
     const halfD = depth / 2;
-    if (maxR > halfW + 1e-6 && maxR > halfD + 1e-6) {
+    // Free range length and width are the sizes the user typed. Growing both
+    // axes here is what made a later width edit rewrite the length.
+    if (!coneIsFreeRange(next) && maxR > halfW + 1e-6 && maxR > halfD + 1e-6) {
       const grow = maxR / Math.max(0.001, Math.min(halfW, halfD));
       const nextWidth = width * grow;
       const nextDepth = depth * grow;
@@ -374,6 +431,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.segments === b.segments &&
     a.topRadius === b.topRadius &&
     a.baseRadius === b.baseRadius &&
+    a.coneFreeRange === b.coneFreeRange &&
     a.leftAngle === b.leftAngle &&
     a.rightAngle === b.rightAngle &&
     a.text === b.text &&

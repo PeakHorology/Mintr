@@ -91,6 +91,21 @@ export function isSelectableModifierEdge(edge: Pick<CadEdgeClassificationInput, 
   return edge.manifold && !edge.boundary && edge.pointCount >= 6;
 }
 
+/** A circle that collapsed to a point (a cone tip) has no edge to round. */
+export function isDegenerateCurve(length: number) {
+  return Number.isFinite(length) && length <= 1e-4;
+}
+
+/**
+ * The line where a periodic cone surface meets itself. It is a UV seam, not a
+ * corner, and OpenCascade rejects a fillet or chamfer on it.
+ */
+export function isAnalyticConeSeam(edge: Pick<CadEdgeClassificationInput, "curveType" | "surfaceTypes">) {
+  if (edge.curveType.toLowerCase() !== "line") return false;
+  if (edge.surfaceTypes.length === 0) return false;
+  return edge.surfaceTypes.every((surfaceType) => surfaceType.toLowerCase() === "cone");
+}
+
 /**
  * Recover a usable dihedral when UV sampling fails on a closed circle (seam /
  * tessellation drift) so the rim still passes the sharp-angle picker.

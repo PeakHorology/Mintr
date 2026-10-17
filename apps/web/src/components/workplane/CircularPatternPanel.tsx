@@ -14,6 +14,7 @@ import {
   clampCircularPatternRotation,
   type CircularPatternRotationStep,
 } from "@/lib/circularPattern";
+import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import {
   displayStepFromMillimeters,
   displayToMillimeters,
@@ -106,15 +107,14 @@ function RadiusControl({
         </span>
       </span>
       <div className="range-control">
-        <input
-          type="range"
+        <ThumbRangeInput
           min={controlMin}
           max={controlMax}
           step={controlStep}
           value={sliderValue}
           disabled={disabled}
-          onChange={(event) => {
-            const next = clamp(Number(event.currentTarget.value), controlMin, controlMax);
+          onValueChange={(raw) => {
+            const next = clamp(raw, controlMin, controlMax);
             onChange(clamp(displayToMillimeters(next, workspace), safeMin, safeMax));
             setDraft(formatControlValue(next, workspace.accuracy, controlStep));
           }}
@@ -189,15 +189,14 @@ function CountControl({
         </span>
       </span>
       <div className="range-control">
-        <input
-          type="range"
+        <ThumbRangeInput
           min={safeMin}
           max={safeMax}
           step={1}
           value={sliderValue}
           disabled={disabled}
-          onChange={(event) => {
-            const next = clampCircularPatternCount(Number(event.currentTarget.value));
+          onValueChange={(raw) => {
+            const next = clampCircularPatternCount(raw);
             onChange(next);
             setDraft(String(next));
           }}
@@ -271,16 +270,15 @@ function RotationControl({
         </span>
       </span>
       <div className="range-control">
-        <input
-          type="range"
+        <ThumbRangeInput
           min={0}
           max={270}
           step={90}
           value={actualValue}
           disabled={disabled}
           list="circular-pattern-rotation-steps"
-          onChange={(event) => {
-            const next = clampCircularPatternRotation(Number(event.currentTarget.value));
+          onValueChange={(raw) => {
+            const next = clampCircularPatternRotation(raw);
             onChange(next);
             setDraft(String(next));
           }}

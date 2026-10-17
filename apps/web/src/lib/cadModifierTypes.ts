@@ -42,6 +42,20 @@ export type CadModifierPrimitivePart =
       radius: number;
       height: number;
       transform?: number[];
+    }
+  | {
+      kind: "cone";
+      /** Bottom radius. Zero is a point sitting on the workplane. */
+      baseRadius: number;
+      /** Top radius. Zero is a pointed tip. */
+      topRadius: number;
+      height: number;
+      transform?: number[];
+      /**
+       * Local depth divided by width. The fillet is built on the circle, then
+       * this stretch is applied, matching the cone drawn on screen.
+       */
+      sectionScale?: number;
     };
 
 export type CadModifierMeshPart = {

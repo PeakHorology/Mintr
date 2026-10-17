@@ -49,7 +49,7 @@ function plainNotes(body) {
     .split(/\r?\n/)
     .map((line) => line.replace(/^#+\s*/, "").replace(/^[-*]\s*/, "").trim())
     .filter((line) => line && !line.startsWith("```") && line.length < 220);
-  return lines.slice(0, 6);
+  return lines.slice(0, 16);
 }
 
 module.exports = {

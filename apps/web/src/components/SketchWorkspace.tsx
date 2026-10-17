@@ -3,6 +3,7 @@
 import { ChevronUp, CornerDownRight, Home, Link, Link2Off, Minus, Plus, Ruler, Split, Trash2, Waves } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { SnapGridControl } from "@/components/workplane/ShapeInspector";
+import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { SketchSnapGlyph } from "@/components/workplane/SketchSnapGlyph";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
@@ -2064,7 +2065,7 @@ function SketchImageRange({
         />
         <span>{suffix}</span>
       </div>
-      <input type="range" min={min} max={max} step={accuracy === 1 ? 0.1 : 0.01} value={safeValue} onChange={(event) => onChange(Number(event.currentTarget.value))} />
+      <ThumbRangeInput min={min} max={max} step={accuracy === 1 ? 0.1 : 0.01} value={safeValue} onValueChange={onChange} />
     </label>
   );
 }

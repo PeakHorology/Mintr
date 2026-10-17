@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type Se
 import { ToolbarHideSelectedIcon } from "@/components/icons";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
+import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
@@ -28,7 +29,7 @@ import {
 } from "@/lib/metricThreadSolid";
 import { THREAD_SIZE_OPTIONS, type ThreadSeries } from "@/lib/metricThreads";
 import { resolveShapeSides, resolveShapeSteps } from "@/lib/displayTessellation";
-import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, conePatchForFootprint, conePatchForRadii, coneTopRadius } from "@/lib/workplaneShapes";
+import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
 import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
 import { isConstructionShape } from "@/lib/holeFeature";
 import { patternFeatureLabel } from "@/lib/patternFeature";
@@ -140,7 +141,7 @@ function formatPropertyNumber(value: number, accuracy: MeasurementAccuracy, step
 }
 
 function propertyUsesLengthUnit(label: string) {
-  return ["Radius", "Length", "Width", "Height", "Bevel", "Top Radius", "Base Radius", "Thickness", "Clearance"].includes(label);
+  return /length|width|height|radius|bevel|thickness|clearance/i.test(label);
 }
 
 function propertyUsesDegreeUnit(label: string) {
@@ -338,10 +339,6 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
   const depth = shapeDepth(shape);
   const setWidth = (value: number) => onUpdate({ width: value, size: resizedShapeSize(value, depth) }, { resizeAxis: "width" });
   const setDepth = (value: number) => onUpdate({ depth: value, size: resizedShapeSize(width, value) }, { resizeAxis: "depth" });
-  const setConeWidth = (value: number) => onUpdate(conePatchForFootprint(shape, value, depth), { resizeAxis: "width" });
-  const setConeDepth = (value: number) => onUpdate(conePatchForFootprint(shape, width, value), { resizeAxis: "depth" });
-  const setBaseRadius = (value: number) => onUpdate(conePatchForRadii(shape, coneTopRadius(shape), value), { resizeAxis: "width" });
-  const setTopRadius = (value: number) => onUpdate(conePatchForRadii(shape, value, coneBaseRadius(shape)), { resizeAxis: "width" });
   const setHeight = (height: number) => onUpdate({ height }, { resizeAxis: "height" });
 
   if (shape.kind === "box") {
@@ -380,13 +377,40 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
   }
 
   if (shape.kind === "cone") {
+    const freeRange = coneIsFreeRange(shape);
+    const profile = coneVisibleProfile(shape);
+    const mode: SelectPropertyConfig = {
+      type: "select",
+      label: "Cone",
+      value: freeRange ? "Free range" : "Standard",
+      options: ["Standard", "Free range"],
+      onChange: (value) => onUpdate(value === "Free range" ? { coneFreeRange: true } : conePatchForStandardMode(shape)),
+    };
+    const sides = { label: "Sides", value: resolveShapeSides(shape.kind, shape.sides) ?? 192, min: 3, max: MAX_SHAPE_SIDES, step: 1, onChange: (value: number) => onUpdate({ sides: Math.round(value) }) };
+    const height = { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight };
+    if (!freeRange) {
+      const setBottom = (value: number) => onUpdate(conePatchForRadii(shape, profile.topX, value), { resizeAxis: "width" });
+      const setTop = (value: number) => onUpdate(conePatchForRadii(shape, value, profile.baseX), { resizeAxis: "width" });
+      return [
+        mode,
+        { label: "Bottom radius", value: profile.baseX, min: MIN_SHAPE_SIZE / 2, max: 80, onChange: setBottom },
+        { label: "Top radius", value: profile.topX, min: 0, max: 80, onChange: setTop },
+        height,
+        sides,
+      ];
+    }
+    const setConeWidth = (value: number) => onUpdate(conePatchForFootprint(shape, value, depth), { resizeAxis: "width" });
+    const setConeDepth = (value: number) => onUpdate(conePatchForFootprint(shape, width, value), { resizeAxis: "depth" });
+    const setBaseRadius = (value: number) => onUpdate(conePatchForRadii(shape, coneTopRadius(shape), value), { resizeAxis: "width" });
+    const setTopRadius = (value: number) => onUpdate(conePatchForRadii(shape, value, coneBaseRadius(shape)), { resizeAxis: "width" });
     return [
+      mode,
       { label: "Top Radius", value: shape.topRadius ?? 0, min: 0, max: 80, onChange: setTopRadius },
       { label: "Base Radius", value: shape.baseRadius ?? width / 2, min: MIN_SHAPE_SIZE / 2, max: 80, onChange: setBaseRadius },
       { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setConeDepth },
       { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setConeWidth },
-      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight },
-      { label: "Sides", value: resolveShapeSides(shape.kind, shape.sides) ?? 192, min: 3, max: MAX_SHAPE_SIDES, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
+      height,
+      sides,
     ];
   }
 
@@ -1199,17 +1223,14 @@ function RangeProperty({
         </span>
       </span>
       <div className={`range-control${centerDetent ? " has-center-index" : ""}`}>
-        <input
-          type="range"
+        <ThumbRangeInput
           min={controlMin}
           max={controlMax}
           step={isAngle ? "any" : controlStep}
           value={sliderValue}
           disabled={disabled}
-          onPointerDown={() => onInteractionActiveChange?.(true)}
-          onPointerUp={() => onInteractionActiveChange?.(false)}
-          onPointerCancel={() => onInteractionActiveChange?.(false)}
-          onChange={(event) => handleSliderChange(Number(event.currentTarget.value))}
+          onDragActiveChange={onInteractionActiveChange}
+          onValueChange={handleSliderChange}
         />
       </div>
       {hint ? <span className="range-property-hint">{hint}</span> : null}

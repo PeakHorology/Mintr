@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { Check, LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import type { CadModifierKind, CadModifierQuality } from "@/lib/cadModifierTypes";
 import { CAD_MODIFIER_MAX_SHARP_ANGLE, edgeModifierSelectionStatus } from "@/lib/cadModifierRuntime";
@@ -120,14 +121,13 @@ export function EdgeModifierSlider({
         </span>
       </span>
       <div className="range-control">
-        <input
-          type="range"
+        <ThumbRangeInput
           min={controlMin}
           max={controlMax}
           step={controlStep}
           value={sliderValue}
           disabled={disabled}
-          onChange={(event) => handleSliderChange(Number(event.currentTarget.value))}
+          onValueChange={handleSliderChange}
         />
       </div>
     </label>
