@@ -36,6 +36,9 @@
     ".next-dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".next-dev/types/app/api/slicer",
+    ".next/types/app/api/slicer",
+    ".next-export/types/app/api/slicer"
   ]
 }
