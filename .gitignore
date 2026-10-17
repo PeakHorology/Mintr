@@ -7,6 +7,7 @@ node_modules/
 .next/
 .next-dev/
 .next-export/
+apps/web/.export-hold/
 out/
 build/
 dist/
