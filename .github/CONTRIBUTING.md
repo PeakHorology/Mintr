@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve PeakCAD.
+Thanks for helping improve Mintr.
 
 ## Local Setup
 
@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` is a local preview on this machine (`http://127.0.0.1:3000`). PeakCAD itself is the Windows desktop build (`npm run package:desktop`).
+`npm run dev` is a local preview on this machine (`http://127.0.0.1:3000`). Mintr itself is the Windows desktop build (`npm run package:desktop`).
 
 ## Before Opening a Pull Request
 

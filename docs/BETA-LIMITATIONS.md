@@ -1,6 +1,6 @@
-# PeakCAD known limitations
+# Known limitations
 
-PeakCAD 1.0 is ready for real parts. These are the remaining gaps versus a full industrial CAD suite.
+Mintr 1.0 is ready for real parts. These are the remaining gaps versus a full industrial CAD suite.
 
 ## Exact STEP vs faceted
 

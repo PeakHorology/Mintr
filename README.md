@@ -1,22 +1,35 @@
 <div align="center">
-  <img src="apps/web/public/assets/peakcad/peakcad-logo.png" width="96" alt="PeakCAD logo">
-  <h1>PeakCAD</h1>
-  <p>Local Windows CAD from Peak Horology.<br>Drop a solid, sketch on a face, and export a real B-Rep STEP file.</p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="apps/web/public/assets/mintr/mintr-wordmark-on-dark.png">
+    <img src="apps/web/public/assets/mintr/mintr-wordmark.png" alt="Mintr" width="420">
+  </picture>
+  <p><strong>Learn. Model. Mint.</strong><br>Your designs, your files.</p>
+  <p>Local Windows CAD from Peak Horology.</p>
   <p>
-    <a href="LICENSE"><img alt="GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-2563eb"></a>
-    <img alt="Version 1.0.7.5" src="https://img.shields.io/badge/version-1.0.7.5-0f172a">
-    <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-0ea5e9">
+    <a href="LICENSE"><img alt="GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-2aa77e"></a>
+    <img alt="Version 1.0.7.5" src="https://img.shields.io/badge/version-1.0.7.5-655447">
+    <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-655447">
+  </p>
+  <p>
+    <a href="https://www.mintr3d.com">mintr3d.com</a>
+    ·
+    <a href="https://www.instagram.com/Mintr3D/">@Mintr3D</a>
   </p>
 </div>
 
-PeakCAD 1.0 is a desktop CAD application. Projects stay on this computer. There is no account, no cloud, and no hosted edition.
+Mintr 1.0.7.5 is the local Windows CAD app from Peak Horology. The installer, shortcuts, and Windows apps entry are named **Mintr3d**. Projects stay on this computer. There is no account, no cloud, and no hosted edition.
+
+The program file is still `PeakCAD.exe`, and projects are still `.peakcad` files. The rebrand does not change that format.
 
 ## Features
 
-- Primitives: box, cylinder, sphere, cone, pyramid, polygon, torus, tube, thread, text, gear
-- Sketch on a face, then extrude, cut, or revolve
-- Group, with an exact OpenCascade boolean when the solid supports it
+- Shapes: box, cylinder, sphere, cone, pyramid, polygon, torus, tube, thread, text, and gears
+- Gear size comes from tooth count and module, so two gears with the same module mesh
+- Sketch on a face while looking at it in 3D, then extrude, cut, or revolve
+- Type a length or an angle while drawing, and click a length or corner to change it
 - Fillet and chamfer
+- Construction lines, a stroked outline, and a sweep along a path
+- Group, with an exact OpenCascade boolean when the solid supports it
 - Import STL, STEP, 3MF, and SVG
 - Export STL, OBJ, 3MF, and STEP (exact B-Rep when the solid allows it, faceted otherwise)
 
@@ -31,7 +44,7 @@ npm install
 npm run package:desktop
 ```
 
-The installer is written to `dist-release/PeakCAD-Setup-1.0.7.5.exe`. A portable build is written beside it. The setup wizard, shortcuts, and Windows apps entry are named Mintr3d, and the icon is the Mintr cube. Close any running PeakCAD window before you install. Setup upgrades an existing install in place and keeps your projects. The program file remains PeakCAD.exe.
+The installer is written to `dist-release/PeakCAD-Setup-1.0.7.5.exe`. A portable build is written beside it. The setup wizard is named Mintr3d and uses the Mintr cube. Close any running Mintr window before you install. Setup upgrades an existing install in place and keeps your projects.
 
 Developers can preview the editor locally:
 
@@ -57,6 +70,6 @@ npm run ci
 
 [GPL-3.0-or-later](LICENSE) · © PeakHorologyLLC
 
-PeakCAD is free software and comes with no warranty. In the app, open **Settings → About** or **Help → About PeakCAD** for the copyright notice, the license, and the written source offer.
+Mintr is free software and comes with no warranty. In the app, open **Settings → About** or **Help → About Mintr** for the copyright notice, the license, and the written source offer.
 
 Third-party components keep their own licenses. The OpenCascade kernel is LGPL-2.1 with the Open CASCADE exception and ships as a separate `occt-wasm.wasm` file. `npm run stage:legal` writes `THIRD-PARTY-NOTICES.txt` from the installed dependencies. The desktop build ships that file with `LICENSE.txt` and `SOURCE-OFFER.txt`.

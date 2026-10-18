@@ -2,16 +2,16 @@
 
 ## Supported Versions
 
-PeakCAD **0.9.x Beta** is the current public line. Please report issues against the latest commit on the default branch.
+Mintr **1.0.x** is the current public line. Please report issues against the latest commit on the default branch.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.9.x   | Yes       |
-| < 0.9   | No        |
+| 1.0.x   | Yes       |
+| < 1.0   | No        |
 
 ## Reporting a Vulnerability
 
-PeakCAD is local-first: projects and files stay on the user’s machine. Still report anything that could:
+Mintr is local-first: projects and files stay on the user’s machine. Still report anything that could:
 
 - Exfiltrate local project or filesystem data unexpectedly
 - Execute untrusted code from imported CAD/mesh files

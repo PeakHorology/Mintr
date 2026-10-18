@@ -1,8 +1,8 @@
-# PeakCAD — Getting Started
+# Mintr — Getting Started
 
-PeakCAD is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.0). There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
+Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.0.7.5). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
 
-## Use PeakCAD (the app)
+## Use Mintr (the app)
 
 ```powershell
 cd path\to\peakcad
@@ -19,17 +19,17 @@ Close any running PeakCAD window before packaging. Run the Setup or portable exe
 
 ### Upgrade an existing install
 
-You do **not** need to uninstall PeakCAD first. The Setup installer upgrades in place and keeps your projects/settings.
+You do **not** need to uninstall first. The Setup installer upgrades in place and keeps your projects and settings.
 
-1. Bump `"version"` in `package.json` (for example `1.0.0` → `1.0.1`)
-2. Close PeakCAD
+1. Bump `"version"` in `package.json` (for example `1.0.7` → `1.0.8`)
+2. Close Mintr
 3. Run `npm run package:desktop`
 4. Run the new `PeakCAD-Setup-*.exe` from `dist-release/`
-5. Finish the installer — PeakCAD relaunches on the upgraded build
+5. Finish the installer — Mintr relaunches on the upgraded build
 
 If a pinned taskbar icon looks wrong after an upgrade, unpin it and pin the Start Menu/Desktop shortcut again (Windows caches icons aggressively).
 
-The portable `.exe` is a separate copy you can run side-by-side; it does not upgrade an installed PeakCAD.
+The portable `.exe` is a separate copy you can run side-by-side; it does not upgrade an installed Mintr.
 
 ## Build from source (developers)
 
@@ -40,7 +40,7 @@ cd path\to\peakcad
 npm run dev
 ```
 
-Open **http://127.0.0.1:3000** on this computer. Leave the terminal open. Press `Ctrl+C` when you are done. Nothing is served to the network as a PeakCAD product.
+Open **http://127.0.0.1:3000** on this computer. Leave the terminal open. Press `Ctrl+C` when you are done. Nothing is served to the network as a Mintr product.
 
 ## Branding
 
@@ -81,4 +81,4 @@ Runs typecheck, unit tests, and STEP e2e (OpenCascade).
 | `node` or `npm` not recognized | Close and reopen your terminal |
 | Port 3000 already in use | Stop other local dev servers |
 | Preview page won't load | Make sure `npm run dev` is still running |
-| Desktop app won't start | Close every PeakCAD window and run the new Setup exe |
+| Desktop app won't start | Close every Mintr window and run the new Setup exe |
