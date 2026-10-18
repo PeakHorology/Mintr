@@ -1,17 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Mintr">
   <title>Mintr</title>
-  <!-- Charcoal field -->
-  <path fill="#2a2a2a" d="M56 20h400l36 36v400l-36 36H56l-36-36V56z"/>
-  <!-- Chamfered frame -->
-  <path fill="#f2f2f0" fill-rule="evenodd" d="M72 44h368l28 28v368l-28 28H72l-28-28V72zm28 36h312l20 20v312l-20 20H100l-20-20V100z"/>
-  <!-- Serif M body -->
-  <path fill="#f2f2f0" d="M120 368V148l22-22h48l66 118 66-118h48l22 22v220h-44V210l-58 104h-68l-58-104v158z"/>
-  <!-- Top serifs -->
-  <rect fill="#f2f2f0" x="112" y="126" width="60" height="18"/>
-  <rect fill="#f2f2f0" x="340" y="126" width="60" height="18"/>
-  <!-- Bottom serifs -->
-  <rect fill="#f2f2f0" x="112" y="368" width="60" height="18"/>
-  <rect fill="#f2f2f0" x="340" y="368" width="60" height="18"/>
-  <!-- Mint strike — minting press line -->
-  <rect fill="#3ecf8e" x="128" y="247" width="256" height="18" rx="2"/>
+  <rect width="512" height="512" rx="96" fill="#2a2a2a"/>
+  <path fill="#2bbf8a" d="M96 400V112h88l72 136 72-136h88v288h-72V248l-52 96h-72l-52-96v152z"/>
+  <path fill="#ffffff" d="M216 400h80l-40-72z"/>
 </svg>
