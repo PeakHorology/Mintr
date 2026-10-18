@@ -4,6 +4,18 @@ Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes
 
 ## Unreleased
 
+## 1.0.7
+
+- Gears are a shape. Tooth count and module set the size, so two gears with the same module mesh.
+- You can sketch on a face while looking at it in 3D. Look at face squares the camera. Extrude opens the same Join or Cut dialog.
+- A face drawn on the side of a profile cuts with it. Sharing a side no longer leaves that face out.
+- Type a length or an angle while you draw a line. Click a length or a corner angle to change it.
+- Fillet or chamfer several sketch corners at once.
+- Construction lines snap and stay out of the solid.
+- Stroke turns an outline into a wall. Sweep carries a closed outline along a construction path.
+- Every sketch corner shows its angle.
+- A project or folder menu opens fully instead of being cut off by the card.
+
 ## 1.0.6
 
 - The start screen checks for an update. When one is ready, the changelog sits under Start Modeling with a button to download it. Start Modeling still opens your projects.

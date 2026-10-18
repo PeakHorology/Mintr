@@ -870,12 +870,21 @@ export default function Home() {
     const api = desktopUpdateApi();
     if (!api) return;
     let cancel = false;
+    const started = performance.now();
     setUpdateChecking(true);
-    void api.check().then((offer) => {
-      if (!cancel) setUpdateOffer(offer);
-    }).catch(() => undefined).finally(() => {
-      if (!cancel) setUpdateChecking(false);
-    });
+    void (async () => {
+      let offer: DesktopUpdateOffer | null = null;
+      try {
+        offer = await api.check();
+      } catch {
+        offer = null;
+      }
+      const remaining = 2000 - (performance.now() - started);
+      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
+      if (cancel) return;
+      setUpdateOffer(offer);
+      setUpdateChecking(false);
+    })();
     return () => {
       cancel = true;
     };
@@ -3213,7 +3222,7 @@ function Dashboard({
     const isHero = Boolean(containingFolder && containingFolder.heroProjectId === project.id);
     return (
       <article
-        className={`project-card${isRecent ? " project-card-recent" : ""}${draggingItemId === project.id ? " is-dragging" : ""}${!isRecent && arrangeTargetId === project.id ? " arrange-target" : ""}`}
+        className={`project-card${isRecent ? " project-card-recent" : ""}${draggingItemId === project.id ? " is-dragging" : ""}${!isRecent && arrangeTargetId === project.id ? " arrange-target" : ""}${openProjectMenuId === project.id ? " menu-open" : ""}`}
         key={isRecent ? `recent-${project.id}` : project.id}
         draggable
         style={isRecent ? undefined : tileArrangeStyle(project.id)}
@@ -3411,7 +3420,7 @@ function Dashboard({
     return (
       <article
         key={folder.id}
-        className={`folder-card${showLocked ? " is-locked" : ""}${sessionUnlocked ? " is-unlocked" : ""}${isDropTarget ? " drop-target" : ""}${isArrangeTarget ? " arrange-target" : ""}${draggingItemId === folder.id ? " is-dragging" : ""}`}
+        className={`folder-card${showLocked ? " is-locked" : ""}${sessionUnlocked ? " is-unlocked" : ""}${isDropTarget ? " drop-target" : ""}${isArrangeTarget ? " arrange-target" : ""}${draggingItemId === folder.id ? " is-dragging" : ""}${openFolderMenuId === folder.id ? " menu-open" : ""}`}
         draggable
         style={tileArrangeStyle(folder.id)}
         onDragStart={(event) => beginArrangeDrag(event, { id: folder.id, kind: "folder" })}

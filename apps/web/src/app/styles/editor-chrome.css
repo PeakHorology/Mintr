@@ -2888,6 +2888,45 @@
   line-height: 1;
 }
 
+.sketch-3d-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: calc(var(--z-overlay) + 3);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(640px, calc(100% - 48px));
+  padding: 8px 12px;
+  pointer-events: none;
+  color: var(--ink-strong);
+  background: var(--glass-surface-strong);
+  border: 1px solid #d2c4a8;
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-md);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  text-align: center;
+}
+
+.sketch-3d-hint button {
+  pointer-events: auto;
+  flex: none;
+  padding: 6px 10px;
+  border: 1px solid var(--peak-border);
+  border-radius: var(--radius-md);
+  background: var(--action-surface);
+  color: var(--action-text);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.workplane-wrap.sketch-on-model,
+.workplane-wrap.sketch-on-model .three-workplane-host {
+  cursor: crosshair;
+}
+
 .sketch-focus-3d {
   position: absolute;
   inset: 0;

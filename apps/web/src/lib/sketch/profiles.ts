@@ -1,4 +1,5 @@
 import type { SketchPoint, SketchProfile, SketchSegment } from "@/types/sketchforge";
+import { createLocalId } from "@/lib/localIds";
 import type { SketchClosedProfile, SketchDoc, SketchEntity, SketchPointEntity, SketchVec2 } from "./types";
 
 export type OrderedSketchStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
@@ -64,6 +65,21 @@ export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] 
     }
 
     if (loopStart === null) {
+      // A second face that shares a side with one we already walked has no unused edge left
+      // to close on. Its two ends are still joined by that shared side, so the chain is a loop.
+      const closing = points.length >= 3 && currentId !== startId
+        ? adjacency.get(currentId)?.find((entry) => entry.pointId === startId)
+        : undefined;
+      if (closing) {
+        const from = pointById.get(currentId);
+        const to = pointById.get(startId);
+        if (from && to) {
+          unvisited.delete(closing.segment.id);
+          steps.push({ segment: closing.segment, from, to });
+          paths.push({ points, steps, closed: true });
+          continue;
+        }
+      }
       paths.push({ points, steps, closed: false });
       continue;
     }
@@ -79,6 +95,70 @@ export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] 
     paths.push({ points: points.slice(loopStart), steps: loopSteps, closed: loopSteps.length >= 3 });
   }
   return paths;
+}
+
+/**
+ * Closed regions the cutter should build.
+ *
+ * Two faces that share a side (a rectangle, then a triangle drawn on that side) are both loops.
+ * Extruding them separately stacks two walls on the shared side and the boolean drops the added
+ * face. Drop every side used by two loops and walk what remains: one outline around both.
+ * A loop with no shared side, such as a hole inside a profile, stays its own outline.
+ */
+export function materialOutlines(profile: SketchProfile): OrderedSketchPath[] {
+  const solid = {
+    ...profile,
+    segments: profile.segments.filter((segment) => !segment.construction),
+  };
+  const closed = orderedSketchPaths(solid).filter((path) => path.closed);
+  if (closed.length < 2) return closed;
+  const useCount = new Map<string, number>();
+  for (const path of closed) {
+    for (const step of path.steps) {
+      useCount.set(step.segment.id, (useCount.get(step.segment.id) ?? 0) + 1);
+    }
+  }
+  const internal = new Set(
+    [...useCount.entries()].filter(([, count]) => count >= 2).map(([id]) => id),
+  );
+  if (internal.size === 0) return closed;
+  const boundary = orderedSketchPaths({
+    ...solid,
+    segments: solid.segments.filter((segment) => !internal.has(segment.id)),
+  }).filter((path) => path.closed);
+  return boundary.length > 0 ? boundary : closed;
+}
+
+/** Gap under which an open chain is treated as closed. A 3D click on a corner dot can land a millimetre off. */
+const CLOSE_GAP_MM = 1.25;
+
+/**
+ * Join an open chain back to its start when the two ends are only a small gap apart.
+ * Line sketches drawn on the 3D view often miss the first point by a fraction of a millimetre,
+ * so the chain looks closed and then extrudes as nothing.
+ */
+export function closeOpenPathGaps(profile: SketchProfile, gapMm = CLOSE_GAP_MM): SketchProfile {
+  const extra: SketchSegment[] = [];
+  const existing = new Set(profile.segments.map((segment) => [segment.startId, segment.endId].sort().join("|")));
+  for (const path of orderedSketchPaths(profile)) {
+    if (path.closed || path.points.length < 3) continue;
+    if (path.steps.some((step) => step.segment.construction)) continue;
+    const first = path.points[0];
+    const last = path.points[path.points.length - 1];
+    if (first.id === last.id) continue;
+    if (Math.hypot(first.x - last.x, first.z - last.z) > gapMm) continue;
+    const key = [first.id, last.id].sort().join("|");
+    if (existing.has(key)) continue;
+    existing.add(key);
+    extra.push({
+      id: createLocalId("sketch-segment"),
+      startId: last.id,
+      endId: first.id,
+      kind: "line",
+    });
+  }
+  if (extra.length === 0) return profile;
+  return { ...profile, segments: [...profile.segments, ...extra] };
 }
 
 function pointInPolygon(point: SketchVec2, polygon: SketchVec2[]) {
@@ -175,7 +255,11 @@ function polygonCentroid(points: SketchVec2[]): SketchVec2 {
 
 /** Closed profiles from a legacy point/segment graph (nested loops become holes). */
 export function closedProfilesFromLegacy(profile: SketchProfile): SketchClosedProfile[] {
-  const closed = orderedSketchPaths(profile).filter((path) => path.closed);
+  const solid = {
+    ...profile,
+    segments: profile.segments.filter((segment) => !segment.construction),
+  };
+  const closed = materialOutlines(solid);
   const loops = closed.map((path, index) => {
     // Measure the curve, not the anchors it was drawn from.
     const outline = sampledPathOutline(path);

@@ -121,6 +121,27 @@ describe("editor history snapshots", () => {
     expect(projectShapesFingerprint([{ ...shape, sides: 64 }])).not.toBe(baseline);
   });
 
+  it("rebuilds a gear when its form changes without a size change", () => {
+    const gear = box({
+      kind: "gear",
+      gearSpec: {
+        form: "spur",
+        teeth: 20,
+        module: 2,
+        pressureAngle: 20,
+        backlash: 0.2,
+        bore: 6,
+        helixAngle: 20,
+        rim: 4,
+      },
+    });
+    const baseline = projectShapesFingerprint([gear]);
+    expect(projectShapesFingerprint([{
+      ...gear,
+      gearSpec: { ...gear.gearSpec!, form: "helical" },
+    }])).not.toBe(baseline);
+  });
+
   it("detects mesh coordinate changes even when array lengths are unchanged", () => {
     const shape = box({
       kind: "mesh",

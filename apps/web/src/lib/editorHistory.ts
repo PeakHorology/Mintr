@@ -1,6 +1,7 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { lookup3mfPackage, remember3mfPackage } from "@/lib/threeMfSource";
+import { gearSpecKey } from "@/lib/gearProfile";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 
 const profile = hardwareProfile();
@@ -82,6 +83,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     radius: shape.radius,
     steps: shape.steps,
     sides: shape.sides,
+    gearSpec: shape.kind === "gear" ? gearSpecKey(shape.gearSpec) : undefined,
     bevel: shape.bevel,
     segments: shape.segments,
     topRadius: shape.topRadius,

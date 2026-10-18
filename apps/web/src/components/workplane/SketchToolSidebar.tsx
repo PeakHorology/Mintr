@@ -14,6 +14,7 @@ import {
   RotateCw,
   Square,
   Star,
+  Spline,
   Triangle,
   X,
 } from "lucide-react";
@@ -197,16 +198,19 @@ export function SketchToolSidebar({
 export function SketchFinishToolbar({
   onSketchExtrude,
   onSketchRevolve,
+  onSketchSweep,
   onSketchCancel,
   revolveDisabled = false,
 }: {
   onSketchExtrude: () => void;
   onSketchRevolve: () => void;
+  onSketchSweep: () => void;
   onSketchCancel: () => void;
   revolveDisabled?: boolean;
 }) {
   const extrudeHelp = usePeakContextHelp("Extrude", TOOL_DESCRIPTIONS.extrude);
   const revolveHelp = usePeakContextHelp("Revolve", TOOL_DESCRIPTIONS.revolve);
+  const sweepHelp = usePeakContextHelp("Sweep", TOOL_DESCRIPTIONS.sweep);
   const cancelHelp = usePeakContextHelp("Cancel", TOOL_DESCRIPTIONS.cancelSketch);
 
   return (
@@ -229,6 +233,11 @@ export function SketchFinishToolbar({
           <RotateCw size={18} strokeWidth={2.6} />
           <span>Revolve</span>
           {revolveHelp.helpPortal}
+        </button>
+        <button className="editor-tool-sidebar-action" type="button" onClick={onSketchSweep} onContextMenu={sweepHelp.onContextMenu}>
+          <Spline size={18} strokeWidth={2.6} />
+          <span>Sweep</span>
+          {sweepHelp.helpPortal}
         </button>
         <button className="editor-tool-sidebar-action cancel" type="button" onClick={onSketchCancel} onContextMenu={cancelHelp.onContextMenu}>
           <X size={18} strokeWidth={2.6} />
@@ -364,6 +373,9 @@ export function SketchUtilitySidebar({
             </SketchToolButton>
             <SketchToolButton label="Pattern" description="Rectangular pattern of the selection." active={sketchTool === "pattern"} onClick={() => onSketchTool("pattern")}>
               <SketchRectPatternIcon />
+            </SketchToolButton>
+            <SketchToolButton label="Stroke" description={TOOL_DESCRIPTIONS.stroke} active={sketchTool === "stroke"} onClick={() => onSketchTool("stroke")}>
+              <Minus size={22} strokeWidth={1.75} className="sketch-tool-icon" />
             </SketchToolButton>
           </div>
         </section>

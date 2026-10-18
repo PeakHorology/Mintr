@@ -8,6 +8,8 @@ import { Brush, Evaluator, HOLLOW_INTERSECTION } from "three-bvh-csg";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { createBooleanTextGeometry } from "@/lib/editorShapeMesh";
+import { createGearGeometry } from "@/lib/gearMesh";
+import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
 import { ShapeInspector, SnapGridControl, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
 import { ToolbarDropToWorkplaneIcon } from "@/components/icons";
@@ -50,6 +52,17 @@ import {
   type ModifierEdgeCandidate,
 } from "@/lib/modifierEdgePick";
 import { defaultSketchPlane, sketchPlaneFromThreeVectors } from "@/lib/sketchPlane";
+import {
+  clearSketchOnModel,
+  emptySketch3DPointer,
+  frameSketchCamera,
+  sketch3DPointerDown,
+  sketch3DPointerMove,
+  sketch3DPointerUp,
+  syncSketchOnModel,
+  type Sketch3DPointerState,
+  type SketchOnModelSession,
+} from "@/lib/sketch/sketch3d";
 import {
   barrelHighlightPositions,
   classifySketchFaceHit,
@@ -182,6 +195,7 @@ const SHAPE_KINDS = new Set<ShapeAsset["kind"]>([
   "icosahedron",
   "mesh",
   "thread",
+  "gear",
 ]);
 const importedGeometryCache = new WeakMap<
   NonNullable<WorkplaneShape["importedMesh"]>,
@@ -266,6 +280,10 @@ export type WorkplaneViewportProps = {
   /** Called when the user clicks a curved face that cannot host a planar sketch yet. */
   onSketchFacePickRejected?: (reason: string) => void;
   onSketchFacePickCancel?: () => void;
+  /** Draw the active sketch on its face while the camera stays free. */
+  sketchOnModel?: SketchOnModelSession | null;
+  /** Increment to square the camera on the sketch face. */
+  sketchFrameRequest?: number;
   onSelectShape: (id: string | string[] | null, mode?: "replace" | "toggle") => void;
   onActivatePlacementRuler?: () => void;
   onDeactivatePlacementRuler?: () => void;
@@ -1949,6 +1967,9 @@ function resizedShapePatchFromFrame(shape: WorkplaneShape, center: THREE.Vector3
   if (shape.kind === "cone") {
     Object.assign(patch, conePatchForFootprint(shape, width, depth));
   }
+  if (shape.kind === "gear") {
+    Object.assign(patch, gearPatchForFootprint(shape, width, depth));
+  }
   return patch;
 }
 
@@ -2353,6 +2374,8 @@ export function WorkplaneViewport({
   circularPatternRadius = 0,
   onCircularPatternCenterPick,
   sketchFacePickMode = false,
+  sketchOnModel = null,
+  sketchFrameRequest = 0,
   onSketchPlanePicked,
   onSketchFacePickRejected,
   onSketchFacePickCancel,
@@ -2524,6 +2547,31 @@ export function WorkplaneViewport({
   const circularPatternRadiusRef = useRef(circularPatternRadius);
   const onCircularPatternCenterPickRef = useRef(onCircularPatternCenterPick);
   const sketchFacePickModeRef = useRef(sketchFacePickMode);
+  const sketchOnModelRef = useRef<SketchOnModelSession | null>(sketchOnModel);
+  sketchOnModelRef.current = sketchOnModel;
+  const sketch3DPointerRef = useRef<Sketch3DPointerState>(emptySketch3DPointer());
+  const sketch3DPlaneKeyRef = useRef("");
+  const sketchDrawKey = sketchOnModel
+    ? [
+      sketchOnModel.tool,
+      sketchOnModel.activePointId ?? "",
+      sketchOnModel.snap,
+      sketchOnModel.profile.points.map((point) => `${point.id}:${point.x.toFixed(3)}:${point.z.toFixed(3)}:${point.handleOut?.x ?? ""}`).join(","),
+      sketchOnModel.profile.segments.map((segment) => `${segment.id}:${segment.construction ? 1 : 0}:${segment.kind ?? "line"}`).join(","),
+      sketchOnModel.profile.faceReferenceLoops?.length ?? 0,
+    ].join("|")
+    : "";
+  const sketchPlaneKey = sketchOnModel
+    ? [
+      sketchOnModel.plane.origin.x.toFixed(2),
+      sketchOnModel.plane.origin.y.toFixed(2),
+      sketchOnModel.plane.origin.z.toFixed(2),
+      sketchOnModel.plane.normal.x.toFixed(2),
+      sketchOnModel.plane.normal.y.toFixed(2),
+      sketchOnModel.plane.normal.z.toFixed(2),
+      sketchOnModel.plane.surface?.kind ?? "plane",
+    ].join("|")
+    : "";
   const onSketchPlanePickedRef = useRef(onSketchPlanePicked);
   const onSketchFacePickRejectedRef = useRef(onSketchFacePickRejected);
   const onSketchFacePickCancelRef = useRef(onSketchFacePickCancel);
@@ -3278,6 +3326,39 @@ export function WorkplaneViewport({
       threeRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const state = threeRef.current;
+    const session = sketchOnModelRef.current;
+    if (!state) return;
+    if (!session || !sketchDrawKey) {
+      clearSketchOnModel(state.scene);
+      sketch3DPointerRef.current = emptySketch3DPointer();
+      sketch3DPlaneKeyRef.current = "";
+      state.needsRender = true;
+      return;
+    }
+    const host = { scene: state.scene, camera: state.camera, domElement: state.renderer.domElement, controls: state.controls };
+    if (sketch3DPlaneKeyRef.current !== sketchPlaneKey) {
+      sketch3DPlaneKeyRef.current = sketchPlaneKey;
+      frameSketchCamera(host, session);
+    }
+    syncSketchOnModel(host, session, sketch3DPointerRef.current);
+    state.needsRender = true;
+  }, [sketchDrawKey, sketchPlaneKey]);
+
+  useEffect(() => {
+    if (!sketchFrameRequest) return;
+    const state = threeRef.current;
+    const session = sketchOnModelRef.current;
+    if (!state || !session) return;
+    frameSketchCamera(
+      { scene: state.scene, camera: state.camera, domElement: state.renderer.domElement, controls: state.controls },
+      session,
+    );
+    sketch3DPlaneKeyRef.current = sketchPlaneKey;
+    state.needsRender = true;
+  }, [sketchFrameRequest]);
 
   useEffect(() => {
     window.sketchforgePerf = {
@@ -4074,7 +4155,9 @@ export function WorkplaneViewport({
         const patch: Partial<WorkplaneShape> =
           shape.kind === "cone"
             ? conePatchForFootprint(shape, nextValue, shapeDepth(shape))
-            : { width: nextValue, size: resizedShapeSize(nextValue, shapeDepth(shape)) };
+            : shape.kind === "gear"
+              ? gearPatchForFootprint(shape, nextValue, shapeDepth(shape))
+              : { width: nextValue, size: resizedShapeSize(nextValue, shapeDepth(shape)) };
         if (shape.kind === "roof") {
           const next = roofAnglesFromProfile(nextValue, shape.height, shape.leftAngle, shape.rightAngle);
           patch.leftAngle = next.leftAngle;
@@ -4085,7 +4168,9 @@ export function WorkplaneViewport({
         const patch: Partial<WorkplaneShape> =
           shape.kind === "cone"
             ? conePatchForFootprint(shape, shapeWidth(shape), nextValue)
-            : { depth: nextValue, size: resizedShapeSize(shapeWidth(shape), nextValue) };
+            : shape.kind === "gear"
+              ? gearPatchForFootprint(shape, shapeWidth(shape), nextValue)
+              : { depth: nextValue, size: resizedShapeSize(shapeWidth(shape), nextValue) };
         onUpdateShape(id, patchWithResizeAnchor(shape, patch, edit.axis, lastResizeAnchorRef.current));
       } else {
         const patch: Partial<WorkplaneShape> = { height: nextValue };
@@ -4601,6 +4686,23 @@ export function WorkplaneViewport({
       if (event.button !== 0 || event.ctrlKey || event.metaKey) {
         return;
       }
+      const sketchSession = sketchOnModelRef.current;
+      if (sketchSession) {
+        event.preventDefault();
+        event.stopPropagation();
+        sketch3DPointerDown(
+          { scene: state.scene, camera: state.camera, domElement: state.renderer.domElement, controls: state.controls },
+          sketchSession,
+          sketch3DPointerRef.current,
+          event.clientX,
+          event.clientY,
+          event.pointerId,
+          event.shiftKey,
+        );
+        event.currentTarget.setPointerCapture(event.pointerId);
+        state.needsRender = true;
+        return;
+      }
       const host = event.currentTarget;
       // A large STEP import used to await a paint here so the "Selecting…" wheel could
       // show first. That yields the gesture: pointer moves arrive before the drag exists,
@@ -4956,6 +5058,20 @@ export function WorkplaneViewport({
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      const sketchSession = sketchOnModelRef.current;
+      const sketchState = threeRef.current;
+      if (sketchSession && sketchState) {
+        sketch3DPointerMove(
+          { scene: sketchState.scene, camera: sketchState.camera, domElement: sketchState.renderer.domElement, controls: sketchState.controls },
+          sketchSession,
+          sketch3DPointerRef.current,
+          event.clientX,
+          event.clientY,
+          event.shiftKey,
+        );
+        sketchState.needsRender = true;
+        return;
+      }
       if (faceSnapActiveRef.current) {
         updateFaceSnapHover(event.clientX, event.clientY);
       }
@@ -5139,6 +5255,23 @@ export function WorkplaneViewport({
 
   const finishDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      const sketchSession = sketchOnModelRef.current;
+      if (sketchSession && sketch3DPointerRef.current.gesture) {
+        sketch3DPointerUp(sketchSession, sketch3DPointerRef.current);
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        const sketchState = threeRef.current;
+        if (sketchState) {
+          syncSketchOnModel(
+            { scene: sketchState.scene, camera: sketchState.camera, domElement: sketchState.renderer.domElement, controls: sketchState.controls },
+            sketchSession,
+            sketch3DPointerRef.current,
+          );
+          sketchState.needsRender = true;
+        }
+        return;
+      }
       const state = threeRef.current;
       const transform = transformRef.current;
       if (transform) {
@@ -5847,7 +5980,7 @@ export function WorkplaneViewport({
         )}
       </div>
 
-      <section className={`workplane-wrap ${sketchFacePickMode ? "sketch-face-pick-mode" : ""} ${sketchFacePickMode && sketchFaceHovering ? "sketch-face-hover" : ""} ${sketchFacePickMode && sketchFaceHoverBlocked ? "sketch-face-hover-blocked" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${rulerMoveMode ? "ruler-move-mode" : ""} ${placementRulerMode ? "placement-ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
+      <section className={`workplane-wrap ${sketchOnModel ? "sketch-on-model" : ""} ${sketchFacePickMode ? "sketch-face-pick-mode" : ""} ${sketchFacePickMode && sketchFaceHovering ? "sketch-face-hover" : ""} ${sketchFacePickMode && sketchFaceHoverBlocked ? "sketch-face-hover-blocked" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${rulerMoveMode ? "ruler-move-mode" : ""} ${placementRulerMode ? "placement-ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -5915,7 +6048,7 @@ export function WorkplaneViewport({
             </div>
           ) : null}
           <div className={`measurement-fade${measurementsConcealed ? " is-concealed" : ""}`}>
-          {transformOverlay && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive ? (
+          {transformOverlay && !sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive ? (
             <TransformOverlay
               box={transformOverlay}
               measureKey={pinnedMeasureKey ?? hoverMeasureKey}
@@ -8418,6 +8551,9 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
     case "polygon":
       addMesh(group, new THREE.CylinderGeometry(1, 1, height, shape.sides ?? 6), material, shape, undefined, undefined, new THREE.Vector3(width / 2, 1, depth / 2));
       break;
+    case "gear":
+      addMesh(group, createGearGeometry(shape), material, shape);
+      break;
     case "icosahedron":
       addMesh(group, new THREE.IcosahedronGeometry(size / 2, resolveIcosahedronDetail()), material, shape);
       break;
@@ -8595,7 +8731,8 @@ function addMesh(
     || shape.kind === "roundRoof"
     || shape.kind === "tube"
     || shape.kind === "ring"
-    || shape.kind === "thread";
+    || shape.kind === "thread"
+    || shape.kind === "gear";
   const sharpDetailEdges =
     shape.kind === "mesh"
     || ["pyramid", "roof", "wedge"].includes(shape.kind);
@@ -8734,6 +8871,7 @@ function patternGeometryKey(shape: WorkplaneShape) {
     shape.radius ?? "",
     shape.sides ?? "",
     shape.steps ?? "",
+    shape.kind === "gear" ? gearSpecKey(shape.gearSpec) : "",
     mesh?.triangleCount ?? 0,
     mesh?.positions.length ?? 0,
   ].join("|");
@@ -8820,7 +8958,7 @@ function addTextShape(group: THREE.Group, material: THREE.MeshStandardMaterial, 
 }
 
 function putGeometryOnBase(geometry: THREE.BufferGeometry) {
-  geometry.computeVertexNormals();
+  if (!geometry.userData.keepNormals) geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   const minY = geometry.boundingBox?.min.y ?? 0;
   geometry.translate(0, -minY, 0);

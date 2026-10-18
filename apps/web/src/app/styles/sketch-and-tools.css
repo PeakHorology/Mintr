@@ -319,6 +319,12 @@
   top: calc(var(--editor-viewport-toolbar-height) + 36px);
 }
 
+.sketch-extrude-prompt-layer {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-overlay) + 8);
+}
+
 .sketch-tool-prompt-backdrop {
   position: absolute;
   inset: 0;
@@ -1345,10 +1351,59 @@
   cursor: pointer;
 }
 
+.sketch-segments path.construction {
+  stroke: #8a6232;
+  stroke-dasharray: 7 5;
+}
+
 .sketch-segments path:hover,
-.sketch-segments path.selected {
+.sketch-segments path.selected,
+.sketch-analytic-circles circle:hover,
+.sketch-analytic-circles circle.selected {
   stroke: #ff8a00;
   stroke-width: 4;
+}
+
+.sketch-analytic-circles circle {
+  fill: none;
+  stroke: #173f60;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.sketch-analytic-circles circle.construction {
+  stroke: #8a6232;
+  stroke-dasharray: 7 5;
+}
+
+.sketch-construction-guides line {
+  stroke: #8a6232;
+  stroke-width: 2;
+  stroke-dasharray: 7 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-segment-dimensions .editable {
+  cursor: pointer;
+}
+
+.sketch-angle-dimension {
+  cursor: pointer;
+}
+
+.sketch-angle-dimension .witness,
+.sketch-angle-dimension .arc {
+  fill: none;
+  stroke: #143c5c;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-angle-dimension .arrow {
+  fill: #143c5c;
+  stroke: none;
 }
 
 .sketch-preview-line {

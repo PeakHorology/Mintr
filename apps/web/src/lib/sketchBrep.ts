@@ -2,7 +2,9 @@ import type { SketchCylinderSurface, SketchPlane, SketchProfile, WorkplaneShape 
 import { loadBrepWithOcct, type Brep, type BrepSolid } from "@/lib/brepKernel";
 import { faceHoleOvershootMm } from "@/lib/csgTree";
 import { isDefaultSketchPlane, isFaceHostedSketch, resolveSketchPlane, sketchPlaneVAxis } from "@/lib/sketchPlane";
-import { orderedSketchPaths, type OrderedSketchPath } from "@/lib/sketch/profiles";
+import { findSweepInputs } from "@/lib/sketch/directEdit";
+import { materialOutlines, type OrderedSketchPath } from "@/lib/sketch/profiles";
+import { buildSweepMesh } from "@/lib/sketch/sweepMath";
 import {
   barrelHoleCutDepthMm,
   cylinderOutwardNormalAtUV,
@@ -281,6 +283,35 @@ export function densifyClosedPathUv(path: OrderedSketchPath, curveSegments = 20)
   return samples;
 }
 
+async function bakeSketchSweepSolid(shape: WorkplaneShape, plane: SketchPlane): Promise<BrepSolid | null> {
+  if (!shape.sketchProfile) return null;
+  const inputs = findSweepInputs(shape.sketchProfile);
+  if (!inputs) return null;
+  const vAxis = sketchPlaneVAxis(plane);
+  const mesh = buildSweepMesh(inputs.section, inputs.path, inputs.pathClosed, {
+    origin: plane.origin,
+    uAxis: plane.uAxis,
+    vAxis,
+    normal: plane.normal,
+  });
+  if (!mesh) return null;
+  const brep = await loadBrepWithOcct();
+  const points: Array<[number, number, number]> = [];
+  for (let index = 0; index < mesh.positions.length; index += 3) {
+    points.push([mesh.positions[index], mesh.positions[index + 1], mesh.positions[index + 2]]);
+  }
+  const faces: number[][] = [];
+  for (let index = 0; index + 2 < mesh.indices.length; index += 3) {
+    faces.push([mesh.indices[index], mesh.indices[index + 1], mesh.indices[index + 2]]);
+  }
+  try {
+    const solid = brep.polyhedron(points, faces);
+    return solid.ok ? solid.value as unknown as BrepSolid : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Exact solid for a sketch feature, built from the profile at export time.
  * The editor keeps the mesh; this is the STEP bake.
@@ -317,7 +348,13 @@ export async function bakeSketchShapeSolid(
   ) {
     return null;
   }
-  const closed = orderedSketchPaths(shape.sketchProfile).filter((path) => path.closed);
+  if (shape.sketchFinish === "sweep") {
+    return bakeSketchSweepSolid(shape, plane);
+  }
+  const closed = materialOutlines({
+    ...shape.sketchProfile,
+    segments: shape.sketchProfile.segments.filter((segment) => !segment.construction),
+  });
   if (closed.length === 0) return null;
   const closedPaths = closed.map((path) => ({ points: densifyClosedPathUv(path) }));
   if (shape.sketchFinish === "revolve" && shape.sketchRevolveAxis) {

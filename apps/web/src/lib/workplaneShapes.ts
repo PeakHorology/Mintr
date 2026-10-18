@@ -1,6 +1,7 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 import { hardwareProfile } from "@/lib/desktopHardware";
+import { gearFootprint, gearSpecKey, moduleForSpan, normalizeGearSpec } from "@/lib/gearProfile";
 
 export const MAX_SHAPE_SIDES = hardwareProfile().maxShapeSides;
 
@@ -313,6 +314,7 @@ export function proportionalResizeScale(startWidth: number, startDepth: number, 
 
 export function fallbackSolidColor(shape: WorkplaneShape) {
   if (shape.kind === "cylinder" || shape.kind === "thread") return "#d97813";
+  if (shape.kind === "gear") return "#8d6a2f";
   if (shape.kind === "sphere") return "#0098c7";
   if (shape.kind === "cone") return "#6e2786";
   if (shape.kind === "pyramid") return "#f2cf10";
@@ -392,6 +394,26 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
       next.size = resizedShapeSize(nextWidth, nextDepth);
     }
   }
+  if (shape.kind === "gear") {
+    const spec = normalizeGearSpec(next.gearSpec);
+    const width = shapeWidth(next);
+    const depth = shapeDepth(next);
+    const expected = gearFootprint(spec, depth);
+    let resolved = spec;
+    if (spec.form === "rack") {
+      if (Math.abs(width - expected.width) > 0.02) {
+        resolved = normalizeGearSpec({ ...spec, module: moduleForSpan(spec, width) });
+      }
+    } else if (Math.abs(width - expected.width) > 0.02 || Math.abs(depth - expected.depth) > 0.02) {
+      const span = Math.abs(width - expected.width) >= Math.abs(depth - expected.depth) ? width : depth;
+      resolved = normalizeGearSpec({ ...spec, module: moduleForSpan(spec, span) });
+    }
+    const foot = gearFootprint(resolved, spec.form === "rack" ? depth : 0);
+    next.gearSpec = resolved;
+    next.width = foot.width;
+    next.depth = foot.depth;
+    next.size = Math.max(foot.width, foot.depth);
+  }
   if (shape.groupedShapes) {
     next.groupedShapes = shape.groupedShapes.map(canonicalizeShape);
   }
@@ -457,7 +479,8 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.hidden === b.hidden &&
     a.construction === b.construction &&
     a.patternFeature === b.patternFeature &&
-    a.holeSpec === b.holeSpec
+    a.holeSpec === b.holeSpec &&
+    (a.kind === "gear" ? gearSpecKey(a.gearSpec) === gearSpecKey(b.gearSpec) : true)
   );
 }
 

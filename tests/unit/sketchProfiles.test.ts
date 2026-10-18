@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { closedProfilesFromLegacy, orderedSketchPaths } from "@/lib/sketch/profiles";
+import { closedProfilesFromLegacy, materialOutlines, orderedSketchPaths } from "@/lib/sketch/profiles";
 import type { SketchProfile } from "@/types/sketchforge";
 
 type Pt = SketchProfile["points"][number];
@@ -115,6 +115,56 @@ describe("orderedSketchPaths", () => {
       ),
     );
     expect(paths.filter((path) => path.closed)).toHaveLength(2);
+  });
+
+  it("keeps a triangle drawn on the side of a rectangle as its own closed face", () => {
+    const paths = orderedSketchPaths(
+      profile(
+        [...SQUARE_POINTS, { id: "p5", x: -8, z: 5 }],
+        [...SQUARE_SEGMENTS, ["s5", "p1", "p5"], ["s6", "p5", "p4"]],
+      ),
+    );
+    const closed = paths.filter((path) => path.closed);
+    expect(closed).toHaveLength(2);
+    expect(closed.every((path) => path.steps.length >= 3)).toBe(true);
+  });
+
+  it("cuts one outline around a rectangle and a triangle that share a side", () => {
+    const outlines = materialOutlines(
+      profile(
+        [...SQUARE_POINTS, { id: "p5", x: -8, z: 5 }],
+        [...SQUARE_SEGMENTS, ["s5", "p1", "p5"], ["s6", "p5", "p4"]],
+      ),
+    );
+    expect(outlines).toHaveLength(1);
+    expect(outlines[0].closed).toBe(true);
+    expect(outlines[0].steps).toHaveLength(5);
+    expect(new Set(outlines[0].points.map((point) => point.id))).toEqual(new Set(["p1", "p2", "p3", "p4", "p5"]));
+  });
+
+  it("closes the gear-face hole: rectangle plus a triangle on its left side", () => {
+    const outlines = materialOutlines(
+      profile(
+        [
+          { id: "d5b0", x: -5, z: -20 },
+          { id: "d549", x: 5, z: -20 },
+          { id: "f29ff", x: 5, z: -10 },
+          { id: "1383", x: -5, z: -10 },
+          { id: "1066", x: -12, z: -14 },
+        ],
+        [
+          ["bottom", "d5b0", "d549"],
+          ["right", "d549", "f29ff"],
+          ["top", "f29ff", "1383"],
+          ["shared", "1383", "d5b0"],
+          ["tri-a", "d5b0", "1066"],
+          ["tri-b", "1066", "1383"],
+        ],
+      ),
+    );
+    expect(outlines).toHaveLength(1);
+    expect(outlines[0].steps).toHaveLength(5);
+    expect(outlines[0].points.some((point) => point.id === "1066")).toBe(true);
   });
 
   it("ignores segments referencing missing points", () => {

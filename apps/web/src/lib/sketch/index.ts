@@ -7,3 +7,6 @@ export * from "./solver";
 export * from "./editOps";
 export * from "./project";
 export * from "./session";
+export * from "./lineEntry";
+export * from "./directEdit";
+export * from "./sweepMath";

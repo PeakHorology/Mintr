@@ -36,6 +36,7 @@ export function sketchProfileToDoc(
       id: segment.id,
       startId: segment.startId,
       endId: segment.endId,
+      construction: segment.construction || undefined,
     });
   }
   doc.entities = entities;
@@ -84,7 +85,6 @@ export function sketchDocToProfile(doc: SketchDoc): SketchProfile {
 
   const segments: SketchSegment[] = doc.entities
     .filter((e) => e.kind === "line" || e.kind === "bezier" || e.kind === "smooth")
-    .filter((e) => !e.construction)
     .map((e) => {
       if (e.kind !== "line" && e.kind !== "bezier" && e.kind !== "smooth") throw new Error("unreachable");
       return {
@@ -92,6 +92,7 @@ export function sketchDocToProfile(doc: SketchDoc): SketchProfile {
         startId: e.startId,
         endId: e.endId,
         kind: e.kind === "line" ? ("line" as const) : e.kind,
+        construction: e.construction || undefined,
       };
     });
 
@@ -191,6 +192,35 @@ export function pruneDanglingReferences(doc: SketchDoc): SketchDoc {
 /** Matches the `<curveId>-p3` / `<curveId>-s3` ids that curve expansion generates. */
 const TESSELLATION_ID = /^(.*)-[ps]\d+$/;
 
+/** Owner curve id when `id` is a display stand-in for a circle or arc, otherwise null. */
+export function curveStandInOwner(id: string): string | null {
+  return TESSELLATION_ID.exec(id)?.[1] ?? null;
+}
+
+/**
+ * Drop the polyline that stands in for analytic curves, and optionally their center points.
+ * The extrude path still tessellates from the document; the sketch view should not treat those
+ * chords as editable corners.
+ */
+export function omitCurveStandIns(
+  profile: SketchProfile,
+  curveIds: Iterable<string>,
+  centerIds: Iterable<string> = [],
+): SketchProfile {
+  const curves = new Set(curveIds);
+  const centers = new Set(centerIds);
+  if (!curves.size && !centers.size) return profile;
+  const standIn = (id: string) => {
+    const owner = curveStandInOwner(id);
+    return owner !== null && curves.has(owner);
+  };
+  return {
+    ...profile,
+    points: profile.points.filter((point) => !standIn(point.id) && !centers.has(point.id)),
+    segments: profile.segments.filter((segment) => !standIn(segment.id)),
+  };
+}
+
 /**
  * Fold a legacy profile's edits back into the document it came from.
  *
@@ -266,10 +296,8 @@ export function mergeProfileIntoDoc(doc: SketchDoc, profile: SketchProfile): Ske
         kind: updated.kind === "bezier" || updated.kind === "smooth" ? updated.kind : "line",
         startId: updated.startId,
         endId: updated.endId,
+        construction: updated.construction ?? entity.construction,
       });
-    } else if (entity.construction) {
-      // Construction segments are never emitted to the profile, so absence is not a deletion.
-      entities.push(entity);
     }
   }
 
@@ -298,6 +326,7 @@ export function mergeProfileIntoDoc(doc: SketchDoc, profile: SketchProfile): Ske
       id: segment.id,
       startId: segment.startId,
       endId: segment.endId,
+      construction: segment.construction || undefined,
     });
   }
 

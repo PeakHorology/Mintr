@@ -1,4 +1,5 @@
 import { catalogSidesForKind, catalogStepsForKind, getActiveDisplayQuality } from "@/lib/displayTessellation";
+import { defaultGearSpec, gearFootprint } from "@/lib/gearProfile";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 import { createLocalId } from "@/lib/localIds";
 import { DEFAULT_TEXT_FONT } from "@/lib/textFonts";
@@ -20,6 +21,7 @@ export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "tube", name: "Ring", src: "assets/peakcad/shape-icons/tube.png", menuIcon: "assets/peakcad/shape-icons/tube.png", kind: "tube", color: "#ce7013" },
   { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b" },
   { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813" },
+  { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#8d6a2f" },
 ];
 
 export function sceneShape(shape: Partial<WorkplaneShape> & Pick<WorkplaneShape, "name" | "kind" | "color">): WorkplaneShape {
@@ -56,12 +58,14 @@ export function makeShapeFromAsset(
   point?: { x: number; z: number; elevation?: number },
   displayQuality: DisplayQuality = getActiveDisplayQuality(),
 ): WorkplaneShape {
+  const gear = asset.kind === "gear" ? defaultGearSpec() : null;
+  const gearSize = gear ? gearFootprint(gear) : null;
   const roundProfile = asset.kind === "sphere" || asset.kind === "torus" || asset.kind === "ring" || asset.kind === "halfSphere" || asset.kind === "icosahedron";
   const flatProfile = asset.kind === "torus" || asset.kind === "ring" || asset.kind === "text";
-  const size = roundProfile ? 22 : 20;
-  const height = asset.kind === "text" ? 10 : asset.kind === "roundRoof" ? 10 : asset.kind === "halfSphere" ? 11 : flatProfile ? 5 : 20;
-  const width = asset.kind === "text" ? 86 : size;
-  const depth = asset.kind === "text" ? 28 : size;
+  const size = gearSize ? gearSize.width : roundProfile ? 22 : 20;
+  const height = asset.kind === "gear" ? 8 : asset.kind === "text" ? 10 : asset.kind === "roundRoof" ? 10 : asset.kind === "halfSphere" ? 11 : flatProfile ? 5 : 20;
+  const width = asset.kind === "text" ? 86 : gearSize ? gearSize.width : size;
+  const depth = asset.kind === "text" ? 28 : gearSize ? gearSize.depth : size;
   const steps = catalogStepsForKind(asset.kind, displayQuality);
   const sides = catalogSidesForKind(asset.kind, displayQuality);
 
@@ -90,6 +94,7 @@ export function makeShapeFromAsset(
     segments: asset.kind === "cylinder" ? 1 : undefined,
     topRadius: asset.kind === "cone" ? 0 : undefined,
     baseRadius: asset.kind === "cone" ? size / 2 : undefined,
+    gearSpec: gear ?? undefined,
     locked: false,
     hidden: false,
   };

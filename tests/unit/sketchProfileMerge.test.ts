@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeProfileIntoDoc, sketchDocToProfile } from "@/lib/sketch/migrate";
+import { mergeProfileIntoDoc, omitCurveStandIns, sketchDocToProfile } from "@/lib/sketch/migrate";
 import { createEmptySketchDoc } from "@/lib/sketch/types";
 import type { SketchDoc } from "@/lib/sketch/types";
 
@@ -90,6 +90,16 @@ describe("mergeProfileIntoDoc", () => {
     expect(merged.entities.some((entity) => entity.id === "b")).toBe(false);
     // And the dimension that measured it goes with it.
     expect(merged.dimensions).toHaveLength(0);
+  });
+
+  it("drops a circle's chords without turning them into sketch points", () => {
+    const doc = richDoc();
+    const trimmed = omitCurveStandIns(sketchDocToProfile(doc), ["hole"]);
+    expect(trimmed.points.some((point) => point.id.startsWith("hole-"))).toBe(false);
+    expect(trimmed.segments.some((segment) => segment.id.startsWith("hole-"))).toBe(false);
+    expect(trimmed.points.some((point) => point.id === "cc")).toBe(true);
+    expect(trimmed.points.length).toBeLessThan(sketchDocToProfile(doc).points.length);
+    expect(mergeProfileIntoDoc(doc, trimmed).entities.some((entity) => entity.id === "hole")).toBe(false);
   });
 
   it("deletes a circle once its polyline is gone from the profile", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useId } from "react";
+import { extrudeSilhouettePath, type ExtrudeSilhouette } from "@/lib/sketchExtrudeSwatch";
 import type { ShapeKind } from "@/types/sketchforge";
 
 function circlePath(cx: number, cy: number, r: number) {
@@ -14,6 +15,28 @@ function polygonPath(sides: number, radius = 32) {
     return `${32 + Math.cos(angle) * radius} ${32 + Math.sin(angle) * radius}`;
   });
   return `M ${points.join(" L ")} Z`;
+}
+
+function gearPath() {
+  const teeth = 8;
+  const cx = 32;
+  const cy = 32;
+  const commands: string[] = [];
+  for (let index = 0; index < teeth; index += 1) {
+    const center = -Math.PI / 2 + (index * Math.PI * 2) / teeth;
+    const half = Math.PI / teeth * 0.34;
+    const rootA = center - Math.PI / teeth + half;
+    const tipA = center - half * 0.55;
+    const tipB = center + half * 0.55;
+    const rootB = center + Math.PI / teeth - half;
+    const point = (angle: number, radius: number) => `${(cx + Math.cos(angle) * radius).toFixed(1)} ${(cy + Math.sin(angle) * radius).toFixed(1)}`;
+    commands.push(`${index === 0 ? "M" : "L"} ${point(rootA, 18)}`);
+    commands.push(`L ${point(tipA, 30)}`);
+    commands.push(`L ${point(tipB, 30)}`);
+    commands.push(`L ${point(rootB, 18)}`);
+  }
+  commands.push("Z");
+  return `${commands.join(" ")} ${circlePath(cx, cy, 8)}`;
 }
 
 function rodPath() {
@@ -55,6 +78,8 @@ export function shapeModePath(kind: ShapeKind, sides?: number) {
       return circlePath(32, 32, 32);
     case "thread":
       return rodPath();
+    case "gear":
+      return gearPath();
     case "cone":
     case "pyramid":
     case "roof":
@@ -84,15 +109,18 @@ export function ShapeModeMark({
   hole = false,
   color = "#d97813",
   sides,
+  silhouette,
 }: {
   kind: ShapeKind;
   hole?: boolean;
   color?: string;
   sides?: number;
+  /** Draw-tool shape for the extrude Join / Cut buttons. */
+  silhouette?: ExtrudeSilhouette;
 }) {
   const hatchId = `hole-hatch-${useId().replace(/:/g, "")}`;
-  const path = shapeModePath(kind, sides);
-  const holed = kind === "torus" || kind === "tube" || kind === "ring" || kind === "text";
+  const path = silhouette ? extrudeSilhouettePath(silhouette) : shapeModePath(kind, sides);
+  const holed = kind === "torus" || kind === "tube" || kind === "ring" || kind === "text" || kind === "gear";
   return (
     <svg className={hole ? "large-hole-swatch" : "large-solid-swatch"} viewBox="0 0 64 64" aria-hidden="true">
       {hole ? (

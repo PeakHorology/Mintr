@@ -4,7 +4,7 @@
   <p>Local Windows CAD from Peak Horology.<br>Drop a solid, sketch on a face, and export a real B-Rep STEP file.</p>
   <p>
     <a href="LICENSE"><img alt="GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-2563eb"></a>
-    <img alt="Version 1.0.6" src="https://img.shields.io/badge/version-1.0.6-0f172a">
+    <img alt="Version 1.0.7" src="https://img.shields.io/badge/version-1.0.7-0f172a">
     <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-0ea5e9">
   </p>
 </div>
@@ -13,7 +13,7 @@ PeakCAD 1.0 is a desktop CAD application. Projects stay on this computer. There 
 
 ## Features
 
-- Primitives: box, cylinder, sphere, cone, pyramid, polygon, torus, tube, thread, text
+- Primitives: box, cylinder, sphere, cone, pyramid, polygon, torus, tube, thread, text, gear
 - Sketch on a face, then extrude, cut, or revolve
 - Group, with an exact OpenCascade boolean when the solid supports it
 - Fillet and chamfer
@@ -31,7 +31,7 @@ npm install
 npm run package:desktop
 ```
 
-The installer is written to `dist-release/PeakCAD-Setup-1.0.6.exe`. A portable build is written beside it. Close any running PeakCAD window before you install. Setup upgrades an existing install in place and keeps your projects.
+The installer is written to `dist-release/PeakCAD-Setup-1.0.7.exe`. A portable build is written beside it. Close any running PeakCAD window before you install. Setup upgrades an existing install in place and keeps your projects.
 
 Developers can preview the editor locally:
 

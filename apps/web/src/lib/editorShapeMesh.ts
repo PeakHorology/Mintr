@@ -8,6 +8,7 @@ import {
   resolveShapeSides,
   resolveShapeSteps,
 } from "@/lib/displayTessellation";
+import { createGearGeometry } from "@/lib/gearMesh";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
@@ -623,6 +624,9 @@ export function geometryMeshForShape(shape: WorkplaneShape): MeshData | null {
     case "polygon":
       geometry = new THREE.CylinderGeometry(1, 1, height, shape.sides ?? 6);
       geometry.scale(width / 2, 1, depth / 2);
+      break;
+    case "gear":
+      geometry = createGearGeometry(shape);
       break;
     case "icosahedron":
       geometry = new THREE.IcosahedronGeometry(size / 2, resolveIcosahedronDetail());

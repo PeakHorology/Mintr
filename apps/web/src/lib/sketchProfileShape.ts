@@ -9,7 +9,7 @@ import { cloneSketchPlane, isFaceHostedSketch, resolveSketchPlane, sketchBasisMa
 import { isCylinderSketchPlane, wrapCircleRadialCylinder, wrapUvLoopRadialPrism } from "@/lib/sketchCylinder";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
 import { promoteWorkplaneSketchToPrimitive } from "@/lib/sketchPrimitivePromote";
-import { closedProfilesFromLegacy, sketchProfileToDoc } from "@/lib/sketch";
+import { closeOpenPathGaps, closedProfilesFromLegacy, materialOutlines, orderedSketchPaths as sharedOrderedSketchPaths, sketchProfileToDoc } from "@/lib/sketch";
 
 export function emptySketchProfile(): SketchProfile {
   return { points: [], segments: [], images: [] };
@@ -119,53 +119,10 @@ export type OrderedSketchStep = { segment: SketchProfile["segments"][number]; fr
 export type OrderedSketchPath = { points: SketchPoint[]; steps: OrderedSketchStep[]; closed: boolean };
 
 export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] {
-  const pointById = new Map(profile.points.map((point) => [point.id, point]));
-  const adjacency = new Map<string, Array<{ pointId: string; segment: SketchProfile["segments"][number] }>>();
-  profile.points.forEach((point) => adjacency.set(point.id, []));
-  const validSegments = profile.segments.filter((segment) => {
-    if (!pointById.has(segment.startId) || !pointById.has(segment.endId) || segment.startId === segment.endId) return;
-    adjacency.get(segment.startId)?.push({ pointId: segment.endId, segment });
-    adjacency.get(segment.endId)?.push({ pointId: segment.startId, segment });
-    return true;
+  return sharedOrderedSketchPaths({
+    ...profile,
+    segments: profile.segments.filter((segment) => !segment.construction),
   });
-  const unvisited = new Set(validSegments.map((segment) => segment.id));
-  const paths: OrderedSketchPath[] = [];
-  while (unvisited.size > 0) {
-    const seedId = unvisited.values().next().value as string | undefined;
-    const seed = validSegments.find((segment) => segment.id === seedId);
-    if (!seed) break;
-    const componentIds = new Set<string>();
-    const queue = [seed.startId, seed.endId];
-    while (queue.length > 0) {
-      const id = queue.pop();
-      if (!id || componentIds.has(id)) continue;
-      componentIds.add(id);
-      adjacency.get(id)?.forEach((entry) => queue.push(entry.pointId));
-    }
-    const startId = [...componentIds].find((id) => (adjacency.get(id)?.filter((entry) => unvisited.has(entry.segment.id)).length ?? 0) === 1) ?? seed.startId;
-    const first = pointById.get(startId);
-    if (!first) {
-      unvisited.delete(seed.id);
-      continue;
-    }
-    const points = [first];
-    const steps: OrderedSketchStep[] = [];
-    let currentId = startId;
-    for (let guard = 0; guard <= validSegments.length; guard += 1) {
-      const edge = adjacency.get(currentId)?.find((entry) => unvisited.has(entry.segment.id));
-      if (!edge) break;
-      const from = pointById.get(currentId);
-      const to = pointById.get(edge.pointId);
-      if (!from || !to) break;
-      unvisited.delete(edge.segment.id);
-      steps.push({ segment: edge.segment, from, to });
-      currentId = to.id;
-      if (currentId === startId) break;
-      points.push(to);
-    }
-    paths.push({ points, steps, closed: currentId === startId && steps.length >= 3 });
-  }
-  return paths;
 }
 
 export function withSmoothSketchHandles(profile: SketchProfile) {
@@ -337,7 +294,8 @@ export function shapeFromSketchProfile(
   existing?: WorkplaneShape | null,
   options?: { cutIntoFace?: boolean },
 ) {
-  const closedPaths = orderedSketchPaths(profile).filter((path) => path.closed);
+  profile = closeOpenPathGaps(profile);
+  const closedPaths = materialOutlines(profile);
   if (closedPaths.length === 0) return null;
   const plane = resolveSketchPlane(profile.sketchPlane ?? existing?.sketchPlane);
   const profilePoints = closedPaths.flatMap((path) => path.points);

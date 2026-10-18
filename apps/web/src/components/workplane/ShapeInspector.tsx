@@ -29,6 +29,15 @@ import {
 } from "@/lib/metricThreadSolid";
 import { THREAD_SIZE_OPTIONS, type ThreadSeries } from "@/lib/metricThreads";
 import { resolveShapeSides, resolveShapeSteps } from "@/lib/displayTessellation";
+import {
+  gearFootprint,
+  gearFormFromLabel,
+  gearFormLabel,
+  gearInspectorHint,
+  gearMetrics,
+  normalizeGearSpec,
+  type GearSpec,
+} from "@/lib/gearProfile";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
 import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
 import { isConstructionShape } from "@/lib/holeFeature";
@@ -141,11 +150,11 @@ function formatPropertyNumber(value: number, accuracy: MeasurementAccuracy, step
 }
 
 function propertyUsesLengthUnit(label: string) {
-  return /length|width|height|radius|bevel|thickness|clearance/i.test(label);
+  return /length|width|height|radius|bevel|thickness|clearance|module|backlash|rim|hole/i.test(label);
 }
 
 function propertyUsesDegreeUnit(label: string) {
-  return label === "Left Angle" || label === "Right Angle";
+  return label === "Left Angle" || label === "Right Angle" || label === "Pressure angle" || label === "Helix angle";
 }
 
 const MAX_SHAPE_NAME_LENGTH = 48;
@@ -165,7 +174,63 @@ function withNameProperty(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate,
   ];
 }
 
-function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
+function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate, sceneShapes: readonly WorkplaneShape[] = []): ShapePropertyConfig[] {
+  if (shape.kind === "gear") {
+    const spec = normalizeGearSpec(shape.gearSpec);
+    const metrics = gearMetrics(spec);
+    const apply = (patch: Partial<GearSpec>) => {
+      const next = normalizeGearSpec({ ...spec, ...patch });
+      const foot = gearFootprint(next, shape.depth);
+      onUpdate({
+        gearSpec: next,
+        width: foot.width,
+        depth: foot.depth,
+        size: Math.max(foot.width, foot.depth),
+      });
+    };
+    const helical = spec.form === "helical" || spec.form === "herringbone";
+    return [
+      {
+        type: "select",
+        label: "Form",
+        value: gearFormLabel(spec.form),
+        options: ["Spur", "Helical", "Herringbone", "Ring", "Rack"],
+        onChange: (next) => apply({ form: gearFormFromLabel(next) }),
+      },
+      { label: "Teeth", value: spec.teeth, min: spec.form === "rack" ? 3 : spec.form === "ring" ? 10 : 6, max: spec.form === "rack" ? 48 : 120, step: 1, onChange: (teeth) => apply({ teeth: Math.round(teeth) }) },
+      {
+        label: "Module",
+        value: spec.module,
+        min: 0.5,
+        max: 8,
+        step: 0.1,
+        hint: gearInspectorHint(shape, sceneShapes),
+        onChange: (module) => apply({ module }),
+      },
+      { label: "Pressure angle", value: spec.pressureAngle, min: 14.5, max: 25, step: 0.5, onChange: (pressureAngle) => apply({ pressureAngle }) },
+      { label: "Backlash", value: spec.backlash, min: 0, max: 1, step: 0.05, hint: "Taken off the pair. Each gear loses half, so a printed pair does not bind.", onChange: (backlash) => apply({ backlash }) },
+      ...(spec.form === "ring"
+        ? [{ label: "Rim", value: spec.rim, min: 1, max: 20, step: 0.5, onChange: (rim: number) => apply({ rim }) }]
+        : []),
+      ...(spec.form !== "ring" && spec.form !== "rack"
+        ? [{ label: "Center hole", value: spec.bore, min: 0, max: Math.max(0.5, metrics.rootDiameter - 1), step: 0.1, onChange: (bore: number) => apply({ bore }) }]
+        : []),
+      ...(helical
+        ? [{
+          label: "Helix angle",
+          value: spec.helixAngle,
+          min: -45,
+          max: 45,
+          step: 1,
+          centerDetent: true,
+          hint: "On the pitch circle. A mate uses the same angle with the opposite sign.",
+          onChange: (helixAngle: number) => apply({ helixAngle }),
+        }]
+        : []),
+      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 80, onChange: (height) => onUpdate({ height }, { resizeAxis: "height" }) },
+    ];
+  }
+
   if (shape.kind === "thread") {
     const designation = shape.threadSpec?.designation ?? "M6";
     const series = shape.threadSpec?.series ?? (designation === "Custom" ? "custom" : THREAD_SIZE_OPTIONS.find((entry) => entry.id === designation)?.series ?? "metric");
@@ -641,7 +706,7 @@ export function ShapeInspector({
     }
     onUpdate(patch, options);
   };
-  const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget));
+  const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget, sceneShapes ?? []));
   const sketchFeature = resolveEditableSketchShape(
     feature ?? shape,
     { preferredId: activeFeatureId, preferFaceFeatures: !activeFeatureId },

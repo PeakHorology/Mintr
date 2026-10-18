@@ -20,7 +20,8 @@ export type ShapeKind =
   | "polygon"
   | "icosahedron"
   | "mesh"
-  | "thread";
+  | "thread"
+  | "gear";
 
 export type ShapeAsset = {
   id: string;
@@ -82,6 +83,8 @@ export type SketchSegment = {
   startId: string;
   endId: string;
   kind?: "line" | "bezier" | "smooth";
+  /** Dashed guide. It snaps, and it is left out of extrude and revolve. */
+  construction?: boolean;
 };
 
 export type SketchImage = {
@@ -309,11 +312,25 @@ export type WorkplaneShape = {
   /** Plane the sketch was drawn on (defaults to workplane when missing). */
   sketchPlane?: SketchPlane;
   /** How the stored sketch profile was turned into this solid. */
-  sketchFinish?: "extrude" | "revolve";
+  sketchFinish?: "extrude" | "revolve" | "sweep";
   /** Axis used for `sketchFinish: "revolve"` (sketch-plane XZ coordinates). */
   sketchRevolveAxis?: { x1: number; z1: number; x2: number; z2: number };
   edgeTreatments?: EdgeTreatmentFeature[];
   edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];
+  /**
+   * Involute gear. Size follows the module and tooth count.
+   * Spur and ring are exact solids. Helical, herringbone, and rack use the same tooth.
+   */
+  gearSpec?: {
+    form?: "spur" | "helical" | "herringbone" | "ring" | "rack";
+    teeth?: number;
+    module?: number;
+    pressureAngle?: number;
+    backlash?: number;
+    bore?: number;
+    helixAngle?: number;
+    rim?: number;
+  };
   /** Metric coarse size / style for `kind: "thread"` solids. */
   threadSpec?: {
     designation: string;

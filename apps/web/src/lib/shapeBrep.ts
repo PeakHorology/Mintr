@@ -1,4 +1,6 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
+import { buildGearIndexedMesh } from "@/lib/gearMesh";
+import { normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { Brep, BrepSolid } from "@/lib/brepKernel";
@@ -26,6 +28,7 @@ export const NATIVE_EXACT_KINDS: ReadonlySet<WorkplaneShape["kind"]> = new Set([
   "tube",
   "ring",
   "polygon",
+  "gear",
 ]);
 
 /** Kinds that are intentionally tessellated / font / helix detail. */
@@ -135,6 +138,8 @@ export function buildNativeShapeSolid(brep: Brep, shape: WorkplaneShape): ShapeB
         return buildHollowCylinder(brep, shape, width, height, depth);
       case "polygon":
         return buildPolygon(brep, shape, width, height, depth);
+      case "gear":
+        return buildGear(brep, shape, height);
       default:
         return { skip: "no exact B-Rep mapping" };
     }
@@ -440,4 +445,60 @@ function buildPolygon(
     solid = scaled.value as unknown as BrepSolid;
   }
   return { solid };
+}
+
+function failureText(error: unknown) {
+  if (error && typeof error === "object" && "message" in error) return String(error.message);
+  return "gear solid failed";
+}
+
+function standGearUp(brep: Brep, solid: BrepSolid, height: number) {
+  const turned = brep.rotate(solid, -90, { axis: [1, 0, 0] });
+  return brep.translate(turned, [0, -height / 2, 0]);
+}
+
+function gearFromMesh(brep: Brep, shape: WorkplaneShape, height: number): ShapeBrepBuild {
+  const mesh = buildGearIndexedMesh(shape.gearSpec, height, shape.depth);
+  const points: Array<[number, number, number]> = [];
+  for (let i = 0; i < mesh.positions.length; i += 3) {
+    points.push([mesh.positions[i], mesh.positions[i + 1] - height / 2, mesh.positions[i + 2]]);
+  }
+  const faces: number[][] = [];
+  for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+    faces.push([mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]]);
+  }
+  const solid = brep.polyhedron(points, faces);
+  if (!solid.ok) return { skip: failureText(solid.error) };
+  return { solid: solid.value as unknown as BrepSolid };
+}
+
+function buildGear(brep: Brep, shape: WorkplaneShape, height: number): ShapeBrepBuild {
+  const spec = normalizeGearSpec(shape.gearSpec);
+  if (spec.form === "rack") {
+    const loop = rackPlanLoop(spec, shape.depth).map((point) => [point.x, point.z] as [number, number]);
+    const extruded = extrudeClosedUv(brep, loop, xzPlane(brep), height, [0, 1, 0]);
+    if (extruded) return { solid: centerOnY(brep, extruded, height) };
+    return gearFromMesh(brep, shape, height);
+  }
+  if (spec.form === "spur" || spec.form === "ring") {
+    const built = spec.form === "ring"
+      ? brep.makeInternalGear({
+        teeth: spec.teeth,
+        moduleSize: spec.module,
+        thickness: height,
+        pressureAngleDeg: spec.pressureAngle,
+        flankThinning: spec.backlash / 2,
+        ringWallThickness: spec.module * 1.25 + spec.rim,
+      })
+      : brep.makeExternalGear({
+        teeth: spec.teeth,
+        moduleSize: spec.module,
+        thickness: height,
+        pressureAngleDeg: spec.pressureAngle,
+        flankThinning: spec.backlash / 2,
+        bore: spec.bore,
+      });
+    if (built.ok) return { solid: standGearUp(brep, built.value.solid as unknown as BrepSolid, height) };
+  }
+  return gearFromMesh(brep, shape, height);
 }

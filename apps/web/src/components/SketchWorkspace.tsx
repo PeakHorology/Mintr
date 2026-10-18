@@ -9,7 +9,7 @@ import { SketchSnapGlyph } from "@/components/workplane/SketchSnapGlyph";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
 import { isDefaultSketchPlane } from "@/lib/sketchPlane";
 import { faceReferenceBounds } from "@/lib/sketchFaceReference";
-import { closedProfilesFromLegacy, CONSTRAINT_LABELS, snapSketchPoint, type SketchConstraint, type SketchDefinitionStatus, type SketchDimension, type SketchEntity, type SketchSnapResult } from "@/lib/sketch";
+import { closedProfilesFromLegacy, CONSTRAINT_LABELS, curveStandInOwner, parseLineEntry, pointAtLengthAngle, screenAngleDeg, sketchCornerMarks, snapHeading, snapSketchPoint, type SketchConstraint, type SketchDefinitionStatus, type SketchDimension, type SketchEntity, type SketchSnapResult } from "@/lib/sketch";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import { mirrorSign, resizedImportedMeshPositions } from "@/lib/workplaneShapes";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
@@ -50,7 +50,8 @@ export type SketchTool =
   | "constrain-coincident"
   | "constrain-midpoint"
   | "constrain-fix"
-  | "constrain-concentric";
+  | "constrain-concentric"
+  | "stroke";
 export type SketchSelection =
   | { kind: "point"; id: string }
   | { kind: "segment"; id: string }
@@ -115,6 +116,12 @@ type SketchWorkspaceProps = {
   onToolChange?: (tool: SketchTool) => void;
   /** Optional toast/notice for empty-tool feedback (e.g. dimension on empty plate). */
   onNotice?: (message: string) => void;
+  showConstruction?: boolean;
+  /** Construction lines that live on the sketch document but not yet on the profile. */
+  constructionGuides?: Array<{ id: string; x1: number; z1: number; x2: number; z2: number }>;
+  onEditSegmentLength?: (segmentId: string, length: number, grow: "end" | "both") => void;
+  onEditCornerAngle?: (pointId: string, degrees: number, leg: 0 | 1) => void;
+  onEditCircleRadius?: (circleId: string, radius: number) => void;
 };
 
 type PathStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
@@ -134,6 +141,7 @@ type PointerAction =
   | { kind: "offset"; pointerId: number; segmentId: string; current: { x: number; z: number } }
   | { kind: "erase"; pointerId: number; current: { x: number; z: number } }
   | { kind: "move-point"; pointerId: number; pointId: string; current: { x: number; z: number } }
+  | { kind: "resize-circle"; pointerId: number; circleId: string; center: { x: number; z: number }; radius: number; current: { x: number; z: number } }
   | { kind: "move-handle"; pointerId: number; pointId: string; handle: "in" | "out"; current: { x: number; z: number } }
   | { kind: "pan"; pointerId: number; clientX: number; clientY: number }
   | { kind: "marquee"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
@@ -369,6 +377,16 @@ function sampleEraseStroke(from: { x: number; z: number }, to: { x: number; z: n
     });
   }
   return samples;
+}
+
+function angleArrow(x: number, z: number, dx: number, dz: number, size: number) {
+  const length = Math.hypot(dx, dz) || 1;
+  const ux = dx / length;
+  const uz = dz / length;
+  const wing = size * 0.42;
+  const backX = x - ux * size;
+  const backZ = z - uz * size;
+  return `M ${x} ${z} L ${backX - uz * wing} ${backZ + ux * wing} L ${backX + uz * wing} ${backZ - ux * wing} Z`;
 }
 
 function segmentDimension(segment: SketchSegment, pointById: Map<string, SketchPoint>) {
@@ -684,6 +702,11 @@ export function SketchWorkspace({
   onSnapResolved,
   onToolChange,
   onNotice,
+  showConstruction = true,
+  constructionGuides = [],
+  onEditSegmentLength,
+  onEditCornerAngle,
+  onEditCircleRadius,
 }: SketchWorkspaceProps) {
   const workspace = useMemo(() => normalizeWorkspaceSettings(initialWorkspace, DEFAULT_WORKPLANE_WORKSPACE), [initialWorkspace]);
   const [snap, setSnap] = useState<GridSize>(() => normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
@@ -715,6 +738,10 @@ export function SketchWorkspace({
     setZoom(clamp(plate / (span * 1.6), 0.75, 6));
   }, [profile.faceReferenceLoops, workspace.depth, workspace.width]);
   const [hover, setHover] = useState<{ x: number; z: number } | null>(null);
+  const [lineEntry, setLineEntry] = useState("");
+  const [lengthEdit, setLengthEdit] = useState<{ segmentId: string; value: number; grow: "end" | "both" } | null>(null);
+  const [radiusEdit, setRadiusEdit] = useState<{ circleId: string; value: number } | null>(null);
+  const [angleEdit, setAngleEdit] = useState<{ pointId: string; value: number; leg: 0 | 1 } | null>(null);
   const [pointerAction, setPointerAction] = useState<PointerAction | null>(null);
   const [arcDraft, setArcDraft] = useState<Array<{ x: number; z: number }>>([]);
   const [erasePreview, setErasePreview] = useState<{ pointIds: string[]; segmentIds: string[] } | null>(null);
@@ -792,8 +819,89 @@ export function SketchWorkspace({
     return images;
   }, [pointerAction, profile.images]);
   const pointById = useMemo(() => new Map(displayProfile.points.map((point) => [point.id, point])), [displayProfile.points]);
+  const circleIds = useMemo(() => new Set(
+    constraintEntities.flatMap((entity) => entity.kind === "circle" ? [entity.id] : []),
+  ), [constraintEntities]);
+  const isCircleStandIn = (id: string) => circleIds.has(curveStandInOwner(id) ?? "");
+  const drawnCircles = useMemo(() => {
+    const centers = new Map(
+      constraintEntities.flatMap((entity) => entity.kind === "point" ? [[entity.id, entity] as const] : []),
+    );
+    return constraintEntities.flatMap((entity) => {
+      if (entity.kind !== "circle") return [];
+      const docCenter = centers.get(entity.centerId);
+      if (!docCenter || docCenter.kind !== "point") return [];
+      const live = pointById.get(entity.centerId);
+      let cx = live?.x ?? docCenter.x;
+      let cz = live?.z ?? docCenter.z;
+      let radius = entity.radius;
+      if (pointerAction?.kind === "resize-circle" && pointerAction.circleId === entity.id) {
+        cx = pointerAction.center.x;
+        cz = pointerAction.center.z;
+        radius = Math.hypot(pointerAction.current.x - cx, pointerAction.current.z - cz);
+      }
+      if (!(radius > 0) || erasePreview?.segmentIds.includes(entity.id)) return [];
+      return [{ id: entity.id, cx, cz, radius, construction: Boolean(entity.construction) }];
+    });
+  }, [constraintEntities, erasePreview, pointById, pointerAction]);
   const paths = useMemo(() => orderedPaths(displayProfile), [displayProfile]);
   const activePoint = activePointId ? pointById.get(activePointId) ?? null : null;
+  const typedPreview = (() => {
+    if (tool !== "line" || !activePoint || !lineEntry) return null;
+    const parsed = parseLineEntry(lineEntry);
+    if (!parsed) return null;
+    const angle = parsed.angleDeg ?? (hover ? screenAngleDeg(activePoint, hover) : null);
+    if (angle === null) return null;
+    return pointAtLengthAngle(activePoint, parsed.length, angle);
+  })();
+  const rubberEnd = typedPreview ?? hover;
+  useEffect(() => {
+    if (tool !== "line") setLineEntry("");
+  }, [tool]);
+  useEffect(() => {
+    if (tool !== "line" || !activePointId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "Escape") {
+        if (!lineEntry) return;
+        event.preventDefault();
+        setLineEntry("");
+        return;
+      }
+      if (event.key === "Backspace") {
+        if (!lineEntry) return;
+        event.preventDefault();
+        setLineEntry((current) => current.slice(0, -1));
+        return;
+      }
+      if (event.key === "Enter") {
+        if (!lineEntry || !activePoint) return;
+        const parsed = parseLineEntry(lineEntry);
+        if (!parsed) return;
+        event.preventDefault();
+        const angle = parsed.angleDeg ?? (hover ? screenAngleDeg(activePoint, hover) : null);
+        if (angle === null) {
+          onNotice?.("Move the pointer to set the angle, or type 50<30");
+          return;
+        }
+        const placed = pointAtLengthAngle(activePoint, parsed.length, angle);
+        setLineEntry("");
+        onPlanePoint({
+          x: clamp(placed.x, -workspace.width / 2, workspace.width / 2),
+          z: clamp(placed.z, -workspace.depth / 2, workspace.depth / 2),
+        });
+        return;
+      }
+      if (/^[0-9.<+-]$/.test(event.key)) {
+        event.preventDefault();
+        setLineEntry((current) => `${current}${event.key}`.slice(0, 32));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activePoint, activePointId, hover, lineEntry, onNotice, onPlanePoint, tool, workspace.depth, workspace.width]);
   const selectedPoint = selected?.kind === "point" ? pointById.get(selected.id) ?? null : null;
   const selectedImage = selected?.kind === "image" ? displayImages.find((image) => image.id === selected.id) ?? null : null;
   const isPointSelected = (id: string) => selected?.kind === "point" ? selected.id === id : selected?.kind === "multiple" ? selected.pointIds.includes(id) : false;
@@ -821,9 +929,9 @@ export function SketchWorkspace({
   }, [gridStep, workspace.depth]);
 
   const pointFromEvent = (
-    event: { clientX: number; clientY: number },
+    event: { clientX: number; clientY: number; shiftKey?: boolean },
     from?: { x: number; z: number } | null,
-    options?: { snap?: boolean; excludePointIds?: readonly string[] },
+    options?: { snap?: boolean; excludePointIds?: readonly string[]; headingStep?: number },
   ) => {
     const svg = svgRef.current;
     const matrix = svg?.getScreenCTM();
@@ -841,14 +949,44 @@ export function SketchWorkspace({
       onSnapResolved?.(null);
       return raw;
     }
-    const activePoint = activePointId ? profile.points.find((point) => point.id === activePointId) : null;
-    const snapResult = snapSketchPoint(profile, {
+    const anchorPoint = activePointId ? profile.points.find((point) => point.id === activePointId) : null;
+    const anchor = from ?? (anchorPoint ? { x: anchorPoint.x, z: anchorPoint.z } : null);
+    const guidePoints = showConstruction ? constructionGuides.flatMap((guide) => [
+      { id: `${guide.id}-a`, x: guide.x1, z: guide.z1 },
+      { id: `${guide.id}-b`, x: guide.x2, z: guide.z2 },
+    ]) : [];
+    const guideSegments = showConstruction ? constructionGuides.map((guide) => ({
+      id: guide.id,
+      startId: `${guide.id}-a`,
+      endId: `${guide.id}-b`,
+      kind: "line" as const,
+      construction: true,
+    })) : [];
+    const snapProfile = {
+      ...profile,
+      points: [...profile.points, ...guidePoints],
+      segments: [
+        ...profile.segments.filter((segment) => showConstruction || !segment.construction),
+        ...guideSegments,
+      ],
+    };
+    const snapResult = snapSketchPoint(snapProfile, {
       cursor: raw,
-      from: from ?? (activePoint ? { x: activePoint.x, z: activePoint.z } : null),
+      from: anchor,
       screenUnit,
       gridStep: step > 0 ? step : undefined,
       excludePointIds: options?.excludePointIds,
     });
+    const headed = options?.headingStep && anchor && (snapResult.kind === "grid" || snapResult.kind === "horizontal" || snapResult.kind === "vertical")
+      ? snapHeading(anchor, snapResult, options.headingStep)
+      : null;
+    if (headed) {
+      onSnapResolved?.(null);
+      return {
+        x: clamp(headed.x, -workspace.width / 2, workspace.width / 2),
+        z: clamp(headed.z, -workspace.depth / 2, workspace.depth / 2),
+      };
+    }
     onSnapResolved?.(snapResult);
     return {
       x: clamp(snapResult.x, -workspace.width / 2, workspace.width / 2),
@@ -895,7 +1033,21 @@ export function SketchWorkspace({
     if (!stroke) return;
     const hitMap = new Map(profile.points.map((point) => [point.id, point]));
     const changed = collectEraseHits(tip, eraseBrushRadius, profile, hitMap, stroke.pointIds, stroke.segmentIds);
-    if (changed) {
+    for (const id of [...stroke.pointIds]) {
+      if (isCircleStandIn(id)) stroke.pointIds.delete(id);
+    }
+    for (const id of [...stroke.segmentIds]) {
+      if (isCircleStandIn(id)) stroke.segmentIds.delete(id);
+    }
+    let circleHit = false;
+    for (const circle of drawnCircles) {
+      const distance = Math.abs(Math.hypot(tip.x - circle.cx, tip.z - circle.cz) - circle.radius);
+      if (distance <= eraseBrushRadius && !stroke.segmentIds.has(circle.id)) {
+        stroke.segmentIds.add(circle.id);
+        circleHit = true;
+      }
+    }
+    if (changed || circleHit) {
       setErasePreview({
         pointIds: [...stroke.pointIds],
         segmentIds: [...stroke.segmentIds],
@@ -931,7 +1083,10 @@ export function SketchWorkspace({
       return;
     }
     if (event.button !== 0 || (event.target !== event.currentTarget && (event.target as Element).closest("[data-sketch-entity]"))) return;
-    const point = pointFromEvent(event, null, tool === "select" || tool === "dimension" ? { snap: false } : undefined);
+    const point = pointFromEvent(event, null, {
+      ...(tool === "select" || tool === "dimension" ? { snap: false as const } : {}),
+      ...(event.shiftKey && tool === "line" ? { headingStep: 15 } : {}),
+    });
     if (!point) return;
     event.preventDefault();
     if (tool === "erase") {
@@ -986,13 +1141,12 @@ export function SketchWorkspace({
       setPointerAction({ ...pointerAction, clientX: event.clientX, clientY: event.clientY });
       return;
     }
-    const moveOptions =
-      pointerAction?.kind === "marquee"
-        ? { snap: false as const }
-        : pointerAction?.kind === "move-point"
-          ? { excludePointIds: [pointerAction.pointId] }
-          : undefined;
-    const point = pointFromEvent(event, null, moveOptions);
+    const moveOptions = {
+      ...(pointerAction?.kind === "marquee" ? { snap: false as const } : {}),
+      ...(pointerAction?.kind === "move-point" ? { excludePointIds: [pointerAction.pointId] } : {}),
+      ...(event.shiftKey && tool === "line" && pointerAction?.kind !== "marquee" ? { headingStep: 15 } : {}),
+    };
+    const point = pointFromEvent(event, null, Object.keys(moveOptions).length ? moveOptions : undefined);
     setHover(point);
     if (!point || !pointerAction) return;
     if (pointerAction.kind === "erase") {
@@ -1022,12 +1176,16 @@ export function SketchWorkspace({
       const minZ = Math.min(action.origin.z, action.current.z);
       const maxZ = Math.max(action.origin.z, action.current.z);
       const contains = (point: { x: number; z: number }) => point.x >= minX && point.x <= maxX && point.z >= minZ && point.z <= maxZ;
-      const pointIds = profile.points.filter(contains).map((point) => point.id);
+      const pointIds = profile.points.filter((point) => contains(point) && !isCircleStandIn(point.id)).map((point) => point.id);
       const segmentIds = profile.segments.filter((segment) => {
+        if (isCircleStandIn(segment.id)) return false;
         const start = pointById.get(segment.startId);
         const end = pointById.get(segment.endId);
         return Boolean(start && end && (contains(start) || contains(end) || contains({ x: (start.x + end.x) / 2, z: (start.z + end.z) / 2 })));
       }).map((segment) => segment.id);
+      for (const circle of drawnCircles) {
+        if (contains({ x: circle.cx, z: circle.cz })) segmentIds.push(circle.id);
+      }
       const imageIds = (profile.images ?? []).filter((image) => {
         const imageMinX = image.x - image.width / 2;
         const imageMaxX = image.x + image.width / 2;
@@ -1078,6 +1236,9 @@ export function SketchWorkspace({
       }, "Sketch image moved");
     } else if (action.kind === "resize-image") {
       onUpdateImage(action.imageId, resizeSketchImage(action.start, action.handle, action.current), "Sketch image resized");
+    } else if (action.kind === "resize-circle") {
+      const radius = Math.hypot(action.current.x - action.center.x, action.current.z - action.center.z);
+      if (Math.abs(radius - action.radius) > 0.05) onEditCircleRadius?.(action.circleId, radius);
     }
     setPointerAction(null);
   };
@@ -1097,8 +1258,8 @@ export function SketchWorkspace({
 
   const measurementLength = measurement ? Math.hypot(measurement.end.x - measurement.start.x, measurement.end.z - measurement.start.z) : 0;
   const measurementLabel = formatDimension(measurementLength, workspace.accuracy);
-  const previewLength = activePoint && hover ? Math.hypot(hover.x - activePoint.x, hover.z - activePoint.z) : 0;
-  const previewLabel = formatDimension(previewLength, workspace.accuracy);
+  const previewLength = activePoint && rubberEnd ? Math.hypot(rubberEnd.x - activePoint.x, rubberEnd.z - activePoint.z) : 0;
+  const previewLabel = lineEntry || formatDimension(previewLength, workspace.accuracy);
   const circlePreviewRadius =
     pointerAction?.kind === "circle"
       ? Math.hypot(pointerAction.current.x - pointerAction.origin.x, pointerAction.current.z - pointerAction.origin.z)
@@ -1441,10 +1602,13 @@ export function SketchWorkspace({
             })}
           </g>
           <g className="sketch-segments">
-            {displayProfile.segments.map((segment) => (
+            {displayProfile.segments.map((segment) => {
+              if (isCircleStandIn(segment.id)) return null;
+              if (!showConstruction && segment.construction) return null;
+              return (
               <path
                 data-sketch-entity="segment"
-                className={isSegmentSelected(segment.id) ? "selected" : ""}
+                className={`${isSegmentSelected(segment.id) ? "selected" : ""} ${segment.construction ? "construction" : ""}`.trim()}
                 key={segment.id}
                 d={segmentData(segment, pointById)}
                 onPointerDown={(event) => {
@@ -1460,25 +1624,167 @@ export function SketchWorkspace({
                   } else if (event.button === 0) onSelectSegment(segment.id, point ?? undefined);
                 }}
               />
-            ))}
+              );
+            })}
           </g>
-          <g className="sketch-segment-dimensions" pointerEvents="none">
+          {drawnCircles.some((circle) => showConstruction || !circle.construction) ? (
+            <g className="sketch-analytic-circles">
+              {drawnCircles.filter((circle) => showConstruction || !circle.construction).map((circle) => {
+                const circleSelected = isSegmentSelected(circle.id)
+                  || (selected?.kind === "segment" && curveStandInOwner(selected.id) === circle.id)
+                  || (selected?.kind === "multiple" && selected.segmentIds.some((id) => curveStandInOwner(id) === circle.id));
+                return (
+                  <circle
+                    key={circle.id}
+                    data-sketch-entity="segment"
+                    className={`${circleSelected ? "selected" : ""} ${circle.construction ? "construction" : ""}`.trim()}
+                    cx={circle.cx}
+                    cy={circle.cz}
+                    r={circle.radius}
+                    onPointerDown={(event) => {
+                      const point = pointFromEvent(event);
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (event.button === 1) beginPan(event);
+                      else if (event.button === 0 && tool === "erase" && point) beginEraseStroke(event, point);
+                      else if (event.button === 0 && tool === "select" && point) {
+                        onSelectSegment(circle.id, point);
+                        beginEntityDrag(event, {
+                          kind: "resize-circle",
+                          pointerId: event.pointerId,
+                          circleId: circle.id,
+                          center: { x: circle.cx, z: circle.cz },
+                          radius: circle.radius,
+                          current: point,
+                        });
+                      } else if (event.button === 0) onSelectSegment(circle.id, point ?? undefined);
+                    }}
+                  />
+                );
+              })}
+            </g>
+          ) : null}
+          {showConstruction && constructionGuides.length > 0 ? (
+            <g className="sketch-construction-guides" pointerEvents="none">
+              {constructionGuides.filter((guide) => !circleIds.has(guide.id.replace(/-g\d+$/, ""))).map((guide) => (
+                <line key={guide.id} x1={guide.x1} y1={guide.z1} x2={guide.x2} y2={guide.z2} />
+              ))}
+            </g>
+          ) : null}
+          <g className="sketch-segment-dimensions">
             {displayProfile.segments.map((segment) => {
+              if (segment.construction || isCircleStandIn(segment.id)) return null;
               const dimension = segmentDimension(segment, pointById);
               if (!dimension) return null;
               const label = formatDimension(dimension.length, workspace.accuracy);
               const pill = dimensionPillSize(label, screenUnit, 18);
+              const editable = tool === "select" && Boolean(onEditSegmentLength);
               return (
-                <g key={`dimension-${segment.id}`} transform={`translate(${dimension.midpoint.x} ${dimension.midpoint.z - labelOffset})`}>
+                <g
+                  key={`dimension-${segment.id}`}
+                  className={editable ? "editable" : ""}
+                  pointerEvents={editable ? "auto" : "none"}
+                  transform={`translate(${dimension.midpoint.x} ${dimension.midpoint.z - labelOffset})`}
+                  onPointerDown={(event) => {
+                    if (!editable || event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setLengthEdit({ segmentId: segment.id, value: dimension.length, grow: "end" });
+                  }}
+                >
+                  <title>{editable ? "Click to type the length" : undefined}</title>
                   <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
                   <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
                 </g>
               );
             })}
+            {tool === "select" ? sketchCornerMarks(displayProfile).filter((mark) => !isCircleStandIn(mark.pointId)).map((mark) => {
+              const rightAngle = Math.abs(mark.degrees - 90) < 0.8;
+              const size = Math.max(4 * screenUnit, Math.min((rightAngle ? 14 : 18) * screenUnit, mark.reach * 0.34));
+              const label = `${mark.degrees.toFixed(0)}°`;
+              const pill = dimensionPillSize(label, screenUnit, 18);
+              const labelDistance = size + 16 * screenUnit;
+              const labelX = mark.x - mark.bx * labelDistance;
+              const labelZ = mark.z - mark.bz * labelDistance;
+              const open = (event: ReactPointerEvent<SVGGElement>) => {
+                if (event.button !== 0 || !onEditCornerAngle) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setAngleEdit({ pointId: mark.pointId, value: mark.degrees, leg: 1 });
+              };
+              const callout = (
+                <g className="editable" transform={`translate(${labelX} ${labelZ})`} onPointerDown={open}>
+                  <title>Click to type the corner angle</title>
+                  <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                  <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
+                </g>
+              );
+              if (rightAngle) {
+                const ax = mark.x + mark.ux0 * size;
+                const az = mark.z + mark.uz0 * size;
+                const bx = mark.x + (mark.ux0 + mark.ux1) * size;
+                const bz = mark.z + (mark.uz0 + mark.uz1) * size;
+                const cx = mark.x + mark.ux1 * size;
+                const cz = mark.z + mark.uz1 * size;
+                return (
+                  <g key={`corner-${mark.pointId}`}>
+                    <g className="sketch-angle-dimension" pointerEvents="none">
+                      <path className="witness" d={`M ${ax} ${az} L ${bx} ${bz} L ${cx} ${cz}`} />
+                    </g>
+                    {callout}
+                  </g>
+                );
+              }
+              const cross = mark.ux0 * mark.uz1 - mark.uz0 * mark.ux1;
+              const turn = cross >= 0 ? 1 : -1;
+              const startX = mark.x + mark.ux0 * size;
+              const startZ = mark.z + mark.uz0 * size;
+              const endX = mark.x + mark.ux1 * size;
+              const endZ = mark.z + mark.uz1 * size;
+              const sweep = turn > 0 ? 1 : 0;
+              const travel0x = -turn * mark.uz0;
+              const travel0z = turn * mark.ux0;
+              const travel1x = -turn * mark.uz1;
+              const travel1z = turn * mark.ux1;
+              const arrow = 3.6 * screenUnit;
+              return (
+                <g key={`corner-${mark.pointId}`}>
+                  <g className="sketch-angle-dimension" pointerEvents="none">
+                    <path className="arc" d={`M ${startX} ${startZ} A ${size} ${size} 0 0 ${sweep} ${endX} ${endZ}`} />
+                    <path className="arrow" d={angleArrow(startX, startZ, -travel0x, -travel0z, arrow)} />
+                    <path className="arrow" d={angleArrow(endX, endZ, travel1x, travel1z, arrow)} />
+                  </g>
+                  {callout}
+                </g>
+              );
+            }) : null}
+            {showDimensions ? drawnCircles.filter((circle) => (showConstruction || !circle.construction) && !dimensions.some((dimension) => (dimension.kind === "radius" || dimension.kind === "diameter") && dimension.entityIds.includes(circle.id))).map((circle) => {
+              const label = formatDimension(circle.radius, workspace.accuracy);
+              const pill = dimensionPillSize(label, screenUnit, 18);
+              const editable = tool === "select" && Boolean(onEditCircleRadius);
+              return (
+                <g
+                  key={`radius-${circle.id}`}
+                  className={editable ? "editable" : ""}
+                  pointerEvents={editable ? "auto" : "none"}
+                  transform={`translate(${circle.cx + circle.radius} ${circle.cz - labelOffset})`}
+                  onPointerDown={(event) => {
+                    if (!editable || event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setRadiusEdit({ circleId: circle.id, value: circle.radius });
+                  }}
+                >
+                  <title>{editable ? "Click to type the radius" : undefined}</title>
+                  <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                  <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
+                </g>
+              );
+            }) : null}
           </g>
-          {activePoint && hover && ["line", "bezier", "smooth"].includes(tool) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={hover.x} y2={hover.z} pointerEvents="none" /> : null}
-          {activePoint && hover && ["line", "bezier", "smooth"].includes(tool) ? (
-            <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + hover.x) / 2} ${(activePoint.z + hover.z) / 2 - labelOffset})`}>
+          {activePoint && rubberEnd && ["line", "bezier", "smooth"].includes(tool) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={rubberEnd.x} y2={rubberEnd.z} pointerEvents="none" /> : null}
+          {activePoint && rubberEnd && ["line", "bezier", "smooth"].includes(tool) ? (
+            <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + rubberEnd.x) / 2} ${(activePoint.z + rubberEnd.z) / 2 - labelOffset})`}>
               {(() => {
                 const pill = dimensionPillSize(previewLabel, screenUnit, 18);
                 return (
@@ -1677,7 +1983,7 @@ export function SketchWorkspace({
             </g>
           ) : null}
           <g className="sketch-points">
-            {displayProfile.points.map((point) => (
+            {displayProfile.points.filter((point) => !isCircleStandIn(point.id)).map((point) => (
               <circle
                 data-sketch-entity="point"
                 className={`${isPointSelected(point.id) ? "selected" : ""} ${activePointId === point.id ? "active" : ""}`}
@@ -1812,6 +2118,13 @@ export function SketchWorkspace({
                     z = dim.midpoint.z - labelOffset;
                   }
                 }
+                if ((dimension.kind === "radius" || dimension.kind === "diameter") && dimension.entityIds[0]) {
+                  const circle = drawnCircles.find((entry) => entry.id === dimension.entityIds[0]);
+                  if (circle) {
+                    x = circle.cx + circle.radius;
+                    z = circle.cz - labelOffset;
+                  }
+                }
                 if (dimension.pointIds && dimension.pointIds.length >= 2) {
                   const a = pointById.get(dimension.pointIds[0]);
                   const b = pointById.get(dimension.pointIds[1]);
@@ -1904,6 +2217,64 @@ export function SketchWorkspace({
             const { id } = dimensionDialog;
             setDimensionDialog(null);
             if (Number.isFinite(value) && value > 0) onEditDimension?.(id, value);
+          }}
+        />
+      ) : null}
+      {lengthEdit ? (
+        <InlineValueDialog
+          title="Line length"
+          fields={[{ key: "value", label: "Length", value: lengthEdit.value.toFixed(2), unit: "mm", min: 0 }]}
+          confirmLabel="Apply"
+          note={
+            <button
+              type="button"
+              onClick={() => setLengthEdit((current) => current ? { ...current, grow: current.grow === "end" ? "both" : "end" } : current)}
+            >
+              {lengthEdit.grow === "both" ? "Grows both ways" : "Start stays, far end moves"}
+            </button>
+          }
+          onCancel={() => setLengthEdit(null)}
+          onConfirm={(values) => {
+            const value = Number.parseFloat(values.value ?? "");
+            const edit = lengthEdit;
+            setLengthEdit(null);
+            if (edit && Number.isFinite(value) && value > 0) onEditSegmentLength?.(edit.segmentId, value, edit.grow);
+          }}
+        />
+      ) : null}
+      {angleEdit ? (
+        <InlineValueDialog
+          title="Corner angle"
+          fields={[{ key: "value", label: "Angle", value: angleEdit.value.toFixed(1), unit: "°", min: 1 }]}
+          confirmLabel="Apply"
+          note={
+            <button
+              type="button"
+              onClick={() => setAngleEdit((current) => current ? { ...current, leg: current.leg === 0 ? 1 : 0 } : current)}
+            >
+              {angleEdit.leg === 0 ? "Turns the first line" : "Turns the second line"}
+            </button>
+          }
+          onCancel={() => setAngleEdit(null)}
+          onConfirm={(values) => {
+            const value = Number.parseFloat(values.value ?? "");
+            const edit = angleEdit;
+            setAngleEdit(null);
+            if (edit && Number.isFinite(value)) onEditCornerAngle?.(edit.pointId, value, edit.leg);
+          }}
+        />
+      ) : null}
+      {radiusEdit ? (
+        <InlineValueDialog
+          title="Circle radius"
+          fields={[{ key: "value", label: "Radius", value: radiusEdit.value.toFixed(2), unit: "mm", min: 0 }]}
+          confirmLabel="Apply"
+          onCancel={() => setRadiusEdit(null)}
+          onConfirm={(values) => {
+            const value = Number.parseFloat(values.value ?? "");
+            const edit = radiusEdit;
+            setRadiusEdit(null);
+            if (edit && Number.isFinite(value) && value > 0.05) onEditCircleRadius?.(edit.circleId, value);
           }}
         />
       ) : null}

@@ -631,6 +631,7 @@ const AXIAL_CUTTER_KINDS = new Set<WorkplaneShape["kind"]>([
   "mesh",
   "sketch",
   "thread",
+  "gear",
 ]);
 
 function extentAlong(shape: WorkplaneShape, axis: THREE.Vector3) {
