@@ -21,7 +21,7 @@ export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "tube", name: "Ring", src: "assets/peakcad/shape-icons/tube.png", menuIcon: "assets/peakcad/shape-icons/tube.png", kind: "tube", color: "#ce7013" },
   { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b" },
   { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813" },
-  { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#8d6a2f" },
+  { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#2aa77e" },
 ];
 
 export function sceneShape(shape: Partial<WorkplaneShape> & Pick<WorkplaneShape, "name" | "kind" | "color">): WorkplaneShape {

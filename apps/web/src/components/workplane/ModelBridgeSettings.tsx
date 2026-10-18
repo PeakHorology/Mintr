@@ -82,13 +82,13 @@ export function ModelBridgeSettings() {
     <div className="model-bridge-settings">
       <div className="workspace-section-heading">
         <strong>Models</strong>
-        <span>{enabled ? (ready ? "Ready for a model on this computer." : "Open a project. PeakCAD will listen on this computer.") : "Models are turned off."}</span>
+        <span>{enabled ? (ready ? "Ready for a model on this computer." : "Open a project. Mintr will listen on this computer.") : "Models are turned off."}</span>
       </div>
       <p>
         Claude, Cursor, and Codex connect with the MCP server below. The model sees object ids and the view. The design stays in this project, and each change can be undone from History.
       </p>
       <label className="workspace-select">
-        <span>Allow models to use PeakCAD</span>
+        <span>Allow models to use Mintr</span>
         <input
           type="checkbox"
           checked={enabled}
@@ -108,7 +108,7 @@ export function ModelBridgeSettings() {
       </div>
       {showCode && pairingCode ? (
         <p>
-          Pairing code {pairingCode}. Give it to a connector that can reach this PeakCAD. It works until you quit PeakCAD. A model on the web still needs a connector on this computer; the design is not uploaded.
+          Pairing code {pairingCode}. Give it to a connector that can reach this Mintr. It works until you quit Mintr. A model on the web still needs a connector on this computer; the design is not uploaded.
         </p>
       ) : null}
       {showCode && !pairingCode ? (

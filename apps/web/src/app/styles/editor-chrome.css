@@ -105,8 +105,8 @@
 .shell-opening-row button.active {
   color: var(--ink-strong);
   background: var(--control-surface);
-  border-color: #c6a15b;
-  box-shadow: inset 0 -2px 0 #c6a15b;
+  border-color: #2aa77e;
+  box-shadow: inset 0 -2px 0 #2aa77e;
 }
 
 .shell-opening-row button:disabled {
@@ -192,14 +192,14 @@
 .history-scrub-slider input::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #c6a15b var(--history-fill, 100%), var(--control-border) var(--history-fill, 100%));
+  background: linear-gradient(90deg, #2aa77e var(--history-fill, 100%), var(--control-border) var(--history-fill, 100%));
 }
 
 .history-scrub-slider input::-webkit-slider-thumb {
   width: 16px;
   height: 16px;
   margin-top: -5px;
-  border: 2px solid #c6a15b;
+  border: 2px solid #2aa77e;
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 3px rgba(40, 32, 24, 0.22);
@@ -216,13 +216,13 @@
 .history-scrub-slider input::-moz-range-progress {
   height: 6px;
   border-radius: 999px;
-  background: #c6a15b;
+  background: #2aa77e;
 }
 
 .history-scrub-slider input::-moz-range-thumb {
   width: 16px;
   height: 16px;
-  border: 2px solid #c6a15b;
+  border: 2px solid #2aa77e;
   border-radius: 50%;
   background: #fff;
 }
@@ -237,7 +237,7 @@
 }
 
 .history-scrub-meta strong {
-  color: #8a6a32;
+  color: #2aa77e;
   font-size: 12px;
   font-weight: 800;
 }
@@ -249,7 +249,7 @@
 }
 
 [data-theme="dark"] .history-scrub-meta strong {
-  color: #d4b57a;
+  color: #2aa77e;
 }
 
 .history-scrub-restore {
@@ -345,7 +345,7 @@
   height: 2px;
   margin-top: 4px;
   border-radius: 1px;
-  background: #c6a15b;
+  background: #2aa77e;
 }
 
 .edge-modifier-panel {
@@ -1084,11 +1084,11 @@
   content: "";
   position: absolute;
   left: 50%;
-  bottom: 0;
-  width: 14px;
+  bottom: -2px;
+  width: 18px;
   height: 2px;
   border-radius: 1px;
-  background: #c6a15b;
+  background: #2aa77e;
   transform: translateX(-50%);
 }
 
@@ -1197,7 +1197,7 @@
   height: 2px;
   margin-top: 3px;
   border-radius: 1px;
-  background: #c6a15b;
+  background: #2aa77e;
 }
 
 .toolbar-overflow-menu button svg,

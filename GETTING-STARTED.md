@@ -12,10 +12,10 @@ npm run package:desktop
 
 This creates files in the `dist-release/` folder:
 
-- `PeakCAD-Setup-1.0.7.exe` — installer (adds Start Menu + Desktop shortcut; version matches `package.json`)
-- `PeakCAD-1.0.7-portable.exe` — portable build (no install needed; not an upgrader)
+- `PeakCAD-Setup-1.0.7.5.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
+- `PeakCAD-1.0.7.5-portable.exe` — portable build (no install needed; not an upgrader)
 
-Close any running PeakCAD window before packaging. Run the Setup or portable exe — that is PeakCAD.
+Close any running PeakCAD window before packaging. Run the Setup or portable exe. The wizard, shortcuts, and Windows apps entry are named Mintr3d. The program file remains PeakCAD.exe, so existing projects and settings stay where they are.
 
 ### Upgrade an existing install
 
@@ -44,10 +44,10 @@ Open **http://127.0.0.1:3000** on this computer. Leave the terminal open. Press 
 
 ## Branding
 
-- App name: **PeakCAD**
+- App name in the installer, shortcuts, and Windows apps list: **Mintr3d**
+- Program file: **PeakCAD.exe**
 - Developer: **PeakHorologyLLC**
-- Logo: `apps/web/public/assets/peakcad/peakcad-logo.png`
-- App icon / favicon: generated from the PeakCAD logo via `npm run prepare:desktop-icon`
+- Installer and Windows icon: the Mintr cube, `apps/web/public/assets/mintr/mintr-square.png`, via `npm run prepare:desktop-icon`
 - Color palette defined in `apps/web/src/app/globals.css` (`:root` variables)
 
 ## How to make changes (with AI help)

@@ -3,6 +3,7 @@
 import { ArrowLeft, CircleArrowUp, Download, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from "react";
 import { rememberProblem } from "@/lib/problemReport";
+import { RELEASE_NOTES } from "@/lib/releaseNotes";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
 import { preloadCadModifierWorker } from "@/lib/cadModifierPreload";
 import { loadBrepWithOcct } from "@/lib/brepKernel";
@@ -867,6 +868,18 @@ export default function Home() {
   activeProjectIdRef.current = activeProjectId;
 
   useEffect(() => {
+    const preview = new URLSearchParams(window.location.search).get("preview-update");
+    if (preview) {
+      setUpdateChecking(false);
+      setUpdateOffer({
+        version: "1.0.8",
+        current: "1.0.7.5",
+        notes: RELEASE_NOTES[0]?.items ?? [],
+        portable: false,
+        canInstall: false,
+      });
+      return;
+    }
     const api = desktopUpdateApi();
     if (!api) return;
     let cancel = false;
@@ -2240,12 +2253,12 @@ export default function Home() {
     return (
       <main className={`startup-screen${startupLeaving ? " is-leaving" : ""}`}>
         <div className="startup-grid" aria-hidden="true" />
-        <img className="startup-mark" src="assets/peakcad/peakcad-logo.png" alt="PeakCAD" />
-        <div className="startup-copy">
-          <h1 className="startup-title">PeakCAD</h1>
-          <p className="startup-subtitle">Peak Horology</p>
-          <p className="startup-note">Your designs, your files.</p>
-        </div>
+        <h1 className="startup-wordmark">
+          <img className="startup-wordmark-on-light" src="assets/mintr/mintr-wordmark.png" alt="Mintr" />
+          <img className="startup-wordmark-on-dark" src="assets/mintr/mintr-wordmark-on-dark.png" alt="" />
+        </h1>
+        <p className="startup-tagline">Learn. Model. Mint.</p>
+        <p className="startup-note">Your designs, your files.</p>
         <button
           className="startup-start dashboard-primary"
           type="button"
@@ -3557,15 +3570,15 @@ function Dashboard({
         <button
           className="dashboard-brand"
           type="button"
-          aria-label="PeakCAD home"
+          aria-label="Mintr home"
           onClick={() => {
             if (openFolder) closeFolderView();
           }}
         >
-          <img className="peakcad-logo" src="assets/peakcad/peakcad-logo.png" alt="PeakCAD" />
+          <img className="peakcad-logo" src="assets/mintr/mintr-square.png" alt="" />
           <span className="dashboard-brand-lockup">
-            <span className="dashboard-brand-name">PeakCAD</span>
-            <span className="dashboard-brand-mark">Peak Horology</span>
+            <span className="dashboard-brand-name">Mintr</span>
+            <span className="dashboard-brand-mark">By Peak Horology</span>
           </span>
         </button>
         <div className="dashboard-topbar-tools">

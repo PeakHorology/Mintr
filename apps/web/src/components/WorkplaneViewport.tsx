@@ -6486,7 +6486,7 @@ function syncFaceSnapHighlight(
   const mesh = new THREE.Mesh(
     geometry,
     new THREE.MeshBasicMaterial({
-      color: name === FACE_SNAP_LOCK_NAME ? "#8c6a3d" : "#c4a36a",
+      color: "#2aa77e",
       transparent: true,
       opacity,
       depthWrite: false,

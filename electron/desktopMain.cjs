@@ -38,7 +38,7 @@ if (process.platform === "win32") {
   app.commandLine.appendSwitch("enable-features", "CanvasOopRasterization");
 }
 
-// Must match package.json build.appId so Windows taskbar pins use PeakCAD's icon/name.
+// Must match package.json build.appId so Windows taskbar pins keep this install's icon.
 if (process.platform === "win32") {
   app.setAppUserModelId(APP_USER_MODEL_ID);
 }
@@ -69,7 +69,7 @@ function legalFilePath(name) {
 function openLegalFile(name) {
   const filePath = legalFilePath(name);
   if (!fs.existsSync(filePath)) {
-    dialog.showErrorBox("PeakCAD", `Could not find ${name}. Reinstall PeakCAD to restore the license files.`);
+    dialog.showErrorBox("Mintr", `Could not find ${name}. Reinstall Mintr to restore the license files.`);
     return;
   }
   void shell.openPath(filePath);
@@ -78,16 +78,16 @@ function openLegalFile(name) {
 function showAboutDialog() {
   const options = {
     type: "info",
-    title: "About PeakCAD",
-    message: `PeakCAD ${app.getVersion()}`,
+    title: "About Mintr",
+    message: `Mintr ${app.getVersion()}`,
     detail: [
       "Copyright © PeakHorologyLLC",
       "",
-      "PeakCAD is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.",
+      "Mintr is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.",
       "",
-      "PeakCAD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.",
+      "Mintr is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.",
       "",
-      "PeakCAD includes OpenCascade Technology (LGPL-2.1 with the Open CASCADE exception) and other third-party components under their own licenses.",
+      "Mintr includes OpenCascade Technology (LGPL-2.1 with the Open CASCADE exception) and other third-party components under their own licenses.",
     ].join("\n"),
     buttons: ["OK", "View License", "Third-Party Notices"],
     defaultId: 0,
@@ -125,7 +125,7 @@ function installFileMenu() {
       {
         role: "help",
         submenu: [
-          { label: "About PeakCAD", click: () => showAboutDialog() },
+          { label: "About Mintr", click: () => showAboutDialog() },
           { label: "We'd love to hear your feedback", click: () => { void openFeedback(); } },
           { label: "Report a problem", click: () => { void openProblemReport(); } },
           { type: "separator" },
@@ -344,7 +344,7 @@ function createWindow(port) {
     height: 900,
     minWidth: 1024,
     minHeight: 700,
-    title: "PeakCAD",
+    title: "Mintr",
     icon: iconPath ?? icon,
     autoHideMenuBar: false,
     backgroundThrottling: false,
@@ -412,11 +412,11 @@ function createWindow(port) {
     mainWindow.setIcon(icon);
   }
 
-  // Makes pinned taskbar shortcuts use PeakCAD's ICO instead of Electron's default.
+  // Makes pinned taskbar shortcuts use the Mintr cube instead of Electron's default.
   if (process.platform === "win32" && typeof mainWindow.setAppDetails === "function") {
     const details = {
       appId: APP_USER_MODEL_ID,
-      relaunchDisplayName: "PeakCAD",
+      relaunchDisplayName: "Mintr3d",
       relaunchCommand: `"${process.execPath}"`,
     };
     if (iconPath) {

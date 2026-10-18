@@ -1,23 +1,22 @@
-PeakCAD {{VERSION}} - Written Offer for Corresponding Source
+Mintr3d {{VERSION}} - Written Offer for Corresponding Source
 ============================================================
 
 Copyright (C) PeakHorologyLLC
 
-PeakCAD is free software: you can redistribute it and/or modify it under the
+Mintr3d is free software: you can redistribute it and/or modify it under the
 terms of the GNU General Public License as published by the Free Software
 Foundation, either version 3 of the License, or (at your option) any later
 version (GPL-3.0-or-later). A copy of the license is included as LICENSE.txt.
 
-PeakCAD is distributed in the hope that it will be useful, but WITHOUT ANY
+Mintr3d is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
 A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 Corresponding Source
 --------------------
-The Corresponding Source for this PeakCAD {{VERSION}} build is the PeakCAD
-source repository (the "peakcad" project by PeakHorologyLLC) at the revision
-that produced this installer, including the build scripts used to create it
-(npm run package:desktop).
+The Corresponding Source for this Mintr3d {{VERSION}} build is this application's
+source repository at the revision that produced this installer, including the
+build scripts used to create it (npm run package:desktop).
 
 For at least three years from the date you received this build, and for as
 long as PeakHorologyLLC offers spare parts or support for it, PeakHorologyLLC
@@ -25,6 +24,13 @@ will provide anyone who possesses this object code a complete copy of that
 Corresponding Source, under GPL-3.0-or-later, for no more than the reasonable
 cost of physically performing the transfer. Contact PeakHorologyLLC through
 https://peakhorology.com to request it.
+
+Installation Information
+------------------------
+Nothing in this build stops you from installing a modified version. Build that
+Corresponding Source with npm run package:desktop and run the installer it
+produces. The program file is PeakCAD.exe. Your projects and settings stay in
+the existing PeakCAD user-data folder.
 
 Third-party components
 ----------------------

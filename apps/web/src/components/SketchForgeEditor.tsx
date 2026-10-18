@@ -3025,7 +3025,7 @@ export function SketchForgeEditor({
 
   const setActiveSketchTool = useCallback((tool: SketchTool) => {
     if (!workspaceSettingsRef.current.peakcadPro && isPeakcadProSketchTool(tool)) {
-      setNotice("Turn on PeakCAD Pro in Settings to use sketch constraints.");
+      setNotice("Turn on Mintr Pro in Settings to use sketch constraints.");
       return;
     }
     setSketchTool(tool);

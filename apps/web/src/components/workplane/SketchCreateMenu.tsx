@@ -4,7 +4,7 @@ const clayTop = "#f6f1ea";
 const claySide = "#d9cbbd";
 const clayShade = "#c4b3a2";
 const clayInk = "#6a5848";
-const clayMark = "#655447";
+const clayMark = "#2aa77e";
 
 function NewSketchIcon() {
   return (

@@ -238,7 +238,7 @@ export function WorkspaceSettingsModal({
         },
         () => {
           if (!cancelled) {
-            setLegalText("This file could not be loaded. The same license files ship in the PeakCAD install folder (LICENSE.txt, THIRD-PARTY-NOTICES.txt, SOURCE-OFFER.txt) and at https://www.gnu.org/licenses/gpl-3.0.txt.");
+            setLegalText("This file could not be loaded. The same license files ship in the Mintr install folder (LICENSE.txt, THIRD-PARTY-NOTICES.txt, SOURCE-OFFER.txt) and at https://www.gnu.org/licenses/gpl-3.0.txt.");
           }
         },
       );
@@ -336,7 +336,7 @@ export function WorkspaceSettingsModal({
                     <span>Adjust the canvas and navigation behavior.</span>
                   </div>
                   <WorkspaceToggle
-                    label="PeakCAD Pro"
+                    label="Mintr Pro"
                     tip={SETTING_TIPS.peakcadPro}
                     checked={workspace.peakcadPro}
                     onChange={(peakcadPro) => {
@@ -400,7 +400,7 @@ export function WorkspaceSettingsModal({
                       <span>Fast</span>
                     </small>
                   </PeakTipLabel>
-                  <p className="workspace-about-credit">PeakCAD is made by Peak Horology.</p>
+                  <p className="workspace-about-credit">Mintr is made by Peak Horology.</p>
                 </>
               ) : null}
 
@@ -725,23 +725,23 @@ export function WorkspaceSettingsModal({
               {activeSection === "about" ? (
                 <>
                   <div className="workspace-section-heading">
-                    <strong>About PeakCAD</strong>
-                    <span>{PEAKCAD_VERSION ? `Version ${PEAKCAD_VERSION}` : "PeakCAD"} · GPL-3.0-or-later</span>
+                    <strong>About Mintr</strong>
+                    <span>{PEAKCAD_VERSION ? `Version ${PEAKCAD_VERSION}` : "Mintr"} · GPL-3.0-or-later</span>
                   </div>
                   <div className="workspace-about-notice">
                     <p className="workspace-about-copyright">Copyright © PeakHorologyLLC</p>
                     <p>
-                      PeakCAD is free software: you can redistribute it and/or modify it under the terms of the GNU General
+                      Mintr is free software: you can redistribute it and/or modify it under the terms of the GNU General
                       Public License as published by the Free Software Foundation, either version 3 of the License, or (at
                       your option) any later version.
                     </p>
                     <p>
-                      PeakCAD is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+                      Mintr is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
                       implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
                       License for more details.
                     </p>
                     <p>
-                      PeakCAD includes OpenCascade Technology (LGPL-2.1 with the Open CASCADE exception), brepjs and
+                      Mintr includes OpenCascade Technology (LGPL-2.1 with the Open CASCADE exception), brepjs and
                       manifold-3d (Apache-2.0), three.js, React, Next.js, Electron, and other components under their own
                       licenses. See the third-party notices for the full list and license texts.
                     </p>

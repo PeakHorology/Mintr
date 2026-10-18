@@ -14,20 +14,19 @@ const interVariable = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "PeakCAD",
-  description: "PeakCAD by PeakHorologyLLC — build shapes, cut holes, and export models locally",
-  applicationName: "PeakCAD",
+  title: "Mintr",
+  description: "Mintr — build shapes, cut holes, and export models locally",
+  applicationName: "Mintr",
   authors: [{ name: "PeakHorologyLLC" }],
   creator: "PeakHorologyLLC",
   publisher: "PeakHorologyLLC",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
-      { url: "assets/peakcad/peakcad-logo.png", type: "image/png" },
-      { url: "assets/peakcad/peakcad-app-icon.png", type: "image/png" },
+      { url: "assets/mintr/mintr-square.png", type: "image/png" },
     ],
-    apple: "assets/peakcad/peakcad-logo.png",
-    shortcut: "assets/peakcad/peakcad-logo.png",
+    apple: "assets/mintr/mintr-square.png",
+    shortcut: "assets/mintr/mintr-square.png",
   },
 };
 

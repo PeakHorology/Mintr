@@ -314,7 +314,7 @@ export function proportionalResizeScale(startWidth: number, startDepth: number, 
 
 export function fallbackSolidColor(shape: WorkplaneShape) {
   if (shape.kind === "cylinder" || shape.kind === "thread") return "#d97813";
-  if (shape.kind === "gear") return "#8d6a2f";
+  if (shape.kind === "gear") return "#2aa77e";
   if (shape.kind === "sphere") return "#0098c7";
   if (shape.kind === "cone") return "#6e2786";
   if (shape.kind === "pyramid") return "#f2cf10";

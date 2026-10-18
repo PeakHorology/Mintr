@@ -9,7 +9,7 @@ const buildDir = join(root, "build");
 const electronDir = join(root, "electron");
 const publicPeakcadDir = join(root, "apps", "web", "public", "assets", "peakcad");
 const publicDir = join(root, "apps", "web", "public");
-const sourceLogo = join(publicPeakcadDir, "peakcad-logo.png");
+const sourceLogo = join(root, "apps", "web", "public", "assets", "mintr", "mintr-square.png");
 const appIconPng = join(publicPeakcadDir, "peakcad-app-icon.png");
 const faviconIco = join(publicDir, "favicon.ico");
 const iconPng = join(buildDir, "icon.png");
@@ -28,7 +28,7 @@ const cropSize = Math.min(width, height);
 const left = Math.max(0, Math.floor((width - cropSize) / 2));
 const top = Math.max(0, Math.floor((height - cropSize) / 2));
 
-// Square PeakCAD mark on the logo's dark field — readable at 16px taskbar size.
+// Mintr cube, kept square so the Windows icon matches the in-app mark.
 const master512 = await sharp(sourceLogo)
   .extract({ left, top, width: cropSize, height: cropSize })
   .resize(512, 512, { kernel: sharp.kernel.lanczos3, fit: "fill" })
@@ -59,5 +59,5 @@ await writeFile(appIconPng, master512);
 await writeFile(faviconIco, ico);
 
 console.log(
-  `[prepare-desktop-icon] wrote PeakCAD icons (${ICON_SIZES.join("/")}px) → ${iconIco}, ${electronIconIco}, ${appIconPng}, ${faviconIco}`,
+  `[prepare-desktop-icon] wrote Mintr cube icons (${ICON_SIZES.join("/")}px) → ${iconIco}, ${electronIconIco}, ${appIconPng}, ${faviconIco}`,
 );

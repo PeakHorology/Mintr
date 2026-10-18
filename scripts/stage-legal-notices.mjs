@@ -1,4 +1,4 @@
-// Stages PeakCAD's license, written source offer, and third-party notices into
+// Stages Mintr's license, written source offer, and third-party notices into
 // apps/web/public/legal/ so the static export (Settings > About) and the desktop
 // installer (electron-builder extraResources/extraFiles) both ship them. The
 // staged folder is gitignored; this script runs before dev/build/export.
@@ -102,7 +102,7 @@ function electronEntry() {
     files: licenseFiles(dir),
     note:
       "Electron bundles Chromium, Node.js, and other components under their own licenses. Those notices " +
-      "ship unmodified next to PeakCAD.exe as LICENSE.electron.txt and LICENSES.chromium.html.",
+      "ship unmodified next to the application as LICENSE.electron.txt and LICENSES.chromium.html.",
   };
 }
 
@@ -157,8 +157,8 @@ function renderNotices(packages) {
       license: "LGPL-2.1-only WITH OCCT-exception-1.0",
       url: "https://github.com/Open-Cascade-SAS/OCCT (build scripts: https://github.com/andymai/occt-wasm)",
       note:
-        "PeakCAD makes use of facilities provided by the Open CASCADE Technology software. The OCCT kernel is\n" +
-        "a separate, replaceable file loaded at runtime; it is not linked into PeakCAD.exe. In the installed app\n" +
+        "Mintr3d makes use of facilities provided by the Open CASCADE Technology software. The OCCT kernel is\n" +
+        "a separate, replaceable file loaded at runtime; it is not linked into the application executable. In the installed app\n" +
         "it is resources\\app.asar.unpacked\\apps\\web\\.next-export\\occt\\occt-wasm.wasm. You may replace it\n" +
         "with a modified build of the same interface. The full LGPL-2.1 text is also shipped separately as\n" +
         "legal\\licenses\\LGPL-2.1.txt.",
@@ -175,14 +175,14 @@ function renderNotices(packages) {
   const all = [...occtEntries, ...packages, electronEntry(), ...FONT_ENTRIES];
   const summary = all.map((entry) => `  - ${entry.name}${entry.version ? ` ${entry.version}` : ""}: ${entry.license}`);
   return [
-    `PeakCAD ${version} - Third-Party Notices`,
+    `Mintr3d ${version} - Third-Party Notices`,
     RULE,
     "",
-    "PeakCAD is Copyright (C) PeakHorologyLLC and is licensed under the GNU General",
+    "Mintr3d is Copyright (C) PeakHorologyLLC and is licensed under the GNU General",
     "Public License, version 3 or (at your option) any later version. See LICENSE.txt.",
     "It comes with ABSOLUTELY NO WARRANTY.",
     "",
-    "PeakCAD includes the following third-party components. Each is distributed",
+    "Mintr3d includes the following third-party components. Each is distributed",
     "under its own license, reproduced in full below.",
     "",
     ...summary,
@@ -201,6 +201,44 @@ for (const name of ["LGPL-2.1.txt", "OCCT_LGPL_EXCEPTION.txt", "occt-wasm-LICENS
 }
 const offer = readFileSync(join(legalSrc, "SOURCE-OFFER.txt"), "utf8").replaceAll("{{VERSION}}", version);
 await writeFile(join(dest, "SOURCE-OFFER.txt"), offer);
+
+const gpl = readFileSync(join(root, "LICENSE"), "utf8").replace(/\r\n/g, "\n");
+const installerLicense = [
+  `Mintr3d ${version}`,
+  "Copyright (C) PeakHorologyLLC",
+  "",
+  "Mintr3d is free software: you can redistribute it and/or modify it under the",
+  "terms of the GNU General Public License as published by the Free Software",
+  "Foundation, either version 3 of the License, or (at your option) any later",
+  "version.",
+  "",
+  "Mintr3d is distributed in the hope that it will be useful, but WITHOUT ANY",
+  "WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR",
+  "A PARTICULAR PURPOSE. See the GNU General Public License for more details.",
+  "",
+  "The installer places these files next to the application:",
+  "  LICENSE.txt - the GNU General Public License, version 3",
+  "  SOURCE-OFFER.txt - the written offer for the Corresponding Source",
+  "  THIRD-PARTY-NOTICES.txt - notices for other components, including",
+  "    OpenCascade Technology (LGPL-2.1 with the Open CASCADE exception)",
+  "",
+  "For at least three years after you receive this build, PeakHorologyLLC will",
+  "give anyone who has this copy the Corresponding Source under GPL-3.0-or-later,",
+  "as stated in SOURCE-OFFER.txt. Contact PeakHorologyLLC through",
+  "https://peakhorology.com.",
+  "",
+  "You can install a modified version by building that source with",
+  "npm run package:desktop and running the installer it produces. This build",
+  "does not require a vendor signature for the application to run.",
+  "",
+  "The complete GNU General Public License follows.",
+  "",
+  "=".repeat(72),
+  "",
+  gpl.endsWith("\n") ? gpl : `${gpl}\n`,
+].join("\n").replace(/\n/g, "\r\n");
+await mkdir(join(root, "build"), { recursive: true });
+await writeFile(join(root, "build", "license.txt"), installerLicense);
 
 const packages = collectRuntimePackages();
 await writeFile(join(dest, "THIRD-PARTY-NOTICES.txt"), `${renderNotices(packages)}\n`);

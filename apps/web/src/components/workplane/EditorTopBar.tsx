@@ -182,7 +182,7 @@ export function EditorTopBar({
   leftTools?: ReactNode;
   rightTools?: ReactNode;
 }) {
-  const logo = <img className="peakcad-logo" src="assets/peakcad/peakcad-logo.png" alt="PeakCAD" draggable={false} />;
+  const logo = <img className="peakcad-logo" src="assets/mintr/mintr-square.png" alt="Mintr" draggable={false} />;
   const homeRef = useRef<HTMLButtonElement>(null);
   const { open: homeTipOpen, tooltipProps: homeTipProps, hide: hideHomeTip } = usePeakTooltip();
   const homeHelp = usePeakContextHelp("Home", TOOL_DESCRIPTIONS.home);

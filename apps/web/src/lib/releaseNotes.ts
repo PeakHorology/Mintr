@@ -12,13 +12,22 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.0.7.5",
+    items: [
+      "PeakCAD has evolved, Mintr is here to serve",
+      "Follow us on instagram @Mintr3D",
+      "New website coming soon Mintr3d.com",
+      "This rebrand changes nothing about PeakCAD, its aim is to make it more desirable for the community to use",
+      "Still free, always will be. 1.0.7 was a big change please read patchnotes",
+    ],
+  },
+  {
     version: "1.0.7",
     items: [
-      "Gears are a shape. Tooth count and module set the size, so two gears with the same module mesh.",
-      "You can sketch on a face while looking at it in 3D. Look at face squares the camera. Extrude opens the same Join or Cut dialog.",
+      "Gears have been added as a shape. Several tooth profiles to choose from. Tooth count and module set the size so two gears with the same module mesh.",
+      "Sketch has had a massive revamp, more intuitive, more information, sketch in 3d finally works",
       "A face drawn on the side of a profile cuts with it. Sharing a side no longer leaves that face out.",
       "Type a length or an angle while you draw a line. Click a length or a corner angle to change it.",
-      "Fillet or chamfer several sketch corners at once.",
       "Construction lines snap and stay out of the solid.",
       "Stroke turns an outline into a wall. Sweep carries a closed outline along a construction path.",
       "Every sketch corner shows its angle.",
