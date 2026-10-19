@@ -39,6 +39,9 @@
     "node_modules",
     ".next-dev/types/app/api/slicer",
     ".next/types/app/api/slicer",
-    ".next-export/types/app/api/slicer"
+    ".next-export/types/app/api/slicer",
+    ".next-dev/types/validator.ts",
+    ".next/types/validator.ts",
+    ".next-export/types/validator.ts"
   ]
 }
