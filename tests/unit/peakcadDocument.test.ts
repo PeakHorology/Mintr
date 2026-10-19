@@ -64,14 +64,34 @@ describe("peakcad document", () => {
     expect(() => parsePeakcadDocument(JSON.stringify({ name: "nope" }))).toThrow(/not a PeakCAD project/i);
   });
 
-  it("builds a safe Windows filename", () => {
-    expect(peakcadFilename('Case / "A"')).toBe("Case A.peakcad");
-    expect(peakcadFilename("   ")).toBe("Untitled design.peakcad");
+  it("keeps the saved format so older projects still open", () => {
+    const document = buildPeakcadDocument({
+      project: {
+        id: "project-1",
+        name: "Watch plate",
+        createdAt: 10,
+        updatedAt: 20,
+        accent: "gold",
+        shapes: 0,
+      },
+      shapes: [],
+    });
+    expect(document.format).toBe("peakcad");
+    expect(document.version).toBe(1);
+    expect(parsePeakcadDocument(serializePeakcadDocument(document)).project.name).toBe("Watch plate");
   });
 
-  it("treats a design title as matching its saved .peakcad name", () => {
+  it("builds a safe Windows filename", () => {
+    expect(peakcadFilename('Case / "A"')).toBe("Case A.mintr");
+    expect(peakcadFilename("   ")).toBe("Untitled design.mintr");
+    expect(peakcadFilename("Design · Sep 9.peakcad")).toBe("Design · Sep 9.mintr");
+  });
+
+  it("treats a design title as matching its saved project name", () => {
     expect(peakcadNamesMatch("Design · Sep 9", "Design · Sep 9.peakcad")).toBe(true);
     expect(peakcadNamesMatch("Design · Sep 9.peakcad", "Design · Sep 9.peakcad")).toBe(true);
+    expect(peakcadNamesMatch("Design · Sep 9", "Design · Sep 9.mintr")).toBe(true);
+    expect(peakcadNamesMatch("Design · Sep 9.peakcad", "Design · Sep 9.mintr")).toBe(true);
     expect(peakcadNamesMatch("Design · Sep 9", "Case plate.peakcad")).toBe(false);
     expect(peakcadNamesMatch("  Watch plate  ", "Watch plate")).toBe(true);
   });

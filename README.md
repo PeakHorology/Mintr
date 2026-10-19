@@ -7,7 +7,7 @@
   <p>Local Windows CAD from Peak Horology.</p>
   <p>
     <a href="LICENSE"><img alt="GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-2aa77e"></a>
-    <img alt="Version 1.0.7.5" src="https://img.shields.io/badge/version-1.0.7.5-655447">
+    <img alt="Version 1.0.8" src="https://img.shields.io/badge/version-1.0.8-655447">
     <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-655447">
   </p>
   <p>
@@ -17,9 +17,9 @@
   </p>
 </div>
 
-Mintr 1.0.7.5 is the local Windows CAD app from Peak Horology. The installer, shortcuts, and Windows apps entry are named **Mintr3d**. Projects stay on this computer. There is no account, no cloud, and no hosted edition.
+Mintr 1.0.8 is the local Windows CAD app from Peak Horology. The installer, shortcuts, and Windows apps entry are named **Mintr3d**. Projects stay on this computer. There is no account, no cloud, and no hosted edition.
 
-The program file is still `PeakCAD.exe`, and projects are still `.peakcad` files. The rebrand does not change that format.
+The program file is `Mintr.exe`. New projects are saved as `.mintr`. A `.peakcad` file from PeakCAD still opens, and saving that design keeps the `.peakcad` name. The project data inside the file is unchanged.
 
 ## Features
 
@@ -44,7 +44,7 @@ npm install
 npm run package:desktop
 ```
 
-The installer is written to `dist-release/PeakCAD-Setup-1.0.7.5.exe`. A portable build is written beside it. The setup wizard is named Mintr3d and uses the Mintr cube. Close any running Mintr window before you install. Setup upgrades an existing install in place and keeps your projects.
+The installer is written to `dist-release/PeakCAD-Setup-1.0.8.exe`. A portable build is written beside it. The setup wizard is named Mintr3d and uses the Mintr cube. Close any running Mintr window before you install. Setup upgrades an existing install in place and keeps your projects.
 
 Developers can preview the editor locally:
 

@@ -42,6 +42,7 @@ if (process.platform === "win32") {
 if (process.platform === "win32") {
   app.setAppUserModelId(APP_USER_MODEL_ID);
 }
+// This name is the existing AppData folder. The program file is Mintr.exe.
 app.setName("PeakCAD");
 
 let server = null;
@@ -384,14 +385,14 @@ function createWindow(port) {
     if (saveBeforeCloseInFlight) return;
     const choice = dialog.showMessageBoxSync(window, {
       type: "question",
-      buttons: ["Save file", "Keep in PeakCAD"],
+      buttons: ["Save file", "Keep in Mintr"],
       defaultId: 0,
       // Esc and the dialog X are not a listed button, so they stay in the project.
       cancelId: 2,
       noLink: true,
-      title: "PeakCAD",
-      message: closing ? "Save a .peakcad file before closing?" : "Save a .peakcad file before reloading?",
-      detail: "This design stays in PeakCAD either way. Saving writes a .peakcad file you can back up, share, or open from disk.",
+      title: "Mintr",
+      message: closing ? "Save this design before closing?" : "Save this design before reloading?",
+      detail: "This design stays in Mintr either way. A new file is saved as .mintr. An open .peakcad file keeps that name.",
     });
     if (choice === 1) {
       event.preventDefault();

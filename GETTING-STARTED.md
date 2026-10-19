@@ -1,6 +1,6 @@
 # Mintr — Getting Started
 
-Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.0.7.5). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
+Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.0.8). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
 
 ## Use Mintr (the app)
 
@@ -12,10 +12,10 @@ npm run package:desktop
 
 This creates files in the `dist-release/` folder:
 
-- `PeakCAD-Setup-1.0.7.5.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
-- `PeakCAD-1.0.7.5-portable.exe` — portable build (no install needed; not an upgrader)
+- `PeakCAD-Setup-1.0.8.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
+- `PeakCAD-1.0.8-portable.exe` — portable build (no install needed; not an upgrader)
 
-Close any running PeakCAD window before packaging. Run the Setup or portable exe. The wizard, shortcuts, and Windows apps entry are named Mintr3d. The program file remains PeakCAD.exe, so existing projects and settings stay where they are.
+Close any running Mintr window before packaging. Run the Setup or portable exe. The wizard, shortcuts, and Windows apps entry are named Mintr3d. The program file is Mintr.exe. Existing projects and settings stay where they are.
 
 ### Upgrade an existing install
 
@@ -45,7 +45,7 @@ Open **http://127.0.0.1:3000** on this computer. Leave the terminal open. Press 
 ## Branding
 
 - App name in the installer, shortcuts, and Windows apps list: **Mintr3d**
-- Program file: **PeakCAD.exe**
+- Program file: **Mintr.exe**
 - Developer: **PeakHorologyLLC**
 - Installer and Windows icon: the Mintr cube, `apps/web/public/assets/mintr/mintr-square.png`, via `npm run prepare:desktop-icon`
 - Color palette defined in `apps/web/src/app/globals.css` (`:root` variables)

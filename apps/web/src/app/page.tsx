@@ -3,7 +3,7 @@
 import { ArrowLeft, CircleArrowUp, Download, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from "react";
 import { rememberProblem } from "@/lib/problemReport";
-import { RELEASE_NOTES } from "@/lib/releaseNotes";
+import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
 import { preloadCadModifierWorker } from "@/lib/cadModifierPreload";
 import { loadBrepWithOcct } from "@/lib/brepKernel";
@@ -54,9 +54,12 @@ import {
   resolveDesktopPeakcadTextByName,
   revealPeakcadFile,
   savePeakcadTextAs,
+  setKnownLegacyProjectPaths,
   subscribePeakcadMenu,
   subscribePeakcadOpenPath,
   subscribePeakcadSaveBeforeClose,
+  subscribeProjectFilesTransitioned,
+  readPendingProjectMoves,
   writeNewDesktopPeakcad,
   writePeakcadText,
 } from "@/lib/peakcadFile";
@@ -872,9 +875,9 @@ export default function Home() {
     if (preview) {
       setUpdateChecking(false);
       setUpdateOffer({
-        version: "1.0.8",
-        current: "1.0.7.5",
-        notes: RELEASE_NOTES[0]?.items ?? [],
+        version: "1.0.9",
+        current: "1.0.8",
+        notes: UNRELEASED_NOTES.length ? UNRELEASED_NOTES : (RELEASE_NOTES[0]?.items ?? []),
         portable: false,
         canInstall: false,
       });
@@ -1617,7 +1620,7 @@ export default function Home() {
       if (!document) return;
       applyOpenedDocument(document, true);
     } catch (error) {
-      setDashboardNotice(error instanceof Error ? error.message : "Could not open that PeakCAD file.");
+      setDashboardNotice(error instanceof Error ? error.message : "Could not open that project.");
     }
   }, [applyOpenedDocument, openProtectedPeakcad]);
 
@@ -1663,7 +1666,7 @@ export default function Home() {
       return false;
     } catch (error) {
       if (throwOnError) throw error;
-      setDashboardNotice(error instanceof Error ? error.message : "Could not save the PeakCAD file.");
+      setDashboardNotice(error instanceof Error ? error.message : "Could not save the project.");
       return false;
     }
   }, [sealPeakcadText]);
@@ -1681,7 +1684,7 @@ export default function Home() {
         return writePeakcadText(filePath, text);
       })
       .catch((error) => {
-        setDashboardNotice(error instanceof Error ? error.message : "Could not save the PeakCAD file.");
+        setDashboardNotice(error instanceof Error ? error.message : "Could not save the project.");
       });
   }, [sealPeakcadText]);
 
@@ -1694,6 +1697,38 @@ export default function Home() {
       persistCachedProjectFile(project.id, project.filePath);
     }
   }, [persistCachedProjectFile, projects]);
+
+  useEffect(() => {
+    setKnownLegacyProjectPaths(
+      projects.flatMap((project) => (
+        project.filePath && /\.(peakcad|mintr)$/i.test(project.filePath) ? [project.filePath] : []
+      )),
+    );
+  }, [projects]);
+
+  useEffect(() => {
+    const retarget = (renames: { from: string; to: string }[]) => {
+      const byFrom = new Map(renames.map((item) => [item.from.replaceAll("/", "\\").toLowerCase(), item.to]));
+      setProjects((current) => {
+        let changed = false;
+        const next = current.map((project) => {
+          if (!project.filePath) return project;
+          const to = byFrom.get(project.filePath.replaceAll("/", "\\").toLowerCase());
+          if (!to) return project;
+          changed = true;
+          knownFilePathRef.current[project.id] = to;
+          return withSavedPeakcadFile(project, to);
+        });
+        return changed ? next : current;
+      });
+    };
+    const pending = readPendingProjectMoves().then((moves) => {
+      if (moves.length > 0) retarget(moves);
+    }).catch(() => undefined);
+    return subscribeProjectFilesTransitioned((renames) => {
+      void pending.then(() => retarget(renames));
+    });
+  }, []);
 
   const attachMatchingDesktopFile = useCallback(async (projectId: string) => {
     if (!hasDesktopProjectFiles()) return;
@@ -1941,7 +1976,7 @@ export default function Home() {
           persistCachedProjectFile(project.id, filePath);
         })
         .catch(() => {
-          setDashboardNotice("Created the design, but could not write a .peakcad file yet. Use Save As to pick a folder.");
+          setDashboardNotice("Created the design, but could not write a .mintr file yet. Use Save As to pick a folder.");
         });
     }
   };
@@ -2158,7 +2193,7 @@ export default function Home() {
           if (!document) return;
           applyOpenedDocument(document, true);
         } catch (error) {
-          setDashboardNotice(error instanceof Error ? error.message : "Could not open that PeakCAD file.");
+          setDashboardNotice(error instanceof Error ? error.message : "Could not open that project.");
         }
       })();
     });
@@ -2177,7 +2212,7 @@ export default function Home() {
       const projectId = activeProjectIdRef.current;
       if (!projectId) {
         if (action === "save" || action === "save-as") {
-          setDashboardNotice("Open a design to save a .peakcad file.");
+          setDashboardNotice("Open a design to save it.");
         }
         return;
       }

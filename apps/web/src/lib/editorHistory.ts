@@ -112,6 +112,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     cadPrimitiveFrame: shape.cadPrimitiveFrame,
     sketchId: shape.sketchId,
     sketchFinish: shape.sketchFinish,
+    sketchSweep: shape.sketchSweep,
     sketchProfileIds: shape.sketchProfileIds,
     sketchPlane: shape.sketchPlane,
     sketchProfile: shape.sketchProfile,

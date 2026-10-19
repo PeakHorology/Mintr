@@ -94,9 +94,11 @@ function sampleClosedPath(path: OrderedPath): Array<{ x: number; z: number }> {
   path.steps.forEach(({ segment, from, to }, stepIndex) => {
     if (stepIndex === 0) samples.push({ x: from.x, z: from.z });
     const forward = segment.startId === from.id;
-    const control1 = forward ? from.handleOut : from.handleIn;
-    const control2 = forward ? to.handleIn : to.handleOut;
-    const curved = segment.kind !== "line" && control1 && control2;
+    const raw1 = forward ? from.handleOut : from.handleIn;
+    const raw2 = forward ? to.handleIn : to.handleOut;
+    const control1 = raw1 ?? from;
+    const control2 = raw2 ?? to;
+    const curved = segment.kind !== "line" && Boolean(raw1 || raw2);
     if (curved) {
       const steps = 12;
       for (let index = 1; index <= steps; index += 1) {

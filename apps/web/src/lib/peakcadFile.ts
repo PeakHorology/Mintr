@@ -1,4 +1,5 @@
 import {
+  MINTR_FILE_EXTENSION,
   PEAKCAD_FILE_EXTENSION,
   peakcadFilename,
   serializePeakcadDocument,
@@ -16,6 +17,8 @@ export type PeakcadFileApi = {
   saveAs?: (payload: { text: string; defaultName: string }) => Promise<{ path: string } | null>;
   writeNew?: (payload: { text: string; defaultName: string }) => Promise<{ path: string } | null>;
   resolveName?: (defaultName: string) => Promise<{ path: string; text: string } | null>;
+  transitionLegacy?: (extraPaths: string[]) => Promise<ProjectFileTransition>;
+  pendingMoves?: () => Promise<ProjectFileRename[]>;
   reveal?: (filePath: string) => Promise<void>;
   onOpenPath?: (listener: (filePath: string) => void) => () => void;
   onMenu?: (listener: (action: PeakcadMenuAction) => void) => () => void;
@@ -23,6 +26,25 @@ export type PeakcadFileApi = {
 };
 
 export type PeakcadMenuAction = "new" | "open" | "save" | "save-as";
+
+export type ProjectFileRename = { from: string; to: string };
+
+export type ProjectFileTransition = {
+  renamed: ProjectFileRename[];
+  already: ProjectFileRename[];
+  failed: { from: string; message: string }[];
+};
+
+const PROJECT_FILES_TRANSITIONED_EVENT = "mintr:project-files-transitioned";
+let knownLegacyProjectPaths: string[] = [];
+
+/** Library paths outside the Mintr folder that a settings transition should rename too. */
+export function setKnownLegacyProjectPaths(paths: string[]) {
+  knownLegacyProjectPaths = paths.filter((filePath) => {
+    const lower = filePath.toLowerCase();
+    return lower.endsWith(".peakcad") || lower.endsWith(".mintr");
+  });
+}
 
 export type OpenedPeakcadFile = {
   document: PeakcadDocument;
@@ -42,7 +64,7 @@ function pickBrowserFile() {
   return new Promise<File | null>((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = `${PEAKCAD_FILE_EXTENSION},application/json`;
+    input.accept = `${MINTR_FILE_EXTENSION},${PEAKCAD_FILE_EXTENSION},application/json`;
     input.addEventListener("change", () => resolve(input.files?.[0] ?? null), { once: true });
     input.addEventListener("cancel", () => resolve(null), { once: true });
     input.click();
@@ -70,7 +92,7 @@ export async function openPeakcadFile(): Promise<OpenedPeakcadFile | null> {
 export async function readPeakcadPathText(filePath: string): Promise<{ text: string; path: string }> {
   const desktop = fileApi();
   if (!desktop?.read) {
-    throw new Error("Opening a file path is only available in the PeakCAD desktop app.");
+    throw new Error("Opening a file path is only available in the Mintr desktop app.");
   }
   const result = await desktop.read(filePath);
   return { text: result.text, path: result.path };
@@ -85,11 +107,11 @@ export async function writePeakcadPath(filePath: string, document: PeakcadDocume
   await writePeakcadText(filePath, serializePeakcadDocument(document));
 }
 
-/** Write already-serialized `.peakcad` text (see serializePeakcadDocument). */
+/** Write already-serialized project text (see serializePeakcadDocument). */
 export async function writePeakcadText(filePath: string, text: string) {
   const desktop = fileApi();
   if (!desktop?.write) {
-    throw new Error("Saving to a file path is only available in the PeakCAD desktop app.");
+    throw new Error("Saving to a file path is only available in the Mintr desktop app.");
   }
   await desktop.write({ path: filePath, text });
 }
@@ -131,6 +153,35 @@ export async function writeNewDesktopPeakcad(document: PeakcadDocument, suggeste
     defaultName: peakcadFilename(suggestedName),
   });
   return result?.path ?? null;
+}
+
+export async function readPendingProjectMoves(): Promise<ProjectFileRename[]> {
+  const desktop = fileApi();
+  if (!desktop?.pendingMoves) return [];
+  const moves = await desktop.pendingMoves();
+  return Array.isArray(moves) ? moves : [];
+}
+
+export async function transitionDesktopPeakcadFiles(): Promise<ProjectFileTransition> {
+  const desktop = fileApi();
+  if (!desktop?.transitionLegacy) {
+    throw new Error("Restart Mintr to change .peakcad files to .mintr.");
+  }
+  const result = await desktop.transitionLegacy(knownLegacyProjectPaths);
+  if (result.renamed.length > 0 && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent<ProjectFileRename[]>(PROJECT_FILES_TRANSITIONED_EVENT, { detail: result.renamed }));
+  }
+  return result;
+}
+
+export function subscribeProjectFilesTransitioned(listener: (renames: ProjectFileRename[]) => void) {
+  if (typeof window === "undefined") return () => undefined;
+  const wrapped = (event: Event) => {
+    const detail = (event as CustomEvent<ProjectFileRename[]>).detail;
+    if (Array.isArray(detail)) listener(detail);
+  };
+  window.addEventListener(PROJECT_FILES_TRANSITIONED_EVENT, wrapped);
+  return () => window.removeEventListener(PROJECT_FILES_TRANSITIONED_EVENT, wrapped);
 }
 
 export async function revealPeakcadFile(filePath: string) {

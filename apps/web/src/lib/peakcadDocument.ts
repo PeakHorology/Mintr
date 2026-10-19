@@ -3,9 +3,13 @@ import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSe
 import type { EditorHistoryEntry, EditorHistoryMeshBlob } from "@/lib/editorHistory";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
+/** Inside the file this stays "peakcad". Renaming it would reject every saved project. */
 export const PEAKCAD_FORMAT = "peakcad";
 export const PEAKCAD_DOCUMENT_VERSION = 1;
 export const PEAKCAD_FILE_EXTENSION = ".peakcad";
+/** New files and Save As use this. `.peakcad` stays a valid project file. */
+export const MINTR_FILE_EXTENSION = ".mintr";
+const PROJECT_FILE_EXTENSIONS = [MINTR_FILE_EXTENSION, PEAKCAD_FILE_EXTENSION] as const;
 /** Close to V8's max string length (JSON.stringify fails past it). Keep in sync with electron/peakcadPath.cjs. */
 export const PEAKCAD_MAX_BYTES = 512 * 1024 * 1024;
 /** Undo history is dropped from files past this size so large imports do not double the file. */
@@ -63,11 +67,22 @@ function jsonSafeHistoryEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
   };
 }
 
+function projectFileExtension(name: string) {
+  const lower = name.trim().toLowerCase();
+  return PROJECT_FILE_EXTENSIONS.find((ext) => lower.endsWith(ext)) ?? null;
+}
+
+/** Design title with either project extension removed, so old and new files share one name. */
+export function projectFileStem(name: string) {
+  const trimmed = name.trim();
+  const ext = projectFileExtension(trimmed);
+  return (ext ? trimmed.slice(0, -ext.length) : trimmed).trim();
+}
+
 export function peakcadFilename(name: string) {
-  const trimmed = name.trim() || "Untitled design";
-  const safe = trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+  const safe = projectFileStem(name).replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
   const base = (safe || "Untitled design").slice(0, 80);
-  return `${base}${PEAKCAD_FILE_EXTENSION}`;
+  return `${base}${MINTR_FILE_EXTENSION}`;
 }
 
 export function peakcadBasename(filePath: string) {
@@ -77,11 +92,7 @@ export function peakcadBasename(filePath: string) {
 }
 
 export function peakcadNormalizedName(name: string) {
-  const trimmed = name.trim();
-  const withExt = trimmed.toLowerCase().endsWith(PEAKCAD_FILE_EXTENSION)
-    ? trimmed
-    : peakcadFilename(trimmed);
-  return withExt.toLowerCase();
+  return projectFileStem(name).toLowerCase();
 }
 
 export function peakcadNamesMatch(left: string, right: string) {

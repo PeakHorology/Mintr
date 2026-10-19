@@ -27,6 +27,38 @@ describe("to3mf", () => {
     expect(modelXml).toContain('x="0" y="0" z="5"');
   });
 
+  it("writes each body's color as a base material a slicer can map", () => {
+    const bytes = to3mf([
+      {
+        name: "Red box",
+        color: "#c45a3c",
+        vertices: [
+          [0, 0, 0],
+          [10, 0, 0],
+          [0, 5, 0],
+        ],
+        faces: [[0, 1, 2]],
+      },
+      {
+        name: "Blue box",
+        color: "#2aa77e",
+        vertices: [
+          [0, 0, 0],
+          [4, 0, 0],
+          [0, 4, 0],
+        ],
+        faces: [[0, 1, 2]],
+      },
+    ]);
+    const modelXml = strFromU8(unzipSync(bytes)["3D/3dmodel.model"]);
+    expect(modelXml).toContain('displaycolor="#C45A3CFF"');
+    expect(modelXml).toContain('displaycolor="#2AA77EFF"');
+    expect(modelXml).toContain('name="Red box"');
+    expect(modelXml).toContain('pindex="0"');
+    expect(modelXml).toContain('pindex="1"');
+    expect(modelXml).toContain('p1="0"');
+  });
+
   it("rejects empty mesh lists", () => {
     expect(() => to3mf([])).toThrow(/No triangle geometry/);
   });

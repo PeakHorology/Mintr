@@ -5,6 +5,7 @@ import { isDefaultSketchPlane, isFaceHostedSketch, resolveSketchPlane, sketchPla
 import { findSweepInputs } from "@/lib/sketch/directEdit";
 import { materialOutlines, type OrderedSketchPath } from "@/lib/sketch/profiles";
 import { buildSweepMesh } from "@/lib/sketch/sweepMath";
+import { sweepSolid } from "@/lib/sketchSweep";
 import {
   barrelHoleCutDepthMm,
   cylinderOutwardNormalAtUV,
@@ -264,9 +265,11 @@ export function densifyClosedPathUv(path: OrderedSketchPath, curveSegments = 20)
   const samples: Array<{ x: number; z: number }> = [];
   path.steps.forEach(({ segment, from, to }) => {
     const forward = segment.startId === from.id;
-    const control1 = forward ? from.handleOut : from.handleIn;
-    const control2 = forward ? to.handleIn : to.handleOut;
-    if (segment.kind !== "line" && control1 && control2) {
+    const raw1 = forward ? from.handleOut : from.handleIn;
+    const raw2 = forward ? to.handleIn : to.handleOut;
+    const control1 = raw1 ?? from;
+    const control2 = raw2 ?? to;
+    if (segment.kind !== "line" && (raw1 || raw2)) {
       const count = Math.max(4, curveSegments);
       for (let i = 0; i < count; i += 1) {
         const t = i / count;
@@ -285,6 +288,11 @@ export function densifyClosedPathUv(path: OrderedSketchPath, curveSegments = 20)
 
 async function bakeSketchSweepSolid(shape: WorkplaneShape, plane: SketchPlane): Promise<BrepSolid | null> {
   if (!shape.sketchProfile) return null;
+  if (shape.sketchSweep) {
+    const brep = await loadBrepWithOcct();
+    const built = sweepSolid(brep, shape.sketchProfile, shape.sketchDoc, shape.sketchSweep, plane);
+    return built.ok ? built.solid : null;
+  }
   const inputs = findSweepInputs(shape.sketchProfile);
   if (!inputs) return null;
   const vAxis = sketchPlaneVAxis(plane);

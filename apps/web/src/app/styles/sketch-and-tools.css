@@ -471,6 +471,16 @@
   border-color: var(--action-surface-hover);
 }
 
+.sketch-revolve-prompt-actions button.primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.editor-canvas-area > .sketch-revolve-prompt,
+.editor-sketch-area > .sketch-revolve-prompt {
+  flex: 0 0 auto;
+}
+
 .sketch-revolve-prompt-actions button.cancel {
   color: var(--danger-text);
   background: var(--wash-danger);
@@ -1044,6 +1054,24 @@
   height: 100%;
 }
 
+.printer-bed-warning {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: var(--z-viewport-ui);
+  transform: translateX(-50%);
+  max-width: min(420px, calc(100% - 32px));
+  padding: 7px 12px;
+  color: var(--action-text);
+  background: var(--action-surface);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+}
+
 .sketch-workspace-stage {
   position: relative;
   flex: 1;
@@ -1364,6 +1392,12 @@
   stroke-width: 4;
 }
 
+.sketch-segments path.sweep-mark,
+.sketch-analytic-circles circle.sweep-mark {
+  stroke: #2aa77e;
+  stroke-width: 4;
+}
+
 .sketch-analytic-circles circle {
   fill: none;
   stroke: #173f60;
@@ -1407,8 +1441,9 @@
 }
 
 .sketch-preview-line {
+  fill: none;
   stroke: #169fce;
-  stroke-width: 2;
+  stroke-width: 2.5;
   stroke-dasharray: 6 5;
   vector-effect: non-scaling-stroke;
 }
@@ -1419,6 +1454,11 @@
   stroke-width: 2;
   stroke-dasharray: 6 5;
   vector-effect: non-scaling-stroke;
+}
+
+.sketch-drag-handles .sketch-preview-line {
+  stroke: #173f60;
+  stroke-width: 2.5;
 }
 
 .sketch-drag-handles line,
@@ -1437,21 +1477,26 @@
   cursor: move;
 }
 
-.sketch-points circle {
+.sketch-points circle.hit {
+  fill: transparent;
+  stroke: none;
+  cursor: pointer;
+}
+
+.sketch-points circle.mark {
   fill: #ffffff;
   stroke: #143c5c;
   stroke-width: 1.4;
   vector-effect: non-scaling-stroke;
-  cursor: pointer;
 }
 
-.sketch-points circle:hover,
-.sketch-points circle.active {
+.sketch-points g:hover circle.mark,
+.sketch-points circle.mark.active {
   fill: #71d7f0;
   stroke: #086f98;
 }
 
-.sketch-points circle.selected {
+.sketch-points circle.mark.selected {
   fill: #ffb24b;
   stroke: #9d4d00;
   stroke-width: 2;
@@ -1546,49 +1591,6 @@
   background: var(--glass-surface);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
-}
-
-.sketch-point-actions {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  z-index: calc(var(--z-viewport-ui) + 8);
-  display: flex;
-  gap: 5px;
-  padding: 5px;
-  background: var(--glass-surface-strong);
-  border: 1px solid var(--control-border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elevation-md);
-  transform: translateX(-50%);
-}
-
-.sketch-point-actions button {
-  display: inline-flex;
-  min-width: 62px;
-  height: 35px;
-  padding: 0 9px;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  color: var(--ink);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  font-size: var(--text-2xs);
-  font-weight: 800;
-}
-
-.sketch-point-actions button:hover {
-  color: var(--accent-text);
-  background: var(--wash-strong);
-  border-color: var(--control-border-accent);
-}
-
-.sketch-point-actions svg {
-  width: 17px;
-  height: 17px;
 }
 
 .sketch-image-inspector .shape-inspector-header strong {

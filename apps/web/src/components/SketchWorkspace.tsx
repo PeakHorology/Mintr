@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronUp, CornerDownRight, Home, Link, Link2Off, Minus, Plus, Ruler, Split, Trash2, Waves } from "lucide-react";
+import { ChevronUp, Home, Link, Link2Off, Minus, Plus, Ruler, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { SnapGridControl } from "@/components/workplane/ShapeInspector";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
@@ -82,6 +82,8 @@ type SketchWorkspaceProps = {
   constraintConflicts?: string[];
   solveStatus?: SketchDefinitionStatus;
   solveDof?: number;
+  /** Outline and path chosen for Sweep, drawn in mint. */
+  sweepMarkIds?: string[];
   onPlanePoint: (point: { x: number; z: number }, handles?: { handleIn: { x: number; z: number }; handleOut: { x: number; z: number } }) => void;
   onDrawCircle: (center: { x: number; z: number }, radius: number) => void;
   onDrawEllipse: (origin: { x: number; z: number }, corner: { x: number; z: number }) => void;
@@ -232,6 +234,28 @@ const CONSTRAINT_GLYPH: Record<SketchConstraint["kind"], string> = {
   symmetry: "⇄",
   fix: "🔒",
 };
+
+function limitHandle(anchor: { x: number; z: number }, handle: { x: number; z: number }, maxLength: number) {
+  const dx = handle.x - anchor.x;
+  const dz = handle.z - anchor.z;
+  const length = Math.hypot(dx, dz);
+  if (length <= maxLength || length < 1e-9) return handle;
+  const scale = maxLength / length;
+  return { x: anchor.x + dx * scale, z: anchor.z + dz * scale };
+}
+
+/** The curve a Bézier drag will commit: previous point to the click, pulled by the mirrored handle. */
+function bezierDragPreview(
+  start: { x: number; z: number; handleOut?: { x: number; z: number } },
+  end: { x: number; z: number },
+  incoming: { x: number; z: number },
+) {
+  const chord = Math.hypot(end.x - start.x, end.z - start.z);
+  const maxLength = chord * 0.5;
+  const leave = limitHandle(start, start.handleOut ?? start, maxLength);
+  const arrive = limitHandle(end, incoming, maxLength);
+  return `M ${start.x} ${start.z} C ${leave.x} ${leave.z} ${arrive.x} ${arrive.z} ${end.x} ${end.z}`;
+}
 
 function sketchEntityPointIds(entity: SketchEntity): string[] {
   switch (entity.kind) {
@@ -460,9 +484,14 @@ function orderedPaths(profile: SketchProfile): DisplayPath[] {
 
 function curveControls(step: PathStep) {
   const forward = step.segment.startId === step.from.id;
+  const rawFirst = forward ? step.from.handleOut : step.from.handleIn;
+  const rawSecond = forward ? step.to.handleIn : step.to.handleOut;
   return {
-    first: forward ? step.from.handleOut : step.from.handleIn,
-    second: forward ? step.to.handleIn : step.to.handleOut,
+    first: rawFirst ?? step.from,
+    second: rawSecond ?? step.to,
+    // A line point that was just curved only has handles on that point. The
+    // other end still sits on the point, which is a real cubic control.
+    curved: step.segment.kind !== "line" && Boolean(rawFirst || rawSecond),
   };
 }
 
@@ -472,7 +501,7 @@ function pathData(path: DisplayPath) {
   const commands = [`M ${first.x} ${first.z}`];
   path.steps.forEach((step) => {
     const controls = curveControls(step);
-    if (step.segment.kind !== "line" && controls.first && controls.second) {
+    if (controls.curved) {
       commands.push(`C ${controls.first.x} ${controls.first.z} ${controls.second.x} ${controls.second.z} ${step.to.x} ${step.to.z}`);
     } else {
       commands.push(`L ${step.to.x} ${step.to.z}`);
@@ -488,7 +517,7 @@ function segmentData(segment: SketchSegment, pointById: Map<string, SketchPoint>
   if (!from || !to) return "";
   const step = { segment, from, to };
   const controls = curveControls(step);
-  return segment.kind !== "line" && controls.first && controls.second
+  return controls.curved
     ? `M ${from.x} ${from.z} C ${controls.first.x} ${controls.first.z} ${controls.second.x} ${controls.second.z} ${to.x} ${to.z}`
     : `M ${from.x} ${from.z} L ${to.x} ${to.z}`;
 }
@@ -670,6 +699,7 @@ export function SketchWorkspace({
   constraintConflicts = [],
   solveStatus = "empty",
   solveDof = 0,
+  sweepMarkIds = [],
   onPlanePoint,
   onDrawCircle,
   onDrawEllipse,
@@ -748,6 +778,8 @@ export function SketchWorkspace({
   const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
   const svgRef = useRef<SVGSVGElement | null>(null);
   const eraseStrokeRef = useRef<{ pointIds: Set<string>; segmentIds: Set<string> } | null>(null);
+  const pointClickRef = useRef<{ id: string; at: number } | null>(null);
+  const pendingPointDragRef = useRef<{ pointerId: number; pointId: string; x: number; z: number; clientX: number; clientY: number } | null>(null);
   const width = workspace.width / zoom;
   const depth = workspace.depth / zoom;
   const screenUnit = useMemo(() => {
@@ -906,6 +938,8 @@ export function SketchWorkspace({
   const selectedImage = selected?.kind === "image" ? displayImages.find((image) => image.id === selected.id) ?? null : null;
   const isPointSelected = (id: string) => selected?.kind === "point" ? selected.id === id : selected?.kind === "multiple" ? selected.pointIds.includes(id) : false;
   const isSegmentSelected = (id: string) => selected?.kind === "segment" ? selected.id === id : selected?.kind === "multiple" ? selected.segmentIds.includes(id) : false;
+  const sweepMarks = useMemo(() => new Set(sweepMarkIds), [sweepMarkIds]);
+  const isSweepMarked = (id: string) => sweepMarks.has(id) || sweepMarks.has(curveStandInOwner(id) ?? "");
   // Prefer Snap Grid spacing when active so the drawn plate matches 3D snap divisions;
   // otherwise fall back to the workplane grid block size.
   const snapGridStep = snapStep(snap);
@@ -1094,7 +1128,11 @@ export function SketchWorkspace({
       return;
     }
     if (tool === "bezier") {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // A pointer that is already gone cannot be captured.
+      }
       setPointerAction({ kind: "bezier", pointerId: event.pointerId, origin: point, current: point });
     } else if (
       tool === "circle"
@@ -1122,12 +1160,23 @@ export function SketchWorkspace({
       setPointerAction({ kind: "marquee", pointerId: event.pointerId, origin: point, current: point });
     } else if (tool === "dimension") {
       onNotice?.("Select a segment to add a dimension");
-    } else if (tool === "line" || tool === "smooth" || tool === "measure") {
+    } else if (tool === "smooth") {
+      onNotice?.("Click a point to curve it");
+    } else if (tool === "line" || tool === "measure") {
       onPlanePoint(point);
     }
   };
 
   const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const pendingDrag = pendingPointDragRef.current;
+    if (pendingDrag && pendingDrag.pointerId === event.pointerId) {
+      const moved = Math.hypot(event.clientX - pendingDrag.clientX, event.clientY - pendingDrag.clientY);
+      if (moved >= 4) {
+        pendingPointDragRef.current = null;
+        pointClickRef.current = null;
+        beginEntityDrag(event, { kind: "move-point", pointerId: event.pointerId, pointId: pendingDrag.pointId, current: { x: pendingDrag.x, z: pendingDrag.z } });
+      }
+    }
     if (pointerAction?.kind === "pan") {
       const matrix = svgRef.current?.getScreenCTM();
       const scaleX = matrix ? Math.max(0.0001, Math.hypot(matrix.a, matrix.b)) : 1;
@@ -1159,9 +1208,14 @@ export function SketchWorkspace({
   };
 
   const finishPointerAction = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (pendingPointDragRef.current?.pointerId === event.pointerId) pendingPointDragRef.current = null;
     const action = pointerAction;
     if (!action || action.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The pointer was never captured.
+    }
     if (action.kind === "pan") {
       setPointerAction(null);
       return;
@@ -1252,7 +1306,11 @@ export function SketchWorkspace({
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    svgRef.current?.setPointerCapture(event.pointerId);
+    try {
+      svgRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // A pointer that is already gone cannot be captured.
+    }
     setPointerAction(action);
   };
 
@@ -1608,7 +1666,7 @@ export function SketchWorkspace({
               return (
               <path
                 data-sketch-entity="segment"
-                className={`${isSegmentSelected(segment.id) ? "selected" : ""} ${segment.construction ? "construction" : ""}`.trim()}
+                className={`${isSegmentSelected(segment.id) ? "selected" : ""} ${isSweepMarked(segment.id) ? "sweep-mark" : ""} ${segment.construction ? "construction" : ""}`.trim()}
                 key={segment.id}
                 d={segmentData(segment, pointById)}
                 onPointerDown={(event) => {
@@ -1637,7 +1695,7 @@ export function SketchWorkspace({
                   <circle
                     key={circle.id}
                     data-sketch-entity="segment"
-                    className={`${circleSelected ? "selected" : ""} ${circle.construction ? "construction" : ""}`.trim()}
+                    className={`${circleSelected ? "selected" : ""} ${isSweepMarked(circle.id) ? "sweep-mark" : ""} ${circle.construction ? "construction" : ""}`.trim()}
                     cx={circle.cx}
                     cy={circle.cz}
                     r={circle.radius}
@@ -1782,8 +1840,8 @@ export function SketchWorkspace({
               );
             }) : null}
           </g>
-          {activePoint && rubberEnd && ["line", "bezier", "smooth"].includes(tool) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={rubberEnd.x} y2={rubberEnd.z} pointerEvents="none" /> : null}
-          {activePoint && rubberEnd && ["line", "bezier", "smooth"].includes(tool) ? (
+          {activePoint && rubberEnd && (tool === "line" || (tool === "bezier" && pointerAction?.kind !== "bezier")) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={rubberEnd.x} y2={rubberEnd.z} pointerEvents="none" /> : null}
+          {activePoint && rubberEnd && (tool === "line" || (tool === "bezier" && pointerAction?.kind !== "bezier")) ? (
             <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + rubberEnd.x) / 2} ${(activePoint.z + rubberEnd.z) / 2 - labelOffset})`}>
               {(() => {
                 const pill = dimensionPillSize(previewLabel, screenUnit, 18);
@@ -1798,6 +1856,19 @@ export function SketchWorkspace({
           ) : null}
           {pointerAction?.kind === "bezier" ? (
             <g className="sketch-drag-handles" pointerEvents="none">
+              {activePoint ? (
+                <path
+                  className="sketch-preview-line"
+                  d={bezierDragPreview(
+                    activePoint,
+                    pointerAction.origin,
+                    {
+                      x: pointerAction.origin.x * 2 - pointerAction.current.x,
+                      z: pointerAction.origin.z * 2 - pointerAction.current.z,
+                    },
+                  )}
+                />
+              ) : null}
               <line x1={pointerAction.origin.x * 2 - pointerAction.current.x} y1={pointerAction.origin.z * 2 - pointerAction.current.z} x2={pointerAction.current.x} y2={pointerAction.current.z} />
               <circle cx={pointerAction.origin.x} cy={pointerAction.origin.z} r={controlPointRadius} />
             </g>
@@ -1976,21 +2047,21 @@ export function SketchWorkspace({
               {hover ? <circle className="sketch-measurement-point hover" cx={hover.x} cy={hover.z} r={pointRadius} /> : null}
             </g>
           ) : null}
-          {selectedPoint && tool === "select" ? (
+          {selectedPoint && (selectedPoint.handleIn || selectedPoint.handleOut) ? (
             <g className="sketch-curve-handles">
-              {selectedPoint.handleIn ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleIn.x} y2={selectedPoint.handleIn.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleIn.x} cy={selectedPoint.handleIn.z} r={controlPointRadius} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "in", current: selectedPoint.handleIn! })} /></> : null}
-              {selectedPoint.handleOut ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleOut.x} y2={selectedPoint.handleOut.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleOut.x} cy={selectedPoint.handleOut.z} r={controlPointRadius} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "out", current: selectedPoint.handleOut! })} /></> : null}
+              {selectedPoint.handleIn ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleIn.x} y2={selectedPoint.handleIn.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleIn.x} cy={selectedPoint.handleIn.z} r={controlPointRadius * 1.8} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "in", current: selectedPoint.handleIn! })} /></> : null}
+              {selectedPoint.handleOut ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleOut.x} y2={selectedPoint.handleOut.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleOut.x} cy={selectedPoint.handleOut.z} r={controlPointRadius * 1.8} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "out", current: selectedPoint.handleOut! })} /></> : null}
             </g>
           ) : null}
           <g className="sketch-points">
             {displayProfile.points.filter((point) => !isCircleStandIn(point.id)).map((point) => (
+              <g key={point.id}>
               <circle
                 data-sketch-entity="point"
-                className={`${isPointSelected(point.id) ? "selected" : ""} ${activePointId === point.id ? "active" : ""}`}
-                key={point.id}
+                className="hit"
                 cx={point.x}
                 cy={point.z}
-                r={pointRadius}
+                r={Math.max(pointRadius * 2.6, 12 * screenUnit)}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -2000,14 +2071,35 @@ export function SketchWorkspace({
                     beginEraseStroke(event, { x: point.x, z: point.z });
                   } else if (tool === "refine") {
                     onDeletePoint(point.id);
-                  } else if (event.button === 0 && tool === "select") {
-                    onPointPress(point.id);
-                    beginEntityDrag(event, { kind: "move-point", pointerId: event.pointerId, pointId: point.id, current: { x: point.x, z: point.z } });
                   } else if (event.button === 0) {
-                    onPointPress(point.id);
+                    const now = performance.now();
+                    const last = pointClickRef.current;
+                    const again = tool !== "smooth" && last?.id === point.id && now - last.at < 600;
+                    if (again) {
+                      pointClickRef.current = null;
+                      pendingPointDragRef.current = null;
+                      const curved = point.mode === "smooth" || point.mode === "split";
+                      onSetPointMode(point.id, curved ? "corner" : "smooth");
+                    } else {
+                      if (tool !== "smooth") pointClickRef.current = { id: point.id, at: now };
+                      if (tool === "select") {
+                        onPointPress(point.id);
+                        pendingPointDragRef.current = { pointerId: event.pointerId, pointId: point.id, x: point.x, z: point.z, clientX: event.clientX, clientY: event.clientY };
+                      } else {
+                        onPointPress(point.id);
+                      }
+                    }
                   }
                 }}
               />
+              <circle
+                className={`mark ${isPointSelected(point.id) ? "selected" : ""} ${activePointId === point.id ? "active" : ""}`}
+                cx={point.x}
+                cy={point.z}
+                r={pointRadius}
+                pointerEvents="none"
+              />
+              </g>
             ))}
           </g>
           {selectedImage && selectedImageBounds && tool === "select" ? (
@@ -2075,7 +2167,7 @@ export function SketchWorkspace({
               ))}
             </g>
           ) : null}
-          {hover && ["line", "bezier", "smooth", "circle", "square", "triangle", "polygon", "arc", "measure"].includes(tool) ? (
+          {hover && ["line", "bezier", "circle", "square", "triangle", "polygon", "arc", "measure"].includes(tool) ? (
             <circle className="sketch-cursor-point" cx={hover.x} cy={hover.z} r={hoverPointRadius} pointerEvents="none" />
           ) : null}
           {tool === "erase" && (hover || (pointerAction?.kind === "erase" ? pointerAction.current : null)) ? (
@@ -2187,13 +2279,6 @@ export function SketchWorkspace({
           onUpdate={(patch, message) => onUpdateImage(selectedImage.id, patch, message)}
           onDelete={() => onDeleteImage(selectedImage.id)}
         />
-      ) : null}
-      {selectedPoint && tool === "select" ? (
-        <div className="sketch-point-actions" aria-label="Point actions">
-          <button type="button" onClick={() => onSetPointMode(selectedPoint.id, "corner")}><CornerDownRight /><span>Corner</span></button>
-          <button type="button" onClick={() => onSetPointMode(selectedPoint.id, "smooth")}><Waves /><span>Smooth</span></button>
-          <button type="button" onClick={() => onSetPointMode(selectedPoint.id, "split")}><Split /><span>Split</span></button>
-        </div>
       ) : null}
       <div className="grid-settings sketch-grid-settings">
         <SnapGridControl

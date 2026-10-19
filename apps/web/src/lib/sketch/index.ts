@@ -10,3 +10,4 @@ export * from "./session";
 export * from "./lineEntry";
 export * from "./directEdit";
 export * from "./sweepMath";
+export * from "./sweepPlan";

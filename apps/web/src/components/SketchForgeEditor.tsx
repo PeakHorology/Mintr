@@ -138,6 +138,7 @@ import {
 } from "@/lib/linearPattern";
 import { edgeTreatmentSourceParts } from "@/lib/edgeTreatmentSources";
 import { SHELL_SIDES, shellMaxThickness, type ShellSide } from "@/lib/shellLimits";
+import { clampCutClearance, cutShapeToFit, type CutJoint } from "@/lib/cutToFit";
 import { splitPlaneFrame, splitShapeWithPlane, type SplitAxis } from "@/lib/splitShape";
 import {
   dissolvePatternFeature,
@@ -202,6 +203,7 @@ import {
 } from "@/lib/sketchDrawShapes";
 import { resolveSketchRevolveAxis, shapeFromSketchRevolve, type SketchRevolveAxis } from "@/lib/sketchRevolve";
 import { shapeFromSketchSweep } from "@/lib/sketchSweep";
+import { planSketchSweep, resolveSketchSweep, sweepChainHit, sweepSpec, type SweepChain } from "@/lib/sketch/sweepPlan";
 import {
   buildStepExportPreflight,
   occtMeshFallbackNotice,
@@ -220,7 +222,10 @@ import {
   orderedSketchPaths,
   pasteSketchClipboardIntoProfile,
   shapeFromSketchProfile,
+  settleBezierSegment,
   sketchClipboardFromSelection,
+  splitSketchSegmentAt,
+  withSketchPointMode,
   withSmoothSketchHandles,
   type SketchClipboard,
 } from "@/lib/sketchProfileShape";
@@ -388,7 +393,7 @@ export type ValueDialogState =
 const SKETCH_TOOL_CHIP_LABELS: Partial<Record<SketchTool, string>> = {
   line: "Line",
   bezier: "Bezier",
-  smooth: "Smooth curve",
+  smooth: "Smooth",
   circle: "Circle",
   ellipse: "Ellipse",
   square: "Square",
@@ -422,7 +427,7 @@ const SKETCH_TOOL_CHIP_LABELS: Partial<Record<SketchTool, string>> = {
   "constrain-concentric": "Concentric constraint",
 };
 
-const SKETCH_POINT_CHAIN_TOOLS = new Set<SketchTool>(["line", "bezier", "smooth"]);
+const SKETCH_POINT_CHAIN_TOOLS = new Set<SketchTool>(["line", "bezier"]);
 const SKETCH_MULTI_POINT_TOOLS = new Set<SketchTool>([
   "dimension",
   "fillet",
@@ -1373,6 +1378,14 @@ export function SketchForgeEditor({
   const [extrudeHeightPrompt, setExtrudeHeightPrompt] = useState<number | null>(null);
   const [extrudeAsHole, setExtrudeAsHole] = useState(false);
   const [revolvePrompt, setRevolvePrompt] = useState<null | { phase: "pick" } | { phase: "confirm"; axis: SketchRevolveAxis }>(null);
+  const [sweepPrompt, setSweepPrompt] = useState<
+    null
+    | { phase: "pick-outline" }
+    | { phase: "pick-path"; outlineId: string }
+    | { phase: "confirm"; spec: NonNullable<WorkplaneShape["sketchSweep"]> }
+  >(null);
+  const [sweepPreview, setSweepPreview] = useState<WorkplaneShape | null>(null);
+  const [sweepBuildError, setSweepBuildError] = useState<string | null>(null);
   const [sketchProfile, setSketchProfile] = useState<SketchProfile>(() => emptySketchProfile());
   const [sketchDoc, setSketchDoc] = useState<SketchDoc>(() => createEmptySketchDoc(defaultSketchPlane()));
   const [sketchFocusMode, setSketchFocusMode] = useState<SketchFocusMode>("2d");
@@ -1407,7 +1420,13 @@ export function SketchForgeEditor({
   useEffect(() => {
     shellSessionRef.current = shellSession;
   }, [shellSession]);
-  const [splitSession, setSplitSession] = useState<{ shapeId: string; axis: SplitAxis; offset: number } | null>(null);
+  const [splitSession, setSplitSession] = useState<{
+    shapeId: string;
+    axis: SplitAxis;
+    offset: number;
+    joint: CutJoint;
+    clearance: number;
+  } | null>(null);
   const edgeModifierRef = useRef<EdgeModifierSession | null>(null);
   const [circularPattern, setCircularPattern] = useState<CircularPatternSession | null>(null);
   const circularPatternRef = useRef<CircularPatternSession | null>(null);
@@ -1985,6 +2004,25 @@ export function SketchForgeEditor({
     if (!label) return null;
     return { label, hint: "Esc to exit" };
   }, [sketchActive, sketchTool]);
+  const sweepMarkIds = useMemo(() => {
+    if (!sweepPrompt) return [];
+    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    const idsOf = (chain: SweepChain) => [...chain.segmentIds, ...(chain.curveId ? [chain.curveId] : [])];
+    if (sweepPrompt.phase === "confirm") {
+      const resolved = resolveSketchSweep(guided, sketchDoc, sweepPrompt.spec);
+      if (!resolved) return [...sweepPrompt.spec.outlineSegmentIds, ...sweepPrompt.spec.holeSegmentIds, ...sweepPrompt.spec.pathSegmentIds];
+      return [
+        ...idsOf(resolved.outline),
+        ...resolved.outline.holes.flatMap(idsOf),
+        ...idsOf(resolved.path),
+      ];
+    }
+    if (sweepPrompt.phase === "pick-path") {
+      const outline = planSketchSweep(guided, sketchDoc).outlines.find((candidate) => candidate.id === sweepPrompt.outlineId);
+      return outline ? [...idsOf(outline), ...outline.holes.flatMap(idsOf)] : [];
+    }
+    return [];
+  }, [sketchDoc, sketchProfile, sweepPrompt]);
   const viewportShapes = useMemo(
     () => {
       if (historyBrowse !== null && historyBrowse !== historyIndex) {
@@ -2009,9 +2047,12 @@ export function SketchForgeEditor({
         const sourceIds = new Set(linearPattern.sourceIds);
         return shapes.filter((shape) => !sourceIds.has(shape.id)).concat(linearPattern.preview);
       }
+      if (sweepPreview) {
+        return shapes.filter((shape) => shape.id !== sweepPreview.id).concat(sweepPreview);
+      }
       return shapes;
     },
-    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, selectedIds, selectedShapes, shapes],
+    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, selectedIds, selectedShapes, shapes, sweepPreview],
   );
   const debugState = useMemo(
     () =>
@@ -2440,7 +2481,7 @@ export function SketchForgeEditor({
   }, [confirmLeaveProject, onRegisterLeaveGuard, saveProjectExplicitly]);
 
   useEffect(() => {
-    // Browsers only show their generic prompt here; in-app exits ask about a .peakcad file.
+    // Browsers only show their generic prompt here; in-app exits ask to save the design.
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!hasUnsavedProjectChanges()) return;
       event.preventDefault();
@@ -3040,7 +3081,7 @@ export function SketchForgeEditor({
     const messages: Record<SketchTool, string> = {
       line: "Line: click points, type 50<30, or hold Shift for 15° steps",
       bezier: "Bézier: click and drag points to pull curve handles",
-      smooth: "Smooth curve: click points to build a flowing path",
+      smooth: "Smooth: click each point you want to curve",
       circle: "Circle: click the center, then drag to set the radius",
       ellipse: "Ellipse: click a corner, then drag the opposite corner",
       square: "Square: click a corner, then drag to size",
@@ -3508,7 +3549,7 @@ export function SketchForgeEditor({
 
   const connectSketchPoint = useCallback(
     (pointId: string, profile = sketchProfile) => {
-      if (!["line", "bezier", "smooth"].includes(sketchTool)) return profile;
+      if (!["line", "bezier"].includes(sketchTool)) return profile;
       const curveKind = sketchTool as NonNullable<SketchSegment["kind"]>;
       if (!sketchActivePointId) {
         setSketchActivePointId(pointId);
@@ -3527,7 +3568,9 @@ export function SketchForgeEditor({
             ...profile,
             segments: [...profile.segments, { id: createLocalId("sketch-segment"), startId: sketchActivePointId, endId: pointId, kind: curveKind, ...(sketchDoc.settings.constructionMode ? { construction: true as const } : {}) }],
           };
-      const smoothed = sketchTool === "smooth" ? withSmoothSketchHandles(next) : next;
+      const smoothed = !duplicate && curveKind === "bezier"
+        ? settleBezierSegment(next, sketchActivePointId, pointId)
+        : next;
       const closed = orderedSketchPaths(smoothed).some((path) => path.closed && path.steps.some((step) => step.segment.startId === sketchActivePointId || step.segment.endId === sketchActivePointId));
       if (!duplicate) commitSketchProfile(smoothed, closed ? "Profile closed—edit the path or finish the sketch" : "Sketch segment added");
       setSketchActivePointId(closed ? null : pointId);
@@ -3680,7 +3723,11 @@ export function SketchForgeEditor({
         measureSketchPoint({ id: "measure", ...position });
         return;
       }
-      if (!["line", "bezier", "smooth"].includes(sketchTool)) return;
+      if (sketchTool === "smooth") {
+        setNotice("Click a point to curve it");
+        return;
+      }
+      if (!["line", "bezier"].includes(sketchTool)) return;
       const curveKind = sketchTool as NonNullable<SketchSegment["kind"]>;
       const existing = sketchProfile.points.find((point) => Math.hypot(point.x - position.x, point.z - position.z) < 0.0001);
       if (existing) {
@@ -3691,14 +3738,16 @@ export function SketchForgeEditor({
         id: createLocalId("sketch-point"),
         ...position,
         ...(handles ?? {}),
-        mode: sketchTool === "line" ? "corner" : sketchTool === "smooth" ? "smooth" : handles ? "smooth" : "corner",
+        mode: sketchTool === "line" ? "corner" : handles ? "smooth" : "corner",
       };
       const segmentId = sketchActivePointId ? createLocalId("sketch-segment") : null;
       const next: SketchProfile = { ...sketchProfile, points: [...sketchProfile.points, point] };
       if (sketchActivePointId && segmentId) {
         next.segments = [...next.segments, { id: segmentId, startId: sketchActivePointId, endId: point.id, kind: curveKind, ...(sketchDoc.settings.constructionMode ? { construction: true as const } : {}) }];
       }
-      const prepared = sketchTool === "smooth" ? withSmoothSketchHandles(next) : next;
+      const prepared = sketchTool === "bezier" && sketchActivePointId && segmentId
+        ? settleBezierSegment(next, sketchActivePointId, point.id)
+        : next;
       // Persist snap inferences as real constraints (H/V/coincident/midpoint).
       let docOverride: SketchDoc | null = null;
       const snap = lastSketchSnap;
@@ -3738,6 +3787,12 @@ export function SketchForgeEditor({
         setSketchSelection({ kind: "point", id });
         return;
       }
+      if (sketchTool === "smooth") {
+        commitSketchProfile(withSketchPointMode(sketchProfile, id, "smooth"), "Point curved");
+        setSketchActivePointId(null);
+        setSketchSelection({ kind: "point", id });
+        return;
+      }
       if (SKETCH_POINT_CHAIN_TOOLS.has(sketchTool)) {
         connectSketchPoint(id);
         return;
@@ -3745,7 +3800,7 @@ export function SketchForgeEditor({
       setSketchActivePointId(null);
       setSketchSelection((current) => accumulateSketchPick(current, sketchTool, { pointId: id }));
     },
-    [connectSketchPoint, measureSketchPoint, sketchProfile.points, sketchTool],
+    [commitSketchProfile, connectSketchPoint, measureSketchPoint, sketchProfile, sketchTool],
   );
 
   const editSketchCircleRadius = useCallback((circleId: string, radius: number) => {
@@ -4010,38 +4065,21 @@ export function SketchForgeEditor({
   }, [commitSketchProfile, sketchProfile]);
 
   const setSketchPointMode = useCallback((id: string, mode: "corner" | "smooth" | "split") => {
-    let next = cloneSketchProfile(sketchProfile);
-    const point = next.points.find((entry) => entry.id === id);
-    if (!point) return;
-    point.mode = mode;
-    if (mode === "corner") {
-      point.handleIn = undefined;
-      point.handleOut = undefined;
-      next.segments = next.segments.map((segment) => segment.startId === id || segment.endId === id ? { ...segment, kind: "line" } : segment);
-    } else {
-      next.segments = next.segments.map((segment) => segment.startId === id || segment.endId === id ? { ...segment, kind: "bezier" } : segment);
-      if (!point.handleIn || !point.handleOut) next = withSmoothSketchHandles(next);
-      const updated = next.points.find((entry) => entry.id === id);
-      if (updated) updated.mode = mode;
-    }
-    commitSketchProfile(next, mode === "corner" ? "Made corner" : mode === "smooth" ? "Made smooth" : "Curve handles split");
+    if (!sketchProfile.points.some((entry) => entry.id === id)) return;
+    commitSketchProfile(
+      withSketchPointMode(sketchProfile, id, mode),
+      mode === "corner" ? "Made corner" : mode === "smooth" ? "Point curved" : "Curve handles freed",
+    );
   }, [commitSketchProfile, sketchProfile]);
 
   const insertSketchPoint = useCallback((segmentId: string, position: { x: number; z: number }) => {
-    const segment = sketchProfile.segments.find((entry) => entry.id === segmentId);
-    if (!segment) return;
-    const point: SketchPoint = { id: createLocalId("sketch-point"), ...position, mode: segment.kind === "line" ? "corner" : "smooth" };
-    let next: SketchProfile = {
-      ...sketchProfile,
-      points: [...sketchProfile.points, point],
-      segments: sketchProfile.segments.flatMap((entry) => entry.id === segmentId ? [
-        { ...entry, id: createLocalId("sketch-segment"), endId: point.id },
-        { ...entry, id: createLocalId("sketch-segment"), startId: point.id },
-      ] : [entry]),
-    };
-    if (segment.kind === "smooth") next = withSmoothSketchHandles(next);
-    commitSketchProfile(next, "Point added to path");
-    setSketchSelection({ kind: "point", id: point.id });
+    const inserted = splitSketchSegmentAt(sketchProfile, segmentId, position);
+    if (!inserted) {
+      setNotice("Click between the points");
+      return;
+    }
+    commitSketchProfile(inserted.profile, "Point added to path");
+    setSketchSelection({ kind: "point", id: inserted.pointId });
     setSketchTool("select");
   }, [commitSketchProfile, sketchProfile]);
 
@@ -4049,6 +4087,9 @@ export function SketchForgeEditor({
     setSketchActive(false);
     setEditingSketchShapeId(null);
     setRevolvePrompt(null);
+    setSweepPrompt(null);
+    setSweepPreview(null);
+    setSweepBuildError(null);
     setPolygonSidesPrompt(null);
     setExtrudeHeightPrompt(null);
     setToolbarMode("geometry");
@@ -4056,6 +4097,8 @@ export function SketchForgeEditor({
 
   const startSketchExtrude = useCallback(() => {
     setRevolvePrompt(null);
+    setSweepPrompt(null);
+    setSweepPreview(null);
     const closedCount = orderedSketchPaths(closeOpenPathGaps(sketchProfile)).filter((path) => path.closed).length;
     if (closedCount === 0) {
       setNotice("Close at least one profile before extruding");
@@ -4289,6 +4332,8 @@ export function SketchForgeEditor({
   }, [commitShapes, editingSketchShapeId, exitSketchMode, shapes, sketchProfile]);
 
   const startSketchRevolve = useCallback(() => {
+    setSweepPrompt(null);
+    setSweepPreview(null);
     if (!isDefaultSketchPlane(sketchProfile.sketchPlane)) {
       setNotice("Revolve is only available on workplane sketches");
       return;
@@ -4307,22 +4352,135 @@ export function SketchForgeEditor({
     setRevolvePrompt({ phase: "pick" });
   }, [sketchProfile, sketchSelection]);
 
+  const commitSweepShape = useCallback((shape: WorkplaneShape) => {
+    const existing = editingSketchShapeId ? shapes.find((entry) => entry.id === editingSketchShapeId) ?? null : null;
+    const nextShapes = existing
+      ? shapes.map((entry) => (entry.id === existing.id ? shape : entry))
+      : [...shapes, shape];
+    commitShapes(nextShapes, shape.id, existing ? "Sketch swept" : "Sketch swept along the path");
+    setSweepPrompt(null);
+    setSweepPreview(null);
+    exitSketchMode();
+  }, [commitShapes, editingSketchShapeId, exitSketchMode, shapes]);
+
   const startSketchSweep = useCallback(() => {
-    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
-    const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
-    const swept = shapeFromSketchSweep(guided, existing);
-    if (!swept) {
-      setNotice("Sweep needs a closed outline and a construction path on the same sheet");
+    setRevolvePrompt(null);
+    if (sweepPrompt?.phase === "confirm") {
+      if (sweepPreview) commitSweepShape(sweepPreview);
+      else setNotice(sweepBuildError ?? "Building sweep…");
       return;
     }
-    swept.sketchDoc = mergeProfileIntoDoc(sketchDoc, guided);
-    swept.sketchId = sketchDoc.id;
-    const nextShapes = existing
-      ? shapes.map((shape) => (shape.id === existing.id ? swept : shape))
-      : [...shapes, swept];
-    commitShapes(nextShapes, swept.id, existing ? "Sketch swept" : "Sketch swept along the path");
-    exitSketchMode();
-  }, [commitShapes, editingSketchShapeId, exitSketchMode, shapes, sketchDoc, sketchProfile]);
+    if (sweepPrompt?.phase === "pick-outline") {
+      setNotice("Click the closed outline.");
+      return;
+    }
+    if (sweepPrompt?.phase === "pick-path") {
+      setNotice("Click the path.");
+      return;
+    }
+    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
+    if (!sweepPrompt && existing?.sketchSweep && resolveSketchSweep(guided, sketchDoc, existing.sketchSweep)) {
+      setSketchTool("select");
+      setSweepPrompt({ phase: "confirm", spec: existing.sketchSweep });
+      return;
+    }
+    const plan = planSketchSweep(guided, sketchDoc);
+    if (plan.outlines.length === 0) {
+      setNotice("Close an outline first.");
+      return;
+    }
+    if (plan.paths.length === 0) {
+      setNotice("Draw the path, then Sweep.");
+      return;
+    }
+    const openPaths = plan.paths.filter((path) => !path.closed);
+    if (plan.outlines.length === 1 && plan.paths.length === 1 && openPaths.length === 1) {
+      if (plan.outlines[0].holes.length > 1) {
+        setNotice("Sweep can cut one hole in the outline.");
+        return;
+      }
+      setSketchTool("select");
+      setSweepPrompt({ phase: "confirm", spec: sweepSpec(plan.outlines[0], openPaths[0]) });
+      return;
+    }
+    setSketchTool("select");
+    setSweepPrompt({ phase: "pick-outline" });
+    setNotice("Click the outline, then the path.");
+  }, [commitSweepShape, editingSketchShapeId, shapes, sketchDoc, sketchProfile, sweepBuildError, sweepPreview, sweepPrompt]);
+
+  const pickSweepSegment = useCallback((segmentId: string) => {
+    if (!sweepPrompt || sweepPrompt.phase === "confirm") return false;
+    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    const plan = planSketchSweep(guided, sketchDoc);
+    const hit = (chain: SweepChain) => sweepChainHit(chain, segmentId);
+    if (sweepPrompt.phase === "pick-outline") {
+      const outline = plan.outlines.find(hit);
+      if (!outline) {
+        setNotice("Click the closed outline.");
+        return true;
+      }
+      if (outline.holes.length > 1) {
+        setNotice("Sweep can cut one hole in the outline.");
+        return true;
+      }
+      setSweepPrompt({ phase: "pick-path", outlineId: outline.id });
+      setNotice("Click the path.");
+      return true;
+    }
+    const outline = plan.outlines.find((candidate) => candidate.id === sweepPrompt.outlineId);
+    if (!outline) {
+      setSweepPrompt({ phase: "pick-outline" });
+      setNotice("Click the closed outline.");
+      return true;
+    }
+    const path = [...plan.paths, ...plan.outlines.filter((candidate) => candidate.id !== outline.id)].find(hit);
+    if (!path) {
+      setNotice("Click the path.");
+      return true;
+    }
+    setSweepPrompt({ phase: "confirm", spec: sweepSpec(outline, path) });
+    return true;
+  }, [sketchDoc, sketchProfile, sweepPrompt]);
+
+  useEffect(() => {
+    if (!sketchActive) {
+      setSweepPrompt(null);
+      setSweepPreview(null);
+      setSweepBuildError(null);
+    }
+  }, [sketchActive]);
+
+  useEffect(() => {
+    if (sweepPrompt?.phase !== "confirm") {
+      setSweepPreview(null);
+      setSweepBuildError(null);
+      return;
+    }
+    const spec = sweepPrompt.spec;
+    let cancelled = false;
+    setSweepPreview(null);
+    setSweepBuildError(null);
+    setNotice("Building sweep…");
+    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    const existing = editingSketchShapeId ? shapesRef.current.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
+    void shapeFromSketchSweep(guided, sketchDoc, spec, existing).then((result) => {
+      if (cancelled) return;
+      if (!result.ok) {
+        setSweepPreview(null);
+        setSweepBuildError(result.message);
+        setNotice(result.message);
+        return;
+      }
+      setSweepBuildError(null);
+      setSweepPreview(result.shape);
+      setSketchFocusMode("3d");
+      setNotice("Sweep this outline along this path");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingSketchShapeId, sketchDoc, sketchProfile, sweepPrompt]);
 
   useEffect(() => {
     if (!revolvePrompt) return;
@@ -6172,7 +6330,12 @@ export function SketchForgeEditor({
       return;
     }
     try {
-      const parts = splitShapeWithPlane(shape, splitSession);
+      const parts = cutShapeToFit(shape, {
+        axis: splitSession.axis,
+        offset: splitSession.offset,
+        joint: splitSession.joint,
+        clearance: clampCutClearance(splitSession.clearance),
+      });
       if (parts.length < 2) {
         setNotice("Move the line through the object. The cut has to cross it.");
         return;
@@ -6180,7 +6343,7 @@ export function SketchForgeEditor({
       commitShapes(
         shapesRef.current.flatMap((entry) => entry.id === shape.id ? parts : [entry]),
         parts.map((part) => part.id),
-        "Split",
+        splitSession.joint === "none" ? "Split" : "Cut to fit",
       );
       setSplitSession(null);
     } catch (error) {
@@ -8575,6 +8738,9 @@ export function SketchForgeEditor({
           setSketchActivePointId(null);
           setSketchSelection(null);
           setRevolvePrompt(null);
+          setSweepPrompt(null);
+          setSweepPreview(null);
+          setSweepBuildError(null);
           setNotice("Current sketch chain cleared");
           return;
         }
@@ -8997,10 +9163,55 @@ export function SketchForgeEditor({
       if (!selectedShape || selectedShape.locked) return;
       if (edgeModifier) cancelEdgeModifier();
       if (shellSession) invalidateCadModifierSession();
-      setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0 });
+      setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0, joint: "none", clearance: 0.2 });
     },
     splitActive: Boolean(splitSession),
   };
+
+  const sweepDialog = sweepPrompt ? (
+    <div className={`sketch-revolve-prompt phase-${sweepPrompt.phase === "confirm" ? "confirm" : "pick"}`} role="dialog" aria-live="polite" aria-label="Sweep">
+      {sweepPrompt.phase === "pick-outline" ? (
+        <>
+          <div className="sketch-revolve-prompt-copy">
+            <strong>Sweep: choose the outline</strong>
+            <span>Click the closed shape you want to carry.</span>
+          </div>
+          <div className="sketch-revolve-prompt-actions">
+            <button type="button" className="cancel" onClick={() => setSweepPrompt(null)}>Cancel</button>
+          </div>
+        </>
+      ) : null}
+      {sweepPrompt.phase === "pick-path" ? (
+        <>
+          <div className="sketch-revolve-prompt-copy">
+            <strong>Sweep: choose the path</strong>
+            <span>Click the line the outline should follow.</span>
+          </div>
+          <div className="sketch-revolve-prompt-actions">
+            <button type="button" onClick={() => setSweepPrompt({ phase: "pick-outline" })}>Pick the outline again</button>
+            <button type="button" className="cancel" onClick={() => setSweepPrompt(null)}>Cancel</button>
+          </div>
+        </>
+      ) : null}
+      {sweepPrompt.phase === "confirm" ? (
+        <>
+          <div className="sketch-revolve-prompt-copy">
+            <strong>{sweepPreview ? "Sweep this outline along this path?" : sweepBuildError ? "Sweep stopped" : "Building sweep…"}</strong>
+            <span>{sweepBuildError ?? "The outline is the cross-section. It sits on the start of the path."}</span>
+          </div>
+          <div className="sketch-revolve-prompt-actions">
+            <button type="button" className="primary" disabled={!sweepPreview} onClick={() => sweepPreview && commitSweepShape(sweepPreview)}>
+              Sweep
+            </button>
+            <button type="button" onClick={() => { setSweepPrompt({ phase: "pick-outline" }); setSweepPreview(null); }}>
+              Pick again
+            </button>
+            <button type="button" className="cancel" onClick={() => { setSweepPrompt(null); setSweepPreview(null); }}>Cancel</button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  ) : null;
 
   return (
     <div className="peakcad-editor">
@@ -9077,7 +9288,7 @@ export function SketchForgeEditor({
         >
           <div className="dashboard-confirm-dialog">
             <header>
-              <strong id="editor-unsaved-title">Save a .peakcad file?</strong>
+              <strong id="editor-unsaved-title">Save this design?</strong>
               <button
                 type="button"
                 aria-label="Stay in this project"
@@ -9094,7 +9305,7 @@ export function SketchForgeEditor({
                   : "Saving…"
                 : (
                   <>
-                    <span>{projectName}</span> is already kept in PeakCAD. Saving writes a .peakcad file you can back up, share, or open from disk.
+                    <span>{projectName}</span> is already kept in Mintr. A new file is saved as .mintr. An open .peakcad file keeps that name.
                   </>
                 )}
             </p>
@@ -9243,6 +9454,7 @@ export function SketchForgeEditor({
                 )}
               </div>
             ) : null}
+            {sweepDialog}
             <SketchPalette
               doc={sketchDoc}
               status={sketchSolveStatus}
@@ -9331,6 +9543,7 @@ export function SketchForgeEditor({
               constraintConflicts={sketchConflicts}
               solveStatus={workspaceSettings.peakcadPro ? sketchSolveStatus : "empty"}
               solveDof={workspaceSettings.peakcadPro ? sketchDof : 0}
+              sweepMarkIds={sweepMarkIds}
               onPlanePoint={addSketchPlanePoint}
               onDrawCircle={addSketchCircle}
               onDrawEllipse={addSketchEllipse}
@@ -9345,6 +9558,19 @@ export function SketchForgeEditor({
               onOffsetSegment={addSketchOffsetLine}
               onPointPress={pressSketchPoint}
               onSelectSegment={(id, at) => {
+                if (pickSweepSegment(id)) return;
+                if (sketchTool === "smooth") {
+                  const segment = sketchProfile.segments.find((entry) => entry.id === id);
+                  if (!segment) {
+                    setNotice("Click a point to curve it");
+                    return;
+                  }
+                  const next = withSketchPointMode(withSketchPointMode(sketchProfile, segment.startId, "smooth"), segment.endId, "smooth");
+                  commitSketchProfile(next, "Point curved");
+                  setSketchActivePointId(null);
+                  setSketchSelection({ kind: "point", id: segment.endId });
+                  return;
+                }
                 sketchPickAtRef.current = at ?? null;
                 setSketchActivePointId(null);
                 setSketchSelection((current) => accumulateSketchPick(current, sketchTool, { segmentId: id }));
@@ -9444,6 +9670,7 @@ export function SketchForgeEditor({
                   onSketchCancel={cancelSketch}
                   revolveDisabled={!isDefaultSketchPlane(sketchProfile.sketchPlane)}
                 />
+                {sweepDialog}
                 <SketchPalette
                   doc={sketchDoc}
                   status={sketchSolveStatus}
@@ -9502,6 +9729,7 @@ export function SketchForgeEditor({
             onOffsetSegment: addSketchOffsetLine,
             onPointPress: pressSketchPoint,
             onSelectSegment: (id, at) => {
+              if (pickSweepSegment(id)) return;
               sketchPickAtRef.current = at ?? null;
               setSketchActivePointId(null);
               setSketchSelection((current) => accumulateSketchPick(current, sketchTool, { segmentId: id }));
@@ -9606,10 +9834,14 @@ export function SketchForgeEditor({
                   axis={splitSession.axis}
                   offset={splitSession.offset}
                   limit={splitPlane?.limit ?? 10}
+                  joint={splitSession.joint}
+                  clearance={splitSession.clearance}
                   workspace={workspaceSettings}
                   busy={false}
                   onAxisChange={(axis) => setSplitSession((current) => current ? { ...current, axis, offset: 0 } : current)}
                   onOffsetChange={(offset) => setSplitSession((current) => current ? { ...current, offset } : current)}
+                  onJointChange={(joint) => setSplitSession((current) => current ? { ...current, joint } : current)}
+                  onClearanceChange={(clearance) => setSplitSession((current) => current ? { ...current, clearance } : current)}
                   onApply={applySplit}
                   onCancel={cancelSplit}
                 />

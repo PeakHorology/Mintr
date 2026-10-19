@@ -57,6 +57,20 @@ export type WorkplaneWorkspaceSettings = {
    * computer's global choice; a project file does not turn it on or off.
    */
   peakcadPro: boolean;
+  /** Printer preset id. "custom" keeps the three sizes below. */
+  printerPreset: string;
+  /** Build-plate width along X, in millimetres. */
+  printerWidth: number;
+  /** Build-plate depth along Z, in millimetres. */
+  printerDepth: number;
+  /** Usable height above the bed, in millimetres. */
+  printerHeight: number;
+  /** Overhang stripes start past this many degrees from vertical. */
+  overhangAngle: number;
+  /** Draw the printer bed frame on the workplane. */
+  showPrinterBed: boolean;
+  /** Draw warning stripes on faces that lean out past the overhang angle. */
+  showOverhangStripes: boolean;
 };
 
 export type AlignAxis = "x" | "y" | "z";
@@ -315,6 +329,19 @@ export type WorkplaneShape = {
   sketchFinish?: "extrude" | "revolve" | "sweep";
   /** Axis used for `sketchFinish: "revolve"` (sketch-plane XZ coordinates). */
   sketchRevolveAxis?: { x1: number; z1: number; x2: number; z2: number };
+  /**
+   * Outline and path chosen for `sketchFinish: "sweep"`.
+   * Stored so a later edit cannot silently switch to a different chain.
+   */
+  sketchSweep?: {
+    outlineSegmentIds: string[];
+    holeSegmentIds: string[];
+    pathSegmentIds: string[];
+    outlineCurveId?: string;
+    holeCurveId?: string;
+    pathCurveId?: string;
+    pathClosed: boolean;
+  };
   edgeTreatments?: EdgeTreatmentFeature[];
   edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];
   /**

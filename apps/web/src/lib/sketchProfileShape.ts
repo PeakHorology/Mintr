@@ -125,6 +125,78 @@ export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] 
   });
 }
 
+function pathNeighbors(path: OrderedSketchPath, index: number) {
+  const count = path.points.length;
+  if (path.closed && count > 1) {
+    return {
+      previous: path.points[(index - 1 + count) % count],
+      following: path.points[(index + 1) % count],
+      arrive: path.steps.find((step) => step.to.id === path.points[index].id) ?? null,
+      leave: path.steps.find((step) => step.from.id === path.points[index].id) ?? null,
+    };
+  }
+  return {
+    previous: index > 0 ? path.points[index - 1] : null,
+    following: index < count - 1 ? path.points[index + 1] : null,
+    arrive: index > 0 ? path.steps[index - 1] : null,
+    leave: index < count - 1 ? path.steps[index] : null,
+  };
+}
+
+/** The handle the curve uses at this point for one step of the walk. */
+function handleSlot(step: OrderedSketchStep, pointId: string): "in" | "out" {
+  const forward = step.segment.startId === step.from.id;
+  const leaving = step.from.id === pointId;
+  if (leaving) return forward ? "out" : "in";
+  return forward ? "in" : "out";
+}
+
+/**
+ * Handles stay about a third of the edge they pull, aimed through the point.
+ * A sixth of the span between neighbors is longer than a short edge beside a
+ * long one, and that handle runs back through the near point so the curve loops.
+ * The walk may run against the stored segment, so each handle is written to the
+ * slot that segment actually reads.
+ */
+function applySmoothHandles(point: SketchPoint, path: OrderedSketchPath, index: number) {
+  const { previous, following, arrive, leave } = pathNeighbors(path, index);
+  if (!previous && !following) return;
+  const towardNext = following ? { x: following.x - point.x, z: following.z - point.z } : null;
+  const towardPrev = previous ? { x: point.x - previous.x, z: point.z - previous.z } : null;
+  const throughX = (following?.x ?? point.x) - (previous?.x ?? point.x);
+  const throughZ = (following?.z ?? point.z) - (previous?.z ?? point.z);
+  const through = Math.hypot(throughX, throughZ);
+  const tx = through > 1e-9 ? throughX / through : (towardNext ? towardNext.x : -(towardPrev?.x ?? 0));
+  const tz = through > 1e-9 ? throughZ / through : (towardNext ? towardNext.z : -(towardPrev?.z ?? 0));
+  const tangent = Math.hypot(tx, tz) || 1;
+  const ux = tx / tangent;
+  const uz = tz / tangent;
+  const inLength = towardPrev ? Math.hypot(towardPrev.x, towardPrev.z) / 3 : (towardNext ? Math.hypot(towardNext.x, towardNext.z) / 3 : 0);
+  const outLength = towardNext ? Math.hypot(towardNext.x, towardNext.z) / 3 : (towardPrev ? Math.hypot(towardPrev.x, towardPrev.z) / 3 : 0);
+  const arriveAt = { x: point.x - ux * inLength, z: point.z - uz * inLength };
+  const leaveAt = { x: point.x + ux * outLength, z: point.z + uz * outLength };
+  const write = (slot: "in" | "out", at: { x: number; z: number }) => {
+    if (slot === "in") point.handleIn = at;
+    else point.handleOut = at;
+  };
+  if (arrive && leave) {
+    const arriveSlot = handleSlot(arrive, point.id);
+    const leaveSlot = handleSlot(leave, point.id);
+    write(arriveSlot, arriveAt);
+    write(leaveSlot, leaveAt);
+    if (arriveSlot === leaveSlot) write(arriveSlot === "in" ? "out" : "in", arriveAt);
+  } else if (leave) {
+    const slot = handleSlot(leave, point.id);
+    write(slot, leaveAt);
+    write(slot === "in" ? "out" : "in", arriveAt);
+  } else if (arrive) {
+    const slot = handleSlot(arrive, point.id);
+    write(slot, arriveAt);
+    write(slot === "in" ? "out" : "in", leaveAt);
+  }
+  point.mode = "smooth";
+}
+
 export function withSmoothSketchHandles(profile: SketchProfile) {
   const next = cloneSketchProfile(profile);
   const points = new Map(next.points.map((point) => [point.id, point]));
@@ -132,16 +204,186 @@ export function withSmoothSketchHandles(profile: SketchProfile) {
     path.points.forEach((sourcePoint, index) => {
       const point = points.get(sourcePoint.id);
       if (!point) return;
-      const previous = path.closed ? path.points[(index - 1 + path.points.length) % path.points.length] : path.points[Math.max(0, index - 1)];
-      const following = path.closed ? path.points[(index + 1) % path.points.length] : path.points[Math.min(path.points.length - 1, index + 1)];
-      const tangentX = (following.x - previous.x) / 6;
-      const tangentZ = (following.z - previous.z) / 6;
-      point.handleIn = { x: point.x - tangentX, z: point.z - tangentZ };
-      point.handleOut = { x: point.x + tangentX, z: point.z + tangentZ };
-      point.mode = "smooth";
+      applySmoothHandles(point, path, index);
     });
   });
   return next;
+}
+
+/** Smooth one point from its own edges. The rest of the path keeps its handles. */
+export function smoothOneSketchPoint(profile: SketchProfile, pointId: string) {
+  const next = cloneSketchProfile(profile);
+  const path = orderedSketchPaths(next).find((entry) => entry.points.some((point) => point.id === pointId));
+  const index = path?.points.findIndex((point) => point.id === pointId) ?? -1;
+  const point = index >= 0 ? next.points.find((entry) => entry.id === pointId) : undefined;
+  if (!path || !point || index < 0) return next;
+  applySmoothHandles(point, path, index);
+  bowStraightPoint(point, path, index);
+  return next;
+}
+
+/** Turn one existing point into a corner, a curve, or a curve with free handles. */
+export function withSketchPointMode(profile: SketchProfile, pointId: string, mode: "corner" | "smooth" | "split"): SketchProfile {
+  let next = cloneSketchProfile(profile);
+  const point = next.points.find((entry) => entry.id === pointId);
+  if (!point) return next;
+  point.mode = mode;
+  if (mode === "corner") {
+    point.handleIn = undefined;
+    point.handleOut = undefined;
+    next.segments = next.segments.map((segment) =>
+      segment.startId === pointId || segment.endId === pointId ? { ...segment, kind: "line" } : segment,
+    );
+    return next;
+  }
+  next.segments = next.segments.map((segment) =>
+    segment.startId === pointId || segment.endId === pointId ? { ...segment, kind: "bezier" } : segment,
+  );
+  if (!point.handleIn || !point.handleOut) next = smoothOneSketchPoint(next, pointId);
+  const updated = next.points.find((entry) => entry.id === pointId);
+  if (updated) updated.mode = mode;
+  return next;
+}
+
+/** A straight point's handles lie on the line, so curving it looks like nothing happened. */
+const STRAIGHT_POINT_BOW = (28 * Math.PI) / 180;
+
+function bowStraightPoint(point: SketchPoint, path: OrderedSketchPath, index: number) {
+  if (!point.handleIn || !point.handleOut) return;
+  const { previous, following } = pathNeighbors(path, index);
+  if (previous && following) {
+    const ax = point.x - previous.x;
+    const az = point.z - previous.z;
+    const bx = following.x - point.x;
+    const bz = following.z - point.z;
+    const left = Math.hypot(ax, az);
+    const right = Math.hypot(bx, bz);
+    if (left > 1e-6 && right > 1e-6) {
+      const dot = Math.max(-1, Math.min(1, (ax * bx + az * bz) / (left * right)));
+      if (Math.acos(dot) >= (12 * Math.PI) / 180) return;
+    }
+  }
+  const turn = Math.cos(STRAIGHT_POINT_BOW);
+  const rise = Math.sin(STRAIGHT_POINT_BOW);
+  const swing = (handle: { x: number; z: number }) => {
+    const dx = handle.x - point.x;
+    const dz = handle.z - point.z;
+    return { x: point.x + dx * turn - dz * rise, z: point.z + dx * rise + dz * turn };
+  };
+  point.handleIn = swing(point.handleIn);
+  point.handleOut = swing(point.handleOut);
+}
+
+function clampHandleTo(anchor: { x: number; z: number }, handle: { x: number; z: number }, maxLength: number) {
+  const dx = handle.x - anchor.x;
+  const dz = handle.z - anchor.z;
+  const length = Math.hypot(dx, dz);
+  if (length <= maxLength || length < 1e-9) return handle;
+  const scale = maxLength / length;
+  return { x: anchor.x + dx * scale, z: anchor.z + dz * scale };
+}
+
+/**
+ * A pen drag can leave a handle longer than the segment it belongs to. The
+ * control then sits past the other point and the new curve loops on itself.
+ * Shorten only the two handles of this segment. The new point's outgoing
+ * handle stays put for the next segment.
+ */
+export function settleBezierSegment(profile: SketchProfile, startId: string, endId: string) {
+  const next = cloneSketchProfile(profile);
+  const start = next.points.find((point) => point.id === startId);
+  const end = next.points.find((point) => point.id === endId);
+  if (!start || !end) return next;
+  const chord = Math.hypot(end.x - start.x, end.z - start.z);
+  if (chord < 1e-6) return next;
+  const maxLength = chord * 0.5;
+  if (start.handleOut) start.handleOut = clampHandleTo(start, start.handleOut, maxLength);
+  if (end.handleIn) end.handleIn = clampHandleTo(end, end.handleIn, maxLength);
+  return next;
+}
+
+function lerpUv(a: { x: number; z: number }, b: { x: number; z: number }, t: number) {
+  return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+}
+
+function cubicAt(
+  p0: { x: number; z: number },
+  c1: { x: number; z: number },
+  c2: { x: number; z: number },
+  p3: { x: number; z: number },
+  t: number,
+) {
+  const u = 1 - t;
+  return {
+    x: u * u * u * p0.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * p3.x,
+    z: u * u * u * p0.z + 3 * u * u * t * c1.z + 3 * u * t * t * c2.z + t * t * t * p3.z,
+  };
+}
+
+/** Split one segment at the nearest spot to `at`. A curve keeps the shape it had. */
+export function splitSketchSegmentAt(
+  profile: SketchProfile,
+  segmentId: string,
+  at: { x: number; z: number },
+): { profile: SketchProfile; pointId: string } | null {
+  const segment = profile.segments.find((entry) => entry.id === segmentId);
+  const start = segment ? profile.points.find((point) => point.id === segment.startId) : undefined;
+  const end = segment ? profile.points.find((point) => point.id === segment.endId) : undefined;
+  if (!segment || !start || !end) return null;
+  const curved = segment.kind === "bezier" || segment.kind === "smooth";
+  const c1 = start.handleOut ?? start;
+  const c2 = end.handleIn ?? end;
+  let t = 0.5;
+  if (!curved) {
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const lengthSq = dx * dx + dz * dz;
+    t = lengthSq < 1e-9 ? 0.5 : ((at.x - start.x) * dx + (at.z - start.z) * dz) / lengthSq;
+  } else {
+    let best = Number.POSITIVE_INFINITY;
+    for (let step = 1; step < 48; step += 1) {
+      const sampleT = step / 48;
+      const sample = cubicAt(start, c1, c2, end, sampleT);
+      const distance = Math.hypot(sample.x - at.x, sample.z - at.z);
+      if (distance < best) {
+        best = distance;
+        t = sampleT;
+      }
+    }
+  }
+  if (t < 0.08 || t > 0.92) return null;
+  const pointId = createLocalId("sketch-point");
+  const next = cloneSketchProfile(profile);
+  const nextStart = next.points.find((point) => point.id === start.id)!;
+  const nextEnd = next.points.find((point) => point.id === end.id)!;
+  let point: SketchPoint;
+  if (!curved) {
+    const onLine = lerpUv(nextStart, nextEnd, t);
+    point = { id: pointId, x: onLine.x, z: onLine.z, mode: "corner" };
+  } else {
+    const a = lerpUv(nextStart, c1, t);
+    const b = lerpUv(c1, c2, t);
+    const c = lerpUv(c2, nextEnd, t);
+    const d = lerpUv(a, b, t);
+    const e = lerpUv(b, c, t);
+    const atPoint = lerpUv(d, e, t);
+    nextStart.handleOut = a;
+    nextEnd.handleIn = c;
+    point = {
+      id: pointId,
+      x: atPoint.x,
+      z: atPoint.z,
+      mode: "split",
+      handleIn: d,
+      handleOut: e,
+    };
+  }
+  next.points = [...next.points, point];
+  next.segments = next.segments.flatMap((entry) => entry.id === segmentId ? [
+    { ...entry, id: createLocalId("sketch-segment"), endId: pointId },
+    { ...entry, id: createLocalId("sketch-segment"), startId: pointId },
+  ] : [entry]);
+  return { profile: next, pointId };
 }
 
 /** True when a single closed path is an axis-aligned rectangle of line segments in UV. */
@@ -474,10 +716,12 @@ export function shapeFromSketchProfile(
       outline.moveTo(first.x, first.y);
       path.steps.forEach(({ segment, from, to }) => {
         const forward = segment.startId === from.id;
-        const control1 = forward ? from.handleOut : from.handleIn;
-        const control2 = forward ? to.handleIn : to.handleOut;
+        const raw1 = forward ? from.handleOut : from.handleIn;
+        const raw2 = forward ? to.handleIn : to.handleOut;
+        const control1 = raw1 ?? from;
+        const control2 = raw2 ?? to;
         const end = toLocal(to.x, to.z);
-        if (segment.kind !== "line" && control1 && control2) {
+        if (segment.kind !== "line" && (raw1 || raw2)) {
           const c1 = toLocal(control1.x, control1.z);
           const c2 = toLocal(control2.x, control2.z);
           outline.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y);

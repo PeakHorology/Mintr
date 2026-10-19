@@ -53,7 +53,7 @@ Send these four. Not the secret.
 - Signing account name (`artifactsigning`)
 - Endpoint, such as `https://eus.codesigning.azure.net`
 
-Those go into the Windows build so `npm run package:desktop` signs `PeakCAD.exe` and the installer. The secret stays on this machine as an environment variable:
+Those go into the Windows build so `npm run package:desktop` signs `Mintr.exe` and the installer. The secret stays on this machine as an environment variable:
 
 - `AZURE_TENANT_ID` is the Directory (tenant) ID
 - `AZURE_CLIENT_ID` is the Application (client) ID

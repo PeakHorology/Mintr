@@ -87,6 +87,7 @@ import {
   shapeTessellationFingerprint,
 } from "@/lib/displayTessellation";
 import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
+import { bedFitForShapes, normalizePrinterBed, triangleNeedsSupport, type PrinterBed } from "@/lib/printerBed";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
@@ -372,6 +373,11 @@ export type ThreeState = {
   helperLayer: THREE.Group;
   modifierLayer: THREE.Group;
   xrayLayer: THREE.Group;
+  printLayer: THREE.Group;
+  showPrinterBed: boolean;
+  showOverhangStripes: boolean;
+  printerAngle: number;
+  overhangKey: string;
   clippingPlane: THREE.Plane;
   xray: {
     enabled: boolean;
@@ -438,7 +444,7 @@ export type CaptureSceneImageOptions = {
 /** Capture the current viewport as a PNG data URL. */
 function captureSceneImage(state: ThreeState, options: CaptureSceneImageOptions = {}) {
   const hideOverlays = options.hideOverlays !== false;
-  const overlayLayers = [state.workplaneLayer, state.helperLayer, state.modifierLayer, state.xrayLayer];
+  const overlayLayers = [state.workplaneLayer, state.helperLayer, state.modifierLayer, state.xrayLayer, state.printLayer];
   const previousVisibility = overlayLayers.map((layer) => layer.visible);
   const previousXray = { ...state.xray };
   if (hideOverlays) {
@@ -3312,6 +3318,7 @@ export function WorkplaneViewport({
       disposeChildren(state.helperLayer);
       disposeChildren(state.modifierLayer);
       disposeChildren(state.xrayLayer);
+      disposeChildren(state.printLayer);
       state.renderer.dispose();
       host.replaceChildren();
       if (window.sketchforgeCaptureCanvas) {
@@ -5864,9 +5871,15 @@ export function WorkplaneViewport({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [clearSketchFaceHover, hotkeys, resetView, rulerToolsOpen, setRulerActive, xrayControlsOpen, zoomCamera]);
 
+  const printerWarning = useMemo(
+    () => bedFitForShapes(shapes, normalizePrinterBed(workspace)).message,
+    [shapes, workspace],
+  );
+
   return (
     <main className="workplane-stage">
       <div className="workplane-canvas-host">
+      {printerWarning ? <div className="printer-bed-warning" role="status">{printerWarning}</div> : null}
       <div
         className="view-cube"
         aria-label="View orientation cube — drag to orbit, click a face to snap"
@@ -6274,7 +6287,9 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
   modifierLayer.name = "EdgeModifier";
   const xrayLayer = new THREE.Group();
   xrayLayer.name = "XrayCuttingPlane";
-  scene.add(workplaneLayer, shapeLayer, helperLayer, modifierLayer, xrayLayer);
+  const printLayer = new THREE.Group();
+  printLayer.name = "Printer";
+  scene.add(workplaneLayer, shapeLayer, printLayer, helperLayer, modifierLayer, xrayLayer);
 
   const raycaster = new THREE.Raycaster();
   raycaster.params.Line = { threshold: 1.15 };
@@ -6314,6 +6329,11 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     helperLayer,
     modifierLayer,
     xrayLayer,
+    printLayer,
+    showPrinterBed: true,
+    showOverhangStripes: false,
+    printerAngle: 45,
+    overhangKey: "",
     clippingPlane,
     xray: {
       enabled: false,
@@ -6630,6 +6650,12 @@ function rebuildWorkplane(state: ThreeState | null, workspace: WorkspaceSettings
   if (workspace.showGrid) {
     state.workplaneLayer.add(createGridLines(workspace.width, workspace.depth, workspace.gridBlockSize));
   }
+  const bed = normalizePrinterBed(workspace);
+  state.showPrinterBed = bed.showBed;
+  state.showOverhangStripes = bed.showStripes;
+  state.printerAngle = bed.overhangAngle;
+  if (bed.showBed) state.workplaneLayer.add(createPrinterFrame(bed));
+  rebuildOverhangStripes(state);
 }
 
 function createGridLines(width = WORKPLANE_WIDTH, depth = WORKPLANE_DEPTH, blockSize = DEFAULT_WORKSPACE.gridBlockSize) {
@@ -6677,6 +6703,144 @@ function linesFromPoints(points: number[], material: THREE.LineBasicMaterial) {
   const lines = new THREE.LineSegments(geometry, material);
   lines.renderOrder = 1;
   return lines;
+}
+
+const overhangMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  polygonOffset: true,
+  polygonOffsetFactor: -2,
+  polygonOffsetUnits: -2,
+  vertexShader: `
+    varying vec3 vWorld;
+    void main() {
+      vec4 world = modelMatrix * vec4(position, 1.0);
+      vWorld = world.xyz;
+      gl_Position = projectionMatrix * viewMatrix * world;
+    }
+  `,
+  fragmentShader: `
+    varying vec3 vWorld;
+    void main() {
+      float band = fract((vWorld.x + vWorld.z) * 0.22);
+      if (band > 0.45) discard;
+      gl_FragColor = vec4(0.545, 0.353, 0.071, 0.92);
+    }
+  `,
+});
+
+function createPrinterFrame(bed: PrinterBed) {
+  const group = new THREE.Group();
+  group.name = "PrinterBed";
+  const y = 0.2;
+  const halfWidth = bed.width / 2;
+  const halfDepth = bed.depth / 2;
+  const height = bed.height;
+  const footprint = new THREE.LineBasicMaterial({ color: "#c6a15b", transparent: true, opacity: 0.95, depthWrite: false });
+  const cage = new THREE.LineBasicMaterial({ color: "#c6a15b", transparent: true, opacity: 0.28, depthWrite: false });
+  const push = (points: number[], from: [number, number, number], to: [number, number, number]) => {
+    points.push(...from, ...to);
+  };
+  const foot: number[] = [];
+  push(foot, [-halfWidth, y, -halfDepth], [halfWidth, y, -halfDepth]);
+  push(foot, [halfWidth, y, -halfDepth], [halfWidth, y, halfDepth]);
+  push(foot, [halfWidth, y, halfDepth], [-halfWidth, y, halfDepth]);
+  push(foot, [-halfWidth, y, halfDepth], [-halfWidth, y, -halfDepth]);
+  group.add(linesFromPoints(foot, footprint));
+  const cagePoints: number[] = [];
+  const corners: [number, number][] = [[-halfWidth, -halfDepth], [halfWidth, -halfDepth], [halfWidth, halfDepth], [-halfWidth, halfDepth]];
+  for (const [x, z] of corners) push(cagePoints, [x, y, z], [x, height, z]);
+  push(cagePoints, [-halfWidth, height, -halfDepth], [halfWidth, height, -halfDepth]);
+  push(cagePoints, [halfWidth, height, -halfDepth], [halfWidth, height, halfDepth]);
+  push(cagePoints, [halfWidth, height, halfDepth], [-halfWidth, height, halfDepth]);
+  push(cagePoints, [-halfWidth, height, halfDepth], [-halfWidth, height, -halfDepth]);
+  group.add(linesFromPoints(cagePoints, cage));
+  return group;
+}
+
+function rebuildOverhangStripes(state: ThreeState, skip = false) {
+  if (skip) return;
+  if (!state.showOverhangStripes) {
+    disposeChildren(state.printLayer);
+    state.overhangKey = "";
+    return;
+  }
+  const parts = [state.printerAngle.toFixed(2)];
+  for (const child of state.shapeLayer.children) {
+    if (child.userData.hole || child.userData.construction) continue;
+    parts.push(
+      String(child.userData.shapeId ?? ""),
+      child.position.x.toFixed(2),
+      child.position.y.toFixed(2),
+      child.position.z.toFixed(2),
+      child.rotation.x.toFixed(3),
+      child.rotation.y.toFixed(3),
+      child.rotation.z.toFixed(3),
+      String(child.userData.renderFingerprint ?? ""),
+    );
+  }
+  const key = parts.join("|");
+  if (key === state.overhangKey) return;
+  state.overhangKey = key;
+  disposeChildren(state.printLayer);
+  const positions: number[] = [];
+  for (const child of state.shapeLayer.children) {
+    if (child.userData.hole || child.userData.construction) continue;
+    collectOverhangTriangles(child, state.printerAngle, positions);
+  }
+  if (positions.length < 9) return;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const mesh = new THREE.Mesh(geometry, overhangMaterial.clone());
+  mesh.name = "OverhangStripes";
+  mesh.renderOrder = 4;
+  mesh.frustumCulled = false;
+  state.printLayer.add(mesh);
+}
+
+function collectOverhangTriangles(root: THREE.Object3D, angle: number, positions: number[]) {
+  root.updateWorldMatrix(true, true);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const edgeA = new THREE.Vector3();
+  const edgeB = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || child.userData.printBody !== true) return;
+    let node: THREE.Object3D | null = child;
+    while (node) {
+      if (node.userData.hole || node.userData.construction) return;
+      node = node.parent;
+    }
+    const attribute = child.geometry.getAttribute("position");
+    if (!attribute) return;
+    const index = child.geometry.getIndex();
+    const matrix = child.matrixWorld;
+    const count = index ? index.count : attribute.count;
+    for (let triangle = 0; triangle + 2 < count; triangle += 3) {
+      const ia = index ? index.getX(triangle) : triangle;
+      const ib = index ? index.getX(triangle + 1) : triangle + 1;
+      const ic = index ? index.getX(triangle + 2) : triangle + 2;
+      a.fromBufferAttribute(attribute, ia).applyMatrix4(matrix);
+      b.fromBufferAttribute(attribute, ib).applyMatrix4(matrix);
+      c.fromBufferAttribute(attribute, ic).applyMatrix4(matrix);
+      edgeA.subVectors(b, a);
+      edgeB.subVectors(c, a);
+      normal.crossVectors(edgeA, edgeB);
+      const length = normal.length();
+      if (length < 1e-8) continue;
+      normal.multiplyScalar(1 / length);
+      if (!triangleNeedsSupport(a.y, b.y, c.y, normal.y, angle)) continue;
+      const lift = 0.18;
+      positions.push(
+        a.x + normal.x * lift, a.y + normal.y * lift, a.z + normal.z * lift,
+        b.x + normal.x * lift, b.y + normal.y * lift, b.z + normal.z * lift,
+        c.x + normal.x * lift, c.y + normal.y * lift, c.z + normal.z * lift,
+      );
+    }
+  });
 }
 
 type CutPreviewShapeFrame = {
@@ -7021,6 +7185,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   }
 
   rebuildSelectionHelpers(state, shapes, selectedIds);
+  rebuildOverhangStripes(state, !showCutPreviews);
   applyXrayClipping(state);
   // autoUpdate is off, so a fresh scene has no shadow map until this runs.
   // Without it, MeshStandardMaterials stay blank until the first drag ends.
@@ -8703,6 +8868,7 @@ function addMesh(
     }
   }
   const mesh = new THREE.Mesh(prepared, material);
+  mesh.userData.printBody = true;
   const importedTriangles = shape.importedMesh?.triangleCount ?? 0;
   mesh.castShadow = !shape.hole && !shape.construction && importedTriangles <= hardwareProfile().shadowCasterTriangleLimit;
   mesh.receiveShadow = false;

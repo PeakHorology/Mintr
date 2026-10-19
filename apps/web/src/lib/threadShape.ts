@@ -232,6 +232,42 @@ export function createThreadShape(options: {
   return asHole ? withHoleMode(shape, true) : shape;
 }
 
+/** Rebuild a thread from its spec so the stored mesh is the solid Group cuts. */
+export function solidThreadShape(shape: WorkplaneShape): WorkplaneShape {
+  if (shape.kind !== "thread" || !shape.threadSpec) return shape;
+  const spec = shape.threadSpec;
+  const rebuilt = createThreadShape({
+    designation: spec.designation,
+    height: spec.length ?? shape.height,
+    point: { x: shape.x, z: shape.z, elevation: shape.elevation ?? 0 },
+    base: {
+      ...shape,
+      id: shape.id,
+      name: shape.name,
+      color: shape.color,
+      sides: shape.sides,
+    },
+  });
+  const posed: WorkplaneShape = {
+    ...rebuilt,
+    id: shape.id,
+    name: shape.name,
+    x: shape.x,
+    z: shape.z,
+    elevation: shape.elevation,
+    rotation: shape.rotation,
+    rotationX: shape.rotationX,
+    rotationZ: shape.rotationZ,
+    mirrorX: shape.mirrorX,
+    mirrorY: shape.mirrorY,
+    mirrorZ: shape.mirrorZ,
+    locked: shape.locked,
+    hidden: shape.hidden,
+    solidColor: shape.solidColor,
+  };
+  return shape.hole ? withHoleMode(posed, true, shape.color) : posed;
+}
+
 /** True when a Threads screw can be split into shaft + thread cutter. */
 export function canSeparateThreadScrew(shape: WorkplaneShape) {
   if (shape.kind !== "thread" || shape.locked || shape.hole) return false;

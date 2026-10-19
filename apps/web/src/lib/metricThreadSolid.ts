@@ -2,7 +2,8 @@ import { metricThreadDepth, type ResolvedThreadParams } from "@/lib/metricThread
 
 export const DEFAULT_THREAD_SIDES = 96;
 export const MIN_THREAD_SIDES = 8;
-export const MAX_THREAD_SIDES = 256;
+/** Past this the helix stops being a closed solid, so the sides control stops here. */
+export const MAX_THREAD_SIDES = 96;
 export const DEFAULT_THREAD_CLEARANCE = 0.2;
 export const MIN_THREAD_CLEARANCE = 0;
 export const MAX_THREAD_CLEARANCE = 2;
@@ -98,6 +99,25 @@ function threadRunoutScale(y: number, height: number, pitch: number) {
   return Math.min(smoothstep01(y / runout), smoothstep01((height - y) / runout));
 }
 
+function pushAnnulus(
+  positions: number[],
+  normals: number[],
+  innerRadius: number,
+  outerRadius: number,
+  y: number,
+  radialSegs: number,
+) {
+  for (let i = 0; i < radialSegs; i += 1) {
+    const a0 = (i / radialSegs) * Math.PI * 2;
+    const a1 = ((i + 1) / radialSegs) * Math.PI * 2;
+    const inner0: Vec3 = [Math.cos(a0) * innerRadius, y, Math.sin(a0) * innerRadius];
+    const inner1: Vec3 = [Math.cos(a1) * innerRadius, y, Math.sin(a1) * innerRadius];
+    const outer0: Vec3 = [Math.cos(a0) * outerRadius, y, Math.sin(a0) * outerRadius];
+    const outer1: Vec3 = [Math.cos(a1) * outerRadius, y, Math.sin(a1) * outerRadius];
+    pushQuad(positions, normals, inner0, inner1, outer1, outer0);
+  }
+}
+
 function pushDisk(
   positions: number[],
   normals: number[],
@@ -141,19 +161,6 @@ function hexPoint(acrossFlats: number, index: number, y: number): Vec3 {
   const radius = acrossFlats / Math.sqrt(3);
   const angle = Math.PI / 6 + (index * Math.PI) / 3;
   return [Math.cos(angle) * radius, y, Math.sin(angle) * radius];
-}
-
-function pushHexPrism(positions: number[], normals: number[], acrossFlats: number, y0: number, y1: number) {
-  const bottom = Array.from({ length: 6 }, (_, index) => hexPoint(acrossFlats, index, y0));
-  const top = Array.from({ length: 6 }, (_, index) => hexPoint(acrossFlats, index, y1));
-  for (let index = 0; index < 6; index += 1) {
-    const next = (index + 1) % 6;
-    pushQuad(positions, normals, bottom[index], bottom[next], top[next], top[index]);
-  }
-  for (let index = 1; index < 5; index += 1) {
-    pushTriangle(positions, normals, bottom[0], bottom[index + 1], bottom[index]);
-    pushTriangle(positions, normals, top[0], top[index], top[index + 1]);
-  }
 }
 
 function hexRadiusAt(acrossFlats: number, angle: number) {
@@ -405,18 +412,42 @@ export function buildMetricThreadedCylinder(
   }
 
   if (role === "screw") {
+    // The shank is open at the top. The head continues that same rim, so the
+    // screw is one closed shell rather than a head sitting on an open shaft.
     const y0 = shank;
     const y1 = shank + headSize.height;
     const headR = headSize.across / 2;
     if (head === "hex") {
-      pushHexPrism(positions, normals, headSize.across, y0, y1);
+      for (let i = 0; i < radialSegs; i += 1) {
+        const a0 = (i / radialSegs) * Math.PI * 2;
+        const a1 = ((i + 1) / radialSegs) * Math.PI * 2;
+        const r0 = hexRadiusAt(headSize.across, a0);
+        const r1 = hexRadiusAt(headSize.across, a1);
+        const shoulder0: Vec3 = [Math.cos(a0) * shaftR, y0, Math.sin(a0) * shaftR];
+        const shoulder1: Vec3 = [Math.cos(a1) * shaftR, y0, Math.sin(a1) * shaftR];
+        const hex0: Vec3 = [Math.cos(a0) * r0, y0, Math.sin(a0) * r0];
+        const hex1: Vec3 = [Math.cos(a1) * r1, y0, Math.sin(a1) * r1];
+        const top0: Vec3 = [Math.cos(a0) * r0, y1, Math.sin(a0) * r0];
+        const top1: Vec3 = [Math.cos(a1) * r1, y1, Math.sin(a1) * r1];
+        pushQuad(positions, normals, shoulder0, shoulder1, hex1, hex0);
+        pushQuad(positions, normals, hex0, hex1, top1, top0);
+      }
+      const center: Vec3 = [0, y1, 0];
+      for (let i = 0; i < radialSegs; i += 1) {
+        const a0 = (i / radialSegs) * Math.PI * 2;
+        const a1 = ((i + 1) / radialSegs) * Math.PI * 2;
+        const r0 = hexRadiusAt(headSize.across, a0);
+        const r1 = hexRadiusAt(headSize.across, a1);
+        const p0: Vec3 = [Math.cos(a0) * r0, y1, Math.sin(a0) * r0];
+        const p1: Vec3 = [Math.cos(a1) * r1, y1, Math.sin(a1) * r1];
+        pushTriangle(positions, normals, center, p0, p1);
+      }
     } else if (head === "countersunk") {
       pushFrustum(positions, normals, shaftR, headR, y0, y1, radialSegs);
-      pushDisk(positions, normals, shaftR, y0, radialSegs, false);
       pushDisk(positions, normals, headR, y1, radialSegs, true);
     } else {
+      pushAnnulus(positions, normals, shaftR, headR, y0, radialSegs);
       pushFrustum(positions, normals, headR, headR, y0, y1, radialSegs);
-      pushDisk(positions, normals, headR, y0, radialSegs, false);
       pushDisk(positions, normals, headR, y1, radialSegs, true);
     }
   }

@@ -29,7 +29,7 @@ const LEGACY_BAKED_STEPS: Partial<Record<ShapeKind, number>> = {
 const SIDE_DEFAULTS: Record<DisplayQuality, Partial<Record<ShapeKind, number>>> = {
   draft: { cylinder: 64, cone: 64, roundRoof: 48, tube: 96, ring: 96, thread: 48 },
   standard: { cylinder: 128, cone: 128, roundRoof: 96, tube: 192, ring: 192, thread: 96 },
-  smooth: { cylinder: 192, cone: 192, roundRoof: 128, tube: 256, ring: 256, thread: 128 },
+  smooth: { cylinder: 192, cone: 192, roundRoof: 128, tube: 256, ring: 256, thread: 96 },
 };
 
 const STEP_DEFAULTS: Record<DisplayQuality, Partial<Record<ShapeKind, number>>> = {

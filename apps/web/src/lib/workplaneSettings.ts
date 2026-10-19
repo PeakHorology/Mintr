@@ -1,6 +1,7 @@
 import type { DisplayQuality, GridSize, MeasurementAccuracy, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 import { DEFAULT_DISPLAY_QUALITY, normalizeDisplayQuality } from "@/lib/displayTessellation";
 import { normalizeScaleForUnits } from "@/lib/measurementUnits";
+import { DEFAULT_OVERHANG_ANGLE, DEFAULT_PRINTER_ID, normalizePrinterBed } from "@/lib/printerBed";
 import { DEFAULT_LIGHT_VIEWPORT_BACKGROUND } from "@/lib/uiTheme";
 
 export const DEFAULT_SNAP_GRID: GridSize = "1.0 mm";
@@ -29,6 +30,13 @@ export const DEFAULT_WORKPLANE_WORKSPACE: WorkplaneWorkspaceSettings = {
   accuracy: 2,
   displayQuality: DEFAULT_DISPLAY_QUALITY,
   peakcadPro: false,
+  printerPreset: DEFAULT_PRINTER_ID,
+  printerWidth: 220,
+  printerDepth: 220,
+  printerHeight: 250,
+  overhangAngle: DEFAULT_OVERHANG_ANGLE,
+  showPrinterBed: true,
+  showOverhangStripes: false,
 };
 
 const snapGridOptions: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
@@ -60,6 +68,15 @@ export function normalizeSnapGrid(value: unknown, fallback: GridSize = DEFAULT_S
 export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWorkspaceSettings = DEFAULT_WORKPLANE_WORKSPACE): WorkplaneWorkspaceSettings {
   const candidate = value && typeof value === "object" ? (value as Partial<WorkplaneWorkspaceSettings>) : {};
   const units = stringOrDefault(candidate.units, fallback.units);
+  const printer = normalizePrinterBed({
+    printerPreset: candidate.printerPreset ?? fallback.printerPreset,
+    printerWidth: candidate.printerWidth ?? fallback.printerWidth,
+    printerDepth: candidate.printerDepth ?? fallback.printerDepth,
+    printerHeight: candidate.printerHeight ?? fallback.printerHeight,
+    overhangAngle: candidate.overhangAngle ?? fallback.overhangAngle,
+    showPrinterBed: candidate.showPrinterBed ?? fallback.showPrinterBed,
+    showOverhangStripes: candidate.showOverhangStripes ?? fallback.showOverhangStripes,
+  });
   return {
     width: numberOrDefault(candidate.width, fallback.width),
     depth: numberOrDefault(candidate.depth, fallback.depth),
@@ -76,6 +93,13 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
     accuracy: accuracyOrDefault(candidate.accuracy, fallback.accuracy),
     displayQuality: displayQualityOrDefault(candidate.displayQuality, fallback.displayQuality),
     peakcadPro: resolvePeakcadPro(candidate.peakcadPro, fallback.peakcadPro),
+    printerPreset: printer.preset,
+    printerWidth: printer.width,
+    printerDepth: printer.depth,
+    printerHeight: printer.height,
+    overhangAngle: printer.overhangAngle,
+    showPrinterBed: printer.showBed,
+    showOverhangStripes: printer.showStripes,
   };
 }
 

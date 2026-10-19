@@ -25,9 +25,11 @@ import { HelpFeedbackForm } from "@/components/workplane/HelpFeedbackForm";
 import { ModelBridgeSettings } from "@/components/workplane/ModelBridgeSettings";
 import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
+import { hasDesktopProjectFiles, transitionDesktopPeakcadFiles, type ProjectFileTransition } from "@/lib/peakcadFile";
 import { SlicerSettingsFields } from "@/components/workplane/SlicerSettingsFields";
 import { loadUiTheme, setUiTheme, type UiTheme } from "@/lib/uiTheme";
 import { DEFAULT_WORKPLANE_WORKSPACE, savePeakcadPro } from "@/lib/workplaneSettings";
+import { brandForPreset, printersForBrand, PRINTER_BRANDS } from "@/lib/printerBed";
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
@@ -92,12 +94,31 @@ const SETTING_TIPS = {
   length: "Workplane size along Z (length/depth), in the current units.",
   gridBlockSize: "Spacing between major grid lines on the workplane.",
   blockSize: "Custom spacing between grid lines when Grid block size is set to Custom.",
+  printerBrand: "The maker of the printer. The next menu lists that maker's machines.",
+  printer: "The machine you print on. The bed is drawn on the workplane, and parts that stick past it are marked.",
+  overhang: "Faces that lean out more than this, measured from vertical, get warning stripes. 45 is a usual limit.",
+  showPrinterBed: "Show the printer bed on the workplane.",
+  showOverhangStripes: "Paint warning stripes on faces that lean out past the overhang angle.",
   makeDefault: "Save these settings as the default for this project.",
   makeDefaultApp: "Save these settings as the default for new projects.",
   peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
   uiTheme: "Switch PeakCAD’s chrome between light and dark. Applies to the dashboard and editor.",
   downloadFolder: "Local folder used for exported files and downloads on this computer.",
 } as const;
+
+function transitionResultNotice(result: ProjectFileTransition) {
+  const changed = result.renamed.length;
+  const already = result.already.length;
+  const failed = result.failed[0]?.message;
+  if (changed === 0 && already === 0 && !failed) return "No project files to move. New designs will be saved in Documents\\Mintr.";
+  const parts: string[] = [];
+  if (changed > 0) parts.push(`Moved ${changed} ${changed === 1 ? "file" : "files"} into Documents\\Mintr.`);
+  if (already > 0) {
+    parts.push(`${already} ${already === 1 ? "was" : "were"} left in place because a .mintr file was already there.`);
+  }
+  if (failed) parts.push(failed);
+  return parts.join(" ");
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -142,9 +163,19 @@ export function WorkspaceSettingsModal({
   const [hotkeyNotice, setHotkeyNotice] = useState<string | null>(null);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentId | null>(null);
   const [legalText, setLegalText] = useState<string | null>(null);
+  const [canTransitionFiles, setCanTransitionFiles] = useState(false);
+  const [transitionConfirm, setTransitionConfirm] = useState(false);
+  const [transitionBusy, setTransitionBusy] = useState(false);
+  const [transitionNotice, setTransitionNotice] = useState<string | null>(null);
   const [dimensionDrafts, setDimensionDrafts] = useState(() => ({
     width: workspace.width.toFixed(workspace.accuracy),
     depth: workspace.depth.toFixed(workspace.accuracy),
+  }));
+  const [printerDrafts, setPrinterDrafts] = useState(() => ({
+    printerWidth: String(workspace.printerWidth),
+    printerDepth: String(workspace.printerDepth),
+    printerHeight: String(workspace.printerHeight),
+    overhangAngle: String(workspace.overhangAngle),
   }));
   const downloadFolderValue = downloadFolder ?? localDownloadFolder;
   const scaleOptions = scaleOptionsForUnits(workspace.units);
@@ -155,6 +186,9 @@ export function WorkspaceSettingsModal({
       setLocalDownloadFolder(downloadFolder);
     }
   }, [downloadFolder]);
+  useEffect(() => {
+    setCanTransitionFiles(hasDesktopProjectFiles());
+  }, []);
   const toolQueryNormalized = toolQuery.trim().toLowerCase();
   const filteredToolIndex = !toolQueryNormalized
     ? TOOL_INDEX
@@ -180,7 +214,13 @@ export function WorkspaceSettingsModal({
       width: workspace.width.toFixed(workspace.accuracy),
       depth: workspace.depth.toFixed(workspace.accuracy),
     });
-  }, [workspace.accuracy, workspace.depth, workspace.width]);
+    setPrinterDrafts({
+      printerWidth: String(workspace.printerWidth),
+      printerDepth: String(workspace.printerDepth),
+      printerHeight: String(workspace.printerHeight),
+      overhangAngle: String(workspace.overhangAngle),
+    });
+  }, [workspace.accuracy, workspace.depth, workspace.overhangAngle, workspace.printerDepth, workspace.printerHeight, workspace.printerWidth, workspace.width]);
   useEffect(() => {
     setHotkeyRecordingActive(Boolean(recordingAction));
     return () => setHotkeyRecordingActive(false);
@@ -264,6 +304,40 @@ export function WorkspaceSettingsModal({
       return;
     }
     patchWorkspace({ sizePreset, width: preset.width, depth: preset.depth });
+  };
+  const setPrinterBrand = (brand: string) => {
+    const current = printersForBrand(brandForPreset(workspace.printerPreset)).find((entry) => entry.id === workspace.printerPreset);
+    if (current?.brand === brand) return;
+    const preset = printersForBrand(brand)[0];
+    if (!preset || preset.id === "custom") {
+      patchWorkspace({ printerPreset: "custom" });
+      return;
+    }
+    patchWorkspace({
+      printerPreset: preset.id,
+      printerWidth: preset.width,
+      printerDepth: preset.depth,
+      printerHeight: preset.height,
+    });
+  };
+  const setPrinterPreset = (label: string) => {
+    const preset = printersForBrand(brandForPreset(workspace.printerPreset)).find((entry) => entry.label === label);
+    if (!preset || preset.id === "custom") {
+      patchWorkspace({ printerPreset: "custom" });
+      return;
+    }
+    patchWorkspace({
+      printerPreset: preset.id,
+      printerWidth: preset.width,
+      printerDepth: preset.depth,
+      printerHeight: preset.height,
+    });
+  };
+  const setPrinterSize = (key: "printerWidth" | "printerDepth" | "printerHeight", value: string) => {
+    const parsed = Number.parseFloat(value);
+    const fallback = workspace[key];
+    const next = clamp(Number.isFinite(parsed) ? parsed : fallback, key === "printerHeight" ? 20 : 40, 2000);
+    patchWorkspace({ printerPreset: "custom", [key]: next });
   };
   const setGridBlockPreset = (gridBlockPreset: string) => {
     patchWorkspace({ gridBlockPreset, gridBlockSize: gridBlockSizeForPreset(gridBlockPreset, workspace.gridBlockSize) });
@@ -517,6 +591,108 @@ export function WorkspaceSettingsModal({
                       </PeakTipLabel>
                     </div>
                   ) : null}
+                  <div className="workspace-section-heading">
+                    <strong>Printer</strong>
+                    <span>The bed on the workplane. Stripes mark faces that need support.</span>
+                  </div>
+                  <WorkspaceSelect
+                    label="Brand"
+                    tip={SETTING_TIPS.printerBrand}
+                    value={brandForPreset(workspace.printerPreset)}
+                    options={PRINTER_BRANDS}
+                    onChange={setPrinterBrand}
+                  />
+                  <WorkspaceSelect
+                    label="Printer"
+                    tip={SETTING_TIPS.printer}
+                    value={printersForBrand(brandForPreset(workspace.printerPreset)).find((preset) => preset.id === workspace.printerPreset)?.label ?? "Custom size"}
+                    options={printersForBrand(brandForPreset(workspace.printerPreset)).map((preset) => preset.label)}
+                    onChange={setPrinterPreset}
+                  />
+                  <div className="workspace-dimensions">
+                    <PeakTipLabel label="Bed width in millimetres." helpTitle="Bed width" description="Bed width in millimetres.">
+                      <span>Width</span>
+                      <input
+                        type="number"
+                        value={printerDrafts.printerWidth}
+                        min={40}
+                        max={2000}
+                        step={1}
+                        aria-label="Printer bed width"
+                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, printerWidth: event.currentTarget.value }))}
+                        onBlur={(event) => setPrinterSize("printerWidth", event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </PeakTipLabel>
+                    <PeakTipLabel label="Bed depth in millimetres." helpTitle="Bed depth" description="Bed depth in millimetres.">
+                      <span>Depth</span>
+                      <input
+                        type="number"
+                        value={printerDrafts.printerDepth}
+                        min={40}
+                        max={2000}
+                        step={1}
+                        aria-label="Printer bed depth"
+                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, printerDepth: event.currentTarget.value }))}
+                        onBlur={(event) => setPrinterSize("printerDepth", event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </PeakTipLabel>
+                  </div>
+                  <div className="workspace-dimensions">
+                    <PeakTipLabel label="Usable height above the bed, in millimetres." helpTitle="Bed height" description="Usable height above the bed, in millimetres.">
+                      <span>Height</span>
+                      <input
+                        type="number"
+                        value={printerDrafts.printerHeight}
+                        min={20}
+                        max={2000}
+                        step={1}
+                        aria-label="Printer height"
+                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, printerHeight: event.currentTarget.value }))}
+                        onBlur={(event) => setPrinterSize("printerHeight", event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </PeakTipLabel>
+                    <PeakTipLabel label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang}>
+                      <span>Overhang</span>
+                      <input
+                        type="number"
+                        value={printerDrafts.overhangAngle}
+                        min={0}
+                        max={85}
+                        step={1}
+                        aria-label="Overhang angle"
+                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, overhangAngle: event.currentTarget.value }))}
+                        onBlur={(event) => {
+                          const parsed = Number.parseFloat(event.currentTarget.value);
+                          if (!Number.isFinite(parsed)) return;
+                          patchWorkspace({ overhangAngle: Math.max(0, Math.min(85, parsed)) });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </PeakTipLabel>
+                  </div>
+                  <WorkspaceToggle
+                    label="Show printer bed"
+                    tip={SETTING_TIPS.showPrinterBed}
+                    checked={workspace.showPrinterBed}
+                    onChange={(showPrinterBed) => patchWorkspace({ showPrinterBed })}
+                  />
+                  <WorkspaceToggle
+                    label="Show overhang stripes"
+                    tip={SETTING_TIPS.showOverhangStripes}
+                    checked={workspace.showOverhangStripes}
+                    onChange={(showOverhangStripes) => patchWorkspace({ showOverhangStripes })}
+                  />
                 </>
               ) : null}
 
@@ -547,6 +723,60 @@ export function WorkspaceSettingsModal({
                     />
                   </PeakTipLabel>
                   <SlicerSettingsFields />
+                  {canTransitionFiles ? (
+                    <div className="workspace-file-transition">
+                      <strong>Move projects to Documents\Mintr</strong>
+                      <p>
+                        Changes each .peakcad project to .mintr and moves your project files into Documents\Mintr.
+                        The design inside each file stays the same. Nothing is replaced if a .mintr file is already there.
+                        After this, new designs are saved in Documents\Mintr.
+                      </p>
+                      {transitionConfirm ? (
+                        <div className="workspace-file-transition-actions">
+                          <button
+                            type="button"
+                            className="workspace-file-transition-cancel"
+                            disabled={transitionBusy}
+                            onClick={() => setTransitionConfirm(false)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="make-default-button"
+                            disabled={transitionBusy}
+                            onClick={() => {
+                              setTransitionBusy(true);
+                              setTransitionNotice(null);
+                              void transitionDesktopPeakcadFiles()
+                                .then((result) => {
+                                  setTransitionNotice(transitionResultNotice(result));
+                                  setTransitionConfirm(false);
+                                })
+                                .catch((error: unknown) => {
+                                  setTransitionNotice(error instanceof Error ? error.message : "Could not change those files.");
+                                })
+                                .finally(() => setTransitionBusy(false));
+                            }}
+                          >
+                            {transitionBusy ? "Moving…" : "Move files"}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="make-default-button"
+                          onClick={() => {
+                            setTransitionNotice(null);
+                            setTransitionConfirm(true);
+                          }}
+                        >
+                          Move projects to Documents\Mintr
+                        </button>
+                      )}
+                      {transitionNotice ? <p className="workspace-hotkey-notice">{transitionNotice}</p> : null}
+                    </div>
+                  ) : null}
                 </>
               ) : null}
 
@@ -824,7 +1054,7 @@ function WorkspaceToggle({
   return (
     <PeakTipLabel label={tip} helpTitle={label} description={tip} className="workspace-toggle">
       <span>{label}</span>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
+      <input type="checkbox" aria-label={label} checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
     </PeakTipLabel>
   );
 }

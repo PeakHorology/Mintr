@@ -1,6 +1,6 @@
 {
   "name": "peakcad",
-  "version": "1.0.7.5",
+  "version": "1.0.8",
   "private": true,
   "license": "GPL-3.0-or-later",
   "author": "PeakHorologyLLC",
@@ -115,7 +115,7 @@
     ],
     "fileAssociations": [
       {
-        "ext": "peakcad",
+        "ext": ["mintr", "peakcad"],
         "name": "Mintr3d Project",
         "description": "Mintr3d project file",
         "icon": "build/icon.ico",
@@ -124,7 +124,7 @@
     ],
     "win": {
       "icon": "build/icon.ico",
-      "executableName": "PeakCAD",
+      "executableName": "Mintr",
       "signAndEditExecutable": true,
       "target": [
         {
@@ -155,6 +155,7 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
+      "include": "build/installer.nsh",
       "shortcutName": "Mintr3d",
       "uninstallDisplayName": "Mintr3d",
       "artifactName": "PeakCAD-Setup-${version}.${ext}"

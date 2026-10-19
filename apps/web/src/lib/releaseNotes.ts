@@ -12,6 +12,20 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.0.8",
+    items: [
+      "Double-click a sketch point to switch it between a corner and a curve.",
+      "Smooth stays on, so you can click each point you want to curve.",
+      "A Bézier curve shows while you drag the handles.",
+      "A curve stays on its line instead of looping back on itself.",
+      "Workplane settings start with the printer brand, then the printer. The bed size follows.",
+      "The bed warns when a part hangs past the plate, and marks faces that need support.",
+      "Split can leave a dovetail, plug, snap, or thread so the pieces fit back together.",
+      "A 3MF export keeps the color of each body.",
+      "New designs save as .mintr. Older .peakcad files still open, and Settings can move projects into Documents\\Mintr.",
+    ],
+  },
+  {
     version: "1.0.7.5",
     items: [
       "PeakCAD has evolved, Mintr is here to serve",

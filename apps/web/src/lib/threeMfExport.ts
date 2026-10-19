@@ -8,6 +8,8 @@ export type ThreeMfMeshData = {
   name: string;
   vertices: [number, number, number][];
   faces: [number, number, number][];
+  /** #RRGGBB. Written as a base material so a slicer can map filaments. */
+  color?: string;
 };
 
 /** Convert PeakCAD Y-up into 3MF/slicer Z-up (rotate +90° about X). */
@@ -29,7 +31,25 @@ function sanitizeObjectName(name: string, index: number) {
   return cleaned || `Solid ${index + 1}`;
 }
 
+/** #RRGGBB or #RRGGBBAA, upper case, or null when the color is not a hex. */
+export function threeMfDisplayColor(color: string | undefined) {
+  if (!color) return null;
+  const match = /^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(color.trim());
+  if (!match) return null;
+  return `#${match[1].toUpperCase()}${match[2] ? match[2].toUpperCase() : "FF"}`;
+}
+
 function buildModelXml(meshes: ThreeMfMeshData[]) {
+  const materials: { name: string; display: string }[] = [];
+  const materialIndex = new Map<string, number>();
+  for (const mesh of meshes) {
+    const display = threeMfDisplayColor(mesh.color);
+    if (!display || materialIndex.has(display)) continue;
+    materialIndex.set(display, materials.length);
+    materials.push({ name: `Color ${materials.length + 1}`, display });
+  }
+  const materialId = meshes.length + 1;
+
   // Single-pass string parts — avoid nested map/join temporaries for large meshes.
   const parts: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>\n',
@@ -38,10 +58,22 @@ function buildModelXml(meshes: ThreeMfMeshData[]) {
     "  <resources>\n",
   ];
 
+  if (materials.length > 0) {
+    parts.push(`      <basematerials id="${materialId}">\n`);
+    for (const material of materials) {
+      parts.push(`        <base name="${escapeXml(material.name)}" displaycolor="${material.display}" />\n`);
+    }
+    parts.push("      </basematerials>\n");
+  }
+
   meshes.forEach((mesh, index) => {
     const objectId = index + 1;
+    const display = threeMfDisplayColor(mesh.color);
+    const pindex = display === null ? null : materialIndex.get(display);
+    const property = pindex === undefined || pindex === null ? "" : ` pid="${materialId}" pindex="${pindex}"`;
+    const triangleProperty = pindex === undefined || pindex === null ? "" : ` pid="${materialId}" p1="${pindex}"`;
     parts.push(
-      `      <object id="${objectId}" name="${escapeXml(sanitizeObjectName(mesh.name, index))}" type="model">\n`,
+      `      <object id="${objectId}" name="${escapeXml(sanitizeObjectName(mesh.name, index))}" type="model"${property}>\n`,
       "        <mesh>\n",
       "          <vertices>\n",
     );
@@ -51,7 +83,7 @@ function buildModelXml(meshes: ThreeMfMeshData[]) {
     }
     parts.push("          </vertices>\n", "          <triangles>\n");
     for (const [a, b, c] of mesh.faces) {
-      parts.push(`          <triangle v1="${a}" v2="${b}" v3="${c}" />\n`);
+      parts.push(`          <triangle v1="${a}" v2="${b}" v3="${c}"${triangleProperty} />\n`);
     }
     parts.push("          </triangles>\n", "        </mesh>\n", "      </object>\n");
   });
@@ -111,5 +143,8 @@ export function to3mfForShapes(shapes: WorkplaneShape[]): { bytes: Uint8Array; p
     const bytes = rewrite3mf(carrier);
     if (bytes) return { bytes, preserved: true };
   }
-  return { bytes: to3mf(shapes.map((shape) => meshForShape(shape))), preserved: false };
+  return {
+    bytes: to3mf(shapes.map((shape) => ({ ...meshForShape(shape), color: shape.hole ? undefined : shape.color }))),
+    preserved: false,
+  };
 }

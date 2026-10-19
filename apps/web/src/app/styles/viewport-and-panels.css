@@ -1418,6 +1418,49 @@
   font-weight: 650;
 }
 
+.workspace-file-transition {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding-top: 6px;
+}
+
+.workspace-file-transition strong {
+  font-size: var(--text-sm);
+}
+
+.workspace-file-transition p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.workspace-file-transition-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.workspace-file-transition-cancel {
+  height: 34px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--tile-hover);
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.workspace-file-transition .make-default-button:disabled,
+.workspace-file-transition-cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .workspace-modal-card {
   position: relative;
   z-index: calc(var(--z-viewport-ui) + 1);

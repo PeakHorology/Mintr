@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld("peakcadFile", {
   saveAs: (payload) => ipcRenderer.invoke("peakcad:file-save-as", payload),
   writeNew: (payload) => ipcRenderer.invoke("peakcad:file-write-new", payload),
   resolveName: (defaultName) => ipcRenderer.invoke("peakcad:file-resolve-name", defaultName),
+  transitionLegacy: (extraPaths) => ipcRenderer.invoke("peakcad:file-transition-legacy", extraPaths),
+  pendingMoves: () => ipcRenderer.invoke("peakcad:file-pending-moves"),
   reveal: (filePath) => ipcRenderer.invoke("peakcad:file-reveal", filePath),
   onOpenPath: (listener) => {
     const wrapped = (_event, filePath) => listener(filePath);

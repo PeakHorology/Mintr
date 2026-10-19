@@ -14,7 +14,7 @@ Use this skill with PeakCAD open on this computer. The desktop app listens on lo
 2. Start the MCP server. Installed PeakCAD:
 
 ```bash
-PeakCAD.exe --mcp
+Mintr.exe --mcp
 ```
 
 From a checkout:

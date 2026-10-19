@@ -46,8 +46,16 @@ export function splitPlaneFrame(shape: WorkplaneShape, cut: SplitCut, bounds = s
   return { origin, normal, offset, width: width + 8, height: height + 8, limit };
 }
 
-/** Cut one solid into the two closed pieces on either side of the plane. */
-export function splitShapeWithPlane(shape: WorkplaneShape, cut: SplitCut): WorkplaneShape[] {
+export type SplitHalves = {
+  /** World-space triangle soup on the negative side of the cut normal. */
+  negative: number[];
+  /** World-space triangle soup on the positive side of the cut normal. */
+  positive: number[];
+  frame: ReturnType<typeof splitPlaneFrame>;
+};
+
+/** The two closed pieces, still in world space, before they become shapes. */
+export function splitWorldHalves(shape: WorkplaneShape, cut: SplitCut): SplitHalves | null {
   const mesh = meshForShape(shape);
   const bounds = boundsOfMesh(mesh);
   const frame = splitPlaneFrame(shape, cut, bounds);
@@ -58,12 +66,19 @@ export function splitShapeWithPlane(shape: WorkplaneShape, cut: SplitCut): Workp
   const positive = subtractHalf(source, origin, normal.clone().multiplyScalar(-1), span);
   const negative = subtractHalf(source, origin, normal, span);
   source.dispose();
+  if (negative.length < 9 || positive.length < 9) return null;
+  return { negative, positive, frame };
+}
+
+/** Cut one solid into the two closed pieces on either side of the plane. */
+export function splitShapeWithPlane(shape: WorkplaneShape, cut: SplitCut): WorkplaneShape[] {
+  const halves = splitWorldHalves(shape, cut);
+  if (!halves) return [];
   const [negativeName, positiveName] = SIDE_NAME[cut.axis];
-  const parts = [
-    shapeFromPositions(shape, negative, negativeName),
-    shapeFromPositions(shape, positive, positiveName),
+  return [
+    shapeFromSplitWorld(shape, halves.negative, negativeName),
+    shapeFromSplitWorld(shape, halves.positive, positiveName),
   ].filter((part): part is WorkplaneShape => part !== null);
-  return parts;
 }
 
 function axisCenter(bounds: Cuboid, axis: SplitAxis) {
@@ -165,7 +180,7 @@ function worldPositions(brush: Brush) {
   return values;
 }
 
-function shapeFromPositions(source: WorkplaneShape, world: number[], side: string): WorkplaneShape | null {
+export function shapeFromSplitWorld(source: WorkplaneShape, world: number[], side: string): WorkplaneShape | null {
   if (world.length < 9) return null;
   let minX = Infinity;
   let minY = Infinity;

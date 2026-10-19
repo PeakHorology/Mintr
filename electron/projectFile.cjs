@@ -2,16 +2,70 @@ const { dialog, ipcMain, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  EXTENSION,
+  CURRENT_EXTENSION,
   MAX_BYTES,
   defaultProjectDir,
+  ensureProjectExtension,
   findPeakcadArg,
   isWritablePeakcadPath,
   normalizePeakcadPath,
+  resolveProjectFile,
+  transitionProjectFilesToMintrDir,
   uniquePath,
 } = require("./peakcadPath.cjs");
 
 const allowedPaths = new Set();
+const PROJECT_FOLDER_FILE = "mintr-project-folder.json";
+const PROJECT_MOVES_FILE = "mintr-project-moves.json";
+
+function projectFolderFlag(app) {
+  return path.join(app.getPath("userData"), PROJECT_FOLDER_FILE);
+}
+
+function mintrProjectFolderChosen(app) {
+  try {
+    return JSON.parse(fs.readFileSync(projectFolderFlag(app), "utf8"))?.folder === "mintr";
+  } catch {
+    return false;
+  }
+}
+
+function chooseMintrProjectFolder(app) {
+  const target = projectFolderFlag(app);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ folder: "mintr" }), "utf8");
+  fs.renameSync(temporary, target);
+}
+
+function activeProjectDir(app) {
+  const documents = app.getPath("documents");
+  return path.join(documents, mintrProjectFolderChosen(app) ? "Mintr" : "PeakCAD");
+}
+
+function movesFile(app) {
+  return path.join(app.getPath("userData"), PROJECT_MOVES_FILE);
+}
+
+function readRememberedMoves(app) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(movesFile(app), "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item.from === "string" && typeof item.to === "string");
+  } catch {
+    return [];
+  }
+}
+
+function rememberMove(app, move) {
+  const moves = readRememberedMoves(app).filter((item) => item.from.toLowerCase() !== move.from.toLowerCase());
+  moves.push({ from: move.from, to: move.to });
+  const target = movesFile(app);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(moves), "utf8");
+  fs.renameSync(temporary, target);
+}
 
 function allowPath(filePath) {
   const resolved = normalizePeakcadPath(filePath);
@@ -25,7 +79,7 @@ function isAllowlisted(filePath) {
 
 function assertWritable(app, filePath) {
   const resolved = normalizePeakcadPath(filePath);
-  if (isWritablePeakcadPath(resolved, defaultProjectDir(app), allowedPaths)) {
+  if (isWritablePeakcadPath(resolved, activeProjectDir(app), allowedPaths)) {
     return resolved;
   }
   throw new Error("That file path is not available for save.");
@@ -33,11 +87,11 @@ function assertWritable(app, filePath) {
 
 function writeTextFile(filePath, text) {
   if (typeof text !== "string") {
-    throw new Error("PeakCAD file contents must be text.");
+    throw new Error("Project file contents must be text.");
   }
   const bytes = Buffer.byteLength(text, "utf8");
   if (bytes > MAX_BYTES) {
-    throw new Error("This PeakCAD file is too large to save.");
+    throw new Error("This project file is too large to save.");
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, text, "utf8");
@@ -48,22 +102,22 @@ function readTextFile(filePath) {
   const resolved = normalizePeakcadPath(filePath);
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) {
-    throw new Error("That PeakCAD path is not a file.");
+    throw new Error("That path is not a file.");
   }
   if (stat.size > MAX_BYTES) {
-    throw new Error("This PeakCAD file is too large to open.");
+    throw new Error("This project file is too large to open.");
   }
   return { path: resolved, text: fs.readFileSync(resolved, "utf8") };
 }
 
 function registerProjectFileIpc(app, getWindow) {
-  ipcMain.handle("peakcad:file-default-dir", async () => defaultProjectDir(app));
+  ipcMain.handle("peakcad:file-default-dir", async () => activeProjectDir(app));
 
   ipcMain.handle("peakcad:file-open", async () => {
     const window = getWindow();
     const result = await dialog.showOpenDialog(window ?? undefined, {
-      title: "Open PeakCAD project",
-      filters: [{ name: "PeakCAD project", extensions: ["peakcad"] }],
+      title: "Open Mintr project",
+      filters: [{ name: "Mintr project", extensions: ["mintr", "peakcad"] }],
       properties: ["openFile"],
     });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -81,35 +135,57 @@ function registerProjectFileIpc(app, getWindow) {
   ipcMain.handle("peakcad:file-save-as", async (_event, payload) => {
     const window = getWindow();
     const result = await dialog.showSaveDialog(window ?? undefined, {
-      title: "Save PeakCAD project",
-      defaultPath: path.join(defaultProjectDir(app), typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${EXTENSION}`),
-      filters: [{ name: "PeakCAD project", extensions: ["peakcad"] }],
+      title: "Save Mintr project",
+      defaultPath: path.join(activeProjectDir(app), typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${CURRENT_EXTENSION}`),
+      filters: [{ name: "Mintr project", extensions: ["mintr", "peakcad"] }],
     });
     if (result.canceled || !result.filePath) return null;
-    const target = allowPath(result.filePath.endsWith(EXTENSION) ? result.filePath : `${result.filePath}${EXTENSION}`);
+    const target = allowPath(ensureProjectExtension(result.filePath, CURRENT_EXTENSION));
     return { path: writeTextFile(target, payload?.text) };
   });
 
   ipcMain.handle("peakcad:file-resolve-name", async (_event, defaultName) => {
-    const dir = defaultProjectDir(app);
-    const name = typeof defaultName === "string" ? defaultName : `Untitled design${EXTENSION}`;
-    const target = path.join(dir, name.toLowerCase().endsWith(EXTENSION) ? name : `${name}${EXTENSION}`);
-    if (!fs.existsSync(target)) return null;
+    const target = resolveProjectFile(activeProjectDir(app), defaultName);
+    if (!target) return null;
     return readTextFile(target);
   });
 
   ipcMain.handle("peakcad:file-write-new", async (_event, payload) => {
-    const dir = defaultProjectDir(app);
+    const dir = activeProjectDir(app);
     fs.mkdirSync(dir, { recursive: true });
-    const name = typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${EXTENSION}`;
-    const target = uniquePath(path.join(dir, name.endsWith(EXTENSION) ? name : `${name}${EXTENSION}`));
+    const name = ensureProjectExtension(
+      typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${CURRENT_EXTENSION}`,
+      CURRENT_EXTENSION,
+    );
+    const target = uniquePath(path.join(dir, name));
     return { path: writeTextFile(target, payload?.text) };
+  });
+
+  ipcMain.handle("peakcad:file-pending-moves", async () => readRememberedMoves(app));
+
+  ipcMain.handle("peakcad:file-transition-legacy", async (_event, extraPaths) => {
+    const documents = app.getPath("documents");
+    const legacyRoot = path.join(documents, "PeakCAD");
+    const mintrRoot = path.join(documents, "Mintr");
+    const result = transitionProjectFilesToMintrDir(
+      legacyRoot,
+      mintrRoot,
+      Array.isArray(extraPaths) ? extraPaths : [],
+      (filePath) => isWritablePeakcadPath(filePath, legacyRoot, allowedPaths),
+    );
+    for (const move of result.renamed) {
+      allowedPaths.delete(move.from.toLowerCase());
+      allowPath(move.to);
+      rememberMove(app, move);
+    }
+    chooseMintrProjectFolder(app);
+    return result;
   });
 
   ipcMain.handle("peakcad:file-reveal", async (_event, filePath) => {
     const resolved = normalizePeakcadPath(filePath);
     if (!fs.existsSync(resolved)) {
-      throw new Error("That PeakCAD file is no longer on disk.");
+      throw new Error("That project file is no longer on disk.");
     }
     shell.showItemInFolder(resolved);
   });

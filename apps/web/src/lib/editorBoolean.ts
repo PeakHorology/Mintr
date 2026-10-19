@@ -63,7 +63,7 @@ import {
   shapeAabb,
 } from "@/lib/editorShapeMesh";
 import { MIN_SHAPE_DIMENSION, cleanModelDimension } from "@/lib/modelDimension";
-import { canSeparateThreadScrew, separateThreadScrewParts } from "@/lib/threadShape";
+import { canSeparateThreadScrew, separateThreadScrewParts, solidThreadShape } from "@/lib/threadShape";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, SketchPlane, SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 import type { GroupBuildResult, IntersectionAttempt, IntersectionBuildResult, ManifoldSolid, ShapeUpdatePatch } from "@/components/SketchForgeEditor";
 
@@ -1443,10 +1443,18 @@ export function shapeIsSketchHoleMesh(shape: WorkplaneShape) {
   );
 }
 
+/** A headed screw's display mesh is not a closed solid. Clipping it here stalls the UI. */
+function selectionHasHeadedScrew(selection: WorkplaneShape[]) {
+  return selection.some((shape) => shape.kind === "thread" && shape.threadSpec?.role === "screw");
+}
+
 export function booleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | null {
   const solids = selection.filter((shape) => !shape.hole && !shape.locked);
   const holes = selection.filter((shape) => shape.hole);
   if (solids.length === 0 || holes.length === 0) {
+    return null;
+  }
+  if (selectionHasHeadedScrew(selection)) {
     return null;
   }
 
@@ -1754,7 +1762,15 @@ export function shapeToManifoldSolid(runtime: ManifoldToplevel, shape: Workplane
 
   const mesh = meshDataToManifoldMesh(runtime, meshForShape(shape));
   try {
-    return runtime.Manifold.ofMesh(mesh);
+    const solid = runtime.Manifold.ofMesh(mesh);
+    if (!solid || solid.status() !== "NoError" || solid.numTri() < 1) {
+      disposeManifold(solid);
+      return null;
+    }
+    created.push(solid);
+    return solid;
+  } catch {
+    return null;
   } finally {
     disposeManifold(mesh);
   }
@@ -2276,7 +2292,7 @@ export function bvhIntersectionMeshShape(selection: WorkplaneShape[], operation:
 }
 
 export async function buildIntersectionShapeFromSelection(groupable: WorkplaneShape[]): Promise<IntersectionBuildResult> {
-  const booleanSelection = expandGroupsForBoolean(groupable);
+  const booleanSelection = expandGroupsForBoolean(groupable.map(solidThreadShape));
   const solids = booleanSelection.filter((shape) => !shape.hole && !shape.locked);
   const holes = booleanSelection.filter((shape) => shape.hole && !shape.locked);
   if (solids.length === 0 || holes.length === 0) {
@@ -2359,6 +2375,9 @@ export function importedBooleanMeshShape(selection: WorkplaneShape[]): Workplane
   const solids = selection.filter((shape) => !shape.hole && !shape.locked);
   const holes = selection.filter((shape) => shape.hole);
   if (solids.length === 0 || holes.length === 0 || !selection.some((shape) => Boolean(shape.importedMesh))) {
+    return null;
+  }
+  if (selectionHasHeadedScrew(selection)) {
     return null;
   }
 
@@ -3116,14 +3135,15 @@ export function hasNonZeroRotation(shape: WorkplaneShape) {
 }
 
 export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]): Promise<GroupBuildResult> {
-  const booleanSelection = expandGroupsForBoolean(groupable).map((shape) => (
+  const solidified = groupable.map(solidThreadShape);
+  const booleanSelection = expandGroupsForBoolean(solidified).map((shape) => (
     shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape
   ));
   const hasSolid = booleanSelection.some((shape) => !shape.hole);
   const hasHole = booleanSelection.some((shape) => shape.hole);
   const hasImportedMesh = booleanSelection.some((shape) => Boolean(shape.importedMesh));
   const boxBooleanSelection = hasSolid && hasHole
-    ? expandGroupsForBoxBoolean(groupable).map((shape) => (shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape))
+    ? expandGroupsForBoxBoolean(solidified).map((shape) => (shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape))
     : [];
   // Group fuses. Exact B-rep when every operand has one; otherwise a mesh union.
   const occtEligible = hasSolid && selectionSupportsOcctCsg(booleanSelection);
@@ -3158,7 +3178,7 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
       singleColorMeshGroup);
   // Keep the user's selected operands as the CSG tree, not flattened boolean
   // leaves, so Ungroup peels one Group at a time.
-  const nestedOperands = groupable.filter((shape) => !shape.locked);
+  const nestedOperands = solidified.filter((shape) => !shape.locked);
   const nestedGroup = group && nestedOperands.length >= 2
     ? {
         ...group,
@@ -3249,7 +3269,7 @@ export async function remeshCsgGroupFromWorldChildren(
   }
 
   // Mesh operands only. STEP export fuses the recipe; do not bake B-Rep into the edit session.
-  const bakedChildren = activeChildren;
+  const bakedChildren = activeChildren.map(solidThreadShape);
   let result = await evaluateCsgOpOnOperands(bakedChildren, op, { ...options, skipOcct: true });
   if (!result?.importedMesh) {
     const flat = await buildGroupedShapeFromSelection(bakedChildren);
@@ -3280,7 +3300,7 @@ export async function remeshCsgGroupFromWorldChildren(
     cadDisplayEdgesVersion: undefined,
     // Keep suppressed features in the tree even though they were not remeshed in.
     groupedShapes: worldChildren.map((child) =>
-      cloneAsGroupChild(child, g.x, g.z, g.elevation ?? 0, true),
+      cloneAsGroupChild(solidThreadShape(child), g.x, g.z, g.elevation ?? 0, true),
     ),
     csg: {
       op: g.csg?.op ?? op,

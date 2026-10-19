@@ -259,7 +259,7 @@ function cursorOnSketch(
   const raw = raySketchUV(session.plane, ray.origin, ray.direction);
   if (!raw) return null;
   const exclude = [...(excludePointIds ?? [])];
-  if (session.activePointId && (session.tool === "line" || session.tool === "smooth")) {
+  if (session.activePointId && session.tool === "line") {
     exclude.push(session.activePointId);
   }
   const onDot = screenNearestSketchPoint(host, session, clientX, clientY, raw, exclude);
@@ -269,13 +269,13 @@ function cursorOnSketch(
     : null;
   const snapped = snapSketchPoint(session.profile, {
     cursor: raw,
-    from: session.tool === "line" || session.tool === "smooth" ? anchor : null,
+    from: session.tool === "line" ? anchor : null,
     screenUnit: screenUnit(host, session.plane),
     gridStep: gridStepOf(session.snap),
     excludePointIds,
   });
   let point = { x: snapped.x, z: snapped.z };
-  if (shiftKey && (session.tool === "line" || session.tool === "smooth") && anchor && snapped.kind === "grid") {
+  if (shiftKey && session.tool === "line" && anchor && snapped.kind === "grid") {
     point = snapHeading(anchor, point, 15);
   }
   return point;
@@ -431,10 +431,20 @@ export function sketch3DPointerDown(
     syncSketchOnModel(host, session, pointer);
     return;
   }
-  if (session.tool === "line" || session.tool === "smooth" || session.tool === "measure") {
+  if (session.tool === "line" || session.tool === "measure") {
     const hit = nearestPoint(session.profile, uv, tolerance * 0.85);
     if (hit) session.onPointPress(hit);
     else session.onPlanePoint(uv);
+    return;
+  }
+  if (session.tool === "smooth") {
+    const hit = nearestPoint(session.profile, uv, tolerance * 0.85);
+    if (hit) session.onPointPress(hit);
+    else {
+      const segmentId = nearestSegment(session.profile, uv, tolerance);
+      if (segmentId) session.onSelectSegment(segmentId, uv);
+      else session.onPlanePoint(uv);
+    }
     return;
   }
   const pointId = nearestPoint(session.profile, uv, tolerance);
@@ -735,7 +745,7 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
     } else {
       pushWorld(preview, plane, [drag.origin, drag.current], curved);
     }
-  } else if (pointer.hover && (session.tool === "line" || session.tool === "smooth" || session.tool === "arc")) {
+  } else if (pointer.hover && (session.tool === "line" || session.tool === "arc")) {
     const anchor = session.activePointId ? byId.get(session.activePointId) : null;
     const from = anchor ?? pointer.arc[pointer.arc.length - 1];
     if (from) pushWorld(preview, plane, [from, pointer.hover], curved);
