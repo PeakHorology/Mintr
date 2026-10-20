@@ -40,6 +40,7 @@ export type SketchTool =
   | "chamfer"
   | "mirror"
   | "pattern"
+  | "circular-pattern"
   | "constrain-h"
   | "constrain-v"
   | "constrain-equal"
@@ -1465,7 +1466,7 @@ export function SketchWorkspace({
 
   return (
     <main className="sketch-workspace-stage">
-      <div className="sketch-mode-badge">Sketch view</div>
+      <div className="sketch-mode-badge">Flat sketch</div>
       {solveStatus !== "empty" ? (
         <div
           className={`sketch-solve-strip status-${solveStatus}${constraintConflicts.length ? " has-conflicts" : ""}`}
@@ -1473,14 +1474,14 @@ export function SketchWorkspace({
         >
           <span className="sketch-solve-status">
             {solveStatus === "fully-defined"
-              ? "Fully defined"
+              ? "Fully locked"
               : solveStatus === "over-constrained"
-                ? "Over-constrained"
+                ? "Too many rules"
                 : solveStatus === "unsolved"
-                  ? "Not solved"
-                  : "Under-defined"}
+                  ? "Needs a fix"
+                  : "Still movable"}
           </span>
-          <span className="sketch-solve-dof">DOF {solveDof}</span>
+          <span className="sketch-solve-dof">{solveDof} still free to move</span>
           {constraintConflicts.length > 0 ? (
             <span className="sketch-solve-conflicts">{constraintConflicts.length} conflict{constraintConflicts.length === 1 ? "" : "s"}</span>
           ) : null}
@@ -1762,8 +1763,8 @@ export function SketchWorkspace({
               const label = `${mark.degrees.toFixed(0)}°`;
               const pill = dimensionPillSize(label, screenUnit, 18);
               const labelDistance = size + 16 * screenUnit;
-              const labelX = mark.x - mark.bx * labelDistance;
-              const labelZ = mark.z - mark.bz * labelDistance;
+              const labelX = mark.x + mark.bx * labelDistance;
+              const labelZ = mark.z + mark.bz * labelDistance;
               const open = (event: ReactPointerEvent<SVGGElement>) => {
                 if (event.button !== 0 || !onEditCornerAngle) return;
                 event.preventDefault();

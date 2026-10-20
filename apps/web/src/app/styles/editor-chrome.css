@@ -31,42 +31,54 @@
   cursor: default;
 }
 
-.sketch-finish-toolbar {
-  position: absolute;
-  top: calc(var(--editor-viewport-toolbar-height) + 10px);
-  right: calc(var(--chrome-right) + 12px);
-  z-index: calc(var(--z-overlay) + 4);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 72px;
-  padding: 8px 6px 10px;
-  color: var(--ink-strong);
-  background: var(--glass-surface-strong);
-  border: 1px solid #d2c4a8;
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elevation-lg);
+.editor-top-bar-tools--modify {
+  align-items: center;
 }
 
-.sketch-finish-toolbar-header {
-  color: var(--peak-forest);
-  font-size: var(--text-2xs);
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-align: center;
-  text-transform: uppercase;
+.editor-top-bar-right .sketch-finish-toolbar {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  z-index: auto;
+  flex: 0 0 auto;
+  align-self: center;
+  width: auto;
+  max-width: 100%;
+  height: calc(var(--editor-toolbar-height) - 12px);
+  max-height: calc(var(--editor-toolbar-height) - 12px);
+  margin: 0;
+  transform: none;
 }
 
-.sketch-finish-toolbar-list {
-  display: flex;
-  flex-direction: column;
+.editor-top-bar-right .sketch-finish-toolbar .toolbar-section-tools {
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.sketch-finish-toolbar .sketch-finish-action {
   gap: 4px;
+  height: 26px;
+  padding: 0 8px;
 }
 
-.sketch-finish-toolbar .editor-tool-sidebar-action:not(.primary):not(.cancel) {
-  color: var(--peak-forest);
-  background: var(--wash);
-  border-color: var(--control-border-strong);
+.sketch-finish-toolbar .sketch-finish-action.primary,
+.sketch-finish-toolbar .sketch-finish-action.primary:hover:not(.disabled) {
+  color: var(--action-text);
+  background: var(--action-surface);
+  border-color: var(--action-surface-hover);
+  box-shadow: none;
+}
+
+.sketch-finish-toolbar .sketch-finish-action.cancel {
+  color: var(--danger-text);
+}
+
+.sketch-finish-toolbar .sketch-finish-action.disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .shell-openings {
@@ -2201,6 +2213,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  max-width: min(520px, calc(100% - 48px));
   padding: 7px 14px;
   color: var(--peak-charcoal);
   background: var(--glass-surface-strong);
@@ -2225,6 +2238,7 @@
   border-left: 1px solid var(--peak-border);
   font-size: var(--text-2xs);
   font-weight: 700;
+  line-height: 1.3;
 }
 
 @keyframes active-tool-chip-in {
@@ -2796,8 +2810,7 @@
 .sketch-palette {
   position: absolute;
   top: calc(var(--editor-viewport-toolbar-height) + 10px);
-  /* Clear of .sketch-finish-toolbar: 12px rail gap + 72px bar + 12px gap. */
-  right: calc(var(--chrome-right) + 96px);
+  right: calc(var(--chrome-right) + 12px);
   z-index: calc(var(--z-overlay) + 3);
   width: min(240px, calc(100% - var(--chrome-left) - var(--chrome-right) - 120px));
   max-height: calc(100% - 120px);
@@ -2964,18 +2977,25 @@
   border-color: var(--action-surface);
 }
 
+.sketch-3d-hint button.sketch-view-3d-button {
+  background: var(--glass-surface-strong);
+  color: var(--ink-strong);
+  border-color: #d2c4a8;
+}
+
 .sketch-utility-sidebar .editor-tool-sidebar-scroll,
 .editor-tool-sidebar-right .editor-tool-sidebar-scroll {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 6px 4px 8px;
-  scrollbar-width: none;
+  scrollbar-width: thin;
 }
 
 .sketch-utility-sidebar .editor-tool-sidebar-scroll::-webkit-scrollbar,
 .editor-tool-sidebar-right .editor-tool-sidebar-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+  display: block;
+  width: 6px;
+  height: 6px;
 }
 
 .sketch-utility-sidebar .editor-tool-sidebar-header,
@@ -3050,6 +3070,8 @@
   font-size: var(--text-2xs);
   font-weight: 700;
   letter-spacing: 0.01em;
+  line-height: 1.05;
+  white-space: normal;
 }
 
 .sketch-utility-sidebar .editor-tool-sidebar-item.active span,

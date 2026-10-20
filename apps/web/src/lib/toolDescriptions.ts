@@ -177,7 +177,7 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   { key: "star", label: "Star", category: "Sketch" },
   { key: "arc", label: "Arc", category: "Sketch" },
   { key: "offset", label: "Offset", category: "Sketch" },
-  { key: "stroke", label: "Stroke", category: "Sketch" },
+  { key: "stroke", label: "Lineweight", category: "Sketch" },
   { key: "select", label: "Select", category: "Sketch" },
   { key: "image", label: "Image", category: "Sketch" },
   { key: "refine", label: "Refine", category: "Sketch" },

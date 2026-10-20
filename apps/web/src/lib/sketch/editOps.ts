@@ -533,6 +533,90 @@ export function mirrorEntities(doc: SketchDoc, entityIds: string[], axisLineId: 
   return next;
 }
 
+type PatternSources = {
+  points: SketchPointEntity[];
+  curves: SketchEntity[];
+  circles: Extract<SketchEntity, { kind: "circle" }>[];
+  arcs: Extract<SketchEntity, { kind: "arc" }>[];
+};
+
+/** Lines, curves, circles, and arcs, plus the points those shapes need. */
+function patternSources(doc: SketchDoc, entityIds: string[]): PatternSources {
+  const selected = new Set(entityIds);
+  for (const entity of doc.entities) {
+    if (!selected.has(entity.id)) continue;
+    if (entity.kind === "line" || entity.kind === "bezier" || entity.kind === "smooth") {
+      selected.add(entity.startId);
+      selected.add(entity.endId);
+    } else if (entity.kind === "circle") {
+      selected.add(entity.centerId);
+    } else if (entity.kind === "arc") {
+      selected.add(entity.centerId);
+      selected.add(entity.startId);
+      selected.add(entity.endId);
+    }
+  }
+  return {
+    points: doc.entities.filter((entity): entity is SketchPointEntity => entity.kind === "point" && selected.has(entity.id)),
+    curves: doc.entities.filter((entity) => selected.has(entity.id) && (entity.kind === "line" || entity.kind === "bezier" || entity.kind === "smooth")),
+    circles: doc.entities.filter((entity): entity is Extract<SketchEntity, { kind: "circle" }> => entity.kind === "circle" && selected.has(entity.id)),
+    arcs: doc.entities.filter((entity): entity is Extract<SketchEntity, { kind: "arc" }> => entity.kind === "arc" && selected.has(entity.id)),
+  };
+}
+
+function appendTransformedCopy(
+  doc: SketchDoc,
+  sources: PatternSources,
+  mapPoint: (x: number, z: number) => SketchVec2,
+) {
+  const idMap = new Map<string, string>();
+  for (const point of sources.points) {
+    const id = newId("sketch-point");
+    idMap.set(point.id, id);
+    const at = mapPoint(point.x, point.z);
+    const copy: SketchPointEntity = { kind: "point", id, x: at.x, z: at.z, construction: point.construction, mode: point.mode };
+    if (point.handleIn) copy.handleIn = mapPoint(point.handleIn.x, point.handleIn.z);
+    if (point.handleOut) copy.handleOut = mapPoint(point.handleOut.x, point.handleOut.z);
+    doc.entities.push(copy);
+  }
+  for (const curve of sources.curves) {
+    if (curve.kind !== "line" && curve.kind !== "bezier" && curve.kind !== "smooth") continue;
+    const startId = idMap.get(curve.startId);
+    const endId = idMap.get(curve.endId);
+    if (!startId || !endId) continue;
+    doc.entities.push({ kind: curve.kind, id: newId("sketch-segment"), startId, endId, construction: curve.construction });
+  }
+  for (const circle of sources.circles) {
+    const centerId = idMap.get(circle.centerId);
+    if (!centerId) continue;
+    doc.entities.push({ kind: "circle", id: newId("sketch-circle"), centerId, radius: circle.radius, construction: circle.construction });
+  }
+  for (const arc of sources.arcs) {
+    const centerId = idMap.get(arc.centerId);
+    const startId = idMap.get(arc.startId);
+    const endId = idMap.get(arc.endId);
+    if (!centerId || !startId || !endId) continue;
+    doc.entities.push({
+      kind: "arc",
+      id: newId("sketch-arc"),
+      centerId,
+      startId,
+      endId,
+      ccw: arc.ccw,
+      construction: arc.construction,
+    });
+  }
+}
+
+/** Middle of the selected shapes. Circles and arcs count from their center. */
+export function patternSelectionCenter(doc: SketchDoc, entityIds: string[]): SketchVec2 | null {
+  const sources = patternSources(doc, entityIds);
+  if (!sources.points.length) return null;
+  const x = sources.points.reduce((sum, point) => sum + point.x, 0) / sources.points.length;
+  const z = sources.points.reduce((sum, point) => sum + point.z, 0) / sources.points.length;
+  return { x, z };
+}
+
 /** Rectangular pattern of selected geometry. */
 export function rectangularPattern(
   doc: SketchDoc,
@@ -543,49 +627,19 @@ export function rectangularPattern(
   spacingZ: number,
 ): SketchDoc {
   const next = cloneSketchDoc(doc);
-  const selected = new Set(entityIds);
-  for (const e of next.entities) {
-    if (!selected.has(e.id)) continue;
-    if (e.kind === "line" || e.kind === "bezier" || e.kind === "smooth") {
-      selected.add(e.startId);
-      selected.add(e.endId);
-    }
-  }
-  const basePoints = next.entities.filter((e) => e.kind === "point" && selected.has(e.id)) as SketchPointEntity[];
-  const baseCurves = next.entities.filter(
-    (e) => selected.has(e.id) && (e.kind === "line" || e.kind === "bezier" || e.kind === "smooth"),
-  );
-
+  const sources = patternSources(next, entityIds);
   for (let ix = 0; ix < countX; ix += 1) {
     for (let iz = 0; iz < countZ; iz += 1) {
       if (ix === 0 && iz === 0) continue;
       const ox = ix * spacingX;
       const oz = iz * spacingZ;
-      const idMap = new Map<string, string>();
-      for (const p of basePoints) {
-        const id = newId("sketch-point");
-        idMap.set(p.id, id);
-        next.entities.push({ kind: "point", id, x: p.x + ox, z: p.z + oz, construction: p.construction });
-      }
-      for (const c of baseCurves) {
-        if (c.kind !== "line" && c.kind !== "bezier" && c.kind !== "smooth") continue;
-        const startId = idMap.get(c.startId);
-        const endId = idMap.get(c.endId);
-        if (!startId || !endId) continue;
-        next.entities.push({
-          kind: c.kind,
-          id: newId("sketch-segment"),
-          startId,
-          endId,
-          construction: c.construction,
-        });
-      }
+      appendTransformedCopy(next, sources, (x, z) => ({ x: x + ox, z: z + oz }));
     }
   }
   return next;
 }
 
-/** Circular pattern around a center point. */
+/** Circular pattern around a center point. Copies lines, curves, circles, and arcs. */
 export function circularPatternSketch(
   doc: SketchDoc,
   entityIds: string[],
@@ -594,49 +648,16 @@ export function circularPatternSketch(
 ): SketchDoc {
   if (count < 2) return doc;
   const next = cloneSketchDoc(doc);
-  const selected = new Set(entityIds);
-  for (const e of next.entities) {
-    if (!selected.has(e.id)) continue;
-    if (e.kind === "line" || e.kind === "bezier" || e.kind === "smooth") {
-      selected.add(e.startId);
-      selected.add(e.endId);
-    }
-  }
-  const basePoints = next.entities.filter((e) => e.kind === "point" && selected.has(e.id)) as SketchPointEntity[];
-  const baseCurves = next.entities.filter(
-    (e) => selected.has(e.id) && (e.kind === "line" || e.kind === "bezier" || e.kind === "smooth"),
-  );
+  const sources = patternSources(next, entityIds);
   for (let i = 1; i < count; i += 1) {
     const angle = (i / count) * Math.PI * 2;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    const idMap = new Map<string, string>();
-    for (const p of basePoints) {
-      const dx = p.x - center.x;
-      const dz = p.z - center.z;
-      const id = newId("sketch-point");
-      idMap.set(p.id, id);
-      next.entities.push({
-        kind: "point",
-        id,
-        x: center.x + dx * cos - dz * sin,
-        z: center.z + dx * sin + dz * cos,
-        construction: p.construction,
-      });
-    }
-    for (const c of baseCurves) {
-      if (c.kind !== "line" && c.kind !== "bezier" && c.kind !== "smooth") continue;
-      const startId = idMap.get(c.startId);
-      const endId = idMap.get(c.endId);
-      if (!startId || !endId) continue;
-      next.entities.push({
-        kind: c.kind,
-        id: newId("sketch-segment"),
-        startId,
-        endId,
-        construction: c.construction,
-      });
-    }
+    appendTransformedCopy(next, sources, (x, z) => {
+      const dx = x - center.x;
+      const dz = z - center.z;
+      return { x: center.x + dx * cos - dz * sin, z: center.z + dx * sin + dz * cos };
+    });
   }
   return next;
 }

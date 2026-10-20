@@ -3,11 +3,11 @@
 import { CONSTRAINT_LABELS, type SketchDefinitionStatus, type SketchDoc } from "@/lib/sketch";
 
 const STATUS_LABEL: Record<SketchDefinitionStatus, string> = {
-  empty: "Empty",
-  "under-defined": "Under-defined",
-  "fully-defined": "Fully defined",
-  "over-constrained": "Over-constrained",
-  unsolved: "Not solved",
+  empty: "Empty sketch",
+  "under-defined": "Still movable",
+  "fully-defined": "Fully locked",
+  "over-constrained": "Too many rules",
+  unsolved: "Needs a fix",
 };
 
 export function SketchPalette({
@@ -15,26 +15,21 @@ export function SketchPalette({
   status,
   dof,
   conflicts,
-  focusMode,
   selectedProfileCount,
-  onToggleFocusMode,
   onPatchSettings,
   onRemoveConstraint,
-  onToggleConstructionMode,
   proEnabled,
 }: {
   doc: SketchDoc;
   status: SketchDefinitionStatus;
   dof: number;
   conflicts: string[];
-  focusMode: "3d" | "2d";
   selectedProfileCount: number;
   proEnabled: boolean;
-  onToggleFocusMode: () => void;
   onPatchSettings: (patch: Partial<SketchDoc["settings"]>) => void;
   onRemoveConstraint: (constraintId: string) => void;
-  onToggleConstructionMode: () => void;
 }) {
+  if (!proEnabled) return null;
   return (
     <aside className="sketch-palette" aria-label="Sketch palette">
       <header className="sketch-palette-header">
@@ -42,8 +37,8 @@ export function SketchPalette({
         {proEnabled ? <span className={`sketch-palette-status status-${status}`}>{STATUS_LABEL[status]}</span> : null}
       </header>
       <div className="sketch-palette-meta">
-        {proEnabled ? <span>DOF {dof}</span> : null}
-        <span>{selectedProfileCount} profile{selectedProfileCount === 1 ? "" : "s"} selected</span>
+        {proEnabled ? <span>{dof} still free to move</span> : null}
+        <span>{selectedProfileCount > 0 ? "Closed shape — Extrude makes the solid" : "Draw a closed shape, then Extrude"}</span>
       </div>
       {proEnabled && conflicts.length ? (
         <ul className="sketch-palette-conflicts">
@@ -77,27 +72,6 @@ export function SketchPalette({
             Dimensions
           </label>
         ) : null}
-        <label>
-          <input
-            type="checkbox"
-            checked={doc.settings.showConstruction}
-            onChange={(event) => onPatchSettings({ showConstruction: event.target.checked })}
-          />
-          Construction
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={doc.settings.constructionMode}
-            onChange={onToggleConstructionMode}
-          />
-          Draw as construction
-        </label>
-      </div>
-      <div className="sketch-palette-actions">
-        <button type="button" onClick={onToggleFocusMode}>
-          {focusMode === "2d" ? "Sketch in 3D view" : "Focus 2D"}
-        </button>
       </div>
       {proEnabled && doc.settings.showConstraints && doc.constraints.length > 0 ? (
         <section className="sketch-palette-list" aria-label="Constraints">

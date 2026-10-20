@@ -213,6 +213,7 @@ import {
 } from "@/lib/stepQuality";
 import { fingerprintsForEdgeIds, matchRecipeEdgeIds } from "@/lib/edgeTreatmentRematch";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
+import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
 
 import {
   axisAlignedRectFromClosedPath,
@@ -302,6 +303,8 @@ import {
   profileWithConstructionGuides,
   projectEdgesOntoSketch,
   rectangularPattern,
+  circularPatternSketch,
+  patternSelectionCenter,
   removeConstraint,
   resizeSegmentLength,
   resolveEditableSketchShape,
@@ -321,6 +324,7 @@ import {
   type SketchSnapResult,
 } from "@/lib/sketch";
 import { SketchPalette } from "@/components/workplane/SketchPalette";
+import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import {
   applyRepeatActionToDuplicate,
   computeShapeRepeatDelta,
@@ -342,7 +346,7 @@ import { EditorTopBar } from "@/components/workplane/EditorTopBar";
 import type { BlueprintExportFormat } from "@/lib/blueprintExport";
 import { EditorModeStrip, EditorViewportToolbar } from "@/components/workplane/EditorViewportToolbar";
 import { SketchCreateMenu } from "@/components/workplane/SketchCreateMenu";
-import { isPeakcadProSketchTool, SketchFinishToolbar, SketchToolSidebar, SketchUtilitySidebar } from "@/components/workplane/SketchToolSidebar";
+import { isPeakcadProSketchTool, SketchCoach, SketchFinishToolbar, SketchToolSidebar, SketchUtilitySidebar, sketchCoach, type SketchCoachKey } from "@/components/workplane/SketchToolSidebar";
 import { ShapeSidebar } from "@/components/workplane/ShapeSidebar";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import type { MeshSeatMode } from "@/lib/meshSeatOrientation";
@@ -350,7 +354,7 @@ import { lengthDisplayUnit } from "@/lib/measurementUnits";
 import { importedShapeFrom3mf } from "@/lib/threeMfImport";
 import { to3mfForShapes } from "@/lib/threeMfExport";
 import { importedShapeFromSvg, invalidSvgMeshReason } from "@/lib/svgImport";
-import { DEFAULT_SNAP_GRID, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import { DEFAULT_SNAP_GRID, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults } from "@/lib/workplaneSettings";
 import {
   SKETCHFORGE_MCP_POLL_MS,
   SKETCHFORGE_MCP_POLL_WAIT_MS,
@@ -386,46 +390,9 @@ export type ExportFormat = "stl" | "obj" | "3mf";
 export type ToolbarMode = "geometry" | "sketch";
 export type ValueDialogState =
   | { kind: "sketch-fillet" | "sketch-chamfer"; pointIds: string[] }
-  | { kind: "sketch-pattern"; entityIds: string[] }
+  | { kind: "sketch-pattern" | "sketch-circular-pattern"; entityIds: string[] }
   | { kind: "sketch-stroke" }
   | null;
-
-const SKETCH_TOOL_CHIP_LABELS: Partial<Record<SketchTool, string>> = {
-  line: "Line",
-  bezier: "Bezier",
-  smooth: "Smooth",
-  circle: "Circle",
-  ellipse: "Ellipse",
-  square: "Square",
-  rectangle: "Rectangle",
-  roundRect: "Rounded rect",
-  slot: "Slot",
-  triangle: "Triangle",
-  polygon: "Polygon",
-  star: "Star",
-  arc: "Arc",
-  offset: "Offset",
-  refine: "Refine points",
-  erase: "Erase",
-  measure: "Measure",
-  dimension: "Dimension",
-  trim: "Trim",
-  fillet: "Fillet corner",
-  chamfer: "Chamfer corner",
-  mirror: "Mirror",
-  pattern: "Pattern",
-  "constrain-h": "Horizontal constraint",
-  "constrain-v": "Vertical constraint",
-  "constrain-equal": "Equal constraint",
-  "constrain-parallel": "Parallel constraint",
-  "constrain-perp": "Perpendicular constraint",
-  "constrain-tangent": "Tangent constraint",
-  "constrain-symmetry": "Symmetry constraint",
-  "constrain-coincident": "Coincident constraint",
-  "constrain-midpoint": "Midpoint constraint",
-  "constrain-fix": "Fix constraint",
-  "constrain-concentric": "Concentric constraint",
-};
 
 const SKETCH_POINT_CHAIN_TOOLS = new Set<SketchTool>(["line", "bezier"]);
 const SKETCH_MULTI_POINT_TOOLS = new Set<SketchTool>([
@@ -449,6 +416,7 @@ const SKETCH_MULTI_SEGMENT_TOOLS = new Set<SketchTool>([
   "constrain-concentric",
   "mirror",
   "pattern",
+  "circular-pattern",
 ]);
 
 /** Click-to-pick for constraint and modify tools. One click replaces; a second click adds. */
@@ -1370,8 +1338,10 @@ export function SketchForgeEditor({
   const [toolbarMode, setToolbarMode] = useState<ToolbarMode>("geometry");
   const [shapeRailPinned, setShapeRailPinned] = useState(false);
   const [sketchActive, setSketchActive] = useState(false);
+  const beginBlankSketchRef = useRef<() => void>(() => {});
   const [sketchFacePickMode, setSketchFacePickMode] = useState(false);
   const [sketchTool, setSketchTool] = useState<SketchTool>("line");
+  const [sketchHoverTool, setSketchHoverTool] = useState<SketchCoachKey | null>(null);
   const sketchPickAtRef = useRef<{ x: number; z: number } | null>(null);
   const [sketchPolygonSides, setSketchPolygonSides] = useState(DEFAULT_SKETCH_POLYGON_SIDES);
   const [polygonSidesPrompt, setPolygonSidesPrompt] = useState<number | null>(null);
@@ -1888,6 +1858,10 @@ export function SketchForgeEditor({
   }, [linearPattern]);
 
   useEffect(() => {
+    if (!sketchActive) setSketchHoverTool(null);
+  }, [sketchActive]);
+
+  useEffect(() => {
     const refreshHotkeys = () => setHotkeys(loadHotkeyBindings());
     window.addEventListener(HOTKEYS_CHANGED_EVENT, refreshHotkeys);
     return () => window.removeEventListener(HOTKEYS_CHANGED_EVENT, refreshHotkeys);
@@ -1999,11 +1973,16 @@ export function SketchForgeEditor({
     return null;
   }, [alignMode, circularPattern, edgeModifier, hasSelection, linearPattern, mirrorMode, placementRuler]);
   const sketchToolChip = useMemo<{ label: string; hint: string } | null>(() => {
-    if (!sketchActive || sketchTool === "select") return null;
-    const label = SKETCH_TOOL_CHIP_LABELS[sketchTool];
-    if (!label) return null;
-    return { label, hint: "Esc to exit" };
-  }, [sketchActive, sketchTool]);
+    if (!sketchActive) return null;
+    const coach = sketchCoach(
+      sketchHoverTool ?? sketchTool,
+      closedProfilesFromLegacy(sketchProfile).length,
+      sketchDoc.settings.constructionMode,
+      Boolean(sketchActivePointId),
+      Boolean(sketchHoverTool),
+    );
+    return { label: coach.title, hint: coach.body };
+  }, [sketchActive, sketchActivePointId, sketchDoc.settings.constructionMode, sketchHoverTool, sketchProfile, sketchTool]);
   const sweepMarkIds = useMemo(() => {
     if (!sweepPrompt) return [];
     const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
@@ -2122,6 +2101,14 @@ export function SketchForgeEditor({
     if (mode === "sketch") {
       // Geometry viewport unmounts in sketch mode — stash the current frame first.
       captureProjectPreviewFrame();
+      const workplaneEmpty = shapesRef.current.every((shape) => shape.suppressed);
+      if (workplaneEmpty && !sketchActive) {
+        setSketchFacePickMode(false);
+        setTopPanel(null);
+        setMenuOpen(false);
+        beginBlankSketchRef.current();
+        return;
+      }
     }
     setSketchFacePickMode(false);
     setToolbarMode((current) => {
@@ -2133,7 +2120,7 @@ export function SketchForgeEditor({
     });
     setTopPanel(null);
     setMenuOpen(false);
-  }, [captureProjectPreviewFrame]);
+  }, [captureProjectPreviewFrame, sketchActive]);
 
   useEffect(() => {
     if (selectedShapes.length < 2) {
@@ -2325,6 +2312,38 @@ export function SketchForgeEditor({
     },
     [onProjectWorkspaceChange, projectId],
   );
+
+  const [sketchSettingsOpen, setSketchSettingsOpen] = useState(false);
+  const patchSketchGuideSettings = useCallback((patch: { showConstruction?: boolean; constructionMode?: boolean }) => {
+    setSketchDoc((doc) => ({ ...doc, settings: { ...doc.settings, ...patch } }));
+    if (patch.constructionMode !== undefined) {
+      setNotice(patch.constructionMode ? "Drawing guides — these lines will not become a solid" : "Drawing the part");
+    }
+  }, []);
+  const makeSketchWorkspaceDefault = useCallback(() => {
+    const normalizedWorkspace = normalizeWorkspaceSettings(workspaceSettings);
+    const normalizedSnap = normalizeSnapGrid(snapGrid, DEFAULT_SNAP_GRID);
+    const key = projectId ?? "local-workplane";
+    try {
+      window.localStorage.setItem(
+        `sketchForge.workspaceDefault.${key}`,
+        JSON.stringify({ workspace: normalizedWorkspace, snap: normalizedSnap }),
+      );
+    } catch {
+      // Project persistence below is still attempted if browser storage is unavailable.
+    }
+    saveGlobalWorkspaceDefaults(normalizedWorkspace, normalizedSnap);
+    updateProjectWorkspaceSettings({ workspace: normalizedWorkspace, snap: normalizedSnap });
+  }, [projectId, snapGrid, updateProjectWorkspaceSettings, workspaceSettings]);
+  useEffect(() => {
+    if (!(sketchActive && sketchFocusMode === "2d")) {
+      setSketchSettingsOpen(false);
+      return;
+    }
+    const open = () => setSketchSettingsOpen(true);
+    window.addEventListener("sketchforge:open-workspace-settings", open);
+    return () => window.removeEventListener("sketchforge:open-workspace-settings", open);
+  }, [sketchActive, sketchFocusMode]);
 
   const commitShapes = useCallback(
     (next: WorkplaneShape[], nextSelection: string | string[] | null = selectedIds, message?: string) => {
@@ -2749,6 +2768,7 @@ export function SketchForgeEditor({
           : "Sketch started: place the first point",
     );
   }, [captureProjectPreviewFrame]);
+  beginBlankSketchRef.current = () => beginSketch();
 
   const beginEditSelectedSketch = useCallback(() => {
     const selected = selectedShape;
@@ -2801,13 +2821,16 @@ export function SketchForgeEditor({
       rebuilt.sketchDoc = solved.doc;
       rebuilt.hole = shape.hole;
       rebuilt.color = shape.color;
-      const owner = findCsgBodyOwningLeaf(shapesRef.current, shape.id);
+      const exact = await withExactSketchExtrusionSolid(rebuilt, shape.height, {
+        cutIntoFace: Boolean(shape.hole && isFaceHostedSketch(shape.sketchPlane, shape.sketchProfile?.faceReferenceLoops)),
+      });
+      const owner = findCsgBodyOwningLeaf(shapesRef.current, exact.id);
       if (owner) {
         const sourceFingerprint = projectShapesFingerprint(shapesRef.current);
         const sourceProjectId = projectInfoRef.current.projectId;
         const remeshGen = remeshGenerationRef.current + 1;
         remeshGenerationRef.current = remeshGen;
-        const { body, remeshed } = await updateCsgLeafAndRemesh(owner, shape.id, rebuilt);
+        const { body, remeshed } = await updateCsgLeafAndRemesh(owner, shape.id, exact);
         if (remeshGen !== remeshGenerationRef.current) return;
         if (projectInfoRef.current.projectId !== sourceProjectId || projectShapesFingerprint(shapesRef.current) !== sourceFingerprint) {
           setNotice("The scene changed while remeshing; try the dimension edit again");
@@ -2827,8 +2850,8 @@ export function SketchForgeEditor({
         return;
       }
       commitShapes(
-        shapesRef.current.map((entry) => (entry.id === shape.id ? rebuilt : entry)),
-        rebuilt.id,
+        shapesRef.current.map((entry) => (entry.id === shape.id ? exact : entry)),
+        exact.id,
         `Sketch dimension → ${value.toFixed(2)} mm`,
       );
     })();
@@ -3101,9 +3124,10 @@ export function SketchForgeEditor({
       trim: "Trim: click the piece to remove. It cuts at the nearest intersection",
       fillet: "Fillet: click corners, then press Enter",
       chamfer: "Chamfer: click corners, then press Enter",
-      stroke: "Stroke: turn the outline into a wall",
+      stroke: "Lineweight: turn the outline into a wall",
       mirror: "Mirror: select geometry, then a straight axis line",
-      pattern: "Pattern: select geometry, then confirm spacing",
+      pattern: "Linear pattern: select geometry, then confirm spacing",
+      "circular-pattern": "Circular pattern: select a shape. Copies spin around its middle",
       "constrain-h": "Horizontal: select a line",
       "constrain-v": "Vertical: select a line",
       "constrain-equal": "Equal: select two lines",
@@ -3375,7 +3399,7 @@ export function SketchForgeEditor({
       return;
     }
 
-    if (sketchTool === "pattern" && (segmentIds.length || pointIds.length)) {
+    if ((sketchTool === "pattern" || sketchTool === "circular-pattern") && (segmentIds.length || pointIds.length)) {
       const entityIds = sketchSelection.kind === "multiple"
         ? [...sketchSelection.pointIds, ...sketchSelection.segmentIds]
         : sketchSelection.kind === "segment"
@@ -3383,7 +3407,7 @@ export function SketchForgeEditor({
           : sketchSelection.kind === "point"
             ? [sketchSelection.id]
             : [];
-      setValueDialog({ kind: "sketch-pattern", entityIds });
+      setValueDialog({ kind: sketchTool === "circular-pattern" ? "sketch-circular-pattern" : "sketch-pattern", entityIds });
     }
   }, [commitSketchProfile, sketchActive, sketchDoc, sketchProfile, sketchSelection, sketchTool, workspaceSettings.peakcadPro]);
 
@@ -3415,17 +3439,17 @@ export function SketchForgeEditor({
     const sideText = (values.side ?? "center").trim().toLowerCase();
     const side = sideText === "inside" || sideText === "outside" || sideText === "center" ? sideText : null;
     if (!side || !Number.isFinite(width) || width <= 0) {
-      setNotice("Stroke needs a width and a side: center, inside, or outside");
+      setNotice("Lineweight needs a width and a side: center, inside, or outside");
       setSketchTool("select");
       return;
     }
     const stroked = strokeProfile(sketchProfile, { width, side });
     if (!stroked) {
-      setNotice("Stroke needs an outline. A closed shape becomes a frame, an open line becomes a stripe");
+      setNotice("Lineweight needs an outline. A closed shape becomes a frame, an open line becomes a stripe");
       setSketchTool("select");
       return;
     }
-    commitSketchProfile(stroked, `Stroke ${width.toFixed(2)} mm ${side}`);
+    commitSketchProfile(stroked, `Lineweight ${width.toFixed(2)} mm ${side}`);
     setSketchTool("select");
     setSketchSelection(null);
   }, [commitSketchProfile, sketchProfile, valueDialog]);
@@ -3491,7 +3515,27 @@ export function SketchForgeEditor({
     const nextDoc = rectangularPattern(sketchDoc, entityIds, countX, countZ, spacingX, spacingZ);
     const solved = solveSketchDoc(nextDoc);
     setSketchDoc(solved.doc);
-    commitSketchProfile(sketchDocToProfile(solved.doc), "Rectangular pattern created", solved.doc);
+    commitSketchProfile(sketchDocToProfile(solved.doc), "Linear pattern created", solved.doc);
+    setSketchTool("select");
+    setSketchSelection(null);
+  }, [commitSketchProfile, sketchDoc, valueDialog]);
+
+  const confirmSketchCircularPatternDialog = useCallback((values: Record<string, string>) => {
+    if (!valueDialog || valueDialog.kind !== "sketch-circular-pattern") return;
+    const { entityIds } = valueDialog;
+    setValueDialog(null);
+    const count = Math.max(2, Number.parseInt(values.count ?? "6", 10) || 6);
+    const center = patternSelectionCenter(sketchDoc, entityIds);
+    if (!center) {
+      setNotice("Select a shape to copy");
+      setSketchTool("select");
+      setSketchSelection(null);
+      return;
+    }
+    const nextDoc = circularPatternSketch(sketchDoc, entityIds, center, count);
+    const solved = solveSketchDoc(nextDoc);
+    setSketchDoc(solved.doc);
+    commitSketchProfile(sketchDocToProfile(solved.doc), "Circular pattern created", solved.doc);
     setSketchTool("select");
     setSketchSelection(null);
   }, [commitSketchProfile, sketchDoc, valueDialog]);
@@ -4234,6 +4278,10 @@ export function SketchForgeEditor({
         }
       }
     }
+
+    extruded = await withExactSketchExtrusionSolid(extruded, height, {
+      cutIntoFace: Boolean(asHole && (faceSketch || host)),
+    });
 
     // Editing a sketch feature already under a CSG body: replace leaf + remesh (no re-nest).
     const existingOwner = existing ? findCsgBodyOwningLeaf(shapesRef.current, existing.id) : null;
@@ -9251,6 +9299,14 @@ export function SketchForgeEditor({
         rightTools={
           toolbarMode === "geometry" ? (
             <EditorViewportToolbar cluster="modify" {...geometryToolbarProps} />
+          ) : sketchActive ? (
+            <SketchFinishToolbar
+              onSketchExtrude={startSketchExtrude}
+              onSketchRevolve={startSketchRevolve}
+              onSketchSweep={startSketchSweep}
+              onSketchCancel={cancelSketch}
+              revolveDisabled={!isDefaultSketchPlane(sketchProfile.sketchPlane)}
+            />
           ) : null
         }
       />
@@ -9351,6 +9407,7 @@ export function SketchForgeEditor({
             sketchTool={sketchTool}
             proEnabled={workspaceSettings.peakcadPro}
             onSketchTool={setActiveSketchTool}
+            onHoverTool={setSketchHoverTool}
             onSketchImage={() => {
               if (sketchTool !== "select") {
                 setNotice("Choose Select before adding a sketch image");
@@ -9360,13 +9417,6 @@ export function SketchForgeEditor({
             }}
           />
           <div className="editor-sketch-area">
-            <SketchFinishToolbar
-              onSketchExtrude={startSketchExtrude}
-              onSketchRevolve={startSketchRevolve}
-              onSketchSweep={startSketchSweep}
-              onSketchCancel={cancelSketch}
-              revolveDisabled={!isDefaultSketchPlane(sketchProfile.sketchPlane)}
-            />
             {polygonSidesPrompt !== null ? (
               <>
                 <div className="sketch-tool-prompt-backdrop" aria-hidden onPointerDown={(event) => event.preventDefault()} />
@@ -9460,10 +9510,8 @@ export function SketchForgeEditor({
               status={sketchSolveStatus}
               dof={sketchDof}
               conflicts={sketchConflicts}
-              focusMode={sketchFocusMode}
               selectedProfileCount={sketchDoc.selectedProfileIds.length || closedProfilesFromLegacy(sketchProfile).length}
               proEnabled={workspaceSettings.peakcadPro}
-              onToggleFocusMode={() => setSketchFocusMode((mode) => (mode === "2d" ? "3d" : "2d"))}
               onPatchSettings={(patch) => {
                 setSketchDoc((doc) => ({ ...doc, settings: { ...doc.settings, ...patch } }));
               }}
@@ -9477,46 +9525,48 @@ export function SketchForgeEditor({
                 setSketchProfile(sketchDocToProfile(solved.doc));
                 setNotice("Constraint removed");
               }}
-              onToggleConstructionMode={() => {
-                setSketchDoc((doc) => ({
-                  ...doc,
-                  settings: { ...doc.settings, constructionMode: !doc.settings.constructionMode },
-                }));
-                setNotice(sketchDoc.settings.constructionMode ? "Solid geometry mode" : "Construction geometry mode");
-              }}
             />
             <div className="sketch-project-actions">
-              <button
-                type="button"
-                className="sketch-project-edges-button"
-                onClick={() => {
-                  const hostId = sketchDoc.plane.hostShapeId;
-                  const host = hostId ? shapes.find((shape) => shape.id === hostId) : null;
-                  if (!host) {
-                    setNotice("No host body to project edges from — sketch on a face first");
-                    return;
-                  }
-                  const edges = boxEdgesForProjection(
-                    host.id,
-                    { x: host.x, y: (host.elevation ?? 0) + host.height / 2, z: host.z },
-                    { width: host.width, height: host.height, depth: host.depth },
-                    sketchDoc.plane,
-                  );
-                  const projected = projectEdgesOntoSketch(sketchDoc, edges.slice(0, 4));
-                  const solved = solveSketchDoc(projected.doc);
-                  setSketchDoc(solved.doc);
-                  setSketchSolveStatus(solved.status);
-                  setSketchDof(solved.dof);
-                  setSketchConflicts(solved.conflicts);
-                  commitSketchProfile(sketchDocToProfile(solved.doc), `Projected ${projected.addedEntityIds.length} reference entities`, solved.doc);
-                }}
-              >
-                Project host edges
+              <button type="button" className="sketch-view-3d-button" onClick={() => setSketchFocusMode("3d")}>
+                View in 3D
               </button>
-              <ActiveToolChip
-                visible={Boolean(sketchToolChip)}
-                label={sketchToolChip?.label ?? ""}
-                hint={sketchToolChip?.hint}
+              {sketchDoc.plane.hostShapeId ? (
+                <button
+                  type="button"
+                  className="sketch-project-edges-button"
+                  onClick={() => {
+                    const hostId = sketchDoc.plane.hostShapeId;
+                    const host = hostId ? shapes.find((shape) => shape.id === hostId) : null;
+                    if (!host) {
+                      setNotice("Sketch on a face of a part first, then you can copy its edges");
+                      return;
+                    }
+                    const edges = boxEdgesForProjection(
+                      host.id,
+                      { x: host.x, y: (host.elevation ?? 0) + host.height / 2, z: host.z },
+                      { width: host.width, height: host.height, depth: host.depth },
+                      sketchDoc.plane,
+                    );
+                    const projected = projectEdgesOntoSketch(sketchDoc, edges.slice(0, 4));
+                    const solved = solveSketchDoc(projected.doc);
+                    setSketchDoc(solved.doc);
+                    setSketchSolveStatus(solved.status);
+                    setSketchDof(solved.dof);
+                    setSketchConflicts(solved.conflicts);
+                    commitSketchProfile(sketchDocToProfile(solved.doc), `Projected ${projected.addedEntityIds.length} reference entities`, solved.doc);
+                  }}
+                >
+                  Copy the part&apos;s edges
+                </button>
+              ) : null}
+            </div>
+            <div className="sketch-stage-footer">
+              <SketchCoach
+                tool={sketchHoverTool ?? sketchTool}
+                closedCount={closedProfilesFromLegacy(sketchProfile).length}
+                drawingGuides={sketchDoc.settings.constructionMode}
+                placingPoint={Boolean(sketchActivePointId)}
+                hovering={Boolean(sketchHoverTool)}
               />
             </div>
             <SketchWorkspace
@@ -9632,6 +9682,7 @@ export function SketchForgeEditor({
             sketchTool={sketchTool}
             polygonSides={sketchPolygonSides}
             onSketchTool={setActiveSketchTool}
+            onHoverTool={setSketchHoverTool}
             onPolygonSidesChange={setSketchPolygonSideCount}
           />
           </>
@@ -9642,6 +9693,7 @@ export function SketchForgeEditor({
               sketchTool={sketchTool}
               proEnabled={workspaceSettings.peakcadPro}
               onSketchTool={setActiveSketchTool}
+              onHoverTool={setSketchHoverTool}
               onSketchImage={() => {
                 setSketchFocusMode("2d");
                 setNotice("Choose Select on the flat sheet, then add the image");
@@ -9663,23 +9715,14 @@ export function SketchForgeEditor({
             ) : null}
             {sketchActive && sketchFocusMode === "3d" ? (
               <>
-                <SketchFinishToolbar
-                  onSketchExtrude={startSketchExtrude}
-                  onSketchRevolve={startSketchRevolve}
-                  onSketchSweep={startSketchSweep}
-                  onSketchCancel={cancelSketch}
-                  revolveDisabled={!isDefaultSketchPlane(sketchProfile.sketchPlane)}
-                />
                 {sweepDialog}
                 <SketchPalette
                   doc={sketchDoc}
                   status={sketchSolveStatus}
                   dof={sketchDof}
                   conflicts={sketchConflicts}
-                  focusMode={sketchFocusMode}
                   selectedProfileCount={sketchDoc.selectedProfileIds.length || closedProfilesFromLegacy(sketchProfile).length}
                   proEnabled={workspaceSettings.peakcadPro}
-                  onToggleFocusMode={() => setSketchFocusMode((mode) => (mode === "2d" ? "3d" : "2d"))}
                   onPatchSettings={(patch) => {
                     setSketchDoc((doc) => ({ ...doc, settings: { ...doc.settings, ...patch } }));
                   }}
@@ -9693,21 +9736,20 @@ export function SketchForgeEditor({
                     setSketchProfile(sketchDocToProfile(solved.doc));
                     setNotice("Constraint removed");
                   }}
-                  onToggleConstructionMode={() => {
-                    setSketchDoc((doc) => ({
-                      ...doc,
-                      settings: { ...doc.settings, constructionMode: !doc.settings.constructionMode },
-                    }));
-                    setNotice(sketchDoc.settings.constructionMode ? "Solid geometry mode" : "Construction geometry mode");
-                  }}
                 />
                 <div className="sketch-3d-hint">
                   <span>Orbit to check the sketch on the part. Draw when the face is toward you.</span>
+                  <button type="button" className="sketch-view-3d-button" onClick={() => setSketchFocusMode("2d")}>Flat sketch</button>
                   <button type="button" onClick={() => setSketchFrameRequest((count) => count + 1)}>Look at face</button>
                 </div>
               </>
             ) : null}
           <WorkplaneViewport
+          sketchGuides={sketchActive ? {
+            showGuides: sketchDoc.settings.showConstruction,
+            drawAsGuides: sketchDoc.settings.constructionMode,
+            onChange: patchSketchGuideSettings,
+          } : undefined}
           sketchFrameRequest={sketchFrameRequest}
           sketchOnModel={sketchActive && sketchFocusMode === "3d" ? {
             plane: sketchProfile.sketchPlane ?? sketchDoc.plane,
@@ -10034,6 +10076,7 @@ export function SketchForgeEditor({
               sketchTool={sketchTool}
               polygonSides={sketchPolygonSides}
               onSketchTool={setActiveSketchTool}
+              onHoverTool={setSketchHoverTool}
               onPolygonSidesChange={setSketchPolygonSideCount}
             />
           ) : null}
@@ -10227,13 +10270,13 @@ export function SketchForgeEditor({
       ) : null}
       {valueDialog?.kind === "sketch-stroke" ? (
         <InlineValueDialog
-          title="Stroke"
+          title="Lineweight"
           fields={[
             { key: "width", label: "Wall width", value: "2", unit: "mm", min: 0.1 },
             { key: "side", label: "Side", value: "center" },
           ]}
           note="center, inside, or outside. A closed outline becomes a frame. An open line becomes a stripe."
-          confirmLabel="Stroke"
+          confirmLabel="Lineweight"
           onCancel={() => {
             cancelValueDialog();
             setSketchTool("select");
@@ -10243,7 +10286,7 @@ export function SketchForgeEditor({
       ) : null}
       {valueDialog?.kind === "sketch-pattern" ? (
         <InlineValueDialog
-          title="Rectangular pattern"
+          title="Linear pattern"
           fields={[
             { key: "countX", label: "Count X", value: "3", inputMode: "numeric", min: 1, step: "1" },
             { key: "countZ", label: "Count Z", value: "1", inputMode: "numeric", min: 1, step: "1" },
@@ -10253,6 +10296,36 @@ export function SketchForgeEditor({
           confirmLabel="Create pattern"
           onCancel={cancelValueDialog}
           onConfirm={confirmSketchPatternDialog}
+        />
+      ) : null}
+      {sketchSettingsOpen && sketchActive && sketchFocusMode === "2d" ? (
+        <WorkspaceSettingsModal
+          workspace={workspaceSettings}
+          snap={snapGrid}
+          onWorkspaceChange={(workspace) => updateProjectWorkspaceSettings({ workspace, snap: snapGrid })}
+          onSnapChange={(snap) => updateProjectWorkspaceSettings({ workspace: workspaceSettings, snap })}
+          onMakeDefault={makeSketchWorkspaceDefault}
+          onClose={() => setSketchSettingsOpen(false)}
+          sketchGuides={{
+            showGuides: sketchDoc.settings.showConstruction,
+            drawAsGuides: sketchDoc.settings.constructionMode,
+            onChange: patchSketchGuideSettings,
+          }}
+        />
+      ) : null}
+      {valueDialog?.kind === "sketch-circular-pattern" ? (
+        <InlineValueDialog
+          title="Circular pattern"
+          fields={[
+            { key: "count", label: "Copies", value: "6", inputMode: "numeric", min: 2, step: "1" },
+          ]}
+          note="Copies spin around the middle of what you selected. Lines, curves, circles, and arcs all copy."
+          confirmLabel="Create pattern"
+          onCancel={() => {
+            cancelValueDialog();
+            setSketchTool("select");
+          }}
+          onConfirm={confirmSketchCircularPatternDialog}
         />
       ) : null}
       <div

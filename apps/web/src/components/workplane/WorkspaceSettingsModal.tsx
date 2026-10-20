@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Bot, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Ruler, ScrollText, X } from "lucide-react";
+import { BookOpen, Bot, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import {
@@ -33,7 +33,7 @@ import { brandForPreset, printersForBrand, PRINTER_BRANDS } from "@/lib/printerB
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
-type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
+type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "sketch" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
 type WorkspaceSettingsContext = "project" | "app";
 type LegalDocumentId = "license" | "notices" | "offer";
 
@@ -141,6 +141,7 @@ export function WorkspaceSettingsModal({
   context = "project",
   downloadFolder,
   onDownloadFolderChange,
+  sketchGuides,
 }: {
   workspace: WorkspaceSettings;
   snap: GridSize;
@@ -151,9 +152,14 @@ export function WorkspaceSettingsModal({
   context?: WorkspaceSettingsContext;
   downloadFolder?: string;
   onDownloadFolderChange?: (value: string) => void;
+  sketchGuides?: {
+    showGuides: boolean;
+    drawAsGuides: boolean;
+    onChange: (patch: { showConstruction?: boolean; constructionMode?: boolean }) => void;
+  };
 }) {
   const [defaultSaved, setDefaultSaved] = useState(false);
-  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>("appearance");
+  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(sketchGuides ? "sketch" : "appearance");
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => loadUiTheme());
   const [localDownloadFolder, setLocalDownloadFolder] = useState(() => downloadFolder ?? loadDownloadFolder());
   const [toolQuery, setToolQuery] = useState("");
@@ -371,6 +377,12 @@ export function WorkspaceSettingsModal({
               <Grid3X3 size={18} />
               <span>Workplane</span>
             </button>
+            {sketchGuides ? (
+              <button className={activeSection === "sketch" ? "active" : ""} aria-current={activeSection === "sketch" ? "page" : undefined} onClick={() => setActiveSection("sketch")}>
+                <Pencil size={18} />
+                <span>Sketch</span>
+              </button>
+            ) : null}
             <button className={activeSection === "files" ? "active" : ""} aria-current={activeSection === "files" ? "page" : undefined} onClick={() => setActiveSection("files")}>
               <FolderDown size={18} />
               <span>Files</span>
@@ -692,6 +704,27 @@ export function WorkspaceSettingsModal({
                     tip={SETTING_TIPS.showOverhangStripes}
                     checked={workspace.showOverhangStripes}
                     onChange={(showOverhangStripes) => patchWorkspace({ showOverhangStripes })}
+                  />
+                </>
+              ) : null}
+
+              {activeSection === "sketch" && sketchGuides ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Sketch</strong>
+                    <span>Guide lines stay out of the solid. Use them for layout, then turn them off to draw the part.</span>
+                  </div>
+                  <WorkspaceToggle
+                    label="Show guides"
+                    tip="Show or hide guide lines already in this sketch."
+                    checked={sketchGuides.showGuides}
+                    onChange={(showGuides) => sketchGuides.onChange({ showConstruction: showGuides })}
+                  />
+                  <WorkspaceToggle
+                    label="Draw as guides"
+                    tip="New lines are guides. They will not become a solid until you turn this off."
+                    checked={sketchGuides.drawAsGuides}
+                    onChange={(drawAsGuides) => sketchGuides.onChange({ constructionMode: drawAsGuides })}
                   />
                 </>
               ) : null}

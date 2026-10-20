@@ -318,6 +318,11 @@ export type WorkplaneViewportProps = {
   /** Lets the editor dismiss the degree box (and bake) before toolbar actions. */
   rotationEditApiRef?: MutableRefObject<{ dismiss: () => void } | null>;
   onDropToWorkplane?: () => void;
+  sketchGuides?: {
+    showGuides: boolean;
+    drawAsGuides: boolean;
+    onChange: (patch: { showConstruction?: boolean; constructionMode?: boolean }) => void;
+  };
   faceSnapActive?: boolean;
   /** The side already chosen. Stays highlighted until the shapes move. */
   faceSnapSource?: { shapeId: string; point: [number, number, number]; normal: [number, number, number] } | null;
@@ -2415,6 +2420,7 @@ export function WorkplaneViewport({
   viewNudgeAxesRef,
   rotationEditApiRef,
   onDropToWorkplane,
+  sketchGuides,
   faceSnapActive = false,
   faceSnapSource = null,
   onFaceSnapPick,
@@ -6151,6 +6157,7 @@ export function WorkplaneViewport({
           onSnapChange={setSnap}
           onMakeDefault={makeWorkspaceDefault}
           onClose={() => setSettingsOpen(false)}
+          sketchGuides={sketchGuides}
         />
       ) : null}
       </div>
