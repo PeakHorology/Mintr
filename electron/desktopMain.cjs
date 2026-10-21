@@ -113,9 +113,13 @@ function installFileMenu() {
         submenu: [
           { label: "New design", accelerator: "CmdOrCtrl+N", click: () => sendMenu("new") },
           { label: "Open…", accelerator: "CmdOrCtrl+O", click: () => sendMenu("open") },
+          { label: "Import…", click: () => sendMenu("import") },
           { type: "separator" },
           { label: "Save", accelerator: "CmdOrCtrl+S", click: () => sendMenu("save") },
           { label: "Save As…", accelerator: "CmdOrCtrl+Shift+S", click: () => sendMenu("save-as") },
+          { label: "Export…", accelerator: "CmdOrCtrl+E", click: () => sendMenu("export") },
+          { type: "separator" },
+          { label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => sendMenu("settings") },
           { type: "separator" },
           { role: "quit" },
         ],

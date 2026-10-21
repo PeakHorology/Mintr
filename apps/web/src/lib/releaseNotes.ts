@@ -12,6 +12,16 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.0.9",
+    items: [
+      "Selected and hovered shapes keep a bronze outline, including spheres, fillets, and chamfers.",
+      "Those outlines are two pixels thick so they stay easy to see.",
+      "A fillet or chamfer wipes across the part when you apply it.",
+      "A new solid comes in at drop height and lands on the workplane.",
+      "Overhang marks fade in as soon as you turn them on.",
+    ],
+  },
+  {
     version: "1.0.8",
     items: [
       "Double-click a sketch point to switch it between a corner and a curve.",

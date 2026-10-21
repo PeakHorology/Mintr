@@ -10,6 +10,7 @@ import {
 } from "@/lib/stepFacetedExport";
 import { buildNativeShapeSolid, NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
 import { importedMeshHasExactSource, resolveImportedBrepStep } from "@/lib/importedBrepSource";
+import { containsHelicalThreadSolid } from "@/lib/threadShape";
 
 export { aabbsOverlap, shapeYawDegrees, worldAabb, type Aabb };
 
@@ -414,6 +415,10 @@ async function buildLeafSolidExact(
   options?: BuildOptions,
 ): Promise<BuildOutcome> {
   // Modifier results (fillet/chamfer) win over the underlying primitive kind.
+  // A recut display mesh keeps the threads that fillet skipped.
+  if (shape.cadBrep && containsHelicalThreadSolid(shape) && options?.allowFaceted !== false && shape.importedMesh) {
+    return buildFacetedSolid(brep, shape);
+  }
   if (shape.cadBrep) {
     return buildCadBrepBody(brep, shape);
   }
@@ -447,6 +452,9 @@ async function buildCsgBodySolid(
   // Prefer a baked exact payload on the group itself.
   if (shape.importedMesh?.brepStep) {
     return buildImportedBody(brep, shape);
+  }
+  if (shape.cadBrep && containsHelicalThreadSolid(shape) && allowFaceted && shape.importedMesh) {
+    return buildFacetedSolid(brep, shape);
   }
   if (shape.cadBrep) {
     return buildCadBrepBody(brep, shape);

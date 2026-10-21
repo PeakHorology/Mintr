@@ -30,6 +30,7 @@ import { PeakTooltip, usePeakContextHelp, usePeakTooltip } from "@/components/wo
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import type { CadModifierKind } from "@/lib/cadModifierTypes";
 import { formatHotkeyBinding, HOTKEYS_CHANGED_EVENT, loadHotkeyBindings, type HotkeyActionId, type HotkeyBindings } from "@/lib/hotkeys";
+import { useChromePresence } from "@/lib/chromePresence";
 
 type ToolbarMode = "geometry" | "sketch";
 
@@ -192,6 +193,7 @@ function OverflowToolRow({
   const tools = sections.flatMap((section) => section.tools);
   const [visibleLabels, setVisibleLabels] = useState<string[]>(() => tools.map((tool) => tool.label));
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuPresence = useChromePresence(menuOpen);
 
   const toolFingerprint = tools.map((tool) => `${tool.label}:${tool.active ? "1" : "0"}`).join("|");
 
@@ -274,8 +276,13 @@ function OverflowToolRow({
           >
             <Ellipsis size={22} strokeWidth={2.2} aria-hidden="true" />
           </button>
-          {menuOpen ? (
-            <div ref={menuRef} className="toolbar-overflow-menu" role="menu" aria-label="More tools">
+          {menuPresence.mounted ? (
+            <div
+              ref={menuRef}
+              className={`toolbar-overflow-menu${menuPresence.closing ? " is-closing" : ""}`}
+              role="menu"
+              aria-label="More tools"
+            >
               {sections.map((section) => {
                 const hidden = section.tools.filter((tool) => !visible.has(tool.label));
                 if (hidden.length === 0) return null;
@@ -302,6 +309,7 @@ function OverflowToolRow({
                         >
                           <Icon className={tool.iconClassName} />
                           <span>{tool.label}</span>
+                          {tool.shortcut ? <span className="menu-shortcut">{tool.shortcut}</span> : <span />}
                         </button>
                       );
                     })}

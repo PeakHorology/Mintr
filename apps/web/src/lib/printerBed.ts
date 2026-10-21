@@ -1,4 +1,7 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
+import { DEFAULT_NOZZLE_MM, normalizeNozzleMm } from "@/lib/thinWalls";
+
+export type PrinterKind = "filament" | "resin";
 
 export type PrinterPreset = {
   id: string;
@@ -8,12 +11,21 @@ export type PrinterPreset = {
   width: number;
   depth: number;
   height: number;
+  kind: PrinterKind;
 };
 
 const CUSTOM_BRAND = "Custom";
 
-function printer(id: string, brand: string, label: string, width: number, depth: number, height: number): PrinterPreset {
-  return { id, brand, label, width, depth, height };
+function printer(
+  id: string,
+  brand: string,
+  label: string,
+  width: number,
+  depth: number,
+  height: number,
+  kind: PrinterKind = "filament",
+): PrinterPreset {
+  return { id, brand, label, width, depth, height, kind };
 }
 
 /**
@@ -31,6 +43,10 @@ export const PRINTER_PRESETS: readonly PrinterPreset[] = [
   printer("anycubic-kobra-s1", "Anycubic", "Kobra S1", 250, 250, 250),
   printer("anycubic-kobra-max", "Anycubic", "Kobra Max", 400, 400, 450),
   printer("anycubic-vyper", "Anycubic", "Vyper", 245, 245, 260),
+  printer("anycubic-photon-mono-4", "Anycubic", "Photon Mono 4", 153, 87, 165, "resin"),
+  printer("anycubic-photon-mono-m5s", "Anycubic", "Photon Mono M5s", 218, 123, 200, "resin"),
+  printer("anycubic-photon-mono-m7", "Anycubic", "Photon Mono M7", 223, 126, 230, "resin"),
+  printer("anycubic-photon-mono-m7-pro", "Anycubic", "Photon Mono M7 Pro", 223, 126, 230, "resin"),
 
   printer("artillery-genius-pro", "Artillery", "Genius Pro", 220, 220, 250),
   printer("artillery-sidewinder-x2", "Artillery", "Sidewinder X2", 300, 300, 400),
@@ -60,6 +76,8 @@ export const PRINTER_PRESETS: readonly PrinterPreset[] = [
   printer("creality-k1c", "Creality", "K1C", 220, 220, 250),
   printer("creality-k1-max", "Creality", "K1 Max", 300, 300, 300),
   printer("creality-k2-plus", "Creality", "K2 Plus", 350, 350, 350),
+  printer("creality-halot-mage", "Creality", "Halot Mage", 211, 131, 230, "resin"),
+  printer("creality-halot-mage-s", "Creality", "Halot Mage S", 222, 122, 230, "resin"),
 
   printer("elegoo-centauri-carbon", "Elegoo", "Centauri Carbon", 256, 256, 256),
   printer("elegoo-neptune-3-pro", "Elegoo", "Neptune 3 Pro", 225, 225, 280),
@@ -67,6 +85,9 @@ export const PRINTER_PRESETS: readonly PrinterPreset[] = [
   printer("elegoo-neptune-4-pro", "Elegoo", "Neptune 4 Pro", 225, 225, 265),
   printer("elegoo-neptune-4-plus", "Elegoo", "Neptune 4 Plus", 320, 320, 385),
   printer("elegoo-neptune-4-max", "Elegoo", "Neptune 4 Max", 420, 420, 480),
+  printer("elegoo-mars-4", "Elegoo", "Mars 4", 153, 78, 175, "resin"),
+  printer("elegoo-saturn-3", "Elegoo", "Saturn 3", 219, 123, 250, "resin"),
+  printer("elegoo-saturn-4-ultra", "Elegoo", "Saturn 4 Ultra", 219, 123, 220, "resin"),
 
   printer("flashforge-adventurer-5m", "FlashForge", "Adventurer 5M", 220, 220, 220),
   printer("flashforge-adventurer-5m-pro", "FlashForge", "Adventurer 5M Pro", 220, 220, 220),
@@ -75,6 +96,16 @@ export const PRINTER_PRESETS: readonly PrinterPreset[] = [
   printer("flsun-super-racer", "FLSun", "Super Racer", 260, 260, 330),
   printer("flsun-v400", "FLSun", "V400", 300, 300, 410),
 
+  printer("formlabs-form-2", "Formlabs", "Form 2", 145, 145, 175, "resin"),
+  printer("formlabs-form-3", "Formlabs", "Form 3 / 3+", 145, 145, 185, "resin"),
+  printer("formlabs-form-3b", "Formlabs", "Form 3B / 3B+", 145, 145, 185, "resin"),
+  printer("formlabs-form-3l", "Formlabs", "Form 3L", 335, 200, 300, "resin"),
+  printer("formlabs-form-3bl", "Formlabs", "Form 3BL", 335, 200, 300, "resin"),
+  printer("formlabs-form-4", "Formlabs", "Form 4", 200, 125, 210, "resin"),
+  printer("formlabs-form-4b", "Formlabs", "Form 4B", 200, 125, 210, "resin"),
+  printer("formlabs-form-4l", "Formlabs", "Form 4L", 354, 196, 350, "resin"),
+  printer("formlabs-form-4bl", "Formlabs", "Form 4BL", 354, 196, 350, "resin"),
+
   printer("prusa-core-one", "Prusa", "Core One", 250, 220, 270),
   printer("prusa-core-one-l", "Prusa", "Core One L", 300, 300, 330),
   printer("prusa-mini", "Prusa", "MINI+", 180, 180, 180),
@@ -82,6 +113,7 @@ export const PRINTER_PRESETS: readonly PrinterPreset[] = [
   printer("prusa-mk4", "Prusa", "MK4", 250, 210, 220),
   printer("prusa-mk4s", "Prusa", "MK4S", 250, 210, 220),
   printer("prusa-xl", "Prusa", "XL", 360, 360, 360),
+  printer("prusa-sl1s", "Prusa", "SL1S SPEED", 127, 80, 150, "resin"),
 
   printer("qidi-q1-pro", "Qidi", "Q1 Pro", 245, 245, 240),
   printer("qidi-plus-4", "Qidi", "Plus 4", 305, 305, 280),
@@ -116,13 +148,43 @@ export function brandForPreset(id: string | null | undefined) {
   return PRINTER_PRESETS.find((entry) => entry.id === id)?.brand ?? CUSTOM_BRAND;
 }
 
-export function printersForBrand(brand: string) {
-  const matches = PRINTER_PRESETS.filter((entry) => entry.brand === brand);
+export function kindForPreset(id: string | null | undefined): PrinterKind {
+  return PRINTER_PRESETS.find((entry) => entry.id === id)?.kind ?? "filament";
+}
+
+export function brandsForKind(kind: PrinterKind) {
+  const brands: string[] = [];
+  for (const entry of PRINTER_PRESETS) {
+    if (entry.id === "custom" || entry.kind !== kind) continue;
+    if (!brands.includes(entry.brand)) brands.push(entry.brand);
+  }
+  brands.push(CUSTOM_BRAND);
+  return brands;
+}
+
+export function printersForBrand(brand: string, kind?: PrinterKind) {
+  const matches = PRINTER_PRESETS.filter((entry) => {
+    if (entry.brand !== brand) return false;
+    if (!kind || entry.id === "custom") return true;
+    return entry.kind === kind;
+  });
   return matches.length > 0 ? matches : PRINTER_PRESETS.filter((entry) => entry.brand === CUSTOM_BRAND);
 }
 
 export const DEFAULT_PRINTER_ID = "ender-3";
+export const DEFAULT_RESIN_PRINTER_ID = "formlabs-form-4";
 export const DEFAULT_OVERHANG_ANGLE = 45;
+export { DEFAULT_NOZZLE_MM };
+
+export function defaultPrinterForKind(kind: PrinterKind, brand?: string) {
+  if (brand) {
+    const match = printersForBrand(brand, kind).find((entry) => entry.id !== "custom");
+    if (match) return match;
+  }
+  const fallbackId = kind === "resin" ? DEFAULT_RESIN_PRINTER_ID : DEFAULT_PRINTER_ID;
+  return PRINTER_PRESETS.find((entry) => entry.id === fallbackId)
+    ?? PRINTER_PRESETS.find((entry) => entry.kind === kind && entry.id !== "custom")!;
+}
 
 export type PrinterBed = {
   preset: string;
@@ -130,10 +192,15 @@ export type PrinterBed = {
   width: number;
   depth: number;
   height: number;
+  kind: PrinterKind;
   /** Degrees from vertical. A face that leans out more than this needs support. */
   overhangAngle: number;
+  nozzleMm: number;
   showBed: boolean;
   showStripes: boolean;
+  showThinWalls: boolean;
+  showSmallHoles: boolean;
+  showTrappedResin: boolean;
 };
 
 export type BedFit = {
@@ -155,26 +222,39 @@ function clamp(value: number, min: number, max: number) {
 
 export function normalizePrinterBed(input: {
   printerPreset?: unknown;
+  printerKind?: unknown;
   printerWidth?: unknown;
   printerDepth?: unknown;
   printerHeight?: unknown;
   overhangAngle?: unknown;
+  nozzleMm?: unknown;
   showPrinterBed?: unknown;
   showOverhangStripes?: unknown;
+  showThinWalls?: unknown;
+  showSmallHoles?: unknown;
+  showTrappedResin?: unknown;
 } | null | undefined): PrinterBed {
   const requested = typeof input?.printerPreset === "string" ? input.printerPreset : DEFAULT_PRINTER_ID;
   const preset = PRINTER_PRESETS.find((entry) => entry.id === requested)
     ?? PRINTER_PRESETS.find((entry) => entry.id === DEFAULT_PRINTER_ID)!;
   const custom = preset.id === "custom";
+  const kind: PrinterKind = custom
+    ? (input?.printerKind === "resin" ? "resin" : "filament")
+    : preset.kind;
   return {
     preset: preset.id,
     label: preset.brand === "Custom" ? preset.label : `${preset.brand} ${preset.label}`,
     width: custom ? clamp(finiteNumber(input?.printerWidth, preset.width), MIN_BED, MAX_BED) : preset.width,
     depth: custom ? clamp(finiteNumber(input?.printerDepth, preset.depth), MIN_BED, MAX_BED) : preset.depth,
     height: custom ? clamp(finiteNumber(input?.printerHeight, preset.height), 20, MAX_BED) : preset.height,
+    kind,
     overhangAngle: clamp(finiteNumber(input?.overhangAngle, DEFAULT_OVERHANG_ANGLE), 0, 85),
+    nozzleMm: normalizeNozzleMm(input?.nozzleMm, DEFAULT_NOZZLE_MM),
     showBed: typeof input?.showPrinterBed === "boolean" ? input.showPrinterBed : true,
     showStripes: typeof input?.showOverhangStripes === "boolean" ? input.showOverhangStripes : false,
+    showThinWalls: typeof input?.showThinWalls === "boolean" ? input.showThinWalls : false,
+    showSmallHoles: typeof input?.showSmallHoles === "boolean" ? input.showSmallHoles : false,
+    showTrappedResin: typeof input?.showTrappedResin === "boolean" ? input.showTrappedResin : false,
   };
 }
 
@@ -195,6 +275,59 @@ export function triangleNeedsSupport(
   const midY = (y0 + y1 + y2) / 3;
   if (midY <= 0.6 && normalY < -0.85) return false;
   return true;
+}
+
+function quantizedVertexKey(x: number, y: number, z: number, quantize: number) {
+  return `${Math.round(x * quantize)},${Math.round(y * quantize)},${Math.round(z * quantize)}`;
+}
+
+/**
+ * Edges used by only one overhang triangle — the outline of the warning region.
+ * `positions` is a triangle soup (9 floats per triangle). Pass matching
+ * `normals` and `lift` to push the outline out with the fill, using the
+ * owning triangle's normal so interior edges still cancel.
+ */
+export function appendOverhangBoundaryLines(
+  positions: number[],
+  lines: number[],
+  quantize = 1000,
+  normals?: number[],
+  lift = 0,
+) {
+  const edges = new Map<string, { count: number; ax: number; ay: number; az: number; bx: number; by: number; bz: number; nx: number; ny: number; nz: number }>();
+  for (let offset = 0; offset + 8 < positions.length; offset += 9) {
+    const nx = normals?.[offset] ?? 0;
+    const ny = normals?.[offset + 1] ?? 0;
+    const nz = normals?.[offset + 2] ?? 0;
+    const corners = [offset, offset + 3, offset + 6];
+    for (let index = 0; index < 3; index += 1) {
+      const a = corners[index];
+      const b = corners[(index + 1) % 3];
+      const ax = positions[a];
+      const ay = positions[a + 1];
+      const az = positions[a + 2];
+      const bx = positions[b];
+      const by = positions[b + 1];
+      const bz = positions[b + 2];
+      const ka = quantizedVertexKey(ax, ay, az, quantize);
+      const kb = quantizedVertexKey(bx, by, bz, quantize);
+      if (ka === kb) continue;
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const existing = edges.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        edges.set(key, { count: 1, ax, ay, az, bx, by, bz, nx, ny, nz });
+      }
+    }
+  }
+  for (const edge of edges.values()) {
+    if (edge.count !== 1) continue;
+    const dx = edge.nx * lift;
+    const dy = edge.ny * lift;
+    const dz = edge.nz * lift;
+    lines.push(edge.ax + dx, edge.ay + dy, edge.az + dz, edge.bx + dx, edge.by + dy, edge.bz + dz);
+  }
 }
 
 type Corner = [number, number, number];

@@ -246,6 +246,7 @@ import {
   shapeWithEdgeTreatmentRecord,
   tangentCadEdgeChain,
   bakedEdgeTreatmentPreview,
+  recutIgnoredThreadsAfterEdgeTreatment,
   shapeFromCadMesh,
 } from "@/lib/editorEdgeTreatments";
 import { cloneAsGroupChild, groupedShape } from "@/lib/editorGroup";
@@ -367,7 +368,7 @@ import {
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
 import { takePreloadedCadModifierWorker } from "@/lib/cadModifierPreload";
 import { nearestMetricThreadForDiameter, type MetricThreadDesignation } from "@/lib/metricThreads";
-import { canSeparateThreadScrew, createThreadShape, DEFAULT_THREAD_DESIGNATION, separateThreadScrewParts } from "@/lib/threadShape";
+import { canSeparateThreadScrew, containsHelicalThreadSolid, createThreadShape, DEFAULT_THREAD_DESIGNATION, separateThreadScrewParts } from "@/lib/threadShape";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchImage, SketchPlane, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 export { importedShapeFromStl, importedShapeFromSvg, importedShapeFrom3mf };
@@ -384,6 +385,7 @@ export type ProjectSaveHandler = (snapshot: ProjectSaveSnapshot) => Promise<bool
 export type EditorLeaveGuard = {
   confirmLeave: () => Promise<boolean>;
   save: (mode: "save" | "save-as") => Promise<boolean>;
+  command?: (action: "import" | "export") => void;
 };
 export type TopPanel = "import" | "export" | "tips" | null;
 export type ExportFormat = "stl" | "obj" | "3mf";
@@ -493,6 +495,16 @@ export type EdgeModifierSession = {
   /** Recipe being edited so prepare can reselect the original edges. */
   editRecipe?: NonNullable<WorkplaneShape["edgeTreatments"]>[number];
 };
+
+function edgeWipePointsFromSession(session: EdgeModifierSession): { polylines: number[][] } | undefined {
+  const selected = new Set(session.selectedEdgeIds);
+  const polylines: number[][] = [];
+  for (const edge of session.edges) {
+    if (!selected.has(edge.id) || edge.points.length < 6) continue;
+    polylines.push(edge.points);
+  }
+  return polylines.length > 0 ? { polylines } : undefined;
+}
 
 export type EdgeModifierComponentPreview = {
   owner: number;
@@ -2313,7 +2325,8 @@ export function SketchForgeEditor({
     [onProjectWorkspaceChange, projectId],
   );
 
-  const [sketchSettingsOpen, setSketchSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cadApplyFlash, setCadApplyFlash] = useState<{ nonce: number; ids: string[]; edgeWipe?: { polylines: number[][] } } | null>(null);
   const patchSketchGuideSettings = useCallback((patch: { showConstruction?: boolean; constructionMode?: boolean }) => {
     setSketchDoc((doc) => ({ ...doc, settings: { ...doc.settings, ...patch } }));
     if (patch.constructionMode !== undefined) {
@@ -2336,14 +2349,10 @@ export function SketchForgeEditor({
     updateProjectWorkspaceSettings({ workspace: normalizedWorkspace, snap: normalizedSnap });
   }, [projectId, snapGrid, updateProjectWorkspaceSettings, workspaceSettings]);
   useEffect(() => {
-    if (!(sketchActive && sketchFocusMode === "2d")) {
-      setSketchSettingsOpen(false);
-      return;
-    }
-    const open = () => setSketchSettingsOpen(true);
+    const open = () => setSettingsOpen(true);
     window.addEventListener("sketchforge:open-workspace-settings", open);
     return () => window.removeEventListener("sketchforge:open-workspace-settings", open);
-  }, [sketchActive, sketchFocusMode]);
+  }, []);
 
   const commitShapes = useCallback(
     (next: WorkplaneShape[], nextSelection: string | string[] | null = selectedIds, message?: string) => {
@@ -2368,6 +2377,17 @@ export function SketchForgeEditor({
     },
     [appendHistorySnapshot, historyBrowse, selectedIds, syncProjectShapes],
   );
+
+  const flashCadApply = useCallback((ids: string | string[] | null | undefined, edgeWipe?: { polylines: number[][] }) => {
+    const list = !ids ? [] : Array.isArray(ids) ? ids : [ids];
+    if (list.length === 0) return;
+    const polylines = edgeWipe?.polylines.filter((line) => line.length >= 6) ?? [];
+    setCadApplyFlash({
+      nonce: Date.now(),
+      ids: list,
+      ...(polylines.length > 0 ? { edgeWipe: { polylines } } : {}),
+    });
+  }, []);
 
   const persistBakedImportedBrepSteps = useCallback(() => {
     if (historyWriteSuspendedRef.current > 0) return;
@@ -2495,7 +2515,14 @@ export function SketchForgeEditor({
 
   useEffect(() => {
     if (!onRegisterLeaveGuard) return;
-    onRegisterLeaveGuard({ confirmLeave: confirmLeaveProject, save: saveProjectExplicitly });
+    onRegisterLeaveGuard({
+      confirmLeave: confirmLeaveProject,
+      save: saveProjectExplicitly,
+      command: (action) => {
+        if (action === "import") setTopPanel("import");
+        if (action === "export") setTopPanel("export");
+      },
+    });
     return () => onRegisterLeaveGuard(null);
   }, [confirmLeaveProject, onRegisterLeaveGuard, saveProjectExplicitly]);
 
@@ -5845,7 +5872,10 @@ export function SketchForgeEditor({
     cadModifierEditBeforeRef.current = editEntry ? workingShape : null;
     const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(workingShape);
     const hasAppliedEdgeTreatment = Boolean(workingShape.importedMesh && workingShape.edgeTreatments?.length);
-    const sourceParts = edgeTreatmentSourceParts(workingShape, { keepResultMesh: hasAppliedEdgeTreatment });
+    const sourceParts = edgeTreatmentSourceParts(workingShape, {
+      keepResultMesh: hasAppliedEdgeTreatment,
+      ignoreThreads: true,
+    });
     const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((shape) => {
       const frame = shape.cadBrepFrame;
       const preserveNeedsRetessellation = preservesEdgeTreatmentSize(shape) && Boolean(frame) && (
@@ -5893,7 +5923,9 @@ export function SketchForgeEditor({
     });
     setNotice(editRecipe
       ? `Editing existing ${kind}`
-      : `Preparing ${kind} edges in the CAD worker`);
+      : containsHelicalThreadSolid(workingShape)
+        ? `Preparing ${kind} without thread geometry`
+        : `Preparing ${kind} edges in the CAD worker`);
     const parts: CadModifierMeshPart[] = partInputs.map((part) => {
       if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
       if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
@@ -5985,7 +6017,10 @@ export function SketchForgeEditor({
     }
     const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(shape);
     const hasAppliedEdgeTreatment = Boolean(shape.importedMesh && shape.edgeTreatments?.length);
-    const sourceParts = edgeTreatmentSourceParts(shape, { keepResultMesh: hasAppliedEdgeTreatment });
+    const sourceParts = edgeTreatmentSourceParts(shape, {
+      keepResultMesh: hasAppliedEdgeTreatment,
+      ignoreThreads: true,
+    });
     const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((partShape) => {
       const frame = partShape.cadBrepFrame;
       const preserveNeedsRetessellation = preservesEdgeTreatmentSize(partShape) && Boolean(frame) && (
@@ -6112,13 +6147,14 @@ export function SketchForgeEditor({
     };
     const createdAt = Date.now();
     const groupedModifiedShape = groupedShapeWithComponentEdgeTreatment(shape, preview, sourceParts, session, feature, createdAt);
-    const modifiedShape = groupedModifiedShape ?? shapeWithEdgeTreatmentRecord(
+    const recordedShape = groupedModifiedShape ?? shapeWithEdgeTreatmentRecord(
       bakedEdgeTreatmentPreview(preview, shape),
       shape,
       feature,
       preserveEdgeSize,
       createdAt,
     );
+    const modifiedShape = await recutIgnoredThreadsAfterEdgeTreatment(recordedShape, shape);
     const currentTarget = shapesRef.current.find((candidate) => candidate.id === shape.id);
     if (
       projectInfoRef.current.projectId !== sourceProjectId ||
@@ -6132,12 +6168,13 @@ export function SketchForgeEditor({
       modifiedShape.id,
       `${kind === "fillet" ? "Filleted" : "Chamfered"} ${selectedEdgeIds.length} edge${selectedEdgeIds.length === 1 ? "" : "s"} by MCP`,
     );
+    flashCadApply(modifiedShape.id, edgeWipePointsFromSession(session));
     return {
       object: mcpShapeSummary(modifiedShape),
       selectedEdgeIds,
       selectableEdgeIds: selectableIds,
     };
-  }, [commitShapes, invalidateCadModifierSession, prepareCadModifierForMcp, postCadModifierRequestAsync]);
+  }, [commitShapes, flashCadApply, invalidateCadModifierSession, prepareCadModifierForMcp, postCadModifierRequestAsync]);
 
   reapplyEdgeTreatmentsRef.current = async (shape: WorkplaneShape) => {
     const recipes = [...(shape.edgeTreatments ?? [])];
@@ -6293,21 +6330,23 @@ export function SketchForgeEditor({
         feature,
         createdAt,
       );
-      const modifiedShape: WorkplaneShape = groupedModifiedShape ?? shapeWithEdgeTreatmentRecord(
+      const recordedShape = groupedModifiedShape ?? shapeWithEdgeTreatmentRecord(
         bakedEdgeTreatmentPreview(previewShape, recordBefore),
         recordBefore,
         feature,
         session.preserveEdgeSize,
         createdAt,
       );
+      const modifiedShape: WorkplaneShape = await recutIgnoredThreadsAfterEdgeTreatment(recordedShape, recordBefore);
       commitShapes(
         shapes.map((shape) => shape.id === base.id ? modifiedShape : shape),
         base.id,
         `${label} ${session.selectedEdgeIds.length} edge${session.selectedEdgeIds.length === 1 ? "" : "s"}`,
       );
+      flashCadApply(base.id, edgeWipePointsFromSession(session));
       invalidateCadModifierSession();
     })();
-  }, [commitShapes, edgeModifier, invalidateCadModifierSession, postCadModifierRequestAsync, shapes]);
+  }, [commitShapes, edgeModifier, flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync, shapes]);
 
   useEffect(() => {
     if (!edgeModifier) return;
@@ -6367,8 +6406,9 @@ export function SketchForgeEditor({
       base.id,
       "Hollowed",
     );
+    flashCadApply(base.id);
     invalidateCadModifierSession();
-  }, [commitShapes, invalidateCadModifierSession, shellSession?.preview, shapes]);
+  }, [commitShapes, flashCadApply, invalidateCadModifierSession, shellSession?.preview, shapes]);
 
   const applySplit = useCallback(() => {
     if (!splitSession) return;
@@ -6822,11 +6862,12 @@ export function SketchForgeEditor({
     }
     const groupedIds = new Set(groupable.map((shape) => shape.id));
     commitShapes([...shapesRef.current.filter((shape) => !groupedIds.has(shape.id)), linkedGroup], linkedGroup.id, `Grouped ${groupable.length} shapes`);
+    flashCadApply(linkedGroup.id);
     setActiveFeatureId(null);
     if (result.qualityNotice) {
       setNotice(result.qualityNotice);
     }
-  }, [commitShapes, selectedIds, selectedShapes]);
+  }, [commitShapes, flashCadApply, selectedIds, selectedShapes]);
 
   const assembleSelected = useCallback(() => {
     const groupable = selectedShapes.filter((shape) => !isConstructionShape(shape));
@@ -6890,8 +6931,9 @@ export function SketchForgeEditor({
       return;
     }
     commitShapes([...remainingShapes, intersection], intersection.id, `Intersected ${groupable.length} shapes`);
+    flashCadApply(intersection.id);
     setActiveFeatureId(null);
-  }, [commitShapes, selectedShapes]);
+  }, [commitShapes, flashCadApply, selectedShapes]);
 
   const ungroupSelected = useCallback(() => {
     const groups = selectedShapes.filter((shape) => shape.groupedShapes?.length);
@@ -8733,6 +8775,24 @@ export function SketchForgeEditor({
         return;
       }
 
+      if (!isTypingTarget(event.target) && (event.ctrlKey || event.metaKey) && !event.altKey) {
+        if (event.key === ",") {
+          event.preventDefault();
+          setSettingsOpen(true);
+          return;
+        }
+        if (event.key === "s" || event.key === "S") {
+          event.preventDefault();
+          void saveProjectExplicitly(event.shiftKey ? "save-as" : "save");
+          return;
+        }
+        if ((event.key === "e" || event.key === "E") && !event.shiftKey) {
+          event.preventDefault();
+          setTopPanel("export");
+          return;
+        }
+      }
+
       const action = matchHotkeyAction(
         event,
         hotkeys,
@@ -9135,6 +9195,7 @@ export function SketchForgeEditor({
     extrudeHeightPrompt,
     raiseSelected,
     redo,
+    saveProjectExplicitly,
     shapes,
     sketchActive,
     sketchFacePickMode,
@@ -9266,6 +9327,13 @@ export function SketchForgeEditor({
       <EditorTopBar
         projectName={projectName}
         onProjectNameChange={onProjectNameChange}
+        chromeBusy={
+          exactStepSaveProgress
+            ? { progress: exactStepSaveProgress.done / Math.max(1, exactStepSaveProgress.total) }
+            : (shellSession?.busy || edgeModifier?.busy || stepExporting || Boolean(modelLoadingName))
+              ? {}
+              : null
+        }
         onHome={onHome ? () => void handleHome() : undefined}
         onImport={() => {
           setTopPanel("import");
@@ -9745,6 +9813,9 @@ export function SketchForgeEditor({
               </>
             ) : null}
           <WorkplaneViewport
+          settingsOpen={settingsOpen && !(toolbarMode === "sketch" && sketchActive && sketchFocusMode === "2d")}
+          onSettingsClose={() => setSettingsOpen(false)}
+          applyFlash={cadApplyFlash}
           sketchGuides={sketchActive ? {
             showGuides: sketchDoc.settings.showConstruction,
             drawAsGuides: sketchDoc.settings.constructionMode,
@@ -10298,14 +10369,14 @@ export function SketchForgeEditor({
           onConfirm={confirmSketchPatternDialog}
         />
       ) : null}
-      {sketchSettingsOpen && sketchActive && sketchFocusMode === "2d" ? (
+      {settingsOpen && sketchActive && sketchFocusMode === "2d" && toolbarMode === "sketch" ? (
         <WorkspaceSettingsModal
           workspace={workspaceSettings}
           snap={snapGrid}
           onWorkspaceChange={(workspace) => updateProjectWorkspaceSettings({ workspace, snap: snapGrid })}
           onSnapChange={(snap) => updateProjectWorkspaceSettings({ workspace: workspaceSettings, snap })}
           onMakeDefault={makeSketchWorkspaceDefault}
-          onClose={() => setSketchSettingsOpen(false)}
+          onClose={() => setSettingsOpen(false)}
           sketchGuides={{
             showGuides: sketchDoc.settings.showConstruction,
             drawAsGuides: sketchDoc.settings.constructionMode,

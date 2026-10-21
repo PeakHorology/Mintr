@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bedFitForShapes, brandForPreset, normalizePrinterBed, PRINTER_BRANDS, PRINTER_PRESETS, printersForBrand, triangleNeedsSupport, type PrinterBed } from "@/lib/printerBed";
+import { appendOverhangBoundaryLines, bedFitForShapes, brandForPreset, brandsForKind, defaultPrinterForKind, kindForPreset, normalizePrinterBed, PRINTER_BRANDS, PRINTER_PRESETS, printersForBrand, triangleNeedsSupport, type PrinterBed } from "@/lib/printerBed";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 const bed: PrinterBed = {
@@ -8,9 +8,14 @@ const bed: PrinterBed = {
   width: 100,
   depth: 100,
   height: 50,
+  kind: "filament",
   overhangAngle: 45,
+  nozzleMm: 0.4,
   showBed: true,
   showStripes: true,
+  showThinWalls: false,
+  showSmallHoles: false,
+  showTrappedResin: false,
 };
 
 function shape(overrides: Partial<WorkplaneShape> = {}): WorkplaneShape {
@@ -65,6 +70,16 @@ describe("printer bed", () => {
       showStripes: false,
     });
     expect(normalizePrinterBed({ printerPreset: "ender-3" }).showStripes).toBe(false);
+    expect(normalizePrinterBed({ printerPreset: "ender-3" }).kind).toBe("filament");
+    expect(normalizePrinterBed({ printerPreset: "formlabs-form-4" })).toMatchObject({
+      preset: "formlabs-form-4",
+      label: "Formlabs Form 4",
+      kind: "resin",
+      width: 200,
+      depth: 125,
+      height: 210,
+    });
+    expect(normalizePrinterBed({ printerPreset: "custom", printerKind: "resin" }).kind).toBe("resin");
   });
 
   it("groups machines by brand and keeps each plate inside the published size", () => {
@@ -83,6 +98,22 @@ describe("printer bed", () => {
     }
   });
 
+  it("keeps filament and resin machines on separate brand lists", () => {
+    expect(kindForPreset("formlabs-form-4")).toBe("resin");
+    expect(kindForPreset("ender-3")).toBe("filament");
+    expect(brandsForKind("resin")).toContain("Formlabs");
+    expect(brandsForKind("resin")).toContain("Anycubic");
+    expect(brandsForKind("resin")).not.toContain("Bambu Lab");
+    expect(brandsForKind("filament")).not.toContain("Formlabs");
+    expect(printersForBrand("Anycubic", "filament").some((preset) => preset.label.startsWith("Photon"))).toBe(false);
+    expect(printersForBrand("Anycubic", "resin").map((preset) => preset.label)).toContain("Photon Mono 4");
+    expect(printersForBrand("Anycubic", "resin").some((preset) => preset.label.startsWith("Kobra"))).toBe(false);
+    expect(printersForBrand("Formlabs", "resin").map((preset) => preset.id)).toContain("formlabs-form-4");
+    expect(defaultPrinterForKind("resin").id).toBe("formlabs-form-4");
+    expect(defaultPrinterForKind("resin", "Anycubic").id).toBe("anycubic-photon-mono-4");
+    expect(defaultPrinterForKind("filament", "Formlabs").id).toBe("ender-3");
+  });
+
   it("warns when a part sticks past the bed or above the printer", () => {
     expect(bedFitForShapes([shape()], bed).message).toBeNull();
     expect(bedFitForShapes([shape({ x: 60 })], bed).message).toBe("Past the 100 × 100 mm bed.");
@@ -94,5 +125,25 @@ describe("printer bed", () => {
     expect(triangleNeedsSupport(10, 10, 12, -0.9, 45)).toBe(true);
     expect(triangleNeedsSupport(10, 10, 12, -0.4, 45)).toBe(false);
     expect(triangleNeedsSupport(0.1, 0.1, 0.2, -1, 45)).toBe(false);
+    expect(triangleNeedsSupport(10, 10, 12, -0.6, 30)).toBe(true);
+    expect(triangleNeedsSupport(10, 10, 12, -0.6, 45)).toBe(false);
+  });
+
+  it("draws only the outline of an overhang patch, not the interior edges", () => {
+    const positions = [
+      0, 0, 0, 1, 0, 0, 0, 0, 1,
+      1, 0, 0, 1, 0, 1, 0, 0, 1,
+    ];
+    const lines: number[] = [];
+    appendOverhangBoundaryLines(positions, lines);
+    expect(lines.length / 6).toBe(4);
+    const lifted: number[] = [];
+    const normals = [
+      0, 1, 0, 0, 1, 0, 0, 1, 0,
+      0, 1, 0, 0, 1, 0, 0, 1, 0,
+    ];
+    appendOverhangBoundaryLines(positions, lifted, 1000, normals, 0.5);
+    expect(lifted.length / 6).toBe(4);
+    expect(lifted[1]).toBe(0.5);
   });
 });

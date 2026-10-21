@@ -25,7 +25,7 @@ export type PeakcadFileApi = {
   onSaveBeforeClose?: (handler: () => Promise<boolean>) => () => void;
 };
 
-export type PeakcadMenuAction = "new" | "open" | "save" | "save-as";
+export type PeakcadMenuAction = "new" | "open" | "save" | "save-as" | "import" | "export" | "settings";
 
 export type ProjectFileRename = { from: string; to: string };
 

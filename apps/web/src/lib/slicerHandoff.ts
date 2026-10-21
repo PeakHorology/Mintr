@@ -1,4 +1,4 @@
-export type SlicerId = "orca" | "bambu" | "prusa" | "superslicer" | "cura";
+export type SlicerId = "orca" | "bambu" | "prusa" | "superslicer" | "cura" | "formlabs";
 export type SlicerFormat = "3mf" | "stl";
 
 export type DetectedSlicer = {
@@ -30,6 +30,7 @@ const BY_EXE: Record<string, { id: SlicerId; name: string; format: SlicerFormat 
   "superslicer.exe": { id: "superslicer", name: "SuperSlicer", format: "3mf" },
   "ultimaker-cura.exe": { id: "cura", name: "UltiMaker Cura", format: "stl" },
   "cura.exe": { id: "cura", name: "UltiMaker Cura", format: "stl" },
+  "preform.exe": { id: "formlabs", name: "Formlabs PreForm", format: "stl" },
 };
 
 export const SLICER_PREFERENCE_KEY = "peakcad:slicer";
@@ -75,10 +76,10 @@ export function preferenceFromPath(filePath: string): SlicerPreference | null {
 
 function captionFor(choice: { launch: boolean; format: SlicerFormat; name: string }) {
   if (!choice.launch) {
-    return "No slicer is selected. This downloads a 3MF. Pick a slicer below, or set one in Settings → Files.";
+    return "No slicer is selected. This downloads a 3MF. Pick a slicer below, or set one in Settings → Printing.";
   }
   if (choice.format === "stl") {
-    return `Writes an STL and opens it in ${choice.name}, so Cura treats it as geometry rather than one of its own projects.`;
+    return `Writes an STL and opens it in ${choice.name}, so it is treated as geometry rather than a slicer project.`;
   }
   return `Writes a 3MF and opens it in ${choice.name}. The printer, filament, and supports stay in the slicer.`;
 }

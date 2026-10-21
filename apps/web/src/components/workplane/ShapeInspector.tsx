@@ -7,6 +7,7 @@ import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
+import { useChromePresence } from "@/lib/chromePresence";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import {
@@ -1149,6 +1150,7 @@ export function SnapGridControl({
   onSnapOpenChange: Dispatch<SetStateAction<boolean>>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuPresence = useChromePresence(snapOpen);
 
   useEffect(() => {
     if (!snapOpen) return;
@@ -1183,8 +1185,8 @@ export function SnapGridControl({
         {snap}
         <ChevronDown size={12} fill="currentColor" />
       </button>
-      {snapOpen ? (
-        <div className="snap-menu" role="listbox" aria-label="Snap grid size">
+      {menuPresence.mounted ? (
+        <div className={`snap-menu${menuPresence.closing ? " is-closing" : ""}`} role="listbox" aria-label="Snap grid size">
           {GRID_SIZES.map((size) => (
             <button
               key={size}

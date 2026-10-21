@@ -1,7 +1,8 @@
 "use client";
 
 import { BookOpen, Bot, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Printer3dIcon } from "@/components/icons";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import {
   cloneHotkeyBindings,
@@ -29,11 +30,12 @@ import { hasDesktopProjectFiles, transitionDesktopPeakcadFiles, type ProjectFile
 import { SlicerSettingsFields } from "@/components/workplane/SlicerSettingsFields";
 import { loadUiTheme, setUiTheme, type UiTheme } from "@/lib/uiTheme";
 import { DEFAULT_WORKPLANE_WORKSPACE, savePeakcadPro } from "@/lib/workplaneSettings";
-import { brandForPreset, printersForBrand, PRINTER_BRANDS } from "@/lib/printerBed";
+import { brandForPreset, brandsForKind, defaultPrinterForKind, kindForPreset, printersForBrand, type PrinterKind } from "@/lib/printerBed";
+import { MAX_NOZZLE_MM, MIN_NOZZLE_MM, normalizeNozzleMm } from "@/lib/thinWalls";
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
-type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "sketch" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
+type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "printing" | "sketch" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
 type WorkspaceSettingsContext = "project" | "app";
 type LegalDocumentId = "license" | "notices" | "offer";
 
@@ -78,6 +80,15 @@ const WORKSPACE_SIZE_PRESETS = [
   { label: "Custom", width: 200, depth: 200 },
 ];
 const GRID_BLOCK_PRESETS = ["1 mm", "2.5 mm", "5 mm", "10 mm", "20 mm", "50 mm", "100 mm", "Custom"] as const;
+const PRINTER_PROCESS_OPTIONS = ["Filament", "Resin"] as const;
+
+function printerKindFromLabel(label: string): PrinterKind {
+  return label === "Resin" ? "resin" : "filament";
+}
+
+function printerKindLabel(kind: PrinterKind) {
+  return kind === "resin" ? "Resin" : "Filament";
+}
 
 const SETTING_TIPS = {
   showShadows: "Cast soft shadows from shapes onto the workplane to make depth easier to read.",
@@ -94,11 +105,16 @@ const SETTING_TIPS = {
   length: "Workplane size along Z (length/depth), in the current units.",
   gridBlockSize: "Spacing between major grid lines on the workplane.",
   blockSize: "Custom spacing between grid lines when Grid block size is set to Custom.",
-  printerBrand: "The maker of the printer. The next menu lists that maker's machines.",
-  printer: "The machine you print on. The bed is drawn on the workplane, and parts that stick past it are marked.",
-  overhang: "Faces that lean out more than this, measured from vertical, get warning stripes. 45 is a usual limit.",
-  showPrinterBed: "Show the printer bed on the workplane.",
-  showOverhangStripes: "Paint warning stripes on faces that lean out past the overhang angle.",
+  printerProcess: "Filament printers melt plastic through a nozzle. Resin printers cure liquid in a vat. Each process has its own machines.",
+  printerBrand: "The maker of the printer. The next menu lists that maker's machines for the selected process.",
+  printer: "The machine you print on. Filament and resin both use this build volume. Parts that stick past it are marked.",
+  overhang: "Faces that lean past this many degrees from vertical are marked. 45° is typical for filament. Resin usually needs less, or none. The viewport updates as you change it.",
+  showPrinterBed: "Draw the printer's bed and height cage on the workplane.",
+  showOverhangStripes: "Show a gold wash and mint outline on faces that lean past the overhang angle. Meant for filament supports.",
+  nozzle: "Walls and holes smaller than this are marked. For filament this is the nozzle diameter. For resin it is the smallest wall or hole you want to print.",
+  showThinWalls: "Show a mint wash and gold outline on walls thinner than the nozzle or minimum wall.",
+  showSmallHoles: "Show a mint wash and mint outline on holes and slots narrower than the nozzle or minimum wall.",
+  showTrappedResin: "Show a gold wash on sealed cavities that would hold uncured resin. Open a drain to the outside to clear them. Hollow is unchanged.",
   makeDefault: "Save these settings as the default for this project.",
   makeDefaultApp: "Save these settings as the default for new projects.",
   peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
@@ -158,6 +174,21 @@ export function WorkspaceSettingsModal({
     onChange: (patch: { showConstruction?: boolean; constructionMode?: boolean }) => void;
   };
 }) {
+  const [leaving, setLeaving] = useState(false);
+  const leaveTimerRef = useRef<number | null>(null);
+  const requestClose = useCallback(() => {
+    if (leaving) return;
+    const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || context === "app") {
+      onClose();
+      return;
+    }
+    setLeaving(true);
+    leaveTimerRef.current = window.setTimeout(() => onClose(), 140);
+  }, [context, leaving, onClose]);
+  useEffect(() => () => {
+    if (leaveTimerRef.current !== null) window.clearTimeout(leaveTimerRef.current);
+  }, []);
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(sketchGuides ? "sketch" : "appearance");
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => loadUiTheme());
@@ -182,7 +213,13 @@ export function WorkspaceSettingsModal({
     printerDepth: String(workspace.printerDepth),
     printerHeight: String(workspace.printerHeight),
     overhangAngle: String(workspace.overhangAngle),
+    nozzleMm: String(workspace.nozzleMm),
   }));
+  const printerKind: PrinterKind = workspace.printerPreset === "custom"
+    ? workspace.printerKind
+    : kindForPreset(workspace.printerPreset);
+  const printerBrand = brandForPreset(workspace.printerPreset);
+  const printerModels = printersForBrand(printerBrand, printerKind);
   const downloadFolderValue = downloadFolder ?? localDownloadFolder;
   const scaleOptions = scaleOptionsForUnits(workspace.units);
   const scaleValue = normalizeScaleForUnits(workspace.units, workspace.scale);
@@ -225,12 +262,23 @@ export function WorkspaceSettingsModal({
       printerDepth: String(workspace.printerDepth),
       printerHeight: String(workspace.printerHeight),
       overhangAngle: String(workspace.overhangAngle),
+      nozzleMm: String(workspace.nozzleMm),
     });
-  }, [workspace.accuracy, workspace.depth, workspace.overhangAngle, workspace.printerDepth, workspace.printerHeight, workspace.printerWidth, workspace.width]);
+  }, [workspace.accuracy, workspace.depth, workspace.nozzleMm, workspace.overhangAngle, workspace.printerDepth, workspace.printerHeight, workspace.printerWidth, workspace.width]);
   useEffect(() => {
     setHotkeyRecordingActive(Boolean(recordingAction));
     return () => setHotkeyRecordingActive(false);
   }, [recordingAction]);
+  useEffect(() => {
+    if (recordingAction) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      requestClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [recordingAction, requestClose]);
   useEffect(() => {
     if (!recordingAction) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -311,39 +359,58 @@ export function WorkspaceSettingsModal({
     }
     patchWorkspace({ sizePreset, width: preset.width, depth: preset.depth });
   };
-  const setPrinterBrand = (brand: string) => {
-    const current = printersForBrand(brandForPreset(workspace.printerPreset)).find((entry) => entry.id === workspace.printerPreset);
-    if (current?.brand === brand) return;
-    const preset = printersForBrand(brand)[0];
-    if (!preset || preset.id === "custom") {
-      patchWorkspace({ printerPreset: "custom" });
-      return;
-    }
+  const applyPrinterPreset = (preset: { id: string; kind: PrinterKind; width: number; depth: number; height: number }) => {
+    setPrinterDrafts((current) => ({
+      ...current,
+      printerWidth: String(preset.width),
+      printerDepth: String(preset.depth),
+      printerHeight: String(preset.height),
+    }));
     patchWorkspace({
       printerPreset: preset.id,
+      printerKind: preset.id === "custom" ? printerKind : preset.kind,
       printerWidth: preset.width,
       printerDepth: preset.depth,
       printerHeight: preset.height,
     });
   };
-  const setPrinterPreset = (label: string) => {
-    const preset = printersForBrand(brandForPreset(workspace.printerPreset)).find((entry) => entry.label === label);
-    if (!preset || preset.id === "custom") {
-      patchWorkspace({ printerPreset: "custom" });
+  const setPrinterKind = (nextKind: PrinterKind) => {
+    if (printerKind === nextKind) return;
+    if (workspace.printerPreset === "custom") {
+      patchWorkspace({ printerKind: nextKind });
       return;
     }
-    patchWorkspace({
-      printerPreset: preset.id,
-      printerWidth: preset.width,
-      printerDepth: preset.depth,
-      printerHeight: preset.height,
-    });
+    applyPrinterPreset(defaultPrinterForKind(nextKind, printerBrand));
+  };
+  const setPrinterBrand = (brand: string) => {
+    if (printerBrand === brand) return;
+    const preset = printersForBrand(brand, printerKind)[0];
+    if (!preset || preset.id === "custom") {
+      patchWorkspace({ printerPreset: "custom", printerKind });
+      return;
+    }
+    applyPrinterPreset(preset);
+  };
+  const setPrinterPreset = (label: string) => {
+    const preset = printerModels.find((entry) => entry.label === label);
+    if (!preset || preset.id === "custom") {
+      patchWorkspace({ printerPreset: "custom", printerKind });
+      return;
+    }
+    applyPrinterPreset(preset);
+  };
+  const setNozzleMm = (value: string, commit = false) => {
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed) && !commit) return;
+    const next = normalizeNozzleMm(Number.isFinite(parsed) ? parsed : workspace.nozzleMm);
+    setPrinterDrafts((current) => ({ ...current, nozzleMm: String(next) }));
+    if (next !== workspace.nozzleMm) patchWorkspace({ nozzleMm: next });
   };
   const setPrinterSize = (key: "printerWidth" | "printerDepth" | "printerHeight", value: string) => {
     const parsed = Number.parseFloat(value);
     const fallback = workspace[key];
     const next = clamp(Number.isFinite(parsed) ? parsed : fallback, key === "printerHeight" ? 20 : 40, 2000);
-    patchWorkspace({ printerPreset: "custom", [key]: next });
+    patchWorkspace({ printerPreset: "custom", printerKind, [key]: next });
   };
   const setGridBlockPreset = (gridBlockPreset: string) => {
     patchWorkspace({ gridBlockPreset, gridBlockSize: gridBlockSizeForPreset(gridBlockPreset, workspace.gridBlockSize) });
@@ -354,11 +421,11 @@ export function WorkspaceSettingsModal({
   };
 
   return (
-    <div className={`workspace-modal${context === "app" ? " workspace-modal-app" : ""}`} role="dialog" aria-modal="true" aria-label="Settings">
+    <div className={`workspace-modal${context === "app" ? " workspace-modal-app" : " workspace-modal-sheet"}${leaving ? " is-leaving" : ""}`} role="dialog" aria-modal="true" aria-label="Settings">
       <div className="workspace-modal-card" onPointerDown={(event) => event.stopPropagation()}>
         <header className="workspace-modal-header">
           <strong>Settings</strong>
-          <button aria-label="Close settings" onClick={onClose}>
+          <button aria-label="Close settings" onClick={requestClose}>
             <X size={18} />
           </button>
         </header>
@@ -376,6 +443,10 @@ export function WorkspaceSettingsModal({
             <button className={activeSection === "workplane" ? "active" : ""} aria-current={activeSection === "workplane" ? "page" : undefined} onClick={() => setActiveSection("workplane")}>
               <Grid3X3 size={18} />
               <span>Workplane</span>
+            </button>
+            <button className={activeSection === "printing" ? "active" : ""} aria-current={activeSection === "printing" ? "page" : undefined} onClick={() => setActiveSection("printing")}>
+              <Printer3dIcon size={18} />
+              <span>Printing</span>
             </button>
             {sketchGuides ? (
               <button className={activeSection === "sketch" ? "active" : ""} aria-current={activeSection === "sketch" ? "page" : undefined} onClick={() => setActiveSection("sketch")}>
@@ -603,22 +674,34 @@ export function WorkspaceSettingsModal({
                       </PeakTipLabel>
                     </div>
                   ) : null}
+                </>
+              ) : null}
+
+              {activeSection === "printing" ? (
+                <>
                   <div className="workspace-section-heading">
-                    <strong>Printer</strong>
-                    <span>The bed on the workplane. Stripes mark faces that need support.</span>
+                    <strong>Printing</strong>
+                    <span>Choose the process and the machine, see the build volume, and mark faces that need support or walls that are too thin.</span>
                   </div>
+                  <WorkspaceSelect
+                    label="Process"
+                    tip={SETTING_TIPS.printerProcess}
+                    value={printerKindLabel(printerKind)}
+                    options={PRINTER_PROCESS_OPTIONS}
+                    onChange={(label) => setPrinterKind(printerKindFromLabel(label))}
+                  />
                   <WorkspaceSelect
                     label="Brand"
                     tip={SETTING_TIPS.printerBrand}
-                    value={brandForPreset(workspace.printerPreset)}
-                    options={PRINTER_BRANDS}
+                    value={printerBrand}
+                    options={brandsForKind(printerKind)}
                     onChange={setPrinterBrand}
                   />
                   <WorkspaceSelect
                     label="Printer"
                     tip={SETTING_TIPS.printer}
-                    value={printersForBrand(brandForPreset(workspace.printerPreset)).find((preset) => preset.id === workspace.printerPreset)?.label ?? "Custom size"}
-                    options={printersForBrand(brandForPreset(workspace.printerPreset)).map((preset) => preset.label)}
+                    value={printerModels.find((preset) => preset.id === workspace.printerPreset)?.label ?? "Custom size"}
+                    options={printerModels.map((preset) => preset.label)}
                     onChange={setPrinterPreset}
                   />
                   <div className="workspace-dimensions">
@@ -672,26 +755,6 @@ export function WorkspaceSettingsModal({
                         }}
                       />
                     </PeakTipLabel>
-                    <PeakTipLabel label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang}>
-                      <span>Overhang</span>
-                      <input
-                        type="number"
-                        value={printerDrafts.overhangAngle}
-                        min={0}
-                        max={85}
-                        step={1}
-                        aria-label="Overhang angle"
-                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, overhangAngle: event.currentTarget.value }))}
-                        onBlur={(event) => {
-                          const parsed = Number.parseFloat(event.currentTarget.value);
-                          if (!Number.isFinite(parsed)) return;
-                          patchWorkspace({ overhangAngle: Math.max(0, Math.min(85, parsed)) });
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") event.currentTarget.blur();
-                        }}
-                      />
-                    </PeakTipLabel>
                   </div>
                   <WorkspaceToggle
                     label="Show printer bed"
@@ -699,12 +762,139 @@ export function WorkspaceSettingsModal({
                     checked={workspace.showPrinterBed}
                     onChange={(showPrinterBed) => patchWorkspace({ showPrinterBed })}
                   />
+                  <div className="workspace-section-heading">
+                    <strong>Overhangs</strong>
+                    <span>For filament. Faces that lean past this angle are marked in gold. Resin usually needs less, or none.</span>
+                  </div>
+                  <div className="workspace-dimensions">
+                    <PeakTipLabel label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang}>
+                      <span>Overhang °</span>
+                      <input
+                        type="number"
+                        value={printerDrafts.overhangAngle}
+                        min={0}
+                        max={85}
+                        step={1}
+                        aria-label="Overhang angle in degrees"
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
+                          setPrinterDrafts((current) => ({ ...current, overhangAngle: value }));
+                          const parsed = Number.parseFloat(value);
+                          if (!Number.isFinite(parsed)) return;
+                          patchWorkspace({ overhangAngle: Math.max(0, Math.min(85, Math.round(parsed))) });
+                        }}
+                        onBlur={(event) => {
+                          const parsed = Number.parseFloat(event.currentTarget.value);
+                          const next = Number.isFinite(parsed) ? Math.max(0, Math.min(85, Math.round(parsed))) : workspace.overhangAngle;
+                          setPrinterDrafts((current) => ({ ...current, overhangAngle: String(next) }));
+                          if (next !== workspace.overhangAngle) patchWorkspace({ overhangAngle: next });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </PeakTipLabel>
+                  </div>
+                  <PeakTipLabel label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang} className="workspace-range">
+                    <span>Starts at</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={85}
+                      step={1}
+                      value={workspace.overhangAngle}
+                      aria-label="Overhang starts at degrees from vertical"
+                      onChange={(event) => {
+                        const next = Number(event.currentTarget.value);
+                        setPrinterDrafts((current) => ({ ...current, overhangAngle: String(next) }));
+                        patchWorkspace({ overhangAngle: next });
+                      }}
+                    />
+                    <small>
+                      <span>0°</span>
+                      <span>{workspace.overhangAngle}° from vertical</span>
+                      <span>85°</span>
+                    </small>
+                  </PeakTipLabel>
                   <WorkspaceToggle
-                    label="Show overhang stripes"
+                    label="Show overhangs"
                     tip={SETTING_TIPS.showOverhangStripes}
                     checked={workspace.showOverhangStripes}
                     onChange={(showOverhangStripes) => patchWorkspace({ showOverhangStripes })}
                   />
+                  <div className="workspace-section-heading">
+                    <strong>Thin walls and small holes</strong>
+                    <span>{printerKind === "resin" ? "Walls and holes smaller than this minimum are marked in mint." : "Walls and holes smaller than the nozzle are marked in mint."}</span>
+                  </div>
+                  <div className="workspace-dimensions">
+                    <PeakTipLabel label={SETTING_TIPS.nozzle} helpTitle={printerKind === "resin" ? "Minimum wall" : "Nozzle"} description={SETTING_TIPS.nozzle}>
+                      <span>{printerKind === "resin" ? "Minimum wall" : "Nozzle"}</span>
+                      <input
+                        type="number"
+                        value={printerDrafts.nozzleMm}
+                        min={MIN_NOZZLE_MM}
+                        max={MAX_NOZZLE_MM}
+                        step={0.05}
+                        aria-label={printerKind === "resin" ? "Minimum wall in millimetres" : "Nozzle size in millimetres"}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
+                          setPrinterDrafts((current) => ({ ...current, nozzleMm: value }));
+                          const parsed = Number.parseFloat(value);
+                          if (!Number.isFinite(parsed)) return;
+                          const next = normalizeNozzleMm(parsed);
+                          if (next !== workspace.nozzleMm) patchWorkspace({ nozzleMm: next });
+                        }}
+                        onBlur={(event) => setNozzleMm(event.currentTarget.value, true)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </PeakTipLabel>
+                  </div>
+                  <PeakTipLabel label={SETTING_TIPS.nozzle} helpTitle={printerKind === "resin" ? "Minimum wall" : "Nozzle"} description={SETTING_TIPS.nozzle} className="workspace-range">
+                    <span>{printerKind === "resin" ? "Minimum" : "Nozzle"}</span>
+                    <input
+                      type="range"
+                      min={MIN_NOZZLE_MM}
+                      max={MAX_NOZZLE_MM}
+                      step={0.05}
+                      value={workspace.nozzleMm}
+                      aria-label={printerKind === "resin" ? "Minimum wall in millimetres" : "Nozzle size in millimetres"}
+                      onChange={(event) => {
+                        const next = normalizeNozzleMm(Number(event.currentTarget.value));
+                        setPrinterDrafts((current) => ({ ...current, nozzleMm: String(next) }));
+                        if (next !== workspace.nozzleMm) patchWorkspace({ nozzleMm: next });
+                      }}
+                    />
+                    <small>
+                      <span>{MIN_NOZZLE_MM} mm</span>
+                      <span>{workspace.nozzleMm} mm</span>
+                      <span>{MAX_NOZZLE_MM} mm</span>
+                    </small>
+                  </PeakTipLabel>
+                  <WorkspaceToggle
+                    label="Show thin walls"
+                    tip={SETTING_TIPS.showThinWalls}
+                    checked={workspace.showThinWalls}
+                    onChange={(showThinWalls) => patchWorkspace({ showThinWalls })}
+                  />
+                  <WorkspaceToggle
+                    label="Show small holes"
+                    tip={SETTING_TIPS.showSmallHoles}
+                    checked={workspace.showSmallHoles}
+                    onChange={(showSmallHoles) => patchWorkspace({ showSmallHoles })}
+                  />
+                  <div className="workspace-section-heading">
+                    <strong>Trapped resin</strong>
+                    <span>Sealed cavities that cannot drain are marked in gold. Open a hole to the outside to clear them.</span>
+                  </div>
+                  <WorkspaceToggle
+                    label="Show trapped resin"
+                    tip={SETTING_TIPS.showTrappedResin}
+                    checked={workspace.showTrappedResin}
+                    onChange={(showTrappedResin) => patchWorkspace({ showTrappedResin })}
+                  />
+                  <SlicerSettingsFields />
                 </>
               ) : null}
 
@@ -755,7 +945,6 @@ export function WorkspaceSettingsModal({
                       aria-label="Download folder path"
                     />
                   </PeakTipLabel>
-                  <SlicerSettingsFields />
                   {canTransitionFiles ? (
                     <div className="workspace-file-transition">
                       <strong>Move projects to Documents\Mintr</strong>
@@ -1068,7 +1257,7 @@ export function WorkspaceSettingsModal({
           </div>
         </div>
       </div>
-      <button className="workspace-modal-backdrop" aria-label="Close settings" onClick={onClose} />
+      <button className="workspace-modal-backdrop" aria-label="Close settings" onClick={requestClose} />
     </div>
   );
 }

@@ -1114,7 +1114,11 @@
     background 120ms ease,
     border-color 120ms ease,
     box-shadow 120ms ease,
-    transform 120ms ease;
+    transform var(--motion-press) var(--motion-ease);
+}
+
+.shape-sidebar-item:active {
+  transform: scale(var(--motion-press-scale));
 }
 
 .shape-sidebar-item:hover {
@@ -1867,6 +1871,8 @@
 
 .view-cube:active {
   cursor: grabbing;
+  transform: scale(var(--motion-press-scale));
+  transition: transform var(--motion-press) var(--motion-ease);
 }
 
 .view-cube-inner {

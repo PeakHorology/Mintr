@@ -21,7 +21,8 @@ export function EditorModeTabs({
   const sketchHelp = usePeakContextHelp("Sketch", TOOL_DESCRIPTIONS.sketchMode);
 
   return (
-    <div className="editor-mode-tabs" role="tablist" aria-label="Editor mode">
+    <div className="editor-mode-tabs" data-mode={toolbarMode} role="tablist" aria-label="Editor mode">
+      <div className="editor-mode-tabs-pill" aria-hidden="true" />
       <button
         className={toolbarMode === "geometry" ? "active" : ""}
         type="button"
@@ -168,6 +169,7 @@ export function EditorTopBar({
   onToolbarModeChange,
   leftTools,
   rightTools,
+  chromeBusy = null,
 }: {
   projectName?: string;
   onProjectNameChange?: (name: string) => void;
@@ -181,6 +183,7 @@ export function EditorTopBar({
   onToolbarModeChange: (mode: ToolbarMode) => void;
   leftTools?: ReactNode;
   rightTools?: ReactNode;
+  chromeBusy?: { progress?: number | null } | null;
 }) {
   const logo = <img className="peakcad-logo" src="assets/mintr/mintr-square.png" alt="Mintr" draggable={false} />;
   const homeRef = useRef<HTMLButtonElement>(null);
@@ -215,21 +218,21 @@ export function EditorTopBar({
         <div className="editor-file-group" aria-label="File">
           <div className="toolbar-section-label">File</div>
           <div className="toolbar-section-tools">
-            <PeakTipButton className="editor-file-action" label="Import" description={TOOL_DESCRIPTIONS.import} data-toolbar-tool="Import" onClick={onImport}>
-              Import
+            <PeakTipButton className="editor-file-action" label="Import…" description={TOOL_DESCRIPTIONS.import} data-toolbar-tool="Import" onClick={onImport}>
+              Import…
             </PeakTipButton>
             {hasMatchingSavedFile && onSaveProject ? (
-              <PeakTipButton className="editor-file-action" label="Save" description={TOOL_DESCRIPTIONS.saveProject} onClick={onSaveProject}>
+              <PeakTipButton className="editor-file-action" label="Save" description={TOOL_DESCRIPTIONS.saveProject} shortcut="Ctrl + S" onClick={onSaveProject}>
                 Save
               </PeakTipButton>
             ) : null}
             {!hasMatchingSavedFile && onSaveProjectAs ? (
-              <PeakTipButton className="editor-file-action" label="Save as" description={TOOL_DESCRIPTIONS.saveProjectAs} onClick={onSaveProjectAs}>
-                Save as
+              <PeakTipButton className="editor-file-action" label="Save as…" description={TOOL_DESCRIPTIONS.saveProjectAs} shortcut="Ctrl + Shift + S" onClick={onSaveProjectAs}>
+                Save as…
               </PeakTipButton>
             ) : null}
-            <PeakTipButton className="editor-file-action" label="Export" description={TOOL_DESCRIPTIONS.export} data-toolbar-tool="Export" onClick={onExport}>
-              Export
+            <PeakTipButton className="editor-file-action" label="Export…" description={TOOL_DESCRIPTIONS.export} shortcut="Ctrl + E" data-toolbar-tool="Export" onClick={onExport}>
+              Export…
             </PeakTipButton>
           </div>
         </div>
@@ -256,6 +259,7 @@ export function EditorTopBar({
               className="toolbar-icon"
               label="Settings"
               description={TOOL_DESCRIPTIONS.settings}
+              shortcut="Ctrl + ,"
               onClick={() => window.dispatchEvent(new Event("sketchforge:open-workspace-settings"))}
             >
               <ToolbarSettingsIcon />
@@ -263,6 +267,21 @@ export function EditorTopBar({
           </div>
         </div>
       </div>
+      {chromeBusy ? (
+        <div
+          className="editor-chrome-progress"
+          role="progressbar"
+          aria-label="Working"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={typeof chromeBusy.progress === "number" ? Math.round(chromeBusy.progress * 100) : undefined}
+        >
+          <div
+            className={`editor-chrome-progress-bar${typeof chromeBusy.progress === "number" ? "" : " is-indeterminate"}`}
+            style={typeof chromeBusy.progress === "number" ? { width: `${Math.round(Math.min(1, Math.max(0, chromeBusy.progress)) * 100)}%` } : undefined}
+          />
+        </div>
+      ) : null}
     </header>
   );
 }

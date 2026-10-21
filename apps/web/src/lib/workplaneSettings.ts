@@ -2,6 +2,7 @@ import type { DisplayQuality, GridSize, MeasurementAccuracy, WorkplaneWorkspaceS
 import { DEFAULT_DISPLAY_QUALITY, normalizeDisplayQuality } from "@/lib/displayTessellation";
 import { normalizeScaleForUnits } from "@/lib/measurementUnits";
 import { DEFAULT_OVERHANG_ANGLE, DEFAULT_PRINTER_ID, normalizePrinterBed } from "@/lib/printerBed";
+import { DEFAULT_NOZZLE_MM } from "@/lib/thinWalls";
 import { DEFAULT_LIGHT_VIEWPORT_BACKGROUND } from "@/lib/uiTheme";
 
 export const DEFAULT_SNAP_GRID: GridSize = "1.0 mm";
@@ -31,12 +32,17 @@ export const DEFAULT_WORKPLANE_WORKSPACE: WorkplaneWorkspaceSettings = {
   displayQuality: DEFAULT_DISPLAY_QUALITY,
   peakcadPro: false,
   printerPreset: DEFAULT_PRINTER_ID,
+  printerKind: "filament",
   printerWidth: 220,
   printerDepth: 220,
   printerHeight: 250,
   overhangAngle: DEFAULT_OVERHANG_ANGLE,
+  nozzleMm: DEFAULT_NOZZLE_MM,
   showPrinterBed: true,
   showOverhangStripes: false,
+  showThinWalls: false,
+  showSmallHoles: false,
+  showTrappedResin: false,
 };
 
 const snapGridOptions: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
@@ -70,12 +76,17 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
   const units = stringOrDefault(candidate.units, fallback.units);
   const printer = normalizePrinterBed({
     printerPreset: candidate.printerPreset ?? fallback.printerPreset,
+    printerKind: candidate.printerKind ?? fallback.printerKind,
     printerWidth: candidate.printerWidth ?? fallback.printerWidth,
     printerDepth: candidate.printerDepth ?? fallback.printerDepth,
     printerHeight: candidate.printerHeight ?? fallback.printerHeight,
     overhangAngle: candidate.overhangAngle ?? fallback.overhangAngle,
+    nozzleMm: candidate.nozzleMm ?? fallback.nozzleMm,
     showPrinterBed: candidate.showPrinterBed ?? fallback.showPrinterBed,
     showOverhangStripes: candidate.showOverhangStripes ?? fallback.showOverhangStripes,
+    showThinWalls: candidate.showThinWalls ?? fallback.showThinWalls,
+    showSmallHoles: candidate.showSmallHoles ?? fallback.showSmallHoles,
+    showTrappedResin: candidate.showTrappedResin ?? fallback.showTrappedResin,
   });
   return {
     width: numberOrDefault(candidate.width, fallback.width),
@@ -94,12 +105,17 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
     displayQuality: displayQualityOrDefault(candidate.displayQuality, fallback.displayQuality),
     peakcadPro: resolvePeakcadPro(candidate.peakcadPro, fallback.peakcadPro),
     printerPreset: printer.preset,
+    printerKind: printer.kind,
     printerWidth: printer.width,
     printerDepth: printer.depth,
     printerHeight: printer.height,
     overhangAngle: printer.overhangAngle,
+    nozzleMm: printer.nozzleMm,
     showPrinterBed: printer.showBed,
     showOverhangStripes: printer.showStripes,
+    showThinWalls: printer.showThinWalls,
+    showSmallHoles: printer.showSmallHoles,
+    showTrappedResin: printer.showTrappedResin,
   };
 }
 

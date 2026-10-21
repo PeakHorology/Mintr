@@ -59,18 +59,28 @@ export type WorkplaneWorkspaceSettings = {
   peakcadPro: boolean;
   /** Printer preset id. "custom" keeps the three sizes below. */
   printerPreset: string;
+  /** Filament or resin. Named presets set this; Custom keeps the last choice. */
+  printerKind: "filament" | "resin";
   /** Build-plate width along X, in millimetres. */
   printerWidth: number;
   /** Build-plate depth along Z, in millimetres. */
   printerDepth: number;
   /** Usable height above the bed, in millimetres. */
   printerHeight: number;
-  /** Overhang stripes start past this many degrees from vertical. */
+  /** Overhang marks start past this many degrees from vertical. */
   overhangAngle: number;
   /** Draw the printer bed frame on the workplane. */
   showPrinterBed: boolean;
-  /** Draw warning stripes on faces that lean out past the overhang angle. */
+  /** Draw overhang marks on faces that lean out past the overhang angle. */
   showOverhangStripes: boolean;
+  /** Nozzle diameter in millimetres. Walls thinner than this are marked. */
+  nozzleMm: number;
+  /** Draw marks on walls thinner than the nozzle. */
+  showThinWalls: boolean;
+  /** Draw marks on holes and slots narrower than the nozzle. */
+  showSmallHoles: boolean;
+  /** Draw marks on sealed cavities that cannot drain. */
+  showTrappedResin: boolean;
 };
 
 export type AlignAxis = "x" | "y" | "z";

@@ -40,6 +40,13 @@ const SLICERS = [
     exes: ["ultimaker-cura.exe", "cura.exe"],
     dirPrefixes: ["ultimaker cura", "ultimaker-cura"],
   },
+  {
+    id: "formlabs",
+    name: "Formlabs PreForm",
+    format: "stl",
+    exes: ["preform.exe"],
+    dirPrefixes: ["formlabs", "preform"],
+  },
 ];
 
 const BY_EXE = new Map();
@@ -138,7 +145,7 @@ function identifyExe(filePath) {
   }
   const spec = BY_EXE.get(path.basename(resolved).toLowerCase());
   if (!spec) {
-    throw new Error("Choose OrcaSlicer, Bambu Studio, PrusaSlicer, SuperSlicer, or UltiMaker Cura.");
+    throw new Error("Choose OrcaSlicer, Bambu Studio, PrusaSlicer, SuperSlicer, UltiMaker Cura, or Formlabs PreForm.");
   }
   return { id: spec.id, name: spec.name, path: resolved, format: spec.format };
 }

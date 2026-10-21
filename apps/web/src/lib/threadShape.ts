@@ -357,3 +357,37 @@ export function separateThreadScrewParts(shape: WorkplaneShape): WorkplaneShape[
     canonicalizeShape({ ...cutter, x: cutter.x + 0.01 }),
   ];
 }
+
+/** Helix solids (screws, nuts, tapped-hole cutters). Smooth shafts stay in the fillet body. */
+export function isHelicalThreadSolid(shape: WorkplaneShape) {
+  return shape.kind === "thread" && shape.threadSpec?.part !== "shaft";
+}
+
+export function containsHelicalThreadSolid(shape: WorkplaneShape): boolean {
+  if (isHelicalThreadSolid(shape)) return true;
+  return Boolean(shape.groupedShapes?.some(containsHelicalThreadSolid));
+}
+
+/** Smooth cylinder that stands in for a helix during fillet/chamfer. */
+export function threadlessEdgeTreatmentStandIn(shape: WorkplaneShape): WorkplaneShape {
+  if (!isHelicalThreadSolid(shape)) return shape;
+  const spec = shape.threadSpec;
+  const major = spec?.majorDiameter ?? Math.min(shape.width ?? shape.size, shape.depth ?? shape.size);
+  const clearance = spec?.role === "bore" || spec?.style === "hole" || shape.hole
+    ? (spec?.clearance ?? 0)
+    : 0;
+  const diameter = Math.max(0.8, major + 2 * clearance);
+  return canonicalizeShape({
+    ...shape,
+    kind: "cylinder",
+    width: diameter,
+    depth: diameter,
+    size: diameter,
+    importedMesh: undefined,
+    cadBrep: undefined,
+    cadBrepFrame: undefined,
+    cadPrimitiveFrame: undefined,
+    cadDisplayEdges: undefined,
+    cadDisplayEdgesVersion: undefined,
+  });
+}

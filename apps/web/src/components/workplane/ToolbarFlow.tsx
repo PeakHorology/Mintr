@@ -52,11 +52,13 @@ export function ToolbarFlow({
   label,
   children,
   width = 340,
+  closing = false,
 }: {
   tool: string;
   label: string;
   children: ReactNode;
   width?: number;
+  closing?: boolean;
 }) {
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
@@ -69,7 +71,7 @@ export function ToolbarFlow({
 
   return (
     <div
-      className="toolbar-flow"
+      className={`toolbar-flow${closing ? " is-closing" : ""}`}
       role="dialog"
       aria-label={label}
       style={anchor ? {

@@ -312,6 +312,11 @@
   animation: history-flow-out var(--motion-enter) var(--motion-ease);
 }
 
+.toolbar-flow.is-closing {
+  animation: chrome-menu-out var(--motion-exit) var(--motion-ease) forwards;
+  pointer-events: none;
+}
+
 .toolbar-flow::before,
 .toolbar-flow::after {
   content: "";
@@ -990,13 +995,14 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform var(--motion-press) var(--motion-ease);
 }
 
 .toolbar-icon:not(.disabled):active {
   background: var(--control-surface-sunken);
   border-color: var(--control-border-accent);
   box-shadow: inset 0 1px 2px rgba(4, 4, 4, 0.16);
+  transform: scale(var(--motion-press-scale));
 }
 
 .toolbar-icon.disabled {
@@ -1139,23 +1145,40 @@
   flex: 0 0 auto;
 }
 
+.toolbar-overflow-cluster--start .toolbar-overflow-menu {
+  left: 0;
+  right: auto;
+  transform-origin: top left;
+}
+
+.toolbar-overflow-cluster--end .toolbar-overflow-menu {
+  transform-origin: top right;
+}
+
 .toolbar-overflow-menu {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
   z-index: var(--z-popover);
   display: grid;
-  min-width: 196px;
+  min-width: 220px;
   padding: 6px;
   color: var(--ink-strong);
   background: var(--glass-surface-strong);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   box-shadow: var(--elevation-lg);
+  animation: chrome-menu-in var(--motion-enter) var(--motion-ease);
+}
+
+.toolbar-overflow-menu.is-closing {
+  animation: chrome-menu-out var(--motion-exit) var(--motion-ease) forwards;
+  pointer-events: none;
 }
 
 .toolbar-overflow-menu button {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   width: 100%;
   min-height: 36px;
   align-items: center;
@@ -1169,6 +1192,18 @@
   font-size: var(--text-sm);
   font-weight: 700;
   text-align: left;
+}
+
+.toolbar-overflow-menu .menu-shortcut {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.toolbar-overflow-menu button.disabled .menu-shortcut {
+  color: var(--ink-disabled);
 }
 
 .toolbar-overflow-menu button:hover:not(.disabled) {
@@ -1973,8 +2008,8 @@
   box-shadow: var(--elevation-md);
   pointer-events: none;
   opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 160ms ease, transform 160ms ease;
+  transform: translateY(8px);
+  transition: opacity var(--motion-enter) var(--motion-ease), transform var(--motion-enter) var(--motion-ease);
 }
 
 .editor-toast.visible {
@@ -2692,7 +2727,7 @@
 }
 
 .editor-body.mode-transitioning {
-  opacity: 0.4;
+  opacity: 1;
 }
 
 .editor-canvas-area {

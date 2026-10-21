@@ -58,7 +58,7 @@ export function SlicerSettingsFields() {
             const trimmed = pathDraft.trim();
             if (!trimmed) return;
             if (!slicer.selectPath(trimmed)) {
-              setPathError("Choose OrcaSlicer, Bambu Studio, PrusaSlicer, SuperSlicer, or UltiMaker Cura.");
+              setPathError("Choose OrcaSlicer, Bambu Studio, PrusaSlicer, SuperSlicer, UltiMaker Cura, or Formlabs PreForm.");
             }
           }}
         />

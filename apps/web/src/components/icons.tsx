@@ -43,6 +43,29 @@ function CadGlyph({ children, ...props }: IconProps & { children: ReactNode }) {
   );
 }
 
+/** Enclosed CoreXY with AMS on top — H2D silhouette, lucide weight. */
+export function Printer3dIcon({ size = 24, strokeWidth = 2, ...props }: IconProps & { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <rect x="6" y="2.5" width="12" height="3.5" rx="1" />
+      <rect x="4" y="6" width="16" height="15.5" rx="2" />
+      <rect x="6.5" y="8.75" width="11" height="10" rx="1.25" />
+      <rect x="10" y="13.5" width="4" height="3.75" rx="0.5" />
+    </svg>
+  );
+}
+
 export function ToolbarHomeIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>

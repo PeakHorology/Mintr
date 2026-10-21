@@ -875,8 +875,8 @@ export default function Home() {
     if (preview) {
       setUpdateChecking(false);
       setUpdateOffer({
-        version: "1.0.9",
-        current: "1.0.8",
+        version: "1.1.0",
+        current: "1.0.9",
         notes: UNRELEASED_NOTES.length ? UNRELEASED_NOTES : (RELEASE_NOTES[0]?.items ?? []),
         portable: false,
         canInstall: false,
@@ -2209,11 +2209,22 @@ export default function Home() {
         })();
         return;
       }
+      if (action === "settings") {
+        if (activeProjectIdRef.current) {
+          window.dispatchEvent(new Event("sketchforge:open-workspace-settings"));
+        } else {
+          setSettingsOpen(true);
+        }
+        return;
+      }
+      if (action === "import" || action === "export") {
+        editorLeaveGuardRef.current?.command?.(action);
+        return;
+      }
+      if (action !== "save" && action !== "save-as") return;
       const projectId = activeProjectIdRef.current;
       if (!projectId) {
-        if (action === "save" || action === "save-as") {
-          setDashboardNotice("Open a design to save it.");
-        }
+        setDashboardNotice("Open a design to save it.");
         return;
       }
       // The editor's save bakes exact STEP for new imports before writing.
@@ -2247,6 +2258,18 @@ export default function Home() {
       return true;
     });
   }, []);
+
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key !== ",") return;
+      event.preventDefault();
+      setSettingsOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [view]);
 
   useEffect(() => {
     if (view === "editor" && isIntroProjectId(activeProjectId) && !hasIntroCoachBeenDismissed()) {

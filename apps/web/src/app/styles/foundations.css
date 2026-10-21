@@ -356,6 +356,9 @@ button {
 :root {
   --motion-enter: 180ms;
   --motion-exit: 140ms;
+  --motion-press: 90ms;
+  --motion-sheet: 240ms;
+  --motion-press-scale: 0.97;
   --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -393,6 +396,26 @@ button {
 @keyframes chrome-menu-in {
   from { opacity: 0; transform: translateY(-4px) scale(0.98); }
   to { opacity: 1; transform: none; }
+}
+
+@keyframes chrome-menu-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+
+@keyframes chrome-sheet-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes chrome-sheet-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateX(18px); }
+}
+
+@keyframes chrome-progress-indet {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
 }
 
 /* Two-tone icon parts.
@@ -2628,6 +2651,29 @@ input[type="range"]:disabled {
   box-shadow: inset 0 1px 0 var(--chrome-inset-highlight);
 }
 
+.editor-chrome-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.editor-chrome-progress-bar {
+  height: 100%;
+  width: 0;
+  background: #2aa77e;
+  transform-origin: left center;
+  transition: width var(--motion-enter) var(--motion-ease);
+}
+
+.editor-chrome-progress-bar.is-indeterminate {
+  width: 32%;
+  animation: chrome-progress-indet 1.1s ease-in-out infinite;
+}
+
 .editor-top-bar-left,
 .editor-top-bar-right {
   display: flex;
@@ -2826,7 +2872,7 @@ input[type="range"]:disabled {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform var(--motion-press) var(--motion-ease);
 }
 
 .editor-file-action:hover:not(.disabled) {
@@ -2841,6 +2887,7 @@ input[type="range"]:disabled {
   background: color-mix(in srgb, var(--peak-charcoal) 6%, var(--control-surface-sunken));
   border-color: var(--control-border-accent);
   box-shadow: inset 0 1px 2px rgba(4, 4, 4, 0.14);
+  transform: scale(var(--motion-press-scale));
 }
 
 .editor-file-group .toolbar-icon {
@@ -2970,7 +3017,7 @@ input[type="range"]:disabled {
   border-radius: var(--radius-sm);
   box-shadow: inset 0 1px 0 var(--chrome-inset-highlight);
   cursor: pointer;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform var(--motion-press) var(--motion-ease);
 }
 
 .editor-top-bar-text:hover:not(.disabled) {
@@ -2985,6 +3032,7 @@ input[type="range"]:disabled {
   background: var(--control-surface-sunken);
   border-color: var(--control-border-accent);
   box-shadow: inset 0 1px 2px rgba(4, 4, 4, 0.14);
+  transform: scale(var(--motion-press-scale));
 }
 
 .editor-top-bar-text.disabled {
@@ -3006,7 +3054,7 @@ input[type="range"]:disabled {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform var(--motion-press) var(--motion-ease);
 }
 
 .editor-top-bar-icon:hover:not(.disabled) {
@@ -3026,6 +3074,10 @@ input[type="range"]:disabled {
   background: var(--control-surface-sunken);
   border-color: var(--control-border-accent);
   box-shadow: inset 0 1px 2px rgba(4, 4, 4, 0.14);
+}
+
+.editor-top-bar-icon:not(.disabled):active {
+  transform: scale(var(--motion-press-scale));
 }
 
 .editor-top-bar-icon.disabled {
@@ -3061,7 +3113,9 @@ input[type="range"]:disabled {
 }
 
 .editor-mode-tabs {
-  display: inline-flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   flex: 0 0 auto;
   flex-shrink: 0;
   gap: 2px;
@@ -3073,8 +3127,30 @@ input[type="range"]:disabled {
   box-shadow: inset 0 1px 2px rgba(4, 4, 4, 0.08);
 }
 
+.editor-mode-tabs-pill {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 4px);
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  background: var(--control-surface);
+  box-shadow: inset 0 1px 0 var(--chrome-inset-highlight), var(--elevation-sm);
+  pointer-events: none;
+  transform: translateX(0);
+  transition: transform var(--motion-enter) var(--motion-ease);
+}
+
+.editor-mode-tabs[data-mode="sketch"] .editor-mode-tabs-pill {
+  transform: translateX(calc(100% + 2px));
+}
+
 .editor-mode-tabs button {
+  position: relative;
+  z-index: 1;
   min-width: 0;
+  width: 100%;
   padding: 5px 12px;
   color: var(--ink-muted);
   background: transparent;
@@ -3085,19 +3161,22 @@ input[type="range"]:disabled {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  transition: color 140ms ease, transform var(--motion-press) var(--motion-ease);
 }
 
 .editor-mode-tabs button:hover {
   color: var(--ink);
-  background: color-mix(in srgb, var(--control-surface) 70%, transparent);
 }
 
 .editor-mode-tabs button.active {
   color: var(--ink-strong);
-  background: var(--control-surface);
-  border-color: var(--control-border);
-  box-shadow: inset 0 1px 0 var(--chrome-inset-highlight), var(--elevation-sm);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.editor-mode-tabs button:active {
+  transform: scale(var(--motion-press-scale));
 }
 
 [data-theme="dark"] .toolbar-overflow .toolbar-section,

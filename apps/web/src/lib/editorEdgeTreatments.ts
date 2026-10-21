@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
 import { cloneWorkplaneShapeSnapshot, compactEdgeTreatmentHistory, edgeTreatmentAppliedFrame, restoreShapeBeforeEdgeTreatment } from "@/lib/edgeTreatmentHistory";
 import { cloneAsGroupChild } from "@/lib/editorGroup";
-import { restoreGroupedChildren } from "@/lib/editorBoolean";
+import { evaluateCsgOpOnOperands, restoreGroupedChildren } from "@/lib/editorBoolean";
+import { containsHelicalThreadSolid, isHelicalThreadSolid, solidThreadShape } from "@/lib/threadShape";
 import { createLocalId } from "@/lib/localIds";
 import { canonicalizeShape, cleanNearZero, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge } from "@/lib/cadModifierTypes";
@@ -184,6 +185,65 @@ export function bakedEdgeTreatmentPreview(shape: WorkplaneShape, base: Workplane
     groupedBaseWidth: shapeWidth(shape),
     groupedBaseDepth: shapeDepth(shape),
     groupedBaseHeight: shape.height,
+  });
+}
+
+/**
+ * Fillet/chamfer run on the host without helix cutters. Cut those threads back
+ * into the treated solid so the part still has them after Apply.
+ * The unthreaded cadBrep stays so a later fillet does not pay the helix cost again.
+ */
+export async function recutIgnoredThreadsAfterEdgeTreatment(
+  treated: WorkplaneShape,
+  original: WorkplaneShape,
+): Promise<WorkplaneShape> {
+  const withChildren = bakedEdgeTreatmentPreview(treated, original);
+  if (!containsHelicalThreadSolid(withChildren) && !containsHelicalThreadSolid(original)) {
+    return withChildren;
+  }
+  const worldChildren = withChildren.groupedShapes?.length
+    ? restoreGroupedChildren(withChildren, { preserveIds: true })
+    : (isHelicalThreadSolid(original) ? [original] : []);
+  const threadHoles = worldChildren
+    .filter((child) => isHelicalThreadSolid(child) && child.hole)
+    .map((child) => solidThreadShape(child));
+  if (threadHoles.length === 0) return withChildren;
+
+  const host: WorkplaneShape = {
+    ...treated,
+    groupedShapes: undefined,
+    groupedBaseWidth: undefined,
+    groupedBaseDepth: undefined,
+    groupedBaseHeight: undefined,
+    hole: false,
+    csg: undefined,
+    threadSpec: undefined,
+    threadFeatures: undefined,
+    threadHistory: undefined,
+  };
+  let recut: WorkplaneShape | null = null;
+  try {
+    recut = await evaluateCsgOpOnOperands([host, ...threadHoles], "subtract", { skipOcct: true });
+  } catch {
+    recut = null;
+  }
+  if (!recut?.importedMesh) return withChildren;
+
+  return canonicalizeShape({
+    ...withChildren,
+    importedMesh: recut.importedMesh,
+    width: recut.width,
+    depth: recut.depth,
+    height: recut.height,
+    size: recut.size,
+    x: recut.x,
+    z: recut.z,
+    elevation: recut.elevation,
+    cadBrep: treated.cadBrep,
+    cadBrepFrame: treated.cadBrepFrame,
+    cadDisplayEdges: treated.cadDisplayEdges,
+    cadDisplayEdgesVersion: treated.cadDisplayEdgesVersion,
+    csg: original.csg ?? withChildren.csg,
   });
 }
 

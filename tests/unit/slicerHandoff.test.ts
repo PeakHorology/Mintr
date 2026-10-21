@@ -30,6 +30,8 @@ describe("slicer handoff", () => {
     expect(slicerFromExeName("bambu-studio.exe")?.format).toBe("3mf");
     expect(slicerFromExeName("prusa-slicer.exe")?.format).toBe("3mf");
     expect(slicerFromExeName("UltiMaker-Cura.exe")?.format).toBe("stl");
+    expect(slicerFromExeName("PreForm.exe")?.id).toBe("formlabs");
+    expect(slicerFromExeName("PreForm.exe")?.format).toBe("stl");
     expect(slicerFromExeName("notepad.exe")).toBeNull();
   });
 
@@ -43,6 +45,7 @@ describe("slicer handoff", () => {
 
   it("downloads a 3MF when slicer handoff is off or nothing is installed", () => {
     expect(resolveSlicerChoice({ mode: "off" }, [orca]).label).toBe("Download 3MF");
+    expect(resolveSlicerChoice({ mode: "off" }, [orca]).caption).toContain("Settings → Printing");
     expect(resolveSlicerChoice({ mode: "auto" }, []).launch).toBe(false);
   });
 
@@ -55,6 +58,24 @@ describe("slicer handoff", () => {
       format: "stl",
     }, [orca]);
     expect(choice.label).toBe("Open in UltiMaker Cura");
+    expect(choice.format).toBe("stl");
+    expect(choice.caption).toContain("STL");
+    expect(choice.caption).not.toContain("Cura treats");
+  });
+
+  it("sends STL to Formlabs PreForm", () => {
+    expect(preferenceFromPath("C:\\Program Files\\Formlabs\\PreForm\\PreForm.exe")).toMatchObject({
+      mode: "app",
+      id: "formlabs",
+      format: "stl",
+    });
+    const choice = resolveSlicerChoice({ mode: "auto" }, [{
+      id: "formlabs",
+      name: "Formlabs PreForm",
+      path: "C:\\Program Files\\Formlabs\\PreForm\\PreForm.exe",
+      format: "stl",
+    }]);
+    expect(choice.label).toBe("Open in Formlabs PreForm");
     expect(choice.format).toBe("stl");
   });
 
@@ -79,16 +100,21 @@ describe("slicer discovery", () => {
     const orcaDir = path.join(root, "OrcaSlicer");
     const curaDir = path.join(root, "UltiMaker Cura 5.8");
     const prusaDir = path.join(root, "Prusa3D", "PrusaSlicer");
+    const preformDir = path.join(root, "Formlabs", "PreForm");
     mkdirSync(orcaDir, { recursive: true });
     mkdirSync(curaDir, { recursive: true });
     mkdirSync(prusaDir, { recursive: true });
+    mkdirSync(preformDir, { recursive: true });
     writeFileSync(path.join(orcaDir, "orca-slicer.exe"), "");
     writeFileSync(path.join(curaDir, "UltiMaker-Cura.exe"), "");
     writeFileSync(path.join(prusaDir, "prusa-slicer.exe"), "");
+    writeFileSync(path.join(preformDir, "PreForm.exe"), "");
 
     const found = detectSlicersIn([root]);
-    expect(found.map((slicer: DetectedSlicer) => slicer.id)).toEqual(["orca", "prusa", "cura"]);
+    expect(found.map((slicer: DetectedSlicer) => slicer.id)).toEqual(["orca", "prusa", "cura", "formlabs"]);
     expect(found.find((slicer: DetectedSlicer) => slicer.id === "cura")?.format).toBe("stl");
+    expect(found.find((slicer: DetectedSlicer) => slicer.id === "formlabs")?.format).toBe("stl");
     expect(identifyExe(path.join(prusaDir, "prusa-slicer.exe")).name).toBe("PrusaSlicer");
+    expect(identifyExe(path.join(preformDir, "PreForm.exe")).name).toBe("Formlabs PreForm");
   });
 });
