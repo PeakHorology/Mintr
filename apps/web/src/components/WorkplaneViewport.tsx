@@ -2875,7 +2875,7 @@ export function WorkplaneViewport({
       dragMeshFingerprintRef.current = meshFingerprint;
       const flash = applyFlashRef.current;
       const wipe = flash?.edgeWipe;
-      const freshFlash = Boolean(flash && flash.nonce !== consumedFlashNonce && flash.ids.length > 0);
+      const freshFlash = flash != null && flash.nonce !== consumedFlashNonce && flash.ids.length > 0;
       pendingEdgeWipe = wipe && freshFlash && !prefersReducedMotion()
         ? { ids: new Set(flash.ids), polylines: wipe.polylines }
         : null;
