@@ -1,15 +1,7 @@
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { toNativeKernelSolid } from "@/lib/nativeKernelProtocol";
 import type { WorkplaneShape } from "@/types/sketchforge";
-
-const repoRoot = path.resolve(__dirname, "../..");
-const releaseExe = path.join(repoRoot, "native/mintr-kernel/build/Release/MintrKernel.exe");
-const distExe = path.join(repoRoot, "native/mintr-kernel/dist/MintrKernel.exe");
-const exe = existsSync(releaseExe) ? releaseExe : distExe;
-const hasExe = existsSync(exe);
+import { hasNativeKernelExe, spawnNativeKernelClient } from "../helpers/nativeKernelChild";
 
 function box(id: string, extra: Partial<WorkplaneShape> = {}): WorkplaneShape {
   return {
@@ -31,52 +23,8 @@ function box(id: string, extra: Partial<WorkplaneShape> = {}): WorkplaneShape {
   };
 }
 
-function kernelClient() {
-  const child = spawn(exe, [], {
-    cwd: path.dirname(exe),
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "ignore"],
-  });
-  let buf = Buffer.alloc(0);
-  const pending = new Map<number, (reply: Record<string, unknown>) => void>();
-  child.stdout?.on("data", (chunk: Buffer) => {
-    buf = Buffer.concat([buf, chunk]);
-    while (buf.length >= 4) {
-      const size = buf.readUInt32LE(0);
-      if (size === 0 || size > 256 * 1024 * 1024) return;
-      if (buf.length < 4 + size) return;
-      const reply = JSON.parse(buf.subarray(4, 4 + size).toString("utf8")) as Record<string, unknown>;
-      buf = Buffer.from(buf.subarray(4 + size));
-      const id = Number(reply.id ?? reply.requestId ?? 0);
-      pending.get(id)?.(reply);
-      pending.delete(id);
-    }
-  });
-  function request(job: Record<string, unknown>, timeoutMs = 45000) {
-    return new Promise<Record<string, unknown>>((resolve, reject) => {
-      const id = Number(job.id ?? job.requestId ?? 0);
-      const timer = setTimeout(() => reject(new Error(`timeout ${String(job.type)}`)), timeoutMs);
-      pending.set(id, (reply) => {
-        clearTimeout(timer);
-        resolve(reply);
-      });
-      const body = Buffer.from(JSON.stringify(job), "utf8");
-      const header = Buffer.alloc(4);
-      header.writeUInt32LE(body.length, 0);
-      child.stdin?.write(header);
-      child.stdin?.write(body);
-    });
-  }
-  return {
-    request,
-    close() {
-      child.kill();
-    },
-  };
-}
-
-describe.skipIf(!hasExe)("Group kernel timing", () => {
-  const client = kernelClient();
+describe.skipIf(!hasNativeKernelExe)("Group kernel timing", () => {
+  const client = spawnNativeKernelClient();
   afterAll(() => client.close());
 
   it("reports ping, hole-cut, and nine-box union cost", async () => {
