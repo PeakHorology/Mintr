@@ -5,8 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { rememberProblem } from "@/lib/problemReport";
 import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
-import { preloadCadModifierWorker } from "@/lib/cadModifierPreload";
-import { loadBrepWithOcct } from "@/lib/brepKernel";
+import { prepareCadRuntime } from "@/lib/cadRuntimeWarmup";
 import { IntroCoach } from "@/components/workplane/IntroCoach";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { toolbarShapeAssets } from "@/lib/shapeCatalog";
@@ -875,8 +874,8 @@ export default function Home() {
     if (preview) {
       setUpdateChecking(false);
       setUpdateOffer({
-        version: "1.1.0",
-        current: "1.0.9",
+        version: "1.2.0",
+        current: "1.1.0",
         notes: UNRELEASED_NOTES.length ? UNRELEASED_NOTES : (RELEASE_NOTES[0]?.items ?? []),
         portable: false,
         canInstall: false,
@@ -1063,10 +1062,7 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      preloadCadModifierWorker(),
-      loadBrepWithOcct().catch(() => undefined),
-    ]).finally(() => {
+    void prepareCadRuntime().finally(() => {
       if (!cancelled) setStartupReady(true);
     });
     return () => {

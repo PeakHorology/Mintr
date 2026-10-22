@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { setActiveDisplayQuality } from "@/lib/displayTessellation";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 
 describe("sphere tessellation", () => {
@@ -9,8 +10,8 @@ describe("sphere tessellation", () => {
   });
 
   it("uses the catalog default and normalizes fractional input", () => {
-    // No explicit steps → follow the active display quality (smooth → 64).
-    expect(sphereTessellation()).toEqual({ widthSegments: 128, heightSegments: 64 });
+    setActiveDisplayQuality("standard");
+    expect(sphereTessellation()).toEqual({ widthSegments: 96, heightSegments: 48 });
     expect(sphereTessellation(27.6)).toEqual({ widthSegments: 56, heightSegments: 28 });
   });
 });

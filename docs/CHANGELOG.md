@@ -4,6 +4,12 @@ Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes
 
 ## Unreleased
 
+## 1.1.0
+
+- Desktop Mintr uses its own CAD engine for Group, fillet, chamfer, hollow, and thread.
+- Sketch extrude, sweep, and STEP import/export use that same engine.
+- Group keeps imported and shared .mintr parts in place.
+
 ## 1.0.9
 
 - Selected and hovered shapes keep a bronze outline, including spheres, fillets, and chamfers.

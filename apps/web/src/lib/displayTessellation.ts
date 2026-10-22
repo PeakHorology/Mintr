@@ -2,7 +2,7 @@ import type { CadModifierQuality } from "@/lib/cadModifierTypes";
 import { hardwareProfile } from "@/lib/desktopHardware";
 import type { DisplayQuality, ShapeKind, WorkplaneShape } from "@/types/sketchforge";
 
-export const DEFAULT_DISPLAY_QUALITY: DisplayQuality = "smooth";
+export const DEFAULT_DISPLAY_QUALITY: DisplayQuality = "standard";
 
 export const DISPLAY_QUALITY_OPTIONS: DisplayQuality[] = ["draft", "standard", "smooth"];
 
@@ -56,6 +56,27 @@ export function setActiveDisplayQuality(quality: DisplayQuality) {
 
 export function getActiveDisplayQuality() {
   return activeDisplayQuality;
+}
+
+/** Run tessellation-sensitive work at a temporary quality, then restore the viewport setting. */
+export function withDisplayQuality<T>(quality: DisplayQuality, fn: () => T): T {
+  const previous = getActiveDisplayQuality();
+  setActiveDisplayQuality(quality);
+  try {
+    return fn();
+  } finally {
+    setActiveDisplayQuality(previous);
+  }
+}
+
+export async function withDisplayQualityAsync<T>(quality: DisplayQuality, fn: () => Promise<T>): Promise<T> {
+  const previous = getActiveDisplayQuality();
+  setActiveDisplayQuality(quality);
+  try {
+    return await fn();
+  } finally {
+    setActiveDisplayQuality(previous);
+  }
 }
 
 export function isCurvedTessellationKind(kind: ShapeKind) {
@@ -193,6 +214,12 @@ export function curvedDisplayTessellation(amount: number, sides: number) {
 export function modifierQualityForDisplay(quality: DisplayQuality = getActiveDisplayQuality()): CadModifierQuality {
   if (quality === "draft") return "draft";
   if (quality === "smooth") return "ultra";
+  return "fine";
+}
+
+/** Live fillet/chamfer preview. Ultra waits for Apply, or a Smooth user picking it in the panel. */
+export function modifierPreviewQualityForDisplay(quality: DisplayQuality = getActiveDisplayQuality()): CadModifierQuality {
+  if (quality === "draft") return "draft";
   return "fine";
 }
 

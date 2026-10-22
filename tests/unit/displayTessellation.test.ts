@@ -3,19 +3,40 @@ import {
   curveSidesForShape,
   curvedDisplayTessellation,
   DEFAULT_DISPLAY_QUALITY,
+  getActiveDisplayQuality,
+  modifierPreviewQualityForDisplay,
   modifierQualityForDisplay,
   resolveHollowCylinderSegments,
   resolveShapeSides,
   resolveShapeSteps,
   setActiveDisplayQuality,
+  withDisplayQuality,
+  withDisplayQualityAsync,
 } from "@/lib/displayTessellation";
 
 describe("display tessellation", () => {
-  it("defaults to smooth display quality", () => {
-    expect(DEFAULT_DISPLAY_QUALITY).toBe("smooth");
+  it("defaults to standard display quality", () => {
+    expect(DEFAULT_DISPLAY_QUALITY).toBe("standard");
     expect(modifierQualityForDisplay("smooth")).toBe("ultra");
     expect(modifierQualityForDisplay("standard")).toBe("fine");
     expect(modifierQualityForDisplay("draft")).toBe("draft");
+    expect(modifierPreviewQualityForDisplay("draft")).toBe("draft");
+    expect(modifierPreviewQualityForDisplay("standard")).toBe("fine");
+    expect(modifierPreviewQualityForDisplay("smooth")).toBe("fine");
+  });
+
+  it("restores viewport quality after a working tessellation wrap", () => {
+    setActiveDisplayQuality("smooth");
+    const sides = withDisplayQuality("draft", () => resolveShapeSides("cylinder", undefined));
+    expect(sides).toBe(64);
+    expect(getActiveDisplayQuality()).toBe("smooth");
+  });
+
+  it("restores viewport quality after an async working tessellation wrap", async () => {
+    setActiveDisplayQuality("smooth");
+    const sides = await withDisplayQualityAsync("draft", async () => resolveShapeSides("cylinder", undefined));
+    expect(sides).toBe(64);
+    expect(getActiveDisplayQuality()).toBe("smooth");
   });
 
   it("upgrades legacy cylinder/sphere tessellation with display quality", () => {

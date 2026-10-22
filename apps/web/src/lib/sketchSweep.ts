@@ -197,7 +197,145 @@ function shapeFromSolid(
   } satisfies WorkplaneShape);
 }
 
+function xyzPoint(point: PlacedPoint) {
+  return { x: point.x, y: point.y, z: point.z };
+}
+
+function serializePlacedLoop(loop: PlacedLoop) {
+  if (loop.circle) {
+    return {
+      circle: {
+        center: xyzPoint(loop.circle.center),
+        radius: loop.circle.radius,
+        axis: xyzPoint(loop.circle.axis),
+      },
+      edges: [],
+    };
+  }
+  return {
+    edges: loop.edges.map((edge) => {
+      if (edge.kind === "line") return { kind: "line", from: xyzPoint(edge.from), to: xyzPoint(edge.to) };
+      if (edge.kind === "arc") return { kind: "arc", from: xyzPoint(edge.from), mid: xyzPoint(edge.mid), to: xyzPoint(edge.to) };
+      return {
+        kind: "bezier",
+        from: xyzPoint(edge.from),
+        c1: xyzPoint(edge.c1),
+        c2: xyzPoint(edge.c2),
+        to: xyzPoint(edge.to),
+      };
+    }),
+  };
+}
+
+export function serializeSketchSweepJob(
+  profile: SketchProfile,
+  doc: SketchDoc | null | undefined,
+  spec: SweepSpec,
+) {
+  const resolved = resolveSketchSweep(profile, doc, spec);
+  if (!resolved) return null;
+  if (resolved.outline.holes.length > 1) return null;
+  const placed = placeSketchSweep(resolved.outline, resolved.path, profile.sketchPlane ?? doc?.plane);
+  if (!placed) return null;
+  return {
+    type: "sketchSweep" as const,
+    simple: placed.simple,
+    pathClosed: placed.pathClosed,
+    outer: serializePlacedLoop(placed.outer),
+    hole: placed.hole ? serializePlacedLoop(placed.hole) : undefined,
+    path: serializePlacedLoop(placed.path),
+  };
+}
+
+export function applyNativeSketchSweepMesh(
+  profile: SketchProfile,
+  doc: SketchDoc | null | undefined,
+  spec: SweepSpec,
+  existing: WorkplaneShape | null | undefined,
+  positions: number[],
+  normals: number[] | undefined,
+  indices: number[],
+  cadBrep: string,
+): WorkplaneShape | null {
+  if (positions.length < 9 || indices.length < 3 || !cadBrep.trim()) return null;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let index = 0; index < positions.length; index += 3) {
+    minX = Math.min(minX, positions[index]);
+    maxX = Math.max(maxX, positions[index]);
+    minY = Math.min(minY, positions[index + 1]);
+    maxY = Math.max(maxY, positions[index + 1]);
+    minZ = Math.min(minZ, positions[index + 2]);
+    maxZ = Math.max(maxZ, positions[index + 2]);
+  }
+  const centerX = (minX + maxX) / 2;
+  const centerZ = (minZ + maxZ) / 2;
+  const local: number[] = [];
+  for (let index = 0; index < positions.length; index += 3) {
+    local.push(positions[index] - centerX, positions[index + 1], positions[index + 2] - centerZ);
+  }
+  const width = Math.max(0.01, maxX - minX);
+  const depth = Math.max(0.01, maxZ - minZ);
+  const height = Math.max(0.01, maxY - minY);
+  const sketchDoc = doc ? mergeProfileIntoDoc(doc, profile) : sketchProfileToDoc(profile, existing?.sketchId ?? existing?.sketchDoc?.id);
+  return canonicalizeShape({
+    id: existing?.id ?? createLocalId("sketch-sweep"),
+    name: existing?.name ?? "Sketch sweep",
+    kind: "mesh",
+    color: existing?.color ?? "#d41721",
+    hole: false,
+    x: centerX,
+    z: centerZ,
+    elevation: minY,
+    size: Math.max(width, depth),
+    width,
+    depth,
+    height,
+    rotation: 0,
+    importedMesh: {
+      positions: local,
+      indices: Array.from(indices),
+      normals: normals && normals.length === positions.length ? Array.from(normals) : undefined,
+      baseWidth: width,
+      baseDepth: depth,
+      baseHeight: height,
+      triangleCount: Math.floor(indices.length / 3),
+      sourceFormat: "json",
+    },
+    cadBrep,
+    cadBrepFrame: { x: centerX, z: centerZ, elevation: minY, width, depth, height },
+    sketchProfile: {
+      ...profile,
+      points: profile.points.map((point) => ({ ...point })),
+      segments: profile.segments.map((segment) => ({ ...segment })),
+    },
+    sketchDoc,
+    sketchId: existing?.sketchId ?? sketchDoc.id,
+    sketchFinish: "sweep",
+    sketchSweep: { ...spec, holeSegmentIds: spec.holeSegmentIds ?? [] },
+    sketchPlane: resolveSketchPlane(profile.sketchPlane ?? doc?.plane),
+  });
+}
+
 export async function shapeFromSketchSweep(
+  profile: SketchProfile,
+  doc: SketchDoc | null | undefined,
+  spec: SweepSpec,
+  existing?: WorkplaneShape | null,
+): Promise<SweepShapeResult> {
+  if (typeof window !== "undefined") {
+    const { runOcctKernelInWorker } = await import("@/lib/occtKernelClient");
+    const result = await runOcctKernelInWorker({ type: "sketchSweep", profile, doc, spec, existing });
+    return result ?? { ok: false, message: "The CAD worker could not finish this sweep" };
+  }
+  return shapeFromSketchSweepLocal(profile, doc, spec, existing);
+}
+
+export async function shapeFromSketchSweepLocal(
   profile: SketchProfile,
   doc: SketchDoc | null | undefined,
   spec: SweepSpec,

@@ -14,7 +14,7 @@ import { simplifiedImportedShapePatch } from "@/lib/meshSimplify";
 import {
   curveSidesForShape,
   curvedDisplayTessellation,
-  modifierQualityForDisplay,
+  modifierPreviewQualityForDisplay,
   resolveHollowCylinderSegments,
   resolveIcosahedronDetail,
   resolveShapeSides,
@@ -107,7 +107,7 @@ import {
 } from "@/lib/importedBrepSource";
 import { meshDataToTransfer, runManifoldBooleanInWorker, warmManifoldBooleanWorker } from "@/lib/manifoldBooleanClient";
 import { cloneWorkplaneShapeSnapshot, compactEdgeTreatmentHistory, edgeTreatmentAppliedFrame, lastEditableEdgeTreatment, restoreShapeBeforeEdgeTreatment } from "@/lib/edgeTreatmentHistory";
-import { appendEditorHistorySnapshot, editorHistoryEntry, expandHistoryShapes, historyShapeMissingTessellation, historyShapeNeedsRemesh, historyStepLabel, hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry, type EditorHistoryState } from "@/lib/editorHistory";
+import { appendEditorHistorySnapshot, editorHistoryEntry, expandHistoryShapes, groupingMotionForSceneChange, historyShapeMissingTessellation, historyShapeNeedsRemesh, historyStepLabel, hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry, type EditorHistoryState } from "@/lib/editorHistory";
 import { faceSampleForSide, faceToFaceMate, layFaceOnWorkplane } from "@/lib/objectSnap";
 import { modelActionLabel, modelActionNeedsConsent, modelGrantKey, readModelsEnabled, writeModelsEnabled } from "@/lib/modelBridge";
 import { createLocalId } from "@/lib/localIds";
@@ -138,7 +138,7 @@ import {
 } from "@/lib/linearPattern";
 import { edgeTreatmentSourceParts } from "@/lib/edgeTreatmentSources";
 import { SHELL_SIDES, shellMaxThickness, type ShellSide } from "@/lib/shellLimits";
-import { clampCutClearance, cutShapeToFit, type CutJoint } from "@/lib/cutToFit";
+import { clampCutClearance, cutShapeToFitBest, type CutJoint } from "@/lib/cutToFit";
 import { splitPlaneFrame, splitShapeWithPlane, type SplitAxis } from "@/lib/splitShape";
 import {
   dissolvePatternFeature,
@@ -367,6 +367,12 @@ import {
 } from "@/lib/sketchforgeMcpProtocol";
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
 import { takePreloadedCadModifierWorker } from "@/lib/cadModifierPreload";
+import {
+  mapNativeCadModifierReply,
+  nativeCadModifierCanHandle,
+  requestNativeCadModifier,
+} from "@/lib/nativeCadModifier";
+import { nativeOcctKernelIsReady, warmNativeOcctKernel } from "@/lib/nativeKernelProtocol";
 import { nearestMetricThreadForDiameter, type MetricThreadDesignation } from "@/lib/metricThreads";
 import { canSeparateThreadScrew, containsHelicalThreadSolid, createThreadShape, DEFAULT_THREAD_DESIGNATION, separateThreadScrewParts } from "@/lib/threadShape";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchImage, SketchPlane, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
@@ -1453,6 +1459,8 @@ export function SketchForgeEditor({
   const edgeRefineRequestRef = useRef<number | null>(null);
   const cadModifierWatchdogRef = useRef<{ requestId: number; phase: CadModifierRequestPhase; timer: number } | null>(null);
   const cadModifierWorkerRestartRef = useRef<() => Worker | null>(() => null);
+  const cadModifierNativeLiveRef = useRef(false);
+  const cadModifierDispatchRef = useRef<(message: CadModifierWorkerResponse) => void>(() => {});
   /** Monotonic remesh generation — stale async remesh results are ignored. */
   const remeshGenerationRef = useRef(0);
   /** Debounced CSG remesh while dragging feature property sliders. */
@@ -1478,6 +1486,9 @@ export function SketchForgeEditor({
       cadModifierWatchdogRef.current = null;
       cadModifierWorkerRef.current?.terminate();
       cadModifierWorkerRef.current = null;
+      cadModifierNativeLiveRef.current = false;
+      cadModifierRequestRef.current += 1;
+      cadModifierPrepareRef.current = cadModifierRequestRef.current;
       cadModifierWorkerRestartRef.current();
       const message = cadModifierTimeoutMessage(phase);
       setEdgeModifier((current) => current ? {
@@ -1696,6 +1707,9 @@ export function SketchForgeEditor({
         setEdgeModifier((current) => current ? { ...current, busy: false, error: message.message } : current);
       }
     }
+    cadModifierDispatchRef.current = (message) => {
+      handleWorkerMessage({ data: message } as MessageEvent<CadModifierWorkerResponse>);
+    };
     cadModifierWorkerRestartRef.current = createWorker;
     return () => {
       disposed = true;
@@ -1718,6 +1732,10 @@ export function SketchForgeEditor({
     cadModifierLatestPreviewRef.current = requestId;
     cadPreviewQueueRef.current.reset();
     cadModifierPrepareRef.current = requestId;
+    if (cadModifierNativeLiveRef.current) {
+      cadModifierNativeLiveRef.current = false;
+      void requestNativeCadModifier({ type: "dispose" }, requestId, 4000);
+    }
     cadModifierWorkerRef.current?.terminate();
     cadModifierWorkerRef.current = null;
     cadModifierBaseShapeRef.current = null;
@@ -1767,10 +1785,16 @@ export function SketchForgeEditor({
         // Allow a real grouping action to retry if an idle preload was interrupted.
         clearManifoldRuntimeCache();
       });
-      // A failed preload drops its cached promise, so the first STEP import/export retries.
-      void import("@/lib/brepKernel")
-        .then(({ loadBrepWithOcct }) => loadBrepWithOcct())
-        .catch(() => undefined);
+      void nativeOcctKernelIsReady().then((native) => {
+        if (native) {
+          warmNativeOcctKernel();
+          return;
+        }
+        // Browser and kernel-less Electron still lazy-load occt-wasm on first exact job.
+        void import("@/lib/brepKernel")
+          .then(({ loadBrepWithOcct }) => loadBrepWithOcct())
+          .catch(() => undefined);
+      });
     };
     if ("requestIdleCallback" in window) {
       const idleId = window.requestIdleCallback(warmBooleanRuntime, { timeout: 1500 });
@@ -2268,7 +2292,7 @@ export function SketchForgeEditor({
     return () => window.clearTimeout(timer);
   }, [projectInteractionActive, syncProjectShapes]);
 
-  const flushPendingFeatureRemeshRef = useRef<(options?: { skipOcct?: boolean; deferHistory?: boolean }) => Promise<void>>(
+  const flushPendingFeatureRemeshRef = useRef<(options?: { skipOcct?: boolean; deferHistory?: boolean; draft?: boolean }) => Promise<void>>(
     async () => {},
   );
 
@@ -2302,8 +2326,13 @@ export function SketchForgeEditor({
         || featureRemeshNeedsExactRef.current;
       if (needsFeatureFlush) {
         void (async () => {
-          // Final OCCT pass after Manifold-only drag remeshes; history via finalize below.
-          await flushPendingFeatureRemeshRef.current({ skipOcct: false, deferHistory: true });
+          flushSync(() => {
+            setNotice("Updating group…");
+          });
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 0);
+          });
+          await flushPendingFeatureRemeshRef.current({ skipOcct: false, deferHistory: true, draft: false });
           finalizeInteractionHistory();
         })();
         return;
@@ -2326,7 +2355,12 @@ export function SketchForgeEditor({
   );
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [cadApplyFlash, setCadApplyFlash] = useState<{ nonce: number; ids: string[]; edgeWipe?: { polylines: number[][] } } | null>(null);
+  const [cadApplyFlash, setCadApplyFlash] = useState<{
+    nonce: number;
+    ids: string[];
+    kind?: "apply" | "combine" | "separate";
+    edgeWipe?: { polylines: number[][] };
+  } | null>(null);
   const patchSketchGuideSettings = useCallback((patch: { showConstruction?: boolean; constructionMode?: boolean }) => {
     setSketchDoc((doc) => ({ ...doc, settings: { ...doc.settings, ...patch } }));
     if (patch.constructionMode !== undefined) {
@@ -2378,13 +2412,18 @@ export function SketchForgeEditor({
     [appendHistorySnapshot, historyBrowse, selectedIds, syncProjectShapes],
   );
 
-  const flashCadApply = useCallback((ids: string | string[] | null | undefined, edgeWipe?: { polylines: number[][] }) => {
+  const flashCadApply = useCallback((
+    ids: string | string[] | null | undefined,
+    edgeWipe?: { polylines: number[][] },
+    kind: "apply" | "combine" | "separate" = "apply",
+  ) => {
     const list = !ids ? [] : Array.isArray(ids) ? ids : [ids];
     if (list.length === 0) return;
     const polylines = edgeWipe?.polylines.filter((line) => line.length >= 6) ?? [];
     setCadApplyFlash({
       nonce: Date.now(),
       ids: list,
+      kind,
       ...(polylines.length > 0 ? { edgeWipe: { polylines } } : {}),
     });
   }, []);
@@ -2539,7 +2578,7 @@ export function SketchForgeEditor({
 
   useEffect(() => () => unsavedPromptResolveRef.current?.(false), []);
 
-  const flushPendingFeatureRemesh = useCallback(async (options?: { skipOcct?: boolean; deferHistory?: boolean }) => {
+  const flushPendingFeatureRemesh = useCallback(async (options?: { skipOcct?: boolean; deferHistory?: boolean; draft?: boolean }) => {
     if (featureRemeshTimerRef.current !== null) {
       window.clearTimeout(featureRemeshTimerRef.current);
       featureRemeshTimerRef.current = null;
@@ -2555,10 +2594,10 @@ export function SketchForgeEditor({
       featureRemeshNeedsExactRef.current = false;
       return;
     }
-    const skipOcct = Boolean(options?.skipOcct);
+    const skipOcct = Boolean(options?.skipOcct) || Boolean(options?.draft);
     const remeshGen = remeshGenerationRef.current + 1;
     remeshGenerationRef.current = remeshGen;
-    const remeshed = await remeshCsgGroup(body, { skipOcct });
+    const remeshed = await remeshCsgGroup(body, { skipOcct, draft: Boolean(options?.draft) });
     if (remeshGen !== remeshGenerationRef.current) return;
     const next = remeshed ?? {
       ...body,
@@ -2848,6 +2887,12 @@ export function SketchForgeEditor({
       rebuilt.sketchDoc = solved.doc;
       rebuilt.hole = shape.hole;
       rebuilt.color = shape.color;
+      flushSync(() => {
+        setNotice("Building sketch…");
+      });
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 0);
+      });
       const exact = await withExactSketchExtrusionSolid(rebuilt, shape.height, {
         cutIntoFace: Boolean(shape.hole && isFaceHostedSketch(shape.sketchPlane, shape.sketchProfile?.faceReferenceLoops)),
       });
@@ -3023,10 +3068,11 @@ export function SketchForgeEditor({
     if (featureRemeshTimerRef.current !== null) {
       window.clearTimeout(featureRemeshTimerRef.current);
     }
-    const delay = projectInteractionActiveRef.current ? 50 : 0;
+    const dragging = projectInteractionActiveRef.current;
+    const delay = dragging ? 200 : 0;
     featureRemeshTimerRef.current = window.setTimeout(() => {
       featureRemeshTimerRef.current = null;
-      void flushPendingFeatureRemesh({ skipOcct: projectInteractionActiveRef.current });
+      void flushPendingFeatureRemesh({ skipOcct: true, draft: dragging });
     }, delay);
   }, [commitShapes, flushPendingFeatureRemesh, selectedShape]);
 
@@ -4306,6 +4352,12 @@ export function SketchForgeEditor({
       }
     }
 
+    flushSync(() => {
+      setNotice("Building sketch…");
+    });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
     extruded = await withExactSketchExtrusionSolid(extruded, height, {
       cutIntoFace: Boolean(asHole && (faceSketch || host)),
     });
@@ -5142,12 +5194,14 @@ export function SketchForgeEditor({
         : "";
     }
     const nextSelection = (entry?.selectedIds ?? []).filter((id) => nextShapes.some((shape) => shape.id === id));
+    const groupingMotion = groupingMotionForSceneChange(shapesRef.current, nextShapes);
     historyIndexRef.current = nextIndex;
     shapesRef.current = nextShapes;
     selectedIdsRef.current = nextSelection;
     setHistoryIndex(nextIndex);
     setShapes(nextShapes);
     setSelectedIds(nextSelection);
+    if (groupingMotion) flashCadApply(groupingMotion.ids, undefined, groupingMotion.kind);
     setActiveFeatureId(null);
     setPlacementRuler((current) => {
       if (!current) return current;
@@ -5166,7 +5220,7 @@ export function SketchForgeEditor({
     } finally {
       historyWriteSuspendedRef.current -= 1;
     }
-  }, [syncProjectShapes]);
+  }, [flashCadApply, syncProjectShapes]);
 
   const undo = useCallback(() => {
     void (async () => {
@@ -5798,28 +5852,63 @@ export function SketchForgeEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [alignMode, faceSnap, layFlat, mirrorMode]);
 
-  const postCadModifierRequest = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = []) => {
-    // Prefer a live worker; cold-start once if a prior crash cleared the ref.
+  const postToCadModifierWorker = (request: CadModifierWorkerPayload, requestId: number, transfer: Transferable[] = []) => {
     const worker = cadModifierWorkerRef.current ?? cadModifierWorkerRestartRef.current();
-    if (!worker) return null;
-    const requestId = cadModifierRequestRef.current + 1;
-    cadModifierRequestRef.current = requestId;
+    if (!worker) return false;
     try {
       worker.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
+      return true;
     } catch {
       // Do not retry with the same transfer list — ArrayBuffers are neutered after a failed postMessage.
       worker.terminate();
       if (cadModifierWorkerRef.current === worker) cadModifierWorkerRef.current = null;
-      return null;
+      return false;
     }
+  };
+
+  const sendCadModifierRequest = (request: CadModifierWorkerPayload, requestId: number, transfer: Transferable[] = []) => {
+    const shellActive = Boolean(shellSessionRef.current);
+    if (!shellActive && nativeCadModifierCanHandle(request, cadModifierNativeLiveRef.current)) {
+      void requestNativeCadModifier(request, requestId, cadModifierRequestTimeoutMs()).then((reply) => {
+        if (!reply || reply.fallback) {
+          if (request.type === "prepare") cadModifierNativeLiveRef.current = false;
+          if (!postToCadModifierWorker(request, requestId, transfer)) {
+            cadModifierDispatchRef.current({
+              type: "error",
+              requestId,
+              message: cadModifierWorkerFailureMessage(),
+              resetSession: true,
+            });
+          }
+          return;
+        }
+        if (request.type === "prepare") cadModifierNativeLiveRef.current = true;
+        if (request.type === "dispose") cadModifierNativeLiveRef.current = false;
+        cadModifierDispatchRef.current(mapNativeCadModifierReply(reply, requestId));
+      }).catch(() => {
+        cadModifierNativeLiveRef.current = false;
+        if (!postToCadModifierWorker(request, requestId, transfer)) {
+          cadModifierDispatchRef.current({
+            type: "error",
+            requestId,
+            message: cadModifierWorkerFailureMessage(),
+            resetSession: true,
+          });
+        }
+      });
+      return true;
+    }
+    return postToCadModifierWorker(request, requestId, transfer);
+  };
+
+  const postCadModifierRequest = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = []) => {
+    const requestId = cadModifierRequestRef.current + 1;
+    cadModifierRequestRef.current = requestId;
+    if (!sendCadModifierRequest(request, requestId, transfer)) return null;
     return requestId;
   }, []);
 
   const postCadModifierRequestAsync = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = [], timeoutMs = 20000) => {
-    const worker = cadModifierWorkerRef.current ?? cadModifierWorkerRestartRef.current();
-    if (!worker) {
-      return Promise.reject(new Error("The CAD worker is not ready"));
-    }
     const requestId = cadModifierRequestRef.current + 1;
     cadModifierRequestRef.current = requestId;
     return new Promise<CadModifierWorkerResponse>((resolve, reject) => {
@@ -5830,6 +5919,7 @@ export function SketchForgeEditor({
         pendingRequests.forEach((pending) => window.clearTimeout(pending.timer));
         cadModifierWorkerRef.current?.terminate();
         cadModifierWorkerRef.current = null;
+        cadModifierNativeLiveRef.current = false;
         const invalidationId = cadModifierRequestRef.current + 1;
         cadModifierRequestRef.current = invalidationId;
         cadModifierLatestPreviewRef.current = invalidationId;
@@ -5846,12 +5936,10 @@ export function SketchForgeEditor({
         pendingRequests.forEach((pending) => pending.reject(new Error("Timed out waiting for the CAD worker; the worker was restarted")));
       }, timeoutMs);
       cadModifierPendingRef.current.set(requestId, { resolve, reject, timer });
-      try {
-        worker.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
-      } catch (error) {
+      if (!sendCadModifierRequest(request, requestId, transfer)) {
         window.clearTimeout(timer);
         cadModifierPendingRef.current.delete(requestId);
-        reject(error instanceof Error ? error : new Error("The CAD worker rejected the request"));
+        reject(new Error("The CAD worker is not ready"));
       }
     });
   }, []);
@@ -5861,7 +5949,7 @@ export function SketchForgeEditor({
     setNotice("Edge modifier cancelled");
   }, [invalidateCadModifierSession]);
 
-  const startEdgeModifier = useCallback((kind: CadModifierKind) => {
+  const startEdgeModifier = useCallback(async (kind: CadModifierKind) => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
       setNotice(`Select one unlocked solid to ${kind}`);
       return;
@@ -5904,28 +5992,33 @@ export function SketchForgeEditor({
     cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
     cadModifierSourcePartsRef.current = sourceParts;
     clearEditorToolSessions("fillet");
-    setEdgeModifier({
-      kind,
-      edges: [],
-      selectedEdgeIds: [],
-      amount: editRecipe?.amount ?? defaultAmount,
-      sharpAngle: editRecipe?.sharpAngle ?? 12,
-      chamferAngle: editRecipe?.chamferAngle ?? 45,
-      quality: "standard",
-      tangentChain: true,
-      preserveEdgeSize: selectedShape.edgeResizeMode === "preserve",
-      busy: true,
-      prepared: false,
-      error: null,
-      preview: null,
-      componentPreviews: [],
-      editRecipe,
+    flushSync(() => {
+      setEdgeModifier({
+        kind,
+        edges: [],
+        selectedEdgeIds: [],
+        amount: editRecipe?.amount ?? defaultAmount,
+        sharpAngle: editRecipe?.sharpAngle ?? 12,
+        chamferAngle: editRecipe?.chamferAngle ?? 45,
+        quality: modifierPreviewQualityForDisplay(workspaceSettingsRef.current.displayQuality),
+        tangentChain: true,
+        preserveEdgeSize: selectedShape.edgeResizeMode === "preserve",
+        busy: true,
+        prepared: false,
+        error: null,
+        preview: null,
+        componentPreviews: [],
+        editRecipe,
+      });
+      setNotice(editRecipe
+        ? `Editing existing ${kind}`
+        : containsHelicalThreadSolid(workingShape)
+          ? `Preparing ${kind} without thread geometry`
+          : `Preparing ${kind} edges in the CAD worker`);
     });
-    setNotice(editRecipe
-      ? `Editing existing ${kind}`
-      : containsHelicalThreadSolid(workingShape)
-        ? `Preparing ${kind} without thread geometry`
-        : `Preparing ${kind} edges in the CAD worker`);
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
     const parts: CadModifierMeshPart[] = partInputs.map((part) => {
       if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
       if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
@@ -6412,31 +6505,35 @@ export function SketchForgeEditor({
 
   const applySplit = useCallback(() => {
     if (!splitSession) return;
-    const shape = shapesRef.current.find((entry) => entry.id === splitSession.shapeId);
+    const session = splitSession;
+    const shape = shapesRef.current.find((entry) => entry.id === session.shapeId);
     if (!shape || shape.locked) {
       setSplitSession(null);
       return;
     }
-    try {
-      const parts = cutShapeToFit(shape, {
-        axis: splitSession.axis,
-        offset: splitSession.offset,
-        joint: splitSession.joint,
-        clearance: clampCutClearance(splitSession.clearance),
-      });
-      if (parts.length < 2) {
-        setNotice("Move the line through the object. The cut has to cross it.");
-        return;
+    setNotice("Splitting…");
+    void (async () => {
+      try {
+        const parts = await cutShapeToFitBest(shape, {
+          axis: session.axis,
+          offset: session.offset,
+          joint: session.joint,
+          clearance: clampCutClearance(session.clearance),
+        });
+        if (parts.length < 2) {
+          setNotice("Move the line through the object. The cut has to cross it.");
+          return;
+        }
+        commitShapes(
+          shapesRef.current.flatMap((entry) => entry.id === shape.id ? parts : [entry]),
+          parts.map((part) => part.id),
+          session.joint === "none" ? "Split" : "Cut to fit",
+        );
+        setSplitSession(null);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Could not split that object");
       }
-      commitShapes(
-        shapesRef.current.flatMap((entry) => entry.id === shape.id ? parts : [entry]),
-        parts.map((part) => part.id),
-        splitSession.joint === "none" ? "Split" : "Cut to fit",
-      );
-      setSplitSession(null);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not split that object");
-    }
+    })();
   }, [commitShapes, splitSession]);
 
   const cancelSplit = useCallback(() => {
@@ -6838,6 +6935,13 @@ export function SketchForgeEditor({
       return;
     }
 
+    flushSync(() => {
+      setNotice(groupable.length >= 8 ? `Grouping ${groupable.length} solids…` : "Grouping…");
+    });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+
     const sourceFingerprint = projectShapesFingerprint(shapesRef.current);
     const sourceProjectId = projectInfoRef.current.projectId;
     const result = await buildGroupedShapeFromSelection(groupable);
@@ -6862,7 +6966,7 @@ export function SketchForgeEditor({
     }
     const groupedIds = new Set(groupable.map((shape) => shape.id));
     commitShapes([...shapesRef.current.filter((shape) => !groupedIds.has(shape.id)), linkedGroup], linkedGroup.id, `Grouped ${groupable.length} shapes`);
-    flashCadApply(linkedGroup.id);
+    flashCadApply(linkedGroup.id, undefined, "combine");
     setActiveFeatureId(null);
     if (result.qualityNotice) {
       setNotice(result.qualityNotice);
@@ -6895,8 +6999,9 @@ export function SketchForgeEditor({
       linked.id,
       `Tied ${groupable.length} shapes`,
     );
+    flashCadApply(linked.id, undefined, "combine");
     setActiveFeatureId(null);
-  }, [commitShapes, selectedShapes]);
+  }, [commitShapes, flashCadApply, selectedShapes]);
 
   const intersectSelected = useCallback(async () => {
     const groupable = selectedShapes.filter((shape) => !shape.locked);
@@ -6906,6 +7011,13 @@ export function SketchForgeEditor({
       setNotice("Select at least one solid and one hole for Intersection");
       return;
     }
+
+    flushSync(() => {
+      setNotice("Intersecting…");
+    });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
 
     const sourceFingerprint = projectShapesFingerprint(shapesRef.current);
     const sourceProjectId = projectInfoRef.current.projectId;
@@ -6931,7 +7043,7 @@ export function SketchForgeEditor({
       return;
     }
     commitShapes([...remainingShapes, intersection], intersection.id, `Intersected ${groupable.length} shapes`);
-    flashCadApply(intersection.id);
+    flashCadApply(intersection.id, undefined, "combine");
     setActiveFeatureId(null);
   }, [commitShapes, flashCadApply, selectedShapes]);
 
@@ -6949,7 +7061,8 @@ export function SketchForgeEditor({
       restored.map((shape) => shape.id),
       "Ungrouped last group",
     );
-  }, [commitShapes, selectedIds, selectedShapes, shapes]);
+    flashCadApply(restored.map((shape) => shape.id), undefined, "separate");
+  }, [commitShapes, flashCadApply, selectedIds, selectedShapes, shapes]);
 
   const separateSelectedParts = useCallback(() => {
     if (selectedShapes.length !== 1 || !selectedShape) {
@@ -7341,6 +7454,7 @@ export function SketchForgeEditor({
           throw new Error(result.failureNotice);
         }
         commitShapes([...currentShapes().filter((shape) => !ids.has(shape.id)), result.group], result.group.id, `MCP grouped ${groupable.length} objects`);
+        flashCadApply(result.group.id, undefined, "combine");
         return { object: mcpShapeSummary(result.group) };
       }
 
@@ -7360,6 +7474,7 @@ export function SketchForgeEditor({
           restored.map((shape) => shape.id),
           "MCP ungrouped last group",
         );
+        flashCadApply(restored.map((shape) => shape.id), undefined, "separate");
         return { objects: restored.map(mcpShapeSummary) };
       }
 
@@ -7380,6 +7495,7 @@ export function SketchForgeEditor({
           linked.id,
           `Tied ${groupable.length} shapes`,
         );
+        flashCadApply(linked.id, undefined, "combine");
         return { object: mcpShapeSummary(linked) };
       }
 
@@ -7404,6 +7520,7 @@ export function SketchForgeEditor({
           throw new Error(result.failureNotice);
         }
         commitShapes([...remaining, result.group], result.group.id, `Intersected ${groupable.length} shapes`);
+        flashCadApply(result.group.id, undefined, "combine");
         return { object: mcpShapeSummary(result.group) };
       }
 
@@ -7603,6 +7720,7 @@ export function SketchForgeEditor({
           throw new Error(result.failureNotice);
         }
         commitShapes([...remainingShapes, result.group], result.group.id, "MCP boolean cut complete");
+        flashCadApply(result.group.id, undefined, "combine");
         return { object: mcpShapeSummary(result.group) };
       }
 

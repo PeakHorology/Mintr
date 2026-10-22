@@ -93,7 +93,7 @@ function printerKindLabel(kind: PrinterKind) {
 const SETTING_TIPS = {
   showShadows: "Cast soft shadows from shapes onto the workplane to make depth easier to read.",
   showGrid: "Show or hide the grid lines drawn on the workplane.",
-  displayQuality: "How densely curved surfaces are tessellated in the viewport and for booleans. Smooth looks rounder; Draft is faster on large scenes.",
+  displayQuality: "How densely curved surfaces are tessellated in the viewport and for booleans. Standard is the everyday setting. Smooth looks rounder and is heavier; Draft is faster on large scenes.",
   cruiseShapes: "Keep camera orbit and pan available while placing a new shape so you can reframe mid-add.",
   zoomSpeed: "How quickly the camera zooms when you scroll the mouse wheel.",
   units: "Choose metric, imperial, or brick studs for displayed measurements.",

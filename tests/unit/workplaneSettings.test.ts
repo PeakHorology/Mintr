@@ -61,6 +61,7 @@ describe("workplane settings helpers", () => {
     expect(normalizeWorkspaceSettings({ accuracy: 9 }, fallback).accuracy).toBe(fallback.accuracy);
     expect(normalizeWorkspaceSettings({}, fallback).displayQuality).toBe(fallback.displayQuality);
     expect(normalizeWorkspaceSettings({ displayQuality: "ultra" as never }, fallback).displayQuality).toBe(fallback.displayQuality);
+    expect(DEFAULT_WORKPLANE_WORKSPACE.displayQuality).toBe("standard");
     expect(DEFAULT_WORKPLANE_WORKSPACE.peakcadPro).toBe(false);
     expect(peakcadProEnabled(normalizeWorkspaceSettings({}, fallback))).toBe(false);
     expect(peakcadProEnabled(normalizeWorkspaceSettings({ peakcadPro: true }, fallback))).toBe(true);

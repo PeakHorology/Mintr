@@ -5,6 +5,7 @@ import {
   compactHistoryShape,
   editorHistoryEntry,
   expandHistoryShapes,
+  groupingMotionForSceneChange,
   historyShapeMissingTessellation,
   historyShapeNeedsRemesh,
   historyStepLabel,
@@ -262,6 +263,43 @@ describe("editor history snapshots", () => {
     const restored = expandHistoryShapes(entry.shapes, entry.meshVault);
     expect(restored[0].importedMesh?.positions).toEqual(shape.importedMesh?.positions);
     expect(restored[0].importedMesh?.brepStep).toBe("ISO-10303-21;");
+  });
+
+  it("plays combine when several bodies become a group", () => {
+    const a = box({ id: "a" });
+    const b = box({ id: "b", x: 30 });
+    const group = box({ id: "group", groupedShapes: [a, b] });
+    expect(groupingMotionForSceneChange([a, b], [group])).toEqual({
+      ids: ["group"],
+      kind: "combine",
+    });
+  });
+
+  it("plays separate when a group becomes several bodies", () => {
+    const a = box({ id: "a" });
+    const b = box({ id: "b", x: 30 });
+    const group = box({ id: "group", groupedShapes: [a, b] });
+    expect(groupingMotionForSceneChange([group], [a, b])).toEqual({
+      ids: ["a", "b"],
+      kind: "separate",
+    });
+  });
+
+  it("does not treat placing or deleting a solid as grouping motion", () => {
+    const a = box({ id: "a" });
+    const b = box({ id: "b", x: 30 });
+    expect(groupingMotionForSceneChange([a], [a, b])).toBeNull();
+    expect(groupingMotionForSceneChange([a, b], [a])).toBeNull();
+  });
+
+  it("plays combine when a solid and hole become a group", () => {
+    const solid = box({ id: "solid" });
+    const hole = box({ id: "hole", hole: true });
+    const group = box({ id: "group", groupedShapes: [solid, hole] });
+    expect(groupingMotionForSceneChange([solid, hole], [group])).toEqual({
+      ids: ["group"],
+      kind: "combine",
+    });
   });
 
   it("keeps a step name through a saved history entry", () => {

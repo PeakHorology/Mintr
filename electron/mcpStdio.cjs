@@ -588,7 +588,7 @@ async function handleMessage(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "peakcad", version: "1.0.9" },
+        serverInfo: { name: "peakcad", version: "1.1.0" },
       });
       return;
     }

@@ -140,7 +140,7 @@ export function getHardwareProfile(): HardwareProfile {
     historyBytes: 512 * 1024 * 1024,
     sketchHistoryEntries: 250,
     thumbnailSize: 1280,
-    modifierTimeoutMs: 180_000,
+    modifierTimeoutMs: 45_000,
     // One primary + at most one warm spare (spares do not take jobs).
     cadWorkerCount: 2,
     maxShapeSides: 1024,

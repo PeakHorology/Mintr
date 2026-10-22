@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { booleanMeshShape, punchThroughCutter } from "@/lib/editorBoolean";
+import { booleanMeshShape, prepareBooleanOperands, punchThroughCutter } from "@/lib/editorBoolean";
 import { meshForShape, type MeshData } from "@/lib/editorShapeMesh";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
@@ -105,6 +105,16 @@ describe("punchThroughCutter", () => {
     expect(z.min).toBeLessThan(-5.2);
     expect(z.max).toBeGreaterThan(5.2);
     expect(punched.width).toBe(4);
+  });
+
+  it("grows flush holes before an OCCT subtract and leaves unions alone", () => {
+    const solid = shape({ id: "solid", kind: "box", hole: false });
+    const hole = shape({ id: "hole", hole: true, width: 8, depth: 8, size: 8 });
+    const subtracted = prepareBooleanOperands([solid, hole], "subtract");
+    const fused = prepareBooleanOperands([solid, hole], "union");
+    expect(subtracted[1]?.height ?? 0).toBeGreaterThan(hole.height);
+    expect(subtracted[1]?.elevation ?? 0).toBeLessThan(hole.elevation ?? 0);
+    expect(fused[1]).toBe(hole);
   });
 
   it("cuts a flush cylinder all the way through", () => {

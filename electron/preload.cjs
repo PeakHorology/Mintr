@@ -68,3 +68,8 @@ contextBridge.exposeInMainWorld("peakcadReport", {
   feedback: () => ipcRenderer.invoke("peakcad:send-feedback"),
   text: () => ipcRenderer.invoke("peakcad:crash-text"),
 });
+
+contextBridge.exposeInMainWorld("peakcadKernel", {
+  ready: () => ipcRenderer.invoke("peakcad:kernel-ready"),
+  request: (job, timeoutMs) => ipcRenderer.invoke("peakcad:kernel-request", { job, timeoutMs }),
+});

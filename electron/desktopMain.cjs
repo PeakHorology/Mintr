@@ -6,6 +6,7 @@ const { allowPath, findPeakcadArg, registerProjectFileIpc } = require("./project
 const { createModelServer } = require("./mcpBridge.cjs");
 const { registerUpdateIpc } = require("./updateCheck.cjs");
 const { registerSlicerIpc } = require("./slicerIpc.cjs");
+const { registerKernelIpc, stopKernel } = require("./kernelHost.cjs");
 const { installCrashReports, openFeedback, openProblemReport, registerCrashReportIpc } = require("./crashReport.cjs");
 
 installCrashReports();
@@ -506,6 +507,7 @@ if (!gotSingleInstanceLock) {
     }
     registerProjectFileIpc(app, () => mainWindow);
     registerSlicerIpc(ipcMain, () => mainWindow);
+    registerKernelIpc(ipcMain);
     registerUpdateIpc(ipcMain);
     registerCrashReportIpc(ipcMain);
     installFileMenu();
@@ -525,6 +527,7 @@ app.on("window-all-closed", () => {
 // Not before-quit: that fires before the window's unsaved-changes prompt, which can cancel the quit
 // (Cancel) or keep the window open while Save runs, and the page still needs its asset server then.
 app.on("will-quit", () => {
+  stopKernel();
   if (server) {
     server.close();
     server = null;

@@ -51,6 +51,7 @@ import {
 } from "@/lib/stepQuality";
 import { resolveEditableSketchShape } from "@/lib/sketch";
 import { DEFAULT_TEXT_FONT, TEXT_FONT_OPTIONS } from "@/lib/textFonts";
+import { measureWorkplaneShape, type ShapeMeasure } from "@/lib/shapeMeasure";
 import type { GridSize, MeasurementAccuracy, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 const MAX_SHAPE_STEPS = 128;
@@ -730,6 +731,7 @@ export function ShapeInspector({
   const [keepPercent, setKeepPercent] = useState(50);
   const [reducing, setReducing] = useState(false);
   const [draftColor, setDraftColor] = useState(solidColor);
+  const [measure, setMeasure] = useState<ShapeMeasure | null>(null);
   const colorPickingRef = useRef(false);
 
   // Do not call onInteractionActiveChange(false) on unmount — switching selection
@@ -740,6 +742,27 @@ export function ShapeInspector({
       setDraftColor(solidColor);
     }
   }, [solidColor]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void measureWorkplaneShape(inspectTarget).then((value) => {
+        if (!cancelled) setMeasure(value);
+      });
+    }, 280);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    inspectTarget.id,
+    inspectTarget.kind,
+    inspectTarget.width,
+    inspectTarget.depth,
+    inspectTarget.height,
+    inspectTarget.importedMesh?.brepStep,
+    inspectTarget.cadBrep,
+  ]);
 
   return (
     <aside className="shape-inspector" aria-label={`${inspectTarget.name} shape settings`} onPointerDown={(event) => event.stopPropagation()}>
@@ -939,6 +962,16 @@ export function ShapeInspector({
               <p className="mesh-reduce-scope">(For STL exports only)</p>
             </>
           )}
+        </div>
+      ) : null}
+
+      {measure ? (
+        <div className="mesh-reduce" aria-label="Solid volume and area">
+          <p className="mesh-reduce-count">
+            Volume {formatMeasurementNumber(measure.volume, workspace.accuracy)} mm³
+            {" · "}
+            Area {formatMeasurementNumber(measure.area, workspace.accuracy)} mm²
+          </p>
         </div>
       ) : null}
 

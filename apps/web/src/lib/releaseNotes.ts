@@ -12,6 +12,14 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.0",
+    items: [
+      "Desktop Mintr uses its own CAD engine for Group, fillet, chamfer, hollow, and thread.",
+      "Sketch extrude, sweep, and STEP import/export use that same engine.",
+      "Group keeps imported and shared .mintr parts in place.",
+    ],
+  },
+  {
     version: "1.0.9",
     items: [
       "Selected and hovered shapes keep a bronze outline, including spheres, fillets, and chamfers.",

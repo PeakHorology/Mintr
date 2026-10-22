@@ -25,6 +25,20 @@ export async function withExactSketchExtrusionSolid(
 ): Promise<WorkplaneShape> {
   if (shape.kind !== "mesh" || shape.sketchFinish !== "extrude" || !shape.sketchProfile) return shape;
   if (shape.edgeTreatments?.length || shape.cadBrep) return shape;
+  if (typeof window !== "undefined") {
+    const { runOcctKernelInWorker } = await import("@/lib/occtKernelClient");
+    return (await runOcctKernelInWorker({ type: "sketchExtrude", shape, distance, cutIntoFace: options?.cutIntoFace })) ?? shape;
+  }
+  return withExactSketchExtrusionSolidLocal(shape, distance, options);
+}
+
+export async function withExactSketchExtrusionSolidLocal(
+  shape: WorkplaneShape,
+  distance: number,
+  options?: { cutIntoFace?: boolean },
+): Promise<WorkplaneShape> {
+  if (shape.kind !== "mesh" || shape.sketchFinish !== "extrude" || !shape.sketchProfile) return shape;
+  if (shape.edgeTreatments?.length || shape.cadBrep) return shape;
   const plane = resolveSketchPlane(shape.sketchPlane ?? shape.sketchProfile.sketchPlane);
   if (isCylinderSketchPlane(plane)) return shape;
   const paths = materialOutlines(shape.sketchProfile);
@@ -75,6 +89,119 @@ export async function withExactSketchExtrusionSolid(
   } catch {
     return shape;
   }
+}
+
+export function serializeSketchExtrudeJob(
+  shape: WorkplaneShape,
+  distance: number,
+  cutIntoFace?: boolean,
+) {
+  if (shape.kind !== "mesh" || shape.sketchFinish !== "extrude" || !shape.sketchProfile) return null;
+  const plane = resolveSketchPlane(shape.sketchPlane ?? shape.sketchProfile.sketchPlane);
+  if (isCylinderSketchPlane(plane)) return null;
+  const paths = materialOutlines(shape.sketchProfile);
+  if (paths.length === 0) return null;
+  const vAxis = sketchPlaneVAxis(plane);
+  const sorted = [...paths].sort((a, b) => pathArea(b) - pathArea(a));
+  const loops = sorted
+    .map((path) => serializeSketchLoop(path, shape.sketchDoc))
+    .filter((loop): loop is NonNullable<typeof loop> => loop !== null);
+  if (loops.length === 0) return null;
+  return {
+    type: "sketchExtrude" as const,
+    distance: Math.max(0.05, distance),
+    cutIntoFace: cutIntoFace ?? Boolean(shape.hole && isFaceHostedSketch(plane, shape.sketchProfile.faceReferenceLoops)),
+    plane: {
+      origin: [plane.origin.x, plane.origin.y, plane.origin.z],
+      uAxis: [plane.uAxis.x, plane.uAxis.y, plane.uAxis.z],
+      vAxis: [vAxis.x, vAxis.y, vAxis.z],
+      normal: [plane.normal.x, plane.normal.y, plane.normal.z],
+    },
+    loops,
+  };
+}
+
+export function applyNativeSketchExtrudeMesh(
+  shape: WorkplaneShape,
+  positions: number[],
+  normals: number[] | undefined,
+  indices: number[],
+  cadBrep: string,
+): WorkplaneShape | null {
+  const placed = meshInLocalFrame(
+    Float32Array.from(positions),
+    Float32Array.from(normals ?? []),
+    Uint32Array.from(indices),
+  );
+  if (!placed || !cadBrep.trim()) return null;
+  return canonicalizeShape({
+    ...shape,
+    x: placed.centerX,
+    z: placed.centerZ,
+    elevation: placed.elevation,
+    width: placed.width,
+    depth: placed.depth,
+    height: placed.height,
+    size: Math.max(placed.width, placed.depth),
+    importedMesh: {
+      positions: placed.positions,
+      normals: placed.normals,
+      indices: placed.indices,
+      baseWidth: placed.width,
+      baseDepth: placed.depth,
+      baseHeight: placed.height,
+      triangleCount: Math.floor(placed.indices.length / 3),
+      sourceFormat: "json",
+    },
+    cadBrep,
+    cadBrepFrame: {
+      x: placed.centerX,
+      z: placed.centerZ,
+      elevation: placed.elevation,
+      width: placed.width,
+      depth: placed.depth,
+      height: placed.height,
+    },
+  });
+}
+
+function serializeSketchLoop(path: OrderedSketchPath, doc: SketchDoc | undefined) {
+  const circleOwner = soleCurve(path);
+  const circle = circleOwner ? circleGeometry(doc, circleOwner) : null;
+  if (circle) return { kind: "circle" as const, cx: circle.cx, cz: circle.cz, radius: circle.radius };
+  const sampled = circleFromClosedPath(path);
+  if (sampled) return { kind: "circle" as const, cx: sampled.centerX, cz: sampled.centerZ, radius: sampled.radius };
+  const start = path.steps[0]?.from ?? path.points[0];
+  if (!start || (path.steps.length < 3 && path.points.length < 3)) return null;
+  const steps: Array<Record<string, unknown>> = [];
+  for (let index = 0; index < path.steps.length; index += 1) {
+    const step = path.steps[index];
+    const owner = curveStandInOwner(step.segment.id);
+    const arc = owner ? arcGeometry(doc, owner) : null;
+    if (arc) {
+      let end = step.to;
+      while (index + 1 < path.steps.length && curveStandInOwner(path.steps[index + 1].segment.id) === owner) {
+        index += 1;
+        end = path.steps[index].to;
+      }
+      const fromEntityStart = Math.hypot(step.from.x - arc.start.x, step.from.z - arc.start.z)
+        <= Math.hypot(step.from.x - arc.end.x, step.from.z - arc.end.z);
+      const mid = arcMidpoint(arc.center, step.from, end, fromEntityStart ? arc.ccw : !arc.ccw);
+      steps.push({ kind: "arc", to: [end.x, end.z], mid: [mid.x, mid.z] });
+      continue;
+    }
+    const forward = step.segment.startId === step.from.id;
+    const raw1 = forward ? step.from.handleOut : step.from.handleIn;
+    const raw2 = forward ? step.to.handleIn : step.to.handleOut;
+    if (step.segment.kind && step.segment.kind !== "line" && (raw1 || raw2)) {
+      const c1 = raw1 ?? step.from;
+      const c2 = raw2 ?? step.to;
+      steps.push({ kind: "bezier", to: [step.to.x, step.to.z], c1: [c1.x, c1.z], c2: [c2.x, c2.z] });
+    } else {
+      steps.push({ kind: "line", to: [step.to.x, step.to.z] });
+    }
+  }
+  return { kind: "wire" as const, start: [start.x, start.z], steps };
 }
 
 function buildExactExtrusion(

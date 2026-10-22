@@ -4,6 +4,8 @@ import { createLocalId } from "@/lib/localIds";
 import { loadBrepWithOcct, type Brep } from "@/lib/brepKernel";
 import { quaternionToAxisAngleDegrees, seatRotationForIndexedMeshes } from "@/lib/meshSeatOrientation";
 import { registerPendingImportedBrep } from "@/lib/importedBrepSource";
+import { hasNativeOcctKernel, nativeKernelWindow } from "@/lib/nativeKernelProtocol";
+import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
 
 const STEP_EXTENSIONS = new Set(["step", "stp"]);
 const MIN_IMPORT_DIMENSION = 0.01;
@@ -369,11 +371,43 @@ async function finishImport(collected: CollectedBody[], hooks?: StepImportHooks)
   return shapesFromCollected(collected, hooks);
 }
 
+async function collectedFromNative(fileName: string, buffer: ArrayBuffer, hooks?: StepImportHooks): Promise<CollectedBody[] | null> {
+  const api = nativeKernelWindow()?.peakcadKernel;
+  if (!api?.request) return null;
+  const step = new TextDecoder("latin1").decode(new Uint8Array(buffer));
+  try {
+    const reply = await api.request({ id: Date.now(), type: "importStep", fileName, step }, cadModifierRequestTimeoutMs());
+    if (!reply || reply.ok === false || reply.fallback || !reply.bodies?.length) return null;
+    const preview = previewCollector(hooks);
+    const collected: CollectedBody[] = [];
+    for (const body of reply.bodies) {
+      const vertices = Float32Array.from(body.positions ?? []);
+      const triangles = Uint32Array.from(body.indices ?? []);
+      const normals = Float32Array.from(body.normals ?? []);
+      const tess = { vertices, normals, triangles };
+      if (!usableTessellation(tess) || !body.stepText?.trim()) continue;
+      collected.push({
+        name: body.name,
+        tess,
+        exact: { kind: "text", text: body.stepText.trim() },
+      });
+      preview.add(body.name, tess);
+    }
+    return collected.length > 0 ? collected : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function importedShapesFromStep(
   fileName: string,
   buffer: ArrayBuffer,
   hooks?: StepImportHooks,
 ): Promise<WorkplaneShape[]> {
+  if (hasNativeOcctKernel()) {
+    const native = await collectedFromNative(fileName, buffer, hooks);
+    if (native) return finishImport(native, hooks);
+  }
   // Tests and any environment without a window mesh on this thread. The browser hands each
   // body to a worker so the window can keep drawing parts as they finish.
   if (typeof window !== "undefined" && typeof Worker !== "undefined") {

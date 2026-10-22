@@ -435,3 +435,33 @@ export function hydrateEditorHistoryState(
     return { entries: [fallback], index: 0 };
   }
 }
+
+export type GroupingMotionKind = "combine" | "separate";
+
+function sceneMotionIds(shapes: WorkplaneShape[]) {
+  return shapes.filter((shape) => !shape.construction && !shape.hidden);
+}
+
+/** Undo/redo of Group, Tie, Intersect, or Ungroup — not a newly placed solid. */
+export function groupingMotionForSceneChange(
+  from: WorkplaneShape[],
+  to: WorkplaneShape[],
+): { ids: string[]; kind: GroupingMotionKind } | null {
+  const fromIds = new Set(from.map((shape) => shape.id));
+  const toIds = new Set(to.map((shape) => shape.id));
+  const appeared = sceneMotionIds(to).filter((shape) => !fromIds.has(shape.id));
+  const disappeared = sceneMotionIds(from).filter((shape) => !toIds.has(shape.id));
+  if (!appeared.length) return null;
+
+  const appearedGroups = appeared.filter((shape) => (shape.groupedShapes?.length ?? 0) >= 2);
+  const disappearedGroups = disappeared.filter((shape) => (shape.groupedShapes?.length ?? 0) >= 2);
+  if (appearedGroups.length && disappeared.length >= 2) {
+    return { ids: appearedGroups.map((shape) => shape.id), kind: "combine" };
+  }
+  if (disappearedGroups.length && appeared.length >= 2) {
+    const ids = appeared.filter((shape) => !shape.hole).map((shape) => shape.id);
+    if (!ids.length) return null;
+    return { ids, kind: "separate" };
+  }
+  return null;
+}

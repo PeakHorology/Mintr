@@ -55,6 +55,10 @@ Thumbs.db
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
 
+# Native CAD kernel build output (source stays tracked)
+native/mintr-kernel/build/
+native/mintr-kernel/dist/
+
 # Staged WASM runtimes (copied from node_modules by scripts/copy-occt-wasm.mjs)
 apps/web/public/occt/
 apps/web/public/manifold.js

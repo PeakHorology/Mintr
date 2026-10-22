@@ -3,6 +3,7 @@ import {
   CAD_MODIFIER_MAX_SHARP_ANGLE,
   CAD_MODIFIER_REQUEST_TIMEOUT_MS,
   CAD_MODIFIER_RUNTIME_BASE,
+  cadModifierRequestTimeoutMs,
   cadModifierTimeoutMessage,
   edgeModifierSelectionStatus,
 } from "@/lib/cadModifierRuntime";
@@ -19,9 +20,10 @@ describe("CAD modifier runtime state", () => {
   });
 
   it("sets a bounded preparation wait and an actionable compatibility error", () => {
-    // Browser profile ~30s; desktop hardware profile allows up to 180s.
+    // Browser profile ~30s; capable desktops cap at 45s so a stuck fillet cannot sit for minutes.
     expect(CAD_MODIFIER_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(20_000);
-    expect(CAD_MODIFIER_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(180_000);
+    expect(CAD_MODIFIER_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(45_000);
+    expect(cadModifierRequestTimeoutMs()).toBeLessThanOrEqual(45_000);
     expect(cadModifierTimeoutMessage("prepare")).toMatch(/timed out|Draft quality|fewer edges/i);
   });
 

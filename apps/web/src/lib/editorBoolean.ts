@@ -8,8 +8,13 @@ import {
   resolveIcosahedronDetail,
   resolveShapeSides,
   resolveShapeSteps,
-  setActiveDisplayQuality,
+  withDisplayQuality,
+  withDisplayQualityAsync,
 } from "@/lib/displayTessellation";
+import {
+  booleanWorkingQuality,
+  isHeavyBooleanSelection,
+} from "@/lib/displayTriangleCount";
 import {
   canonicalizeShape,
   cleanNearZero,
@@ -48,6 +53,7 @@ import { aabbsOverlap, shapeYawDegrees, worldAabb } from "@/lib/shapeBounds";
 import { isFaceHostedSketch, resolveSketchPlane } from "@/lib/sketchPlane";
 import { barrelHoleCutDepthMm } from "@/lib/sketchCylinder";
 import { sphereTessellation } from "@/lib/sphereTessellation";
+import { hasNativeOcctKernel } from "@/lib/nativeKernelProtocol";
 import { occtMeshFallbackNotice, selectionSupportsOcctCsg } from "@/lib/stepQuality";
 import { axisAlignedRectFromClosedPath, circleFromClosedPath, orderedSketchPaths, shapeFromSketchProfile } from "@/lib/sketchProfileShape";
 import { cloneAsGroupChild } from "@/lib/editorGroup";
@@ -74,6 +80,21 @@ const CUTTER_RESIDUAL_INSET = 0.01;
 const IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT = hardwareProfile().booleanTriangleLimit;
 const COPLANAR_BOOLEAN_RESCUE_DEGREES = 0.02;
 const SEPARATE_PARTS_VERTEX_TOLERANCE = 0.0005;
+/** Analytic Manifold on the renderer thread stays cheap only for tiny selections. */
+const ANALYTIC_UI_THREAD_OPERAND_CAP = 4;
+
+/** Node tests may run Manifold/BVH on the calling thread. The browser window must not. */
+export function allowSyncBooleanKernelOnUiThread() {
+  return typeof window === "undefined";
+}
+
+function tessellateForBoolean<T>(shapes: WorkplaneShape[], fn: () => T): T {
+  return withDisplayQuality(booleanWorkingQuality(shapes), fn);
+}
+
+function shouldSkipHeavySyncBvh(selection: WorkplaneShape[]) {
+  return !allowSyncBooleanKernelOnUiThread() && isHeavyBooleanSelection(selection);
+}
 
 export const ALIGN_EPSILON = 0.0005;
 export const ALIGN_AXES: AlignAxis[] = ["x", "y", "z"];
@@ -713,6 +734,17 @@ export function punchThroughCutter(hole: WorkplaneShape, solids: WorkplaneShape[
 
 export function booleanCutters(holes: WorkplaneShape[], solids: WorkplaneShape[]) {
   return holes.map((hole) => punchThroughCutter(hole, solids));
+}
+
+/** Group subtract must overshoot flush skins. Native OCCT otherwise leaves a pocket. */
+export function prepareBooleanOperands(
+  selection: WorkplaneShape[],
+  op: "subtract" | "union" | "intersect",
+): WorkplaneShape[] {
+  if (op !== "subtract") return selection;
+  const solids = selection.filter((shape) => !shape.hole && !shape.hidden);
+  if (solids.length === 0) return selection;
+  return selection.map((shape) => (shape.hole ? punchThroughCutter(shape, solids) : shape));
 }
 
 export function brushFromShape(shape: WorkplaneShape, cutter = false) {
@@ -1457,57 +1489,62 @@ export function booleanMeshShape(selection: WorkplaneShape[]): WorkplaneShape | 
   if (selectionHasHeadedScrew(selection)) {
     return null;
   }
-
-  const sourceTriangleCount = solids.reduce((total, solid) => total + meshForShape(solid).faces.length, 0);
-  const sourceMesh = mergedSolidMeshData(solids);
-  // Solid SUBTRACTION only — never HOLLOW_SUBTRACTION (face-punch → fractured "crazy" meshes).
-  const operations: CSGOperation[] = [SUBTRACTION];
-
-  for (const operation of operations) {
-    let result: Brush | null = null;
-    try {
-      const evaluator = new Evaluator();
-      evaluator.useGroups = false;
-      evaluator.attributes = ["position", "normal"];
-      (evaluator as Evaluator & { useCDTClipping?: boolean }).useCDTClipping = true;
-      result = brushFromShape(solids[0]);
-      result.updateMatrixWorld(true);
-
-      solids.slice(1).forEach((solid) => {
-        result = evaluateBrushDisposing(evaluator, result!, brushFromShape(solid), ADDITION);
-        result.updateMatrixWorld(true);
-      });
-
-      const cutters = booleanCutters(holes, solids);
-      cutters.forEach((hole) => {
-        result = evaluateBrushDisposing(evaluator, result!, brushFromShape(hole, true), operation);
-        result.updateMatrixWorld(true);
-      });
-
-      const group = resultGeometryToMeshShape(selection, solids, result.geometry, "grouped-boolean");
-      if (!group?.importedMesh) {
-        continue;
-      }
-      // Prefer volume/bounds signals over triangle-count ±1 (tiny valid cuts are real).
-      if (looksLikeUnchangedBooleanResult(group, sourceTriangleCount, true)) {
-        continue;
-      }
-      const resultPositions = positionsFromGeometryDrawRange(result.geometry);
-      if (introducesOpenCutBoundary(resultPositions, sourceMesh, cutters)) {
-        continue;
-      }
-      if (!isUsableBooleanGroup(group, sourceTriangleCount, false)) {
-        continue;
-      }
-      return group;
-    } catch {
-      // Try the next CSG operation.
-    } finally {
-      disposeBrush(result);
-    }
+  if (shouldSkipHeavySyncBvh(selection)) {
+    return null;
   }
 
-  return null;
+  return tessellateForBoolean(selection, () => {
+    const sourceTriangleCount = solids.reduce((total, solid) => total + meshForShape(solid).faces.length, 0);
+    const sourceMesh = mergedSolidMeshData(solids);
+    // Solid SUBTRACTION only — never HOLLOW_SUBTRACTION (face-punch → fractured "crazy" meshes).
+    const operations: CSGOperation[] = [SUBTRACTION];
+
+    for (const operation of operations) {
+      let result: Brush | null = null;
+      try {
+        const evaluator = new Evaluator();
+        evaluator.useGroups = false;
+        evaluator.attributes = ["position", "normal"];
+        (evaluator as Evaluator & { useCDTClipping?: boolean }).useCDTClipping = true;
+        result = brushFromShape(solids[0]);
+        result.updateMatrixWorld(true);
+
+        solids.slice(1).forEach((solid) => {
+          result = evaluateBrushDisposing(evaluator, result!, brushFromShape(solid), ADDITION);
+          result.updateMatrixWorld(true);
+        });
+
+        const cutters = booleanCutters(holes, solids);
+        cutters.forEach((hole) => {
+          result = evaluateBrushDisposing(evaluator, result!, brushFromShape(hole, true), operation);
+          result.updateMatrixWorld(true);
+        });
+
+        const group = resultGeometryToMeshShape(selection, solids, result.geometry, "grouped-boolean");
+        if (!group?.importedMesh) {
+          continue;
+        }
+        // Prefer volume/bounds signals over triangle-count ±1 (tiny valid cuts are real).
+        if (looksLikeUnchangedBooleanResult(group, sourceTriangleCount, true)) {
+          continue;
+        }
+        const resultPositions = positionsFromGeometryDrawRange(result.geometry);
+        if (introducesOpenCutBoundary(resultPositions, sourceMesh, cutters)) {
+          continue;
+        }
+        if (!isUsableBooleanGroup(group, sourceTriangleCount, false)) {
+          continue;
+        }
+        return group;
+      } catch {
+        // Try the next CSG operation.
+      } finally {
+        disposeBrush(result);
+      }
+    }
+
+    return null;
+  });
 }
 
 export function resultGeometryToMeshShape(
@@ -1980,12 +2017,28 @@ export async function manifoldBooleanMeshShape(selection: WorkplaneShape[], opti
     return null;
   }
 
-  const sourceMesh = mergedSolidMeshData(solids);
-  const cutterTriangleCount = holes.reduce((total, hole) => total + meshForShape(hole).faces.length, 0);
-  if (sourceMesh.faces.length + cutterTriangleCount > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
+  const prepared = tessellateForBoolean(selection, () => {
+    const sourceMesh = mergedSolidMeshData(solids);
+    const cutterTriangleCount = holes.reduce((total, hole) => total + meshForShape(hole).faces.length, 0);
+    const cutterShapes = booleanCutters(holes, solids);
+    return {
+      sourceMesh,
+      cutterTriangleCount,
+      cutterShapes,
+      solidTransfers: solids.map((shape) => {
+        const mesh = meshForShape(shape);
+        return meshDataToTransfer(mesh.vertices, mesh.faces);
+      }),
+      cutterTransfers: cutterShapes.map((shape) => {
+        const mesh = meshForShape(shape);
+        return meshDataToTransfer(mesh.vertices, mesh.faces);
+      }),
+    };
+  });
+  const { sourceMesh, cutterShapes } = prepared;
+  if (sourceMesh.faces.length + prepared.cutterTriangleCount > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
     return null;
   }
-  const cutterShapes = booleanCutters(holes, solids);
   const residualValidationShapes = holes;
   const sourceInteriorTriangles = cutterInteriorTriangleCount(sourceMesh, cutterShapes);
   const sourceTouchedTriangles = cutterTouchedTriangleCount(sourceMesh, cutterShapes);
@@ -2018,14 +2071,8 @@ export async function manifoldBooleanMeshShape(selection: WorkplaneShape[], opti
   try {
     const outcome = await runManifoldBooleanInWorker({
       op: "subtract",
-      solids: solids.map((shape) => {
-        const mesh = meshForShape(shape);
-        return meshDataToTransfer(mesh.vertices, mesh.faces);
-      }),
-      cutters: cutterShapes.map((shape) => {
-        const mesh = meshForShape(shape);
-        return meshDataToTransfer(mesh.vertices, mesh.faces);
-      }),
+      solids: prepared.solidTransfers,
+      cutters: prepared.cutterTransfers,
     });
     if (outcome.status === "ok") {
       return finishFromPositions(Array.from(outcome.positions));
@@ -2035,7 +2082,11 @@ export async function manifoldBooleanMeshShape(selection: WorkplaneShape[], opti
       return null;
     }
   } catch {
-    // Fall through to main-thread Manifold.
+    // Fall through to main-thread Manifold in Node tests only.
+  }
+
+  if (!allowSyncBooleanKernelOnUiThread()) {
+    return null;
   }
 
   const created: ManifoldSolid[] = [];
@@ -2093,39 +2144,52 @@ export async function manifoldUnionMeshShape(selection: WorkplaneShape[]): Promi
     unifyCoplanar: !importedOperands,
   };
 
-  const mergedSourceMesh = mergedSolidMeshData(solidsForUnion);
-  if (mergedSourceMesh.faces.length > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
+  const prepared = tessellateForBoolean(solidsForUnion, () => {
+    const mergedSourceMesh = mergedSolidMeshData(solidsForUnion);
+    return {
+      mergedSourceMesh,
+      solidTransfers: solidsForUnion.map((shape) => {
+        const mesh = meshForShape(shape);
+        return meshDataToTransfer(mesh.vertices, mesh.faces);
+      }),
+    };
+  });
+  if (prepared.mergedSourceMesh.faces.length > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
     return null;
   }
 
   // Primitives fuse from exact solids. A triangle-soup union keeps each rim, so the
-  // group still reads as separate objects.
-  if (solidsForUnion.every(shapeHasAnalyticSolid)) {
-    const analytic = await manifoldUnionFromRuntime(selection, solids, solidsForUnion, unionCleanup, mergedSourceMesh.faces.length);
+  // group still reads as separate objects. Keep this on the UI thread only for tiny
+  // selections — a 12-cylinder Group used to freeze here.
+  const allowAnalyticUiThread = allowSyncBooleanKernelOnUiThread()
+    || solidsForUnion.length <= ANALYTIC_UI_THREAD_OPERAND_CAP;
+  if (solidsForUnion.every(shapeHasAnalyticSolid) && allowAnalyticUiThread) {
+    const analytic = await manifoldUnionFromRuntime(selection, solids, solidsForUnion, unionCleanup, prepared.mergedSourceMesh.faces.length);
     if (analytic) return analytic;
   }
 
   try {
     const outcome = await runManifoldBooleanInWorker({
       op: "union",
-      solids: solidsForUnion.map((shape) => {
-        const mesh = meshForShape(shape);
-        return meshDataToTransfer(mesh.vertices, mesh.faces);
-      }),
+      solids: prepared.solidTransfers,
     });
     if (outcome.status === "ok") {
       const group = meshPositionsToGroupShape(selection, solids, Array.from(outcome.positions), "grouped-manifold-union", unionCleanup);
-      return isUsableBooleanGroup(group, mergedSourceMesh.faces.length, false) ? group : null;
+      return isUsableBooleanGroup(group, prepared.mergedSourceMesh.faces.length, false) ? group : null;
     }
     if (outcome.status === "superseded") {
       // A newer boolean owns the result; recomputing here would overwrite it with stale geometry.
       return null;
     }
   } catch {
-    // Fall through to main-thread Manifold.
+    // Fall through to main-thread Manifold in Node tests only.
   }
 
-  return manifoldUnionFromRuntime(selection, solids, solidsForUnion, unionCleanup, mergedSourceMesh.faces.length);
+  if (!allowSyncBooleanKernelOnUiThread()) {
+    return null;
+  }
+
+  return manifoldUnionFromRuntime(selection, solids, solidsForUnion, unionCleanup, prepared.mergedSourceMesh.faces.length);
 }
 
 const ANALYTIC_SOLID_KINDS = new Set(["box", "sphere", "cylinder", "cone"]);
@@ -2175,8 +2239,18 @@ export async function manifoldIntersectionMeshShape(selection: WorkplaneShape[])
     return { status: "unsupported" };
   }
 
-  const sourceTriangleCount = selection.reduce((total, shape) => total + meshForShape(shape).faces.length, 0);
-  if (sourceTriangleCount > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
+  const prepared = tessellateForBoolean(selection, () => ({
+    sourceTriangleCount: selection.reduce((total, shape) => total + meshForShape(shape).faces.length, 0),
+    solidTransfers: solids.map((shape) => {
+      const mesh = meshForShape(shape);
+      return meshDataToTransfer(mesh.vertices, mesh.faces);
+    }),
+    cutterTransfers: holes.map((shape) => {
+      const mesh = meshForShape(shape);
+      return meshDataToTransfer(mesh.vertices, mesh.faces);
+    }),
+  }));
+  if (prepared.sourceTriangleCount > IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT) {
     return { status: "unsupported" };
   }
 
@@ -2185,7 +2259,7 @@ export async function manifoldIntersectionMeshShape(selection: WorkplaneShape[])
       return { status: "empty" };
     }
     const group = meshPositionsToGroupShape(selection, solids, positions, "grouped-manifold-intersection");
-    return group && isUsableBooleanGroup(group, sourceTriangleCount, false)
+    return group && isUsableBooleanGroup(group, prepared.sourceTriangleCount, false)
       ? { status: "success", group: asIntersectionGroup(group) }
       : { status: "unsupported" };
   };
@@ -2193,14 +2267,8 @@ export async function manifoldIntersectionMeshShape(selection: WorkplaneShape[])
   try {
     const outcome = await runManifoldBooleanInWorker({
       op: "intersect",
-      solids: solids.map((shape) => {
-        const mesh = meshForShape(shape);
-        return meshDataToTransfer(mesh.vertices, mesh.faces);
-      }),
-      cutters: holes.map((shape) => {
-        const mesh = meshForShape(shape);
-        return meshDataToTransfer(mesh.vertices, mesh.faces);
-      }),
+      solids: prepared.solidTransfers,
+      cutters: prepared.cutterTransfers,
     });
     if (outcome.status === "ok") {
       return finishIntersection(Array.from(outcome.positions));
@@ -2210,7 +2278,11 @@ export async function manifoldIntersectionMeshShape(selection: WorkplaneShape[])
       return { status: "unsupported" };
     }
   } catch {
-    // Fall through to main-thread Manifold.
+    // Fall through to main-thread Manifold in Node tests only.
+  }
+
+  if (!allowSyncBooleanKernelOnUiThread()) {
+    return { status: "unsupported" };
   }
 
   const created: ManifoldSolid[] = [];
@@ -2245,6 +2317,9 @@ export function bvhIntersectionMeshShape(selection: WorkplaneShape[], operation:
   const solids = selection.filter((shape) => !shape.hole && !shape.locked);
   const holes = selection.filter((shape) => shape.hole && !shape.locked);
   if (solids.length === 0 || holes.length === 0) {
+    return { status: "unsupported" };
+  }
+  if (shouldSkipHeavySyncBvh(selection)) {
     return { status: "unsupported" };
   }
 
@@ -2378,6 +2453,9 @@ export function importedBooleanMeshShape(selection: WorkplaneShape[]): Workplane
     return null;
   }
   if (selectionHasHeadedScrew(selection)) {
+    return null;
+  }
+  if (shouldSkipHeavySyncBvh(selection)) {
     return null;
   }
 
@@ -2739,8 +2817,10 @@ export function mergedMeshShape(selection: WorkplaneShape[]): WorkplaneShape | n
   // Keep imported STL/SVG groups as a baked mesh. The viewport child-group path rescales children to a wrapper box.
   const vertices: Vec3[] = [];
   const faces: [number, number, number][] = [];
-  groupable.map(meshForShape).forEach((mesh) => {
-    appendMeshData(vertices, faces, mesh);
+  tessellateForBoolean(groupable, () => {
+    groupable.map(meshForShape).forEach((mesh) => {
+      appendMeshData(vertices, faces, mesh);
+    });
   });
 
   if (vertices.length < 3 || faces.length < 1) {
@@ -2962,6 +3042,7 @@ export async function evaluateCsgOpOnOperands(
           (skipOcct ? null : await occtBooleanMeshShape(solids, "union"))
           ?? await manifoldUnionMeshShape(solids)
           ?? concatenatedImportedMeshShape(solids)
+          ?? mergedMeshShape(solids)
           ?? bakeSolidAsGroupMesh(solids[0])
         );
       }
@@ -2984,6 +3065,7 @@ export async function evaluateCsgOpOnOperands(
       (skipOcct ? null : await occtBooleanMeshShape(solids, "union"))
       ?? await manifoldUnionMeshShape(solids)
       ?? concatenatedImportedMeshShape(solids)
+      ?? mergedMeshShape(solids)
       ?? bakeSolidAsGroupMesh(solids[0])
     );
   }
@@ -3006,6 +3088,10 @@ export async function occtBooleanMeshShape(
   selection: WorkplaneShape[],
   op: "subtract" | "union" | "intersect",
 ): Promise<WorkplaneShape | null> {
+  // Live Group never waits on occt-wasm. That 22 MB kernel takes seconds to boot and
+  // fuse a cylinder into a box. Exact CSG is MintrKernel on the desktop; the browser
+  // uses Manifold and keeps children for a later native bake.
+  if (!hasNativeOcctKernel()) return null;
   if (!selectionSupportsOcctCsg(selection)) return null;
   try {
     const { booleanResultLooksExploded, evaluateOcctBooleanOnWorldShapes } = await import("@/lib/stepExport");
@@ -3018,9 +3104,11 @@ export async function occtBooleanMeshShape(
       solids,
       result.positions,
       `occt-${op}`,
-      op === "union" && !selection.some((shape) => Boolean(shape.importedMesh))
-        ? { unifyCoplanar: true }
-        : undefined,
+      result.quality === "exact"
+        ? { skipWeld: true }
+        : op === "union" && !selection.some((shape) => Boolean(shape.importedMesh))
+          ? { unifyCoplanar: true }
+          : undefined,
     );
     if (!group?.importedMesh) return null;
     const expected = boundsForShapes(selection);
@@ -3145,9 +3233,12 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
   const boxBooleanSelection = hasSolid && hasHole
     ? expandGroupsForBoxBoolean(solidified).map((shape) => (shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape))
     : [];
-  // Group fuses. Exact B-rep when every operand has one; otherwise a mesh union.
+  // Group fuses. Exact B-rep from MintrKernel when the sidecar is up. Browser and
+  // kernel-less Electron skip live OCCT so a cylinder-into-box Group cannot sit on
+  // occt-wasm for several seconds.
+  const skipLiveOcct = !hasNativeOcctKernel();
   const occtEligible = hasSolid && selectionSupportsOcctCsg(booleanSelection);
-  const occtGroup = occtEligible
+  const occtGroup = occtEligible && !skipLiveOcct
     ? await occtBooleanMeshShape(booleanSelection, hasHole ? "subtract" : "union")
     : null;
   const manifoldCutGroup = !occtGroup && hasSolid && hasHole
@@ -3194,7 +3285,6 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
     ))
     : null;
   const consumed = !withMeta && hasSolid && hasHole && cutFullyConsumesSolids(booleanSelection);
-  const usedMeshFallback = Boolean(withMeta && occtEligible && !occtGroup);
   return {
     group: withMeta,
     booleanSelection,
@@ -3206,17 +3296,20 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
       ? (hasImportedMesh ? "Could not cut with this hole mesh" : "Could not cut this selection")
       : "Could not group this selection",
     qualityNotice: occtMeshFallbackNotice({
-      occtEligible: usedMeshFallback,
-      resultHasExactBrep: false,
+      skipOcct: skipLiveOcct,
+      occtEligible,
+      resultHasExactBrep: Boolean(withMeta?.importedMesh?.brepStep || withMeta?.cadBrep),
     }),
   };
 }
 
 /** Re-evaluate a CSG body from world-space children; preserves body + child ids. */
+export type RemeshCsgOptions = { skipOcct?: boolean; draft?: boolean };
+
 export async function remeshCsgGroupFromWorldChildren(
   body: WorkplaneShape,
   worldChildren: WorkplaneShape[],
-  options?: { skipOcct?: boolean },
+  options?: RemeshCsgOptions,
 ): Promise<WorkplaneShape | null> {
   if (worldChildren.length === 0) return null;
   const op = body.csg?.op ?? inferCsgOp(body);
@@ -3268,17 +3361,24 @@ export async function remeshCsgGroupFromWorldChildren(
     });
   }
 
-  // Mesh operands only. STEP export fuses the recipe; do not bake B-Rep into the edit session.
+  // Draft / skipOcct: mesh kernels only. Pointer-up and other remeshes may ask
+  // for OCCT (worker). Never fall through to buildGroupedShapeFromSelection —
+  // that fused on the UI thread.
   const bakedChildren = activeChildren.map(solidThreadShape);
-  let result = await evaluateCsgOpOnOperands(bakedChildren, op, { ...options, skipOcct: true });
-  if (!result?.importedMesh) {
-    const flat = await buildGroupedShapeFromSelection(bakedChildren);
-    result = flat.group;
-  }
-  if (!result?.importedMesh) {
-    const sole = bakedChildren.find((child) => !child.hole) ?? bakedChildren[0];
-    result = bakeSolidAsGroupMesh(sole);
-  }
+  const skipOcct = Boolean(options?.draft) || options?.skipOcct === true;
+  const evaluate = async () => {
+    let next = await evaluateCsgOpOnOperands(bakedChildren, op, { skipOcct });
+    if (!next?.importedMesh) {
+      const solids = bakedChildren.filter((shape) => !shape.hole);
+      next = concatenatedImportedMeshShape(solids)
+        ?? mergedMeshShape(solids)
+        ?? bakeSolidAsGroupMesh(solids[0] ?? bakedChildren[0]);
+    }
+    return next;
+  };
+  let result = options?.draft
+    ? await withDisplayQualityAsync("draft", evaluate)
+    : await evaluate();
   if (!result?.importedMesh) return null;
 
   const g = result;
@@ -3314,7 +3414,7 @@ export async function remeshCsgGroupFromWorldChildren(
  * Bottom-up remesh: nested evaluated children first, then this node.
  * Preserves nested op structure (no flatten).
  */
-export async function remeshCsgGroup(group: WorkplaneShape, options?: { skipOcct?: boolean }): Promise<WorkplaneShape | null> {
+export async function remeshCsgGroup(group: WorkplaneShape, options?: RemeshCsgOptions): Promise<WorkplaneShape | null> {
   if (!group.groupedShapes?.length) return null;
   if (group.csg?.suppressed) return group;
   const op = group.csg?.op ?? inferCsgOp(group);

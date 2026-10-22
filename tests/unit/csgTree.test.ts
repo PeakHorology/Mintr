@@ -88,6 +88,14 @@ describe("csgTree", () => {
     expect(cleaned.length).toBe(9);
   });
 
+  it("skipWeld leaves the native display soup untouched", () => {
+    const positions = [
+      0, 0, 0, 1, 0, 0, 0, 1, 0,
+      2, 2, 2, 2, 2, 2, 2, 2, 2,
+    ];
+    expect(cleanupBooleanPositions(positions, undefined, { skipWeld: true })).toEqual(positions);
+  });
+
   it("keeps a shallow feature on a thin subtract result", () => {
     // A 4mm plate whose top carries a 0.02mm-deep engraving floor at y=3.98. The planarize
     // band is 0.03mm, so running it here snapped the floor up to 4.0 and erased the feature.

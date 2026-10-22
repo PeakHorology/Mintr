@@ -89,10 +89,11 @@ import {
   setActiveDisplayQuality,
   shapeTessellationFingerprint,
 } from "@/lib/displayTessellation";
+import { CUT_PREVIEW_TRIANGLE_SKIP, displayTriangleCount, isHeavyDisplayScene } from "@/lib/displayTriangleCount";
 import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
-import { appendOverhangBoundaryLines, bedFitForShapes, normalizePrinterBed, triangleNeedsSupport, type PrinterBed } from "@/lib/printerBed";
-import { collectSmallHoleTriangles, collectThinWallTriangles } from "@/lib/thinWalls";
-import { collectTrappedCavityTriangles } from "@/lib/trappedResin";
+import { appendOverhangBoundaryLines, bedFitForShapes, normalizePrinterBed, type PrinterBed } from "@/lib/printerBed";
+import { runPrintOverlayInWorker } from "@/lib/printOverlayClient";
+import type { PrintOverlayMarks } from "@/lib/printOverlayCollect";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
@@ -348,7 +349,13 @@ export type WorkplaneViewportProps = {
   /** Top of the inspector column (fillet / chamfer panel). */
   inspectorDockTop?: ReactNode;
   /** Pulse mint edges on these bodies after Hollow / Fillet / Boolean apply. */
-  applyFlash?: { nonce: number; ids: string[]; edgeWipe?: { polylines: number[][] } } | null;
+  applyFlash?: {
+    nonce: number;
+    ids: string[];
+    /** Combine = Group/Tie/Intersect; separate = Ungroup; apply = fillet/hollow. */
+    kind?: "apply" | "combine" | "separate";
+    edgeWipe?: { polylines: number[][] };
+  } | null;
 };
 
 export type WorkplaneRotationEditApi = { dismiss: () => void };
@@ -404,6 +411,7 @@ export type ThreeState = {
   modifierLayer: THREE.Group;
   xrayLayer: THREE.Group;
   printLayer: THREE.Group;
+  printShapes: WorkplaneShape[];
   showPrinterBed: boolean;
   showOverhangStripes: boolean;
   showThinWalls: boolean;
@@ -2879,10 +2887,14 @@ export function WorkplaneViewport({
       pendingEdgeWipe = wipe && freshFlash && !prefersReducedMotion()
         ? { ids: new Set(flash.ids), polylines: wipe.polylines }
         : null;
+      pendingScaleIntro = freshFlash && (flash.kind === "combine" || flash.kind === "separate") && !wipe && !prefersReducedMotion()
+        ? { ids: new Set(flash.ids), startScale: flash.kind === "separate" ? SEPARATE_START_SCALE : COMBINE_START_SCALE }
+        : null;
       if (freshFlash) consumedFlashNonce = flash.nonce;
       if (threeRef.current) threeRef.current.modifierPreviewActive = modifierPreviewActiveRef.current;
       rebuildShapes(threeRef.current, shapes, renderSelectionIds(), !transformRef.current && !dragRef.current);
       pendingEdgeWipe = null;
+      pendingScaleIntro = null;
       refreshDragPreviewObjects(threeRef.current, dragRef.current);
     }
     if (threeRef.current) {
@@ -3229,7 +3241,12 @@ export function WorkplaneViewport({
       const cameraDrag = event.button === 2 || event.button === 1 || (event.button === 0 && (event.ctrlKey || event.metaKey));
       if (!cameraDrag) return;
       concealMeasurements();
-      if (importedTriangleTotal(shapesRef.current) <= HEAVY_SCENE_TRIANGLES) return;
+      cancelScheduledCutPreviewOverlays();
+      if (state.printLayer.children.length > 0) {
+        state.printLayer.visible = false;
+        state.needsRender = true;
+      }
+      if (!isHeavyDisplayScene(shapesRef.current)) return;
       orbitingRef.current = true;
       busyUntilRef.current = performance.now() + 4000;
       if (busyLabelRef.current !== "Moving view…") {
@@ -3242,6 +3259,11 @@ export function WorkplaneViewport({
       revealMeasurements();
       orbitingRef.current = false;
       busyUntilRef.current = performance.now() + 400;
+      const showPrint = state.showOverhangStripes || state.showThinWalls || state.showSmallHoles || state.showTrappedResin;
+      if (showPrint && state.printLayer.children.length > 0) {
+        state.printLayer.visible = true;
+        state.needsRender = true;
+      }
     };
     state.renderer.domElement.addEventListener("pointerdown", onCameraPointerDown);
     state.renderer.domElement.addEventListener("pointerup", onCameraPointerUp);
@@ -3266,7 +3288,9 @@ export function WorkplaneViewport({
       // Removing this brings back the one-frame-late handle/line lag during camera motion.
       state.camera.updateMatrixWorld();
       if (controlsChanged || state.needsRender) {
-        refreshSilhouetteOutlines(state);
+        const skipSilhouette = isHeavyDisplayScene(shapesRef.current)
+          && (orbitingRef.current || state.wasCameraMoving);
+        if (!skipSilhouette) refreshSilhouetteOutlines(state);
       }
       if (viewNudgeAxesRef) {
         viewNudgeAxesRef.current = computeViewNudgeAxes(state.camera);
@@ -3318,6 +3342,7 @@ export function WorkplaneViewport({
           state.cameraStillFrames = 0;
           state.cameraOverlayHold = true;
           rememberCameraHoldPose(state);
+          refreshSilhouetteOutlines(state);
         }
         syncMeasurementOverlays();
       }
@@ -3339,7 +3364,7 @@ export function WorkplaneViewport({
         perf.maxFrameMs = frameMs;
       }
       state.needsRender = false;
-      const heavyScene = importedTriangleTotal(shapesRef.current) > HEAVY_SCENE_TRIANGLES;
+      const heavyScene = isHeavyDisplayScene(shapesRef.current);
       if (heavyScene && (orbitingRef.current || frameMs > 90)) {
         busyUntilRef.current = Math.max(busyUntilRef.current, now + 700);
         const nextLabel = orbitingRef.current ? "Moving view…" : "Working…";
@@ -4777,7 +4802,7 @@ export function WorkplaneViewport({
       // A large STEP import used to await a paint here so the "Selecting…" wheel could
       // show first. That yields the gesture: pointer moves arrive before the drag exists,
       // so the part never follows the mouse. Arrow keys never take this path.
-      const heavyPick = importedTriangleTotal(shapesRef.current) > HEAVY_SCENE_TRIANGLES;
+      const heavyPick = isHeavyDisplayScene(shapesRef.current);
       if (heavyPick) {
         busyLabelRef.current = "Selecting…";
         busyUntilRef.current = performance.now() + 4000;
@@ -6396,6 +6421,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     modifierLayer,
     xrayLayer,
     printLayer,
+    printShapes: [],
     showPrinterBed: true,
     showOverhangStripes: false,
     showThinWalls: false,
@@ -6901,6 +6927,9 @@ function printOverlayGroup(parent: THREE.Group, name: string) {
 }
 
 function printSceneFingerprint(state: ThreeState) {
+  // Overlay triangles are collected in world space, so body placement is part of
+  // the geometry key. Camera pose is not — orbit hides marks and skipRebuild keeps
+  // the last overlay until the view settles.
   const parts: string[] = [];
   for (const child of state.shapeLayer.children) {
     if (child.userData.hole || child.userData.construction) continue;
@@ -7007,6 +7036,104 @@ function fadePrintOverlaysIn(state: ThreeState) {
   fadePrintOverlayRootIn(state, state.printLayer);
 }
 
+let printOverlayGeneration = 0;
+
+function printOverlayJobKey(state: ThreeState) {
+  return [
+    state.showOverhangStripes ? 1 : 0,
+    state.showThinWalls ? 1 : 0,
+    state.showSmallHoles ? 1 : 0,
+    state.showTrappedResin ? 1 : 0,
+    state.printerAngle.toFixed(2),
+    state.nozzleMm.toFixed(2),
+    printSceneFingerprint(state),
+  ].join("|");
+}
+
+function collectAllPrintTriangles(state: ThreeState) {
+  const triangles: PickTriangle[] = [];
+  for (const child of state.shapeLayer.children) {
+    if (child.userData.hole || child.userData.construction) continue;
+    collectPrintBodyTriangles(child, (part) => {
+      triangles.push(...part);
+    });
+  }
+  return triangles;
+}
+
+function applyPrintOverlayMarks(state: ThreeState, marks: PrintOverlayMarks) {
+  const apply = (
+    enabled: boolean,
+    name: string,
+    positions: number[],
+    normals: number[],
+    fillMaterial: THREE.MeshBasicMaterial,
+    lineMaterial: THREE.LineBasicMaterial,
+    fillName: string,
+    lineName: string,
+  ) => {
+    if (!enabled) {
+      const existing = state.printLayer.getObjectByName(name);
+      if (existing) {
+        state.printLayer.remove(existing);
+        disposeObject(existing);
+      }
+      return;
+    }
+    addPrintMarkMeshes(
+      printOverlayGroup(state.printLayer, name),
+      positions,
+      normals,
+      fillMaterial,
+      lineMaterial,
+      fillName,
+      lineName,
+    );
+  };
+  apply(
+    state.showOverhangStripes,
+    "OverhangMarks",
+    marks.overhangPositions,
+    marks.overhangNormals,
+    createOverhangFillMaterial(),
+    createOverhangLineMaterial(),
+    "OverhangFill",
+    "OverhangLines",
+  );
+  apply(
+    state.showThinWalls,
+    "ThinWallMarks",
+    marks.thinPositions,
+    marks.thinNormals,
+    createThinWallFillMaterial(),
+    createThinWallLineMaterial(),
+    "ThinWallFill",
+    "ThinWallLines",
+  );
+  apply(
+    state.showSmallHoles,
+    "SmallHoleMarks",
+    marks.holePositions,
+    marks.holeNormals,
+    createSmallHoleFillMaterial(),
+    createSmallHoleLineMaterial(),
+    "SmallHoleFill",
+    "SmallHoleLines",
+  );
+  apply(
+    state.showTrappedResin,
+    "TrappedResinMarks",
+    marks.trappedPositions,
+    marks.trappedNormals,
+    createTrappedResinFillMaterial(),
+    createTrappedResinLineMaterial(),
+    "TrappedResinFill",
+    "TrappedResinLines",
+  );
+  state.printLayer.visible = true;
+  state.needsRender = true;
+}
+
 function rebuildPrintOverlays(state: ThreeState, skipRebuild = false) {
   const showAny = state.showOverhangStripes || state.showThinWalls || state.showSmallHoles || state.showTrappedResin;
   if (state.printLayer.visible !== showAny) {
@@ -7014,41 +7141,48 @@ function rebuildPrintOverlays(state: ThreeState, skipRebuild = false) {
     state.needsRender = true;
   }
   if (!showAny) {
+    printOverlayGeneration += 1;
     cancelPrintOverlayFade(state);
     if (state.printLayer.children.length > 0) {
       disposeChildren(state.printLayer);
       state.needsRender = true;
     }
     state.printLayer.userData.overlayFadedIn = false;
+    state.printLayer.userData.overlayJobKey = "";
     state.overhangKey = "";
     state.thinWallKey = "";
     state.smallHoleKey = "";
     state.trappedResinKey = "";
     return;
   }
+  const hadMarks = Boolean(state.overhangKey || state.thinWallKey || state.smallHoleKey || state.trappedResinKey);
+  if (skipRebuild && hadMarks) return;
+  const key = printOverlayJobKey(state);
+  if (key === state.printLayer.userData.overlayJobKey) return;
   const alreadyShown = Boolean(state.printLayer.userData.overlayFadedIn);
-  const fading = Boolean(state.printLayer.userData.overlayFadeHandle);
-  const hadOverhang = Boolean(state.overhangKey);
-  const hadThin = Boolean(state.thinWallKey);
-  const hadHoles = Boolean(state.smallHoleKey);
-  const hadTrapped = Boolean(state.trappedResinKey);
-  const overhangRebuilt = rebuildOverhangMarks(state, skipRebuild);
-  const thinRebuilt = rebuildThinWallMarks(state, skipRebuild);
-  const holesRebuilt = rebuildSmallHoleMarks(state, skipRebuild);
-  const trappedRebuilt = rebuildTrappedResinMarks(state, skipRebuild);
-  const contentRebuilt = overhangRebuilt || thinRebuilt || holesRebuilt || trappedRebuilt;
-  if (!alreadyShown && !skipRebuild) {
-    fadePrintOverlaysIn(state);
-    return;
-  }
-  if (!skipRebuild) {
-    if (!hadOverhang && state.overhangKey) fadePrintOverlayRootIn(state, printOverlayGroup(state.printLayer, "OverhangMarks"));
-    else if (!hadThin && state.thinWallKey) fadePrintOverlayRootIn(state, printOverlayGroup(state.printLayer, "ThinWallMarks"));
-    else if (!hadHoles && state.smallHoleKey) fadePrintOverlayRootIn(state, printOverlayGroup(state.printLayer, "SmallHoleMarks"));
-    else if (!hadTrapped && state.trappedResinKey) fadePrintOverlayRootIn(state, printOverlayGroup(state.printLayer, "TrappedResinMarks"));
-    else if (contentRebuilt && fading) cancelPrintOverlayFade(state);
-  }
-  state.printLayer.userData.overlayFadedIn = true;
+  const gen = ++printOverlayGeneration;
+  const triangles = collectAllPrintTriangles(state);
+  void runPrintOverlayInWorker({
+    triangles,
+    overhang: state.showOverhangStripes,
+    angle: state.printerAngle,
+    thinWalls: state.showThinWalls,
+    smallHoles: state.showSmallHoles,
+    trappedResin: state.showTrappedResin,
+    nozzleMm: state.nozzleMm,
+    shapes: state.printShapes,
+  }).then((marks) => {
+    if (gen !== printOverlayGeneration) return;
+    if (!marks) return;
+    applyPrintOverlayMarks(state, marks);
+    state.printLayer.userData.overlayJobKey = key;
+    state.overhangKey = state.showOverhangStripes ? key : "";
+    state.thinWallKey = state.showThinWalls ? key : "";
+    state.smallHoleKey = state.showSmallHoles ? key : "";
+    state.trappedResinKey = state.showTrappedResin ? key : "";
+    if (!alreadyShown) fadePrintOverlaysIn(state);
+    state.printLayer.userData.overlayFadedIn = true;
+  });
 }
 
 function addPrintMarkMeshes(
@@ -7082,158 +7216,6 @@ function addPrintMarkMeshes(
     lines.frustumCulled = false;
     group.add(lines);
   }
-}
-
-function rebuildOverhangMarks(state: ThreeState, skipRebuild: boolean) {
-  const group = printOverlayGroup(state.printLayer, "OverhangMarks");
-  if (!state.showOverhangStripes) {
-    if (group.children.length > 0) {
-      disposeChildren(group);
-      state.needsRender = true;
-    }
-    state.overhangKey = "";
-    return false;
-  }
-  if (skipRebuild && state.overhangKey) return false;
-  const key = ["overhang", state.printerAngle.toFixed(2), printSceneFingerprint(state)].join("|");
-  if (key === state.overhangKey) return false;
-  state.overhangKey = key;
-  const positions: number[] = [];
-  const normals: number[] = [];
-  for (const child of state.shapeLayer.children) {
-    if (child.userData.hole || child.userData.construction) continue;
-    collectOverhangTriangles(child, state.printerAngle, positions, normals);
-  }
-  addPrintMarkMeshes(group, positions, normals, createOverhangFillMaterial(), createOverhangLineMaterial(), "OverhangFill", "OverhangLines");
-  state.printLayer.visible = true;
-  state.needsRender = true;
-  return true;
-}
-
-function rebuildThinWallMarks(state: ThreeState, skipRebuild: boolean) {
-  const group = printOverlayGroup(state.printLayer, "ThinWallMarks");
-  if (!state.showThinWalls) {
-    if (group.children.length > 0) {
-      disposeChildren(group);
-      state.needsRender = true;
-    }
-    state.thinWallKey = "";
-    return false;
-  }
-  if (skipRebuild && state.thinWallKey) return false;
-  const key = ["thin", state.nozzleMm.toFixed(2), printSceneFingerprint(state)].join("|");
-  if (key === state.thinWallKey) return false;
-  state.thinWallKey = key;
-  const positions: number[] = [];
-  const normals: number[] = [];
-  for (const child of state.shapeLayer.children) {
-    if (child.userData.hole || child.userData.construction) continue;
-    collectThinWallsFromObject(child, state.nozzleMm, positions, normals);
-  }
-  addPrintMarkMeshes(group, positions, normals, createThinWallFillMaterial(), createThinWallLineMaterial(), "ThinWallFill", "ThinWallLines");
-  state.printLayer.visible = true;
-  state.needsRender = true;
-  return true;
-}
-
-function rebuildSmallHoleMarks(state: ThreeState, skipRebuild: boolean) {
-  const group = printOverlayGroup(state.printLayer, "SmallHoleMarks");
-  if (!state.showSmallHoles) {
-    if (group.children.length > 0) {
-      disposeChildren(group);
-      state.needsRender = true;
-    }
-    state.smallHoleKey = "";
-    return false;
-  }
-  if (skipRebuild && state.smallHoleKey) return false;
-  const key = ["holes", state.nozzleMm.toFixed(2), printSceneFingerprint(state)].join("|");
-  if (key === state.smallHoleKey) return false;
-  state.smallHoleKey = key;
-  const positions: number[] = [];
-  const normals: number[] = [];
-  for (const child of state.shapeLayer.children) {
-    if (child.userData.hole || child.userData.construction) continue;
-    collectPrintBodyTriangles(child, (triangles) => collectSmallHoleTriangles(triangles, state.nozzleMm, positions, normals));
-  }
-  addPrintMarkMeshes(group, positions, normals, createSmallHoleFillMaterial(), createSmallHoleLineMaterial(), "SmallHoleFill", "SmallHoleLines");
-  state.printLayer.visible = true;
-  state.needsRender = true;
-  return true;
-}
-
-function rebuildTrappedResinMarks(state: ThreeState, skipRebuild: boolean) {
-  const group = printOverlayGroup(state.printLayer, "TrappedResinMarks");
-  if (!state.showTrappedResin) {
-    if (group.children.length > 0) {
-      disposeChildren(group);
-      state.needsRender = true;
-    }
-    state.trappedResinKey = "";
-    return false;
-  }
-  if (skipRebuild && state.trappedResinKey) return false;
-  const key = ["trapped", printSceneFingerprint(state)].join("|");
-  if (key === state.trappedResinKey) return false;
-  state.trappedResinKey = key;
-  const positions: number[] = [];
-  const normals: number[] = [];
-  for (const child of state.shapeLayer.children) {
-    if (child.userData.hole || child.userData.construction) continue;
-    collectPrintBodyTriangles(child, (triangles) => collectTrappedCavityTriangles(triangles, positions, normals));
-  }
-  addPrintMarkMeshes(group, positions, normals, createTrappedResinFillMaterial(), createTrappedResinLineMaterial(), "TrappedResinFill", "TrappedResinLines");
-  state.printLayer.visible = true;
-  state.needsRender = true;
-  return true;
-}
-
-function collectOverhangTriangles(root: THREE.Object3D, angle: number, positions: number[], normals: number[]) {
-  root.updateWorldMatrix(true, true);
-  const a = new THREE.Vector3();
-  const b = new THREE.Vector3();
-  const c = new THREE.Vector3();
-  const edgeA = new THREE.Vector3();
-  const edgeB = new THREE.Vector3();
-  const normal = new THREE.Vector3();
-  root.traverse((child) => {
-    if (!(child instanceof THREE.Mesh) || child.userData.printBody !== true) return;
-    let node: THREE.Object3D | null = child;
-    while (node) {
-      if (node.userData.hole || node.userData.construction) return;
-      node = node.parent;
-    }
-    const attribute = child.geometry.getAttribute("position");
-    if (!attribute) return;
-    const index = child.geometry.getIndex();
-    const matrix = child.matrixWorld;
-    const count = index ? index.count : attribute.count;
-    for (let triangle = 0; triangle + 2 < count; triangle += 3) {
-      const ia = index ? index.getX(triangle) : triangle;
-      const ib = index ? index.getX(triangle + 1) : triangle + 1;
-      const ic = index ? index.getX(triangle + 2) : triangle + 2;
-      a.fromBufferAttribute(attribute, ia).applyMatrix4(matrix);
-      b.fromBufferAttribute(attribute, ib).applyMatrix4(matrix);
-      c.fromBufferAttribute(attribute, ic).applyMatrix4(matrix);
-      edgeA.subVectors(b, a);
-      edgeB.subVectors(c, a);
-      normal.crossVectors(edgeA, edgeB);
-      const length = normal.length();
-      if (length < 1e-8) continue;
-      normal.multiplyScalar(1 / length);
-      if (!triangleNeedsSupport(a.y, b.y, c.y, normal.y, angle)) continue;
-      positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-      normals.push(
-        normal.x, normal.y, normal.z,
-        normal.x, normal.y, normal.z,
-        normal.x, normal.y, normal.z,
-      );
-    }
-  });
-}
-
-function collectThinWallsFromObject(root: THREE.Object3D, nozzleMm: number, positions: number[], normals: number[]) {
-  collectPrintBodyTriangles(root, (triangles) => collectThinWallTriangles(triangles, nozzleMm, positions, normals));
 }
 
 function collectPrintBodyTriangles(root: THREE.Object3D, use: (triangles: PickTriangle[]) => void) {
@@ -7375,6 +7357,9 @@ function cutPreviewBrushFromObject(root: THREE.Object3D) {
 }
 
 function cutPreviewActualIntersectionGeometry(state: ThreeState, solid: WorkplaneShape, hole: WorkplaneShape) {
+  if (displayTriangleCount(solid) + displayTriangleCount(hole) > CUT_PREVIEW_TRIANGLE_SKIP) {
+    return null;
+  }
   const solidObject = findShapeObject(state, solid.id);
   const holeObject = findShapeObject(state, hole.id);
   if (!solidObject || !holeObject) {
@@ -7548,6 +7533,11 @@ function shapeGeometryFingerprint(shape: WorkplaneShape) {
 const NEW_SOLID_SETTLE_MM = 2.5;
 const NEW_SOLID_SETTLE_MS = 180;
 const MAX_SETTLE_SHAPES = 6;
+/** Group/Tie/Intersect start slightly large and ease in — not the new-solid drop. */
+const COMBINE_START_SCALE = 1.08;
+/** Ungroup is the inverse: pieces grow out from a slightly small start. */
+const SEPARATE_START_SCALE = 1 / COMBINE_START_SCALE;
+const COMBINE_MS = 240;
 const APPLY_FLASH_MS = 200;
 const APPLY_FLASH_NAME = "ShapeApplyFlash";
 const EDGE_WIPE_MIN_MS = 420;
@@ -7556,7 +7546,9 @@ const EDGE_WIPE_CAP_NAME = "EdgeWipeCap";
 const EDGE_WIPE_TRACE_NAME = "EdgeWipeTrace";
 
 type PendingEdgeWipe = { ids: Set<string>; polylines: number[][] };
+type PendingScaleIntro = { ids: Set<string>; startScale: number };
 let pendingEdgeWipe: PendingEdgeWipe | null = null;
+let pendingScaleIntro: PendingScaleIntro | null = null;
 let consumedFlashNonce = -1;
 
 function cancelShapeMotion(object: THREE.Object3D) {
@@ -7570,6 +7562,8 @@ function clearShapeSettle(object: THREE.Object3D) {
   cancelShapeMotion(object);
   delete object.userData.pendingSettle;
   delete object.userData.settleRestY;
+  delete object.userData.combining;
+  delete object.userData.combineRestScale;
 }
 
 function settleLiftMm() {
@@ -7577,6 +7571,13 @@ function settleLiftMm() {
 }
 
 function pauseShapeSettle(object: THREE.Object3D) {
+  if (object.userData.combining) {
+    const rest = object.userData.combineRestScale;
+    if (rest instanceof THREE.Vector3) object.scale.copy(rest);
+    clearShapeSettle(object);
+    object.updateMatrixWorld(true);
+    return;
+  }
   const restY = typeof object.userData.settleRestY === "number"
     ? object.userData.settleRestY
     : object.position.y - NEW_SOLID_SETTLE_MM;
@@ -7624,6 +7625,46 @@ function startShapeSettle(state: ThreeState, object: THREE.Object3D) {
       return;
     }
     object.position.y = targetY;
+    object.updateMatrixWorld(true);
+    clearShapeSettle(object);
+  };
+  object.userData.motionHandle = requestAnimationFrame(tick);
+  state.needsRender = true;
+}
+
+function startShapeCombine(state: ThreeState, object: THREE.Object3D, startScale = COMBINE_START_SCALE) {
+  if (prefersReducedMotion()) {
+    clearShapeSettle(object);
+    object.updateMatrixWorld(true);
+    state.needsRender = true;
+    return;
+  }
+  cancelShapeMotion(object);
+  const restScale = object.scale.clone();
+  object.userData.combining = true;
+  object.userData.combineRestScale = restScale;
+  object.scale.copy(restScale).multiplyScalar(startScale);
+  object.updateMatrixWorld(true);
+  const started = performance.now();
+  const tick = (now: number) => {
+    if (!object.parent || !object.userData.combining) {
+      clearShapeSettle(object);
+      return;
+    }
+    const rest = object.userData.combineRestScale instanceof THREE.Vector3
+      ? object.userData.combineRestScale
+      : restScale;
+    const t = Math.min(1, (now - started) / COMBINE_MS);
+    const eased = 1 - (1 - t) ** 3;
+    const scale = startScale + (1 - startScale) * eased;
+    object.scale.copy(rest).multiplyScalar(scale);
+    object.updateMatrixWorld(true);
+    state.needsRender = true;
+    if (t < 1) {
+      object.userData.motionHandle = requestAnimationFrame(tick);
+      return;
+    }
+    object.scale.copy(rest);
     object.updateMatrixWorld(true);
     clearShapeSettle(object);
   };
@@ -7933,7 +7974,16 @@ function applyShapePose(object: THREE.Object3D, shape: WorkplaneShape) {
     THREE.MathUtils.degToRad(shape.rotation),
     THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
   );
-  object.scale.set(mirrorSign(shape.mirrorX), mirrorSign(shape.mirrorY), mirrorSign(shape.mirrorZ));
+  const restScaleX = mirrorSign(shape.mirrorX);
+  const restScaleY = mirrorSign(shape.mirrorY);
+  const restScaleZ = mirrorSign(shape.mirrorZ);
+  if (object.userData.combining) {
+    const rest = object.userData.combineRestScale;
+    if (rest instanceof THREE.Vector3) rest.set(restScaleX, restScaleY, restScaleZ);
+    else object.userData.combineRestScale = new THREE.Vector3(restScaleX, restScaleY, restScaleZ);
+  } else {
+    object.scale.set(restScaleX, restScaleY, restScaleZ);
+  }
   object.updateMatrixWorld(true);
 }
 
@@ -7941,6 +7991,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   if (!state) {
     return;
   }
+  state.printShapes = shapes;
   if (!state.previewHold) state.previewHold = new Map();
 
   const selected = new Set(selectedIds);
@@ -7956,6 +8007,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
 
   const keepIds = new Set<string>();
   const newSolids: THREE.Object3D[] = [];
+  const combineSolids: THREE.Object3D[] = [];
   const previewActive = state.modifierPreviewActive;
   visibleShapes.forEach((shape) => {
     const showEdges = selected.has(shape.id);
@@ -8036,7 +8088,8 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
     if (outgoing && wipe) {
       startEdgeWipe(state, outgoing, object, wipe.polylines);
     } else if (!existing && !held && !shape.hole && !shape.construction) {
-      newSolids.push(object);
+      if (pendingScaleIntro?.ids.has(shape.id)) combineSolids.push(object);
+      else newSolids.push(object);
     }
   });
 
@@ -8072,6 +8125,8 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
       startShapeSettle(state, object);
     });
   }
+  const introScale = pendingScaleIntro?.startScale ?? COMBINE_START_SCALE;
+  combineSolids.forEach((object) => startShapeCombine(state, object, introScale));
   applyXrayClipping(state);
   // autoUpdate is off, so a fresh scene has no shadow map until this runs.
   // Without it, MeshStandardMaterials stay blank until the first drag ends.
@@ -9093,8 +9148,11 @@ function createOutlineLineMaterial(color: string, opacity = 1) {
     dashed: false,
     transparent: true,
     opacity,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
     toneMapped: false,
     alphaToCoverage: true,
   });
@@ -9535,7 +9593,7 @@ function applyDragItemPreview(state: ThreeState, item: DragItem) {
     if (state.edgeWipe && (state.edgeWipe.incoming === item.visual || state.edgeWipe.outgoing === item.visual)) {
       finishEdgeWipe(state);
     }
-    if (item.visual.userData.settling || item.visual.userData.pendingSettle) {
+    if (item.visual.userData.settling || item.visual.userData.pendingSettle || item.visual.userData.combining) {
       pauseShapeSettle(item.visual);
     }
     if (!item.hadPreviewSimplified) {
@@ -9738,7 +9796,7 @@ function createHoleStripeMaterial(role: "hole" | "overlap" = "hole") {
     depthWrite: false,
     roughness: 0.94,
     metalness: 0,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     polygonOffset: true,
     polygonOffsetFactor: overlap ? -2 : 1,
     polygonOffsetUnits: overlap ? -2 : 1,
@@ -9883,9 +9941,17 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
   }
 
   // Solids use FrontSide so a true CSG cavity shows interior walls (not a see-through shell).
-  // DoubleSide only for hole cutters, odd mirror flips, or open/non-manifold json previews.
+  // DoubleSide only for construction ghosts, odd mirror flips, or open/non-manifold json previews.
+  // Sketch extrusions are json meshes, but they are closed solids — DoubleSide + polygon offset
+  // pulls far-wall fragments forward so every crease, including hidden ones, shows through.
   const flippedWinding = mirroredAxisCount(shape) % 2 === 1;
-  const openJsonPreview = Boolean(shape.importedMesh?.sourceFormat === "json" && !shape.groupedShapes?.length && !shape.hole);
+  const openJsonPreview = Boolean(
+    shape.importedMesh?.sourceFormat === "json"
+    && !shape.groupedShapes?.length
+    && !shape.hole
+    && !shape.sketchFinish
+    && !shape.cadBrep,
+  );
   const material = shape.hole
     ? createHoleStripeMaterial("hole")
     : new THREE.MeshStandardMaterial({
@@ -10078,13 +10144,6 @@ const largePickRay = new THREE.Ray();
 const largePickInverse = new THREE.Matrix4();
 const largePickHit = new THREE.Vector3();
 const LARGE_PICK_TRIANGLE_CAP = 4_000;
-const HEAVY_SCENE_TRIANGLES = 80_000;
-
-function importedTriangleTotal(shapes: WorkplaneShape[]): number {
-  let total = 0;
-  for (const shape of shapes) total += shape.importedMesh?.triangleCount ?? 0;
-  return total;
-}
 
 /** Precise triangle tests on a reduced watch movement lock the window. The box is enough to select it. */
 function raycastImportedBounds(this: THREE.Mesh, raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) {
@@ -10127,7 +10186,8 @@ function addMesh(
   const mesh = new THREE.Mesh(prepared, material);
   mesh.userData.printBody = true;
   const importedTriangles = shape.importedMesh?.triangleCount ?? 0;
-  mesh.castShadow = !shape.hole && !shape.construction && importedTriangles <= hardwareProfile().shadowCasterTriangleLimit;
+  const displayTriangles = displayTriangleCount(shape);
+  mesh.castShadow = !shape.hole && !shape.construction && displayTriangles <= hardwareProfile().shadowCasterTriangleLimit;
   mesh.receiveShadow = false;
   if (importedTriangles > LARGE_PICK_TRIANGLE_CAP) {
     mesh.raycast = raycastImportedBounds;
@@ -10203,6 +10263,7 @@ function addMesh(
         color: edgeColor,
         transparent: true,
         opacity: edgeOpacity,
+        depthTest: true,
         depthWrite: false,
         polygonOffset: true,
         polygonOffsetFactor: -2,
@@ -10229,7 +10290,7 @@ function addCadDisplayEdges(group: THREE.Group, shape: WorkplaneShape, color: st
   if (edges.length === 0) return false;
   const material = new THREE.LineBasicMaterial({
     color,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
     transparent: true,
     opacity,
@@ -10245,7 +10306,7 @@ function addCadDisplayEdges(group: THREE.Group, shape: WorkplaneShape, color: st
     const line = new THREE.Line(geometry, material);
     line.name = CAD_DISPLAY_EDGE_NAME;
     line.position.y -= shape.height / 2;
-    line.renderOrder = 1003;
+    line.renderOrder = 2;
     line.userData.complexEdge = true;
     group.add(line);
   });

@@ -192,6 +192,8 @@ export type BooleanCleanupOptions = {
    * Does not planarize, so stepped unions keep their real height.
    */
   unifyCoplanar?: boolean;
+  /** Native OCCT already produced a display mesh; skip the main-thread weld. */
+  skipWeld?: boolean;
 };
 
 /**
@@ -206,6 +208,7 @@ export function cleanupBooleanPositions(
   options: BooleanCleanupOptions = {},
 ): number[] {
   if (positions.length < 9) return positions;
+  if (options.skipWeld) return positions;
 
   const staggeredUnion = options.staggeredUnion === true;
   const unifyCoplanar = options.unifyCoplanar === true;

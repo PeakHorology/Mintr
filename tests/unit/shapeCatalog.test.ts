@@ -24,7 +24,7 @@ describe("shape catalog", () => {
 
   it("creates placed shapes from toolbar assets", () => {
     const asset: ShapeAsset = { id: "box", name: "Box", src: "box.png", kind: "box", color: "#d41721" };
-    const placed = makeShapeFromAsset(asset, { x: 12, z: -8, elevation: 4 });
+    const placed = makeShapeFromAsset(asset, { x: 12, z: -8, elevation: 4 }, "standard");
 
     expect(placed.id).toMatch(/^box-/);
     expect(placed).toMatchObject({
@@ -39,7 +39,7 @@ describe("shape catalog", () => {
       depth: 20,
       height: 20,
       radius: 0,
-      steps: 16,
+      steps: 12,
       locked: false,
       hidden: false,
     });

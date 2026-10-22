@@ -128,6 +128,13 @@ describe("booleanResultLooksExploded", () => {
   it("keeps a stacked pair whose height merely doubled", () => {
     expect(booleanResultLooksExploded(knurl, { width: 40, height: 8, depth: 40 })).toBe(false);
   });
+
+  it("rejects a pose applied twice that roughly doubles the envelope", () => {
+    expect(booleanResultLooksExploded(
+      { width: 50, height: 20, depth: 50 },
+      { width: 100, height: 40, depth: 100 },
+    )).toBe(true);
+  });
 });
 
 describe("meshFrameOriginFromPositions", () => {

@@ -1,8 +1,12 @@
 import { ADDITION, Brush, Evaluator, SUBTRACTION } from "three-bvh-csg";
 import * as THREE from "three";
+import { createLocalId } from "@/lib/localIds";
 import { buildMetricThreadedCylinder } from "@/lib/metricThreadSolid";
 import { nearestMetricThreadForDiameter, resolveThreadParams } from "@/lib/metricThreads";
-import { shapeFromSplitWorld, splitWorldHalves, type SplitAxis, type SplitCut } from "@/lib/splitShape";
+import { MIN_SHAPE_DIMENSION, cleanModelDimension } from "@/lib/modelDimension";
+import { requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
+import { shapeFromSplitWorld, splitPlaneFrame, splitWorldHalves, type SplitAxis, type SplitCut } from "@/lib/splitShape";
+import { canonicalizeShape, cleanNearZero } from "@/lib/workplaneShapes";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 export type CutJoint = "none" | "dovetail" | "plug" | "snap" | "thread";
@@ -22,6 +26,86 @@ export function normalizeCutJoint(value: unknown): CutJoint {
 export function clampCutClearance(value: number) {
   if (!Number.isFinite(value)) return 0.2;
   return Math.max(0, Math.min(1.2, value));
+}
+
+type KernelSplitPart = {
+  name: string;
+  positions?: number[];
+  brepStep?: string;
+  x?: number;
+  z?: number;
+  elevation?: number;
+  width?: number;
+  height?: number;
+  depth?: number;
+};
+
+function shapeFromKernelPart(source: WorkplaneShape, part: KernelSplitPart): WorkplaneShape | null {
+  const positions = part.positions;
+  if (!positions || positions.length < 9) return null;
+  const width = cleanModelDimension(Math.max(MIN_SHAPE_DIMENSION, part.width ?? 1));
+  const height = cleanModelDimension(Math.max(MIN_SHAPE_DIMENSION, part.height ?? 1));
+  const depth = cleanModelDimension(Math.max(MIN_SHAPE_DIMENSION, part.depth ?? 1));
+  return canonicalizeShape({
+    id: createLocalId(`${source.id}-split`),
+    name: `${source.name} ${part.name}`,
+    kind: "mesh",
+    color: source.color,
+    hole: source.hole || undefined,
+    x: cleanNearZero(part.x ?? 0, 0.0005),
+    z: cleanNearZero(part.z ?? 0, 0.0005),
+    elevation: cleanNearZero(part.elevation ?? 0, 0.0005),
+    size: Math.max(width, depth),
+    width,
+    depth,
+    height,
+    rotation: 0,
+    rotationX: 0,
+    rotationZ: 0,
+    importedMesh: {
+      positions,
+      baseWidth: Math.max(part.width ?? width, 0.001),
+      baseDepth: Math.max(part.depth ?? depth, 0.001),
+      baseHeight: Math.max(part.height ?? height, 0.001),
+      triangleCount: Math.floor(positions.length / 9),
+      sourceFormat: part.brepStep ? "step" : "json",
+      brepStep: part.brepStep,
+    },
+    locked: false,
+    hidden: false,
+  });
+}
+
+export async function cutShapeToFitNative(shape: WorkplaneShape, cut: CutToFit): Promise<WorkplaneShape[] | null> {
+  const solids = toNativeKernelSolids([shape]);
+  if (!solids) return null;
+  const frame = splitPlaneFrame(shape, cut);
+  const reply = await requestNativeKernelJob({
+    id: Date.now(),
+    type: "split",
+    solids,
+    origin: frame.origin,
+    normal: frame.normal,
+    joint: cut.joint,
+    clearance: clampCutClearance(cut.clearance),
+    axis: cut.axis,
+  });
+  if (!reply) return null;
+  if (reply.ok === false && reply.fallback === false) {
+    throw new Error(reply.message || "Could not split that object");
+  }
+  if (reply.ok === false || reply.fallback) return null;
+  const parts = (reply.parts ?? [])
+    .map((part) => shapeFromKernelPart(shape, part))
+    .filter((part): part is WorkplaneShape => part !== null);
+  return parts.length >= 2 ? parts : null;
+}
+
+/** Native B-rep split when MintrKernel is up; mesh CSG otherwise. */
+export async function cutShapeToFitBest(shape: WorkplaneShape, cut: CutToFit): Promise<WorkplaneShape[]> {
+  const native = await cutShapeToFitNative(shape, cut);
+  if (native?.length === 2) return native;
+  return cutShapeToFit(shape, cut);
 }
 
 /**

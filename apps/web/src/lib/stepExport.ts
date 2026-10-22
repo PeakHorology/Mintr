@@ -100,7 +100,7 @@ export function booleanResultLooksExploded(before: AxisExtents, after: AxisExten
   const beforeDiag = Math.hypot(before.width, before.height, before.depth);
   const afterDiag = Math.hypot(after.width, after.height, after.depth);
   if (!(beforeDiag > 1e-6)) return afterDiag > 1;
-  return afterDiag > beforeDiag * 6 || afterDiag < beforeDiag * 0.05;
+  return afterDiag > beforeDiag * 1.8 || afterDiag < beforeDiag * 0.05;
 }
 
 /**
@@ -587,6 +587,36 @@ function isAssembleBody(shape: WorkplaneShape): boolean {
 }
 
 export async function exportShapesToStep(shapes: WorkplaneShape[]): Promise<StepExportResult> {
+  if (typeof window !== "undefined") {
+    const prepared: WorkplaneShape[] = [];
+    for (const shape of shapes) {
+      if (shape.importedMesh && !shape.importedMesh.brepStep) {
+        const brepStep = await resolveImportedBrepStep(shape.importedMesh);
+        prepared.push(brepStep
+          ? { ...shape, importedMesh: { ...shape.importedMesh, brepStep } }
+          : shape);
+      } else {
+        prepared.push(shape);
+      }
+    }
+    const { runOcctKernelInWorker } = await import("@/lib/occtKernelClient");
+    const result = await runOcctKernelInWorker({ type: "exportStep", shapes: prepared });
+    if (!result) {
+      return {
+        blob: new Blob([]),
+        exportedCount: 0,
+        exactCount: 0,
+        facetedCount: 0,
+        skipped: [{ name: "STEP", kind: "mesh", reason: "CAD worker timed out or failed" }],
+        degraded: [],
+      };
+    }
+    return result;
+  }
+  return exportShapesToStepLocal(shapes);
+}
+
+export async function exportShapesToStepLocal(shapes: WorkplaneShape[]): Promise<StepExportResult> {
   const brep = await loadBrepWithOcct();
 
   const skipped: SkippedShape[] = [];
@@ -738,11 +768,32 @@ export type OcctBooleanMeshResult = {
  * Prefer OCCT fuse/cut when every operand has exact B-Rep (native / brepStep / cadBrep).
  * Returns world-space triangle soup + STEP text for the result solid.
  */
+async function punchThroughBooleanShapes(
+  shapes: WorkplaneShape[],
+  op: "subtract" | "union" | "intersect",
+) {
+  const { prepareBooleanOperands } = await import("@/lib/editorBoolean");
+  return prepareBooleanOperands(shapes, op);
+}
+
 export async function evaluateOcctBooleanOnWorldShapes(
   shapes: WorkplaneShape[],
   op: "subtract" | "union" | "intersect",
 ): Promise<OcctBooleanMeshResult | null> {
-  const active = shapes.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked);
+  const operands = await punchThroughBooleanShapes(shapes, op);
+  if (typeof window !== "undefined") {
+    const { runOcctKernelInWorker } = await import("@/lib/occtKernelClient");
+    return runOcctKernelInWorker({ type: "boolean", shapes: operands, op });
+  }
+  return evaluateOcctBooleanOnWorldShapesLocal(operands, op);
+}
+
+export async function evaluateOcctBooleanOnWorldShapesLocal(
+  shapes: WorkplaneShape[],
+  op: "subtract" | "union" | "intersect",
+): Promise<OcctBooleanMeshResult | null> {
+  const punched = await punchThroughBooleanShapes(shapes, op);
+  const active = punched.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked);
   if (active.length === 0) return null;
 
   try {
