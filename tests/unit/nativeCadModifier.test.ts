@@ -53,5 +53,22 @@ describe("native CAD modifier adapter", () => {
       quality: "standard",
       chamferAngle: 45,
     }, false)).toBe(false);
+    expect(nativeCadModifierCanHandle({
+      type: "pushPull",
+      faceId: 0,
+      distance: 4,
+      quality: "standard",
+    }, true)).toBe(true);
+  });
+
+  it("rewrites a native fillet failure into what to try", () => {
+    const message = mapNativeCadModifierReply({
+      ok: false,
+      type: "error",
+      message: "native fillet could not rebuild this solid",
+    }, 3);
+    expect(message).toMatchObject({ type: "error", requestId: 3 });
+    if (message.type !== "error") throw new Error("expected error");
+    expect(message.message).toMatch(/Group it first|smaller fillet/i);
   });
 });

@@ -1,5 +1,6 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
-import { requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
+import { hasNativeOcctKernel, requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
+import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 export type ShapeMeasure = {
@@ -41,18 +42,52 @@ function meshMeasure(shape: WorkplaneShape): ShapeMeasure | null {
   return { volume: Math.abs(volume), area, source: "mesh" };
 }
 
+function primitiveMeasure(shape: WorkplaneShape): ShapeMeasure | null {
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  if (!(width > 0 && depth > 0 && height > 0)) return null;
+  if (shape.kind === "box") {
+    return {
+      volume: width * depth * height,
+      area: 2 * (width * depth + width * height + depth * height),
+      source: "mesh",
+    };
+  }
+  if (shape.kind === "cylinder") {
+    const rx = width / 2;
+    const rz = depth / 2;
+    return {
+      volume: Math.PI * rx * rz * height,
+      area: 2 * Math.PI * rx * rz + Math.PI * (rx + rz) * height,
+      source: "mesh",
+    };
+  }
+  if (shape.kind === "sphere") {
+    const r = Math.max(width, depth, height) / 2;
+    return {
+      volume: (4 / 3) * Math.PI * r * r * r,
+      area: 4 * Math.PI * r * r,
+      source: "mesh",
+    };
+  }
+  return null;
+}
+
 export async function measureWorkplaneShape(shape: WorkplaneShape): Promise<ShapeMeasure | null> {
-  const solids = toNativeKernelSolids([shape]);
-  if (solids) {
-    const reply = await requestNativeKernelJob(
-      { id: Date.now(), type: "measure", solids },
-      cadModifierRequestTimeoutMs(),
-    );
-    const volume = Number(reply?.volume);
-    const area = Number(reply?.area);
-    if (reply?.ok && Number.isFinite(volume) && Number.isFinite(area) && volume > 0 && area > 0) {
-      return { volume, area, source: "kernel" };
+  if (hasNativeOcctKernel()) {
+    const solids = toNativeKernelSolids([shape]);
+    if (solids) {
+      const reply = await requestNativeKernelJob(
+        { id: Date.now(), type: "measure", solids },
+        cadModifierRequestTimeoutMs(),
+      );
+      const volume = Number(reply?.volume);
+      const area = Number(reply?.area);
+      if (reply?.ok && Number.isFinite(volume) && Number.isFinite(area) && volume > 0 && area > 0) {
+        return { volume, area, source: "kernel" };
+      }
     }
   }
-  return meshMeasure(shape);
+  return meshMeasure(shape) ?? primitiveMeasure(shape);
 }

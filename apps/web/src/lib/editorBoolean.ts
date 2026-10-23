@@ -38,10 +38,10 @@ import {
   expandBooleanOperands,
   faceHoleCutDepthMm,
   faceHoleOvershootMm,
-  filterCoplanarDisplayEdges,
   inferCsgOp,
   markCsgClean,
   replaceLeafInCsgTree,
+  viewportCadDisplayEdges,
   withCsgMeta,
 } from "@/lib/csgTree";
 import type { CsgOp } from "@/types/sketchforge";
@@ -54,8 +54,15 @@ import { isFaceHostedSketch, resolveSketchPlane } from "@/lib/sketchPlane";
 import { barrelHoleCutDepthMm } from "@/lib/sketchCylinder";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { hasNativeOcctKernel } from "@/lib/nativeKernelProtocol";
-import { occtMeshFallbackNotice, selectionSupportsOcctCsg } from "@/lib/stepQuality";
-import { axisAlignedRectFromClosedPath, circleFromClosedPath, orderedSketchPaths, shapeFromSketchProfile } from "@/lib/sketchProfileShape";
+import {
+  cadOperandsForExactGroup,
+  mixedGroupLeftOutNotice,
+  occtMeshFallbackNotice,
+  selectionSupportsOcctCsg,
+  shapeHasExactBrepSource,
+} from "@/lib/stepQuality";
+import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
+import { axisAlignedRectFromClosedPath, circleFromClosedPath, orderedSketchPaths, pointInSketchPolygon, shapeFromSketchProfile, type OrderedSketchPath } from "@/lib/sketchProfileShape";
 import { cloneAsGroupChild } from "@/lib/editorGroup";
 import {
   type Cuboid,
@@ -741,10 +748,11 @@ export function prepareBooleanOperands(
   selection: WorkplaneShape[],
   op: "subtract" | "union" | "intersect",
 ): WorkplaneShape[] {
-  if (op !== "subtract") return selection;
-  const solids = selection.filter((shape) => !shape.hole && !shape.hidden);
-  if (solids.length === 0) return selection;
-  return selection.map((shape) => (shape.hole ? punchThroughCutter(shape, solids) : shape));
+  const expanded = expandBooleanHoleCutters(selection);
+  if (op !== "subtract") return expanded;
+  const solids = expanded.filter((shape) => !shape.hole && !shape.hidden);
+  if (solids.length === 0) return expanded;
+  return expanded.map((shape) => (shape.hole ? punchThroughCutter(shape, solids) : shape));
 }
 
 export function brushFromShape(shape: WorkplaneShape, cutter = false) {
@@ -2410,7 +2418,7 @@ export async function buildIntersectionShapeFromSelection(groupable: WorkplaneSh
   return {
     group: null,
     empty: false,
-    failureNotice: "Could not calculate this Intersection cleanly",
+    failureNotice: "Could not keep the overlap of these parts. Check that they actually intersect.",
   };
 }
 
@@ -3024,9 +3032,9 @@ export async function evaluateCsgOpOnOperands(
   op: CsgOp,
   options?: { skipOcct?: boolean },
 ): Promise<WorkplaneShape | null> {
-  const selection = operands
-    .filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked)
-    .map((shape) => (shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape));
+  const selection = await ensureExactSketchOperands(expandBooleanHoleCutters(
+    operands.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked),
+  ));
   if (selection.length === 0) return null;
   const skipOcct = Boolean(options?.skipOcct);
 
@@ -3123,7 +3131,7 @@ export async function occtBooleanMeshShape(
       return null;
     }
     const origin = { x: group.x, y: group.elevation ?? 0, z: group.z };
-    const cadDisplayEdges = filterCoplanarDisplayEdges(
+    const cadDisplayEdges = viewportCadDisplayEdges(
       (result.displayEdges ?? [])
         .map((edge) => ({
           points: edge.points.map((value, index) => {
@@ -3156,6 +3164,46 @@ export function expandGroupsForBoxBoolean(selection: WorkplaneShape[]): Workplan
   ));
 }
 
+function sketchPathIsSimpleCutter(path: OrderedSketchPath): boolean {
+  return Boolean(axisAlignedRectFromClosedPath(path) || circleFromClosedPath(path));
+}
+
+function sketchPathIsInsideAnother(path: OrderedSketchPath, others: OrderedSketchPath[]): boolean {
+  const sample = path.points[0];
+  if (!sample) return false;
+  const point = new THREE.Vector2(sample.x, sample.z);
+  return others.some((other) => {
+    if (other === path || other.points.length < 3) return false;
+    return pointInSketchPolygon(point, other.points.map((entry) => new THREE.Vector2(entry.x, entry.z)));
+  });
+}
+
+function sketchProfileFromClosedPath(source: NonNullable<WorkplaneShape["sketchProfile"]>, path: OrderedSketchPath) {
+  const pointIds = new Set(path.points.map((point) => point.id));
+  return {
+    ...source,
+    points: source.points.filter((point) => pointIds.has(point.id)),
+    segments: path.steps.map((step) => step.segment),
+  };
+}
+
+export const SKETCH_HOLE_BATCH_NOTICE =
+  "One hole per sketch stays exact. Draw the next hole and Group, or use Hole primitives.";
+
+/** Several freeform holes in one sketch stay a mesh soup — tell the user the one-at-a-time path. */
+export function sketchHoleBatchNotice(shapes: WorkplaneShape[]): string | undefined {
+  for (const shape of shapes) {
+    if (!shape.hole || !shape.sketchProfile) continue;
+    const closed = orderedSketchPaths(shape.sketchProfile).filter((path) => path.closed);
+    if (closed.length < 2) continue;
+    const independent = closed.filter((path) => !sketchPathIsInsideAnother(path, closed));
+    if (independent.length < 2) continue;
+    if (independent.every(sketchPathIsSimpleCutter)) continue;
+    return SKETCH_HOLE_BATCH_NOTICE;
+  }
+  return undefined;
+}
+
 /** Re-bake simple rect/circle sketch holes so Group uses CylinderGeometry/BoxGeometry cutters
  *  even when the live shape still has an older ExtrudeGeometry soup. */
 export function rebuildSketchHoleCutterIfPossible(shape: WorkplaneShape): WorkplaneShape {
@@ -3166,7 +3214,7 @@ export function rebuildSketchHoleCutterIfPossible(shape: WorkplaneShape): Workpl
   if (closedPaths.length !== 1) {
     return shape;
   }
-  if (!axisAlignedRectFromClosedPath(closedPaths[0]) && !circleFromClosedPath(closedPaths[0])) {
+  if (!sketchPathIsSimpleCutter(closedPaths[0])) {
     return shape;
   }
   const plane = resolveSketchPlane(shape.sketchPlane ?? shape.sketchProfile.sketchPlane);
@@ -3208,7 +3256,71 @@ export function rebuildSketchHoleCutterIfPossible(shape: WorkplaneShape): Workpl
   if (!cuboidsOverlap(originalBounds, meshAabb(rebuilt))) {
     return shape;
   }
+  // Face-hosted cutters keep kind mesh: their pose lives in the extrusion, not
+  // a Y-up primitive. Group bakes exact B-Rep next. Workplane circles/rects
+  // become cylinders/boxes so OCCT can cut them without a bake.
+  if (faceHosted) return rebuilt;
+  const circle = circleFromClosedPath(closedPaths[0]);
+  if (circle) {
+    const diameter = Math.max(rebuilt.width, rebuilt.depth, circle.radius * 2);
+    return {
+      ...rebuilt,
+      kind: "cylinder",
+      width: diameter,
+      depth: diameter,
+      size: diameter,
+      radius: diameter / 2,
+    };
+  }
+  const rect = axisAlignedRectFromClosedPath(closedPaths[0]);
+  if (rect) {
+    return {
+      ...rebuilt,
+      kind: "box",
+      width: rebuilt.width || rect.width,
+      depth: rebuilt.depth || rect.depth,
+      size: Math.max(rebuilt.width || rect.width, rebuilt.depth || rect.depth),
+    };
+  }
   return rebuilt;
+}
+
+/** Split a multi-circle/rect sketch hole into one exact cutter per independent loop. */
+export function expandSketchHoleCuttersIfPossible(shape: WorkplaneShape): WorkplaneShape[] {
+  if (!shape.hole || !shape.sketchProfile) return [shape];
+  const closedPaths = orderedSketchPaths(shape.sketchProfile).filter((path) => path.closed);
+  if (closedPaths.length <= 1) return [rebuildSketchHoleCutterIfPossible(shape)];
+  const independent = closedPaths.filter((path) => !sketchPathIsInsideAnother(path, closedPaths));
+  if (independent.length < 2 || !independent.every(sketchPathIsSimpleCutter)) return [shape];
+  return independent.map((path, index) => rebuildSketchHoleCutterIfPossible({
+    ...shape,
+    id: `${shape.id}__hole${index}`,
+    sketchProfile: sketchProfileFromClosedPath(shape.sketchProfile!, path),
+  }));
+}
+
+function expandBooleanHoleCutters(shapes: WorkplaneShape[]): WorkplaneShape[] {
+  return shapes.flatMap((shape) => (shape.hole ? expandSketchHoleCuttersIfPossible(shape) : [shape]));
+}
+
+async function ensureExactSketchOperands(shapes: WorkplaneShape[]): Promise<WorkplaneShape[]> {
+  return Promise.all(shapes.map(async (shape) => {
+    if (shapeHasExactBrepSource(shape) || !shape.sketchProfile) return shape;
+    const plane = resolveSketchPlane(shape.sketchPlane ?? shape.sketchProfile.sketchPlane);
+    const faceHosted = isFaceHostedSketch(plane, shape.sketchProfile.faceReferenceLoops);
+    try {
+      const exact = await withExactSketchExtrusionSolid(shape, shape.height, {
+        cutIntoFace: Boolean(shape.hole && faceHosted),
+      });
+      return exact.cadBrep || exact.importedMesh?.brepStep ? exact : shape;
+    } catch {
+      return shape;
+    }
+  }));
+}
+
+function originalOperandId(shape: WorkplaneShape): string {
+  return shape.id.replace(/__hole\d+$/, "");
 }
 
 export function canUseBoxBoolean(selection: WorkplaneShape[]) {
@@ -3224,23 +3336,29 @@ export function hasNonZeroRotation(shape: WorkplaneShape) {
 
 export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]): Promise<GroupBuildResult> {
   const solidified = groupable.map(solidThreadShape);
-  const booleanSelection = expandGroupsForBoolean(solidified).map((shape) => (
-    shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape
-  ));
+  const booleanSelection = await ensureExactSketchOperands(
+    expandBooleanHoleCutters(expandGroupsForBoolean(solidified)),
+  );
   const hasSolid = booleanSelection.some((shape) => !shape.hole);
   const hasHole = booleanSelection.some((shape) => shape.hole);
   const hasImportedMesh = booleanSelection.some((shape) => Boolean(shape.importedMesh));
   const boxBooleanSelection = hasSolid && hasHole
-    ? expandGroupsForBoxBoolean(solidified).map((shape) => (shape.hole ? rebuildSketchHoleCutterIfPossible(shape) : shape))
+    ? await ensureExactSketchOperands(expandBooleanHoleCutters(expandGroupsForBoxBoolean(solidified)))
     : [];
   // Group fuses. Exact B-rep from MintrKernel when the sidecar is up. Browser and
   // kernel-less Electron skip live OCCT so a cylinder-into-box Group cannot sit on
   // occt-wasm for several seconds.
   const skipLiveOcct = !hasNativeOcctKernel();
-  const occtEligible = hasSolid && selectionSupportsOcctCsg(booleanSelection);
+  const cadOnly = skipLiveOcct ? null : cadOperandsForExactGroup(booleanSelection);
+  const occtSelection = cadOnly ?? booleanSelection;
+  const occtEligible = hasSolid && selectionSupportsOcctCsg(occtSelection);
+  const occtHasHole = occtSelection.some((shape) => shape.hole);
   const occtGroup = occtEligible && !skipLiveOcct
-    ? await occtBooleanMeshShape(booleanSelection, hasHole ? "subtract" : "union")
+    ? await occtBooleanMeshShape(occtSelection, occtHasHole ? "subtract" : "union")
     : null;
+  const leftOutShapes = cadOnly && occtGroup
+    ? solidified.filter((shape) => !cadOnly.some((cad) => originalOperandId(cad) === shape.id))
+    : [];
   const manifoldCutGroup = !occtGroup && hasSolid && hasHole
     ? await manifoldBooleanMeshShape(booleanSelection, { requireImported: false })
     : null;
@@ -3268,8 +3386,10 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
     : manifoldUnionGroup ??
       singleColorMeshGroup);
   // Keep the user's selected operands as the CSG tree, not flattened boolean
-  // leaves, so Ungroup peels one Group at a time.
-  const nestedOperands = solidified.filter((shape) => !shape.locked);
+  // leaves, so Ungroup peels one Group at a time. Mesh bodies left on the
+  // workplane are not children of this Group.
+  const leftOutIds = new Set(leftOutShapes.map((shape) => shape.id));
+  const nestedOperands = solidified.filter((shape) => !shape.locked && !leftOutIds.has(shape.id));
   const nestedGroup = group && nestedOperands.length >= 2
     ? {
         ...group,
@@ -3293,13 +3413,19 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
     hasImportedMesh,
     consumed,
     failureNotice: hasSolid && hasHole
-      ? (hasImportedMesh ? "Could not cut with this hole mesh" : "Could not cut this selection")
-      : "Could not group this selection",
-    qualityNotice: occtMeshFallbackNotice({
+      ? "That hole did not cut through. Check that it overlaps the solid, then Group again."
+      : "Could not join these parts. Make sure they overlap, then try Group again.",
+    leftOutShapes,
+    qualityNotice: mixedGroupLeftOutNotice(leftOutShapes) ?? occtMeshFallbackNotice({
       skipOcct: skipLiveOcct,
       occtEligible,
       resultHasExactBrep: Boolean(withMeta?.importedMesh?.brepStep || withMeta?.cadBrep),
-    }),
+      operands: booleanSelection,
+    }) ?? (
+      withMeta?.importedMesh?.brepStep || withMeta?.cadBrep
+        ? undefined
+        : sketchHoleBatchNotice(solidified)
+    ),
   };
 }
 

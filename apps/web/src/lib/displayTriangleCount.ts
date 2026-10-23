@@ -91,7 +91,7 @@ export function isHeavyDisplayScene(shapes: WorkplaneShape[], quality: DisplayQu
   return displayTriangleTotal(shapes, quality) > HEAVY_DISPLAY_TRIANGLES;
 }
 
-/** Live OCCT n-way fuse stays on the UI thread; skip it once the selection is this large. */
+/** Live OCCT fuse of many solids stays on the UI thread; skip it once the selection is this large. */
 export const LIVE_OCCT_BOOLEAN_OPERANDS = 8;
 /** Tessellate worker/BVH operands at draft once the selection crosses this triangle budget. */
 export const BOOLEAN_WORKING_TRIANGLE_BUDGET = 40_000;

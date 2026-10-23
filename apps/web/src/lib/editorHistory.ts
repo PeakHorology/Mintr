@@ -421,8 +421,15 @@ export function hydrateEditorHistoryState(
     const index = Number.isInteger(requestedIndex)
       ? Math.min(Math.max(0, requestedIndex as number), normalized.length - 1)
       : normalized.length - 1;
-    if (normalized[index]?.fingerprint !== fallback.fingerprint) {
+    const cursor = normalized[index];
+    if (!cursor) {
       return { entries: [fallback], index: 0 };
+    }
+    if (cursor.fingerprint !== fallback.fingerprint) {
+      const live = expandHistoryShapes(cursor.shapes, cursor.meshVault);
+      if (projectShapesFingerprint(live.map(canonicalizeShape)) !== fallback.fingerprint) {
+        return { entries: [fallback], index: 0 };
+      }
     }
 
     const entries = boundedEditorHistory(normalized);

@@ -15,6 +15,7 @@ import {
   shouldExpandGroupForBoolean,
   expandBooleanOperands,
   filterCoplanarDisplayEdges,
+  viewportCadDisplayEdges,
   viewportGroupChildren,
   withCsgMeta,
 } from "../../apps/web/src/lib/csgTree";
@@ -324,6 +325,19 @@ describe("csgTree", () => {
       mesh,
     );
     expect(kept).toEqual([{ points: [0, 1, 0, 10, 1, 0] }]);
+  });
+
+  it("keeps kernel Push Pull outlines when a triangle soup cannot mark creases", () => {
+    const outlines = [
+      { points: [0, 0, 0, 20, 0, 0] },
+      { points: [20, 0, 0, 20, 0, 20] },
+    ];
+    const jitteredSoup = [
+      0, 0, 0, 20.04, 0, 0, 0, 0, 20.04,
+      20.04, 0, 0, 20.04, 0, 20.04, 0, 0, 20.04,
+    ];
+    expect(filterCoplanarDisplayEdges(outlines, jitteredSoup)).toEqual([]);
+    expect(viewportCadDisplayEdges(outlines, jitteredSoup)).toEqual(outlines);
   });
 
   it("hides a leftover diametric seam and keeps the 90-degree rim", () => {

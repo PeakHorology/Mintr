@@ -4,6 +4,32 @@ Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes
 
 ## Unreleased
 
+## 1.1.2
+
+- Push Pull is in: drag a flat face on a CAD-ready shape, type a distance if you want, then click Apply.
+- Push Pull face outlines follow the real edges of the shape, the drag preview is a clean prism instead of stray triangles, L-shaped faces pick correctly, and a face that points at the camera no longer runs away from the mouse.
+- Push Pull, Fillet, Chamfer, and Hollow work on CAD bodies and Groups that have been moved or turned since they were made.
+- The Start modeling tip stays readable in dark mode.
+- A .mintr file keeps the model history, so someone else can undo, redo, and keep working from where you left off.
+- The projects home uses cover-style cards that fill the window. Folders use a folder icon. Opening a folder slides in; opening a design fades into the editor.
+- The projects home uses the same cream, gold glow, cyan grid, and mint ticks as the rest of Mintr, with quieter chrome and a slower lift on each design.
+- Drop sits a part on the workplane or a flat face. The part does not have to start above that surface.
+- When Group, fillet, chamfer, sweep, or a hole cut fails, the notice says what to try.
+- Print marks on CAD-ready parts come from the desktop engine, so turning them on stays quick.
+- Imported STEP stays exact after autosave. The inspector shows volume in milliliters.
+- Entering a sketch eases the camera onto the face. Switching Flat sketch and 3D sketch keeps the last view on each side. Orbit, pan, and zoom stay the same while you sketch and after Extrude. Shapes grow as you drag, a closed profile fills once, and Extrude rises from the sketch.
+- While you sketch, Flat sketch and 3D sketch sit under the tip at the bottom.
+- Group cuts several holes one at a time, so the outer shape stays true.
+- Split and print marks cut those holes the same way, whether there is one hole or several.
+- Group joins several solids one after another, so a pile of bosses stays true. Two parts still fuse in one step.
+- A Group of three or more parts cleans leftover faces so the workplane matches the file.
+- A hole sketched on a face stays CAD while you edit, so fillet still works.
+- If one body in a Group is mesh, Mintr groups the CAD parts and leaves that body out.
+- Imported STEP finishes baking before you close or leave, so later export stays exact.
+- If Group falls to mesh, the notice names the mesh body so you can Group the CAD parts first.
+- Several circles or rectangles in one sketch hole cut as separate exact holes.
+- If a fillet cannot round every selected edge together, Mintr retries each edge on its own.
+
 ## 1.1.0
 
 - Desktop Mintr uses its own CAD engine for Group, fillet, chamfer, hollow, and thread.

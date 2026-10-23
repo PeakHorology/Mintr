@@ -9,7 +9,7 @@ import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import { useChromePresence } from "@/lib/chromePresence";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
-import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
+import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, formatVolumeWithMilliliters, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import {
   clampRoofRidgeX,
   MAX_ROOF_ANGLE,
@@ -968,7 +968,7 @@ export function ShapeInspector({
       {measure ? (
         <div className="mesh-reduce" aria-label="Solid volume and area">
           <p className="mesh-reduce-count">
-            Volume {formatMeasurementNumber(measure.volume, workspace.accuracy)} mm³
+            {formatVolumeWithMilliliters(measure.volume, workspace.accuracy)}
             {" · "}
             Area {formatMeasurementNumber(measure.area, workspace.accuracy)} mm²
           </p>

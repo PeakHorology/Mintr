@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { WorkplaneShape } from "@/types/sketchforge";
 import {
   bakeImportedBrepStepsForSave,
+  importedBrepBakePending,
   importedBrepStepsAwaitingSave,
   importedMeshHasExactSource,
   registerPendingImportedBrep,
@@ -44,6 +45,7 @@ describe("bakeImportedBrepStepsForSave", () => {
     const grouped: WorkplaneShape = { ...stepShape("Group", 2), importedMesh: undefined, groupedShapes: [good] };
     const duplicate = { ...good, id: "Good copy" };
 
+    expect(importedBrepBakePending([grouped, bad, duplicate])).toBe(true);
     expect(importedBrepStepsAwaitingSave([grouped, bad, duplicate]).map((entry) => entry.name)).toEqual(["Good", "Bad"]);
 
     const progress: Array<[number, number]> = [];
@@ -60,6 +62,7 @@ describe("bakeImportedBrepStepsForSave", () => {
     // The failed body falls back to faceted and is no longer counted as awaiting a save.
     expect(importedMeshHasExactSource(bad.importedMesh)).toBe(false);
     expect(importedBrepStepsAwaitingSave(result.shapes)).toEqual([]);
+    expect(importedBrepBakePending(result.shapes)).toBe(false);
   });
 
   it("reports nothing to bake for meshes that already carry STEP text or were never registered", async () => {

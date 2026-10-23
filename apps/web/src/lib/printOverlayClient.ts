@@ -1,6 +1,8 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
 import { collectPrintOverlayMarks, type PrintOverlayCollectRequest, type PrintOverlayMarks } from "@/lib/printOverlayCollect";
 import { requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
+import type { PickTriangle } from "@/lib/meshPickBvh";
+import type { WorkplaneShape } from "@/types/sketchforge";
 
 type WorkerRequest = PrintOverlayCollectRequest & { requestId: number };
 type WorkerResponse =
@@ -9,6 +11,11 @@ type WorkerResponse =
 
 type Pending = {
   resolve: (value: PrintOverlayMarks | null) => void;
+};
+
+export type PrintOverlayClientRequest = Omit<PrintOverlayCollectRequest, "triangles"> & {
+  triangles?: PickTriangle[];
+  collectTriangles?: () => PickTriangle[];
 };
 
 let worker: Worker | null = null;
@@ -45,9 +52,20 @@ function numbersFrom(value: unknown): number[] {
   return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number") : [];
 }
 
-async function tryNativePrintOverlay(request: PrintOverlayCollectRequest): Promise<PrintOverlayMarks | null> {
-  if (!request.shapes?.length) return null;
-  const solids = toNativeKernelSolids(request.shapes.filter((shape) => !shape.hidden && !shape.construction));
+function visiblePrintShapes(shapes: WorkplaneShape[] | undefined) {
+  return (shapes ?? []).filter((shape) => !shape.hidden && !shape.construction && !shape.suppressed && !shape.csg?.suppressed);
+}
+
+/** True when every visible body can go to MintrKernel — skip the mesh worker on a native hit. */
+export function printOverlayAllCadReady(shapes: WorkplaneShape[] | undefined) {
+  const visible = visiblePrintShapes(shapes);
+  return visible.length > 0 && toNativeKernelSolids(visible) !== null;
+}
+
+async function tryNativePrintOverlay(request: PrintOverlayClientRequest): Promise<PrintOverlayMarks | null> {
+  const visible = visiblePrintShapes(request.shapes);
+  if (!visible.length) return null;
+  const solids = toNativeKernelSolids(visible);
   if (!solids?.length) return null;
   const reply = await requestNativeKernelJob({
     id: Date.now(),
@@ -77,11 +95,24 @@ export function collectPrintOverlayMarksSync(request: PrintOverlayCollectRequest
   return collectPrintOverlayMarks(request);
 }
 
-export async function runPrintOverlayInWorker(request: PrintOverlayCollectRequest): Promise<PrintOverlayMarks | null> {
+export async function runPrintOverlayInWorker(request: PrintOverlayClientRequest): Promise<PrintOverlayMarks | null> {
   const native = await tryNativePrintOverlay(request);
   if (native) return native;
+  const triangles = request.triangles?.length
+    ? request.triangles
+    : (request.collectTriangles?.() ?? []);
+  const meshRequest: PrintOverlayCollectRequest = {
+    triangles,
+    overhang: request.overhang,
+    angle: request.angle,
+    thinWalls: request.thinWalls,
+    smallHoles: request.smallHoles,
+    trappedResin: request.trappedResin,
+    nozzleMm: request.nozzleMm,
+    shapes: request.shapes,
+  };
   if (typeof window === "undefined") {
-    return collectPrintOverlayMarks(request);
+    return collectPrintOverlayMarks(meshRequest);
   }
   try {
     const active = ensureWorker();
@@ -90,13 +121,13 @@ export async function runPrintOverlayInWorker(request: PrintOverlayCollectReques
     return new Promise((resolve) => {
       pending.set(requestId, { resolve });
       try {
-        active.postMessage({ ...request, requestId } satisfies WorkerRequest);
+        active.postMessage({ ...meshRequest, requestId } satisfies WorkerRequest);
       } catch {
         settle(requestId, null);
         recycleWorker();
       }
     });
   } catch {
-    return Promise.resolve(collectPrintOverlayMarks(request));
+    return Promise.resolve(collectPrintOverlayMarks(meshRequest));
   }
 }

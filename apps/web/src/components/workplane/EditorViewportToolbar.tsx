@@ -13,6 +13,7 @@ import {
   ToolbarDuplicateRepeatIcon,
   ToolbarFilletIcon,
   ToolbarHollowIcon,
+  ToolbarPushPullIcon,
   ToolbarSplitIcon,
   ToolbarGroupIcon,
   ToolbarHistoryIcon,
@@ -395,6 +396,7 @@ export function EditorViewportToolbar({
   canAlign,
   canEdgeModify,
   hollowActive,
+  pushPullActive,
   splitActive,
   edgeModifierKind,
   circularPatternActive,
@@ -422,6 +424,7 @@ export function EditorViewportToolbar({
   onLinearPattern,
   onChamfer,
   onFillet,
+  onPushPull,
   onHollow,
   onSplit,
 }: {
@@ -442,6 +445,7 @@ export function EditorViewportToolbar({
   canAlign: boolean;
   canEdgeModify: boolean;
   hollowActive: boolean;
+  pushPullActive: boolean;
   splitActive: boolean;
   edgeModifierKind: CadModifierKind | null;
   circularPatternActive: boolean;
@@ -469,6 +473,7 @@ export function EditorViewportToolbar({
   onLinearPattern: () => void;
   onChamfer: () => void;
   onFillet: () => void;
+  onPushPull: () => void;
   onHollow: () => void;
   onSplit: () => void;
 }) {
@@ -510,6 +515,7 @@ export function EditorViewportToolbar({
     tools: [
       { label: "Chamfer", description: TOOL_DESCRIPTIONS.chamfer, icon: ToolbarChamferIcon, action: onChamfer, enabled: canEdgeModify, active: edgeModifierKind === "chamfer", shortcut: shortcutLabel(hotkeys, "chamfer"), disabledReason: "Select a single unlocked shape first" },
       { label: "Fillet", description: TOOL_DESCRIPTIONS.fillet, icon: ToolbarFilletIcon, action: onFillet, enabled: canEdgeModify, active: edgeModifierKind === "fillet", shortcut: shortcutLabel(hotkeys, "fillet"), disabledReason: "Select a single unlocked shape first" },
+      { label: "Push Pull", description: TOOL_DESCRIPTIONS.pushPull, icon: ToolbarPushPullIcon, action: onPushPull, enabled: canEdgeModify, active: pushPullActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Hollow", description: TOOL_DESCRIPTIONS.hollow, icon: ToolbarHollowIcon, action: onHollow, enabled: canEdgeModify, active: hollowActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Split", description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canEdgeModify || splitActive, active: splitActive, disabledReason: "Select a single unlocked shape first" },
     ],

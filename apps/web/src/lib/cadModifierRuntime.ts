@@ -32,5 +32,5 @@ export function cadModifierTimeoutMessage(phase: CadModifierRequestPhase) {
  * which surfaces as a normal typed error from inside the worker instead.
  */
 export function cadModifierWorkerFailureMessage() {
-  return "The CAD worker could not start. Restart PeakCAD and try again. If this keeps happening, reinstall PeakCAD to restore its CAD engine files.";
+  return "The CAD engine could not start. Close Mintr and open it again. If this keeps happening, reinstall Mintr.";
 }

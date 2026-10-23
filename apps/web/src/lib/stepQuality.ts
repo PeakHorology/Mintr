@@ -152,15 +152,62 @@ export function selectionSupportsOcctCsg(shapes: WorkplaneShape[]): boolean {
   return active.every((shape) => shapeHasExactBrepSource(shape));
 }
 
-export const OCCT_MESH_FALLBACK_NOTICE =
-  "Exact CAD boolean unavailable — used mesh Group. STEP for this solid may be faceted.";
+/** CAD-only operands when a mesh body would otherwise poison the whole Group. */
+export function cadOperandsForExactGroup(shapes: WorkplaneShape[]): WorkplaneShape[] | null {
+  if (selectionSupportsOcctCsg(shapes)) return null;
+  const active = shapes.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked);
+  const cad = active.filter((shape) => shapeHasExactBrepSource(shape));
+  const mesh = active.filter((shape) => !shapeHasExactBrepSource(shape));
+  if (mesh.length === 0 || cad.length < 2 || !selectionSupportsOcctCsg(cad)) return null;
+  return cad;
+}
 
-/** Shown when Group/remesh was OCCT-eligible but the result is only a mesh. */
+export function mixedGroupLeftOutNotice(leftOut: WorkplaneShape[]): string | undefined {
+  if (leftOut.length === 0) return undefined;
+  const names = [...new Set(leftOut.map((shape) => shape.name?.trim() || (shape.hole ? "a hole" : "a part")))];
+  if (names.length === 1) {
+    return `Grouped the CAD parts. ${names[0]} was left out because it is mesh.`;
+  }
+  const listed = names.slice(0, 2).join(" and ");
+  const extra = names.length > 2 ? ` and ${names.length - 2} more` : "";
+  return `Grouped the CAD parts. ${listed}${extra} were left out because they are mesh.`;
+}
+
+export const OCCT_MESH_FALLBACK_NOTICE =
+  "Group used a mesh instead of exact CAD. Fillet may not work on this body. Overlap the parts more, or try a simpler shape.";
+
+function meshOperandLabel(shape: WorkplaneShape): string {
+  const name = shape.name?.trim();
+  return name || (shape.hole ? "a hole" : "a part");
+}
+
+function namedMeshGroupNotice(operands: WorkplaneShape[]): string | undefined {
+  const mesh = operands.filter((shape) => (
+    !shape.suppressed
+    && !shape.csg?.suppressed
+    && !shape.locked
+    && !shapeHasExactBrepSource(shape)
+  ));
+  if (mesh.length === 0) return undefined;
+  const names = [...new Set(mesh.map(meshOperandLabel))];
+  if (names.length === 1) {
+    return `${names[0]} is mesh, so this Group is mesh. Group the CAD parts first, then cut that one.`;
+  }
+  const listed = names.slice(0, 2).join(" and ");
+  const extra = names.length > 2 ? ` and ${names.length - 2} more` : "";
+  return `${listed}${extra} are mesh, so this Group is mesh. Group the CAD parts first, then cut those.`;
+}
+
+/** Shown when Group/remesh fell to mesh: name the mesh body, or the generic overlap hint. */
 export function occtMeshFallbackNotice(options: {
   skipOcct?: boolean;
   occtEligible: boolean;
   resultHasExactBrep: boolean;
+  operands?: WorkplaneShape[];
 }): string | undefined {
-  if (options.skipOcct || !options.occtEligible || options.resultHasExactBrep) return undefined;
+  if (options.skipOcct || options.resultHasExactBrep) return undefined;
+  const named = options.operands ? namedMeshGroupNotice(options.operands) : undefined;
+  if (named) return named;
+  if (!options.occtEligible) return undefined;
   return OCCT_MESH_FALLBACK_NOTICE;
 }

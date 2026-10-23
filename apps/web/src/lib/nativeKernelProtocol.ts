@@ -72,6 +72,7 @@ export type NativeKernelReply = {
   }>;
   selectableEdgeIds?: number[];
   cylindricalFaces?: unknown[];
+  planarFaces?: unknown[];
   sourceType?: string;
   smooth?: boolean;
   step?: string;

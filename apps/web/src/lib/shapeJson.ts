@@ -23,13 +23,14 @@ function numericArrayFromUnknown(value: unknown): number[] | undefined {
 }
 
 function jsonSafeMesh(mesh: NonNullable<WorkplaneShape["importedMesh"]>): NonNullable<WorkplaneShape["importedMesh"]> {
-  const brepStep = bakedImportedBrepStep(mesh);
+  const { meshBlobRef: _blobRef, ...rest } = mesh as typeof mesh & { meshBlobRef?: unknown };
+  const brepStep = bakedImportedBrepStep(rest);
   return {
-    ...mesh,
+    ...rest,
     ...(brepStep ? { brepStep } : {}),
-    positions: Array.from(mesh.positions),
-    ...(mesh.indices ? { indices: Array.from(mesh.indices) } : {}),
-    ...(mesh.normals ? { normals: Array.from(mesh.normals) } : {}),
+    positions: Array.from(rest.positions),
+    ...(rest.indices ? { indices: Array.from(rest.indices) } : {}),
+    ...(rest.normals ? { normals: Array.from(rest.normals) } : {}),
   };
 }
 
@@ -51,14 +52,32 @@ export function jsonSafeShape(shape: WorkplaneShape): WorkplaneShape {
 }
 
 function hydrateMesh(mesh: NonNullable<WorkplaneShape["importedMesh"]>): NonNullable<WorkplaneShape["importedMesh"]> {
-  const positions = numericArrayFromUnknown(mesh.positions) ?? [];
-  const indices = numericArrayFromUnknown(mesh.indices);
-  const normals = numericArrayFromUnknown(mesh.normals);
+  const { meshBlobRef: _blobRef, ...rest } = mesh as typeof mesh & { meshBlobRef?: unknown };
+  const positions = numericArrayFromUnknown(rest.positions) ?? [];
+  const indices = numericArrayFromUnknown(rest.indices);
+  const normals = numericArrayFromUnknown(rest.normals);
   return {
-    ...mesh,
+    ...rest,
     positions,
     ...(indices ? { indices } : {}),
     ...(normals ? { normals } : {}),
+  };
+}
+
+export function hydrateHistoryMeshBlob(blob: {
+  positions: ArrayLike<number> | unknown;
+  indices?: ArrayLike<number> | unknown;
+  normals?: ArrayLike<number> | unknown;
+  brepStep?: string;
+}) {
+  const { meshBlobRef: _blobRef, ...rest } = blob as typeof blob & { meshBlobRef?: unknown };
+  const indices = numericArrayFromUnknown(rest.indices);
+  const normals = numericArrayFromUnknown(rest.normals);
+  return {
+    positions: numericArrayFromUnknown(rest.positions) ?? [],
+    ...(indices ? { indices } : {}),
+    ...(normals ? { normals } : {}),
+    ...(typeof rest.brepStep === "string" ? { brepStep: rest.brepStep } : {}),
   };
 }
 

@@ -22,11 +22,12 @@ export const TOOL_DESCRIPTIONS = {
   layFlat: "Click a face. The shape turns so that face lies flat on the workplane.",
   chamfer: "Cut a flat bevel along selected edges. On a chamfered body, opens the last chamfer to edit.",
   fillet: "Round selected edges with a smooth radius. On a filleted body, opens the last fillet to edit.",
+  pushPull: "Drag a flat face to grow or shrink the solid. Click Apply to keep it.",
   hollow: "Turn a solid into walls of one thickness. Leave a side open for a box or cup, or close every side for a sealed cavity. Inside corners can stay sharp or be rounded.",
   split: "Cut the selected object in two. A dovetail, plug, snap, or thread can join the pieces, then both sit on the bed.",
   hide: "Hide or show the selected shapes.",
   more: "Open extra tips and selection actions.",
-  drop: "Drop the selection onto the workplane.",
+  drop: "Click the workplane or a flat face. The selection sits on that surface, even if it starts lower.",
   import: "Import STEP, STL, 3MF, or SVG. Optionally import as a hole.",
   export: "Export the current model. A 3MF that was imported keeps its other settings when you export 3MF again.",
   reduceFileSize: "Shrink an imported mesh so an STL export is small enough for a laser or viewer to open. Large faces use fewer triangles; small parts and sharp edges stay so the shape still reads. Exact STEP export is unchanged.",
@@ -51,6 +52,8 @@ export const TOOL_DESCRIPTIONS = {
   hideObjects: "Close the objects list.",
   geometryMode: "Switch to solid geometry editing.",
   sketchMode: "Switch to 2D sketch drawing tools.",
+  flatSketch: "Draw on a flat sheet. Switch back with the same slider.",
+  sketch3dView: "Draw on the part in 3D. Click again to look straight at the face.",
   // Sketch draw
   line: "Draw straight line segments. Type 50<30 for a length and angle, or hold Shift to snap in 15° steps.",
   bezier: "Draw a curved segment with editable control handles.",
@@ -122,7 +125,7 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   { key: "duplicateRepeat", label: "Duplicate and repeat", category: "Edit" },
   { key: "delete", label: "Delete", category: "Edit" },
   { key: "hide", label: "Hide / show", category: "Edit" },
-  { key: "drop", label: "Drop to workplane", category: "Edit" },
+  { key: "drop", label: "Drop", category: "Edit" },
   { key: "more", label: "More", category: "Edit" },
   // Modify
   { key: "group", label: "Group", category: "Modify" },
@@ -137,6 +140,7 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   { key: "linearPattern", label: "Linear pattern", category: "Modify" },
   { key: "chamfer", label: "Chamfer", category: "Modify" },
   { key: "fillet", label: "Fillet", category: "Modify" },
+  { key: "pushPull", label: "Push Pull", category: "Modify" },
   { key: "hollow", label: "Hollow", category: "Modify" },
   // File & project
   { key: "import", label: "Import", category: "File & project" },
@@ -162,6 +166,8 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   // Modes
   { key: "geometryMode", label: "Geometry mode", category: "Modes" },
   { key: "sketchMode", label: "Sketch mode", category: "Modes" },
+  { key: "flatSketch", label: "Flat sketch", category: "Modes" },
+  { key: "sketch3dView", label: "3D sketch", category: "Modes" },
   // Sketch
   { key: "line", label: "Line", category: "Sketch" },
   { key: "bezier", label: "Bezier", category: "Sketch" },

@@ -149,6 +149,8 @@ const PROJECT_THUMBNAIL_MAX_SIZE = hardwareProfile().thumbnailSize;
 const PROJECT_ACCENTS: DashboardProject["accent"][] = ["cyan", "green", "gold", "red"];
 const STATIC_EXPORT_BUILD = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
 const RECENT_PROJECT_COUNT = 4;
+const FOLDER_PUSH_MS = 260;
+const EDITOR_FADE_MS = 160;
 
 type DashboardOrder = {
   folders: string[];
@@ -875,7 +877,7 @@ export default function Home() {
       setUpdateChecking(false);
       setUpdateOffer({
         version: "1.2.0",
-        current: "1.1.0",
+        current: "1.1.2",
         notes: UNRELEASED_NOTES.length ? UNRELEASED_NOTES : (RELEASE_NOTES[0]?.items ?? []),
         portable: false,
         canInstall: false,
@@ -2311,7 +2313,7 @@ export default function Home() {
           <img className="startup-wordmark-on-light" src="assets/mintr/mintr-wordmark.png" alt="Mintr" />
           <img className="startup-wordmark-on-dark" src="assets/mintr/mintr-wordmark-on-dark.png" alt="" />
         </h1>
-        <p className="startup-tagline">Learn. Model. Mint.</p>
+        <p className="startup-tagline">Learn. Model. <span className="mintr-word">Mint.</span></p>
         <p className="startup-note">Your designs, your files.</p>
         <button
           className="startup-start dashboard-primary"
@@ -2338,10 +2340,10 @@ export default function Home() {
             </p>
           ) : null}
           {updateOffer ? (
-            <section className="startup-update-card" aria-label={`PeakCAD ${updateOffer.version} is ready`}>
+            <section className="startup-update-card" aria-label={`Mintr ${updateOffer.version} is ready`}>
               <header className="startup-update-head">
                 <span className="startup-update-kicker">New build</span>
-                <strong>PeakCAD {updateOffer.version}</strong>
+                <strong>Mintr {updateOffer.version}</strong>
                 <span className="startup-update-ready">Ready when you are</span>
               </header>
               <ul>
@@ -2367,7 +2369,7 @@ export default function Home() {
                   setStartupUpdateError("");
                   const action = updateOffer.canInstall ? api.install() : api.openDownload();
                   void action.catch((error: unknown) => {
-                    setStartupUpdateError(error instanceof Error ? error.message : "PeakCAD couldn't download the update. Nothing was installed.");
+                    setStartupUpdateError(error instanceof Error ? error.message : "Mintr couldn't download the update. Nothing was installed.");
                     setStartupUpdateBusy(false);
                   });
                 }}
@@ -2593,6 +2595,22 @@ type DesktopUpdateOffer = {
   canInstall: boolean;
 };
 
+function FolderGlyph({ locked }: { locked?: boolean; opened?: boolean }) {
+  return (
+    <svg
+      className={`folder-glyph-svg${locked ? " is-locked" : ""}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        className="folder-glyph-body"
+        d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+      />
+    </svg>
+  );
+}
+
 function desktopUpdateApi() {
   if (typeof window === "undefined") return null;
   return (window as Window & {
@@ -2700,6 +2718,10 @@ function Dashboard({
   const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
   const [openFolderMenuId, setOpenFolderMenuId] = useState<string | null>(null);
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  const [folderPush, setFolderPush] = useState<"in" | "out" | null>(null);
+  const [leavingToEditor, setLeavingToEditor] = useState(false);
+  const folderPushTimerRef = useRef<number | null>(null);
+  const leaveEditorTimerRef = useRef<number | null>(null);
   const [appWorkspace, setAppWorkspace] = useState<WorkplaneWorkspaceSettings>(() => loadGlobalWorkspaceDefaults().workspace);
   const [appSnap, setAppSnap] = useState<GridSize>(() => loadGlobalWorkspaceDefaults().snap);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -2766,7 +2788,10 @@ function Dashboard({
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, RECENT_PROJECT_COUNT)
     : [];
-  const libraryProjects = rootProjects;
+  const recentIdSet = new Set(recentProjects.map((project) => project.id));
+  const libraryProjects = showHomeOverview
+    ? rootProjects.filter((project) => !recentIdSet.has(project.id))
+    : rootProjects;
   const folderArrangeIds = rootFolders.map((folder) => folder.id);
   const projectArrangeIds = openFolder
     ? folderMembers.map((project) => project.id)
@@ -2779,6 +2804,22 @@ function Dashboard({
   const folderCount = rootFolders.length;
   const projectVisibleCount = openFolder ? folderMembers.length : rootProjects.length;
   const libraryGridClass = viewMode === "grid" ? "project-grid project-grid-home" : "project-list";
+
+  useEffect(() => {
+    if (!folderPush) return;
+    if (folderPushTimerRef.current !== null) window.clearTimeout(folderPushTimerRef.current);
+    folderPushTimerRef.current = window.setTimeout(() => {
+      folderPushTimerRef.current = null;
+      setFolderPush(null);
+    }, FOLDER_PUSH_MS);
+    return () => {
+      if (folderPushTimerRef.current !== null) window.clearTimeout(folderPushTimerRef.current);
+    };
+  }, [folderPush]);
+
+  useEffect(() => () => {
+    if (leaveEditorTimerRef.current !== null) window.clearTimeout(leaveEditorTimerRef.current);
+  }, []);
 
   useEffect(() => {
     setOpenProjectMenuId(null);
@@ -3045,11 +3086,23 @@ function Dashboard({
       startFolderLockDialog(folder, "unlock");
       return;
     }
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setFolderPush(null);
+      setOpenFolderId(folderId);
+      return;
+    }
+    setFolderPush("in");
     setOpenFolderId(folderId);
   };
 
   const closeFolderView = () => {
     closeMenus();
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setFolderPush(null);
+      setOpenFolderId(null);
+      return;
+    }
+    setFolderPush("out");
     setOpenFolderId(null);
   };
 
@@ -3257,7 +3310,7 @@ function Dashboard({
   };
 
   const openProjectFromCard = (projectId: string) => {
-    if (suppressProjectOpenRef.current || draggingItemRef.current) {
+    if (suppressProjectOpenRef.current || draggingItemRef.current || leavingToEditor) {
       return;
     }
     const project = projects.find((item) => item.id === projectId);
@@ -3269,7 +3322,16 @@ function Dashboard({
       clearLockFields();
       return;
     }
-    onOpenProject(projectId);
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      onOpenProject(projectId);
+      return;
+    }
+    setLeavingToEditor(true);
+    if (leaveEditorTimerRef.current !== null) window.clearTimeout(leaveEditorTimerRef.current);
+    leaveEditorTimerRef.current = window.setTimeout(() => {
+      leaveEditorTimerRef.current = null;
+      onOpenProject(projectId);
+    }, EDITOR_FADE_MS);
   };
 
   const arrangeHandlers = (targetId: string) => ({
@@ -3315,22 +3377,26 @@ function Dashboard({
             }
           }}
         >
-          <ProjectPreview
-            accent={project.accent}
-            projectId={project.id}
-            thumbnailUrl={project.thumbnailUrl}
-            thumbnailUrlDark={project.thumbnailUrlDark}
-            thumbnailVersion={project.thumbnailVersion}
-          />
-          <span className="project-card-title">
-            {isHero ? <Star className="project-hero-star" size={14} strokeWidth={2.4} fill="currentColor" /> : null}
-            {isIntroProjectId(project.id) ? <span className="project-sample-badge">Sample</span> : null}
-            {project.name}
+          <span className="project-card-cover">
+            <ProjectPreview
+              accent={project.accent}
+              projectId={project.id}
+              thumbnailUrl={project.thumbnailUrl}
+              thumbnailUrlDark={project.thumbnailUrlDark}
+              thumbnailVersion={project.thumbnailVersion}
+            />
           </span>
-          <span className="project-card-meta">
-            {formatUpdated(project.updatedAt)} - {project.shapes} {project.shapes === 1 ? "shape" : "shapes"}
-            {containingFolder && !inFolder ? ` · ${containingFolder.name}` : ""}
-            {project.filePath ? ` · ${peakcadBasename(project.filePath)}` : ""}
+          <span className="project-card-caption">
+            <span className="project-card-title">
+              {isHero ? <Star className="project-hero-star" size={14} strokeWidth={2.4} fill="currentColor" /> : null}
+              {isIntroProjectId(project.id) ? <span className="project-sample-badge">Sample</span> : null}
+              {project.name}
+            </span>
+            <span className="project-card-meta">
+              {formatUpdated(project.updatedAt)} - {project.shapes} {project.shapes === 1 ? "shape" : "shapes"}
+              {containingFolder && !inFolder ? ` · ${containingFolder.name}` : ""}
+              {project.filePath ? ` · ${peakcadBasename(project.filePath)}` : ""}
+            </span>
           </span>
         </div>
         <button
@@ -3498,45 +3564,29 @@ function Dashboard({
           className="folder-card-open"
           type="button"
           aria-label={showLocked ? `${folder.name}, locked folder` : folder.name}
-          onClick={() => {
+          onClick={(event) => {
             if (suppressProjectOpenRef.current) {
               return;
             }
             openFolderView(folder.id);
           }}
         >
-          <span className="folder-card-tab" aria-hidden="true" />
-          <span className="folder-preview-frame">
-            {protectedFolder ? (
-              <span className="folder-lock-preview">
-                {showLocked ? <Lock size={28} strokeWidth={2.2} /> : <LockOpen size={28} strokeWidth={2.2} />}
-              </span>
-            ) : hero ? (
-              <ProjectPreview
-                accent={hero.accent}
-                projectId={hero.id}
-                thumbnailUrl={hero.thumbnailUrl}
-                thumbnailUrlDark={hero.thumbnailUrlDark}
-                thumbnailVersion={hero.thumbnailVersion}
-              />
-            ) : (
-              <span className="folder-preview-empty">
-                <span className="preview-grid" />
-              </span>
-            )}
+          <span className="project-card-cover folder-card-cover">
+            <span className="folder-glyph">
+              <FolderGlyph locked={showLocked} opened={Boolean(sessionUnlocked)} />
+            </span>
           </span>
-          <span className="project-card-title">
-            {protectedFolder ? (
-              showLocked ? <Lock size={15} className="folder-title-lock" /> : <LockOpen size={15} className="folder-title-lock" />
-            ) : null}
-            {folder.name}
-          </span>
-          <span className="project-card-meta">
-            {protectedFolder
-              ? showLocked
-                ? "Locked"
-                : "Unlocked"
-              : `${members.length} ${members.length === 1 ? "project" : "projects"}${hero ? ` · ${hero.name}` : ""}`}
+          <span className="project-card-caption">
+            <span className="project-card-title">
+              {folder.name}
+            </span>
+            <span className="project-card-meta">
+              {protectedFolder
+                ? showLocked
+                  ? "Locked"
+                  : "Unlocked"
+                : `${members.length} ${members.length === 1 ? "project" : "projects"}${hero ? ` · ${hero.name}` : ""}`}
+            </span>
           </span>
         </button>
         <button
@@ -3619,7 +3669,8 @@ function Dashboard({
   };
 
   return (
-    <main className="dashboard-shell">
+    <main className={`dashboard-shell${leavingToEditor ? " is-leaving" : ""}`}>
+      <div className="dashboard-atmosphere" aria-hidden="true" />
       <header className="dashboard-topbar">
         <button
           className="dashboard-brand"
@@ -3672,16 +3723,16 @@ function Dashboard({
               <button
                 className="dashboard-update-button"
                 type="button"
-                aria-label={`PeakCAD ${updateOffer.version} is ready`}
+                aria-label={`Mintr ${updateOffer.version} is ready`}
                 aria-expanded={updateOpen}
-                title={`PeakCAD ${updateOffer.version} is ready`}
+                title={`Mintr ${updateOffer.version} is ready`}
                 onClick={() => setUpdateOpen((open) => !open)}
               >
                 <CircleArrowUp size={20} strokeWidth={2.4} />
               </button>
               {updateOpen ? (
-                <div className="dashboard-update-panel" role="dialog" aria-label={`Update to PeakCAD ${updateOffer.version}`}>
-                  <strong>PeakCAD {updateOffer.version} is ready</strong>
+                <div className="dashboard-update-panel" role="dialog" aria-label={`Update to Mintr ${updateOffer.version}`}>
+                  <strong>Mintr {updateOffer.version} is ready</strong>
                   <ul>
                     {updateOffer.notes.map((note) => (
                       <li key={note}>{note}</li>
@@ -3710,7 +3761,7 @@ function Dashboard({
                         void action.then(() => {
                           if (!updateOffer.canInstall) setUpdateOpen(false);
                         }).catch((error: unknown) => {
-                          setUpdateError(error instanceof Error ? error.message : "PeakCAD couldn't download the update. Nothing was installed.");
+                          setUpdateError(error instanceof Error ? error.message : "Mintr couldn't download the update. Nothing was installed.");
                           setUpdateBusy(false);
                         });
                       }}
@@ -3734,7 +3785,8 @@ function Dashboard({
 
       <div className="dashboard-layout">
         <section
-          className={`dashboard-main${openFolder ? " folder-open" : ""}`}
+          key={openFolder?.id ?? "library"}
+          className={`dashboard-main${openFolder ? " folder-open" : ""}${folderPush === "in" ? " is-push-in" : folderPush === "out" ? " is-push-out" : ""}`}
           aria-label={openFolder ? `Folder ${openFolder.name}` : "Dashboard"}
           {...(openFolder ? folderDropHandlers(openFolder.id) : {})}
         >
@@ -3776,7 +3828,7 @@ function Dashboard({
                       <span>Lock folder</span>
                     </button>
                   ) : null}
-                  <span>
+                  <span className="dashboard-count">
                     {projectVisibleCount === 0
                       ? "0 projects"
                       : `${projectVisibleCount} ${projectVisibleCount === 1 ? "project" : "projects"}`}
@@ -3785,19 +3837,27 @@ function Dashboard({
               ) : (
                 <>
                   <h1>{normalizedQuery ? "Search" : "Projects"}</h1>
-                  <span>
-                    {normalizedQuery
-                      ? folderCount + rootProjects.length === 0
+                  {normalizedQuery ? (
+                    <span className="dashboard-count">
+                      {folderCount + rootProjects.length === 0
                         ? "0 matches"
                         : `${rootProjects.length} ${rootProjects.length === 1 ? "design" : "designs"}${
                             folderCount > 0 ? ` · ${folderCount} ${folderCount === 1 ? "folder" : "folders"}` : ""
-                          }`
-                      : rootProjects.length === 0 && folderCount === 0
-                        ? "0 items"
-                        : `${rootProjects.length} ${rootProjects.length === 1 ? "design" : "designs"}${
-                            folderCount > 0 ? ` · ${folderCount} ${folderCount === 1 ? "folder" : "folders"}` : ""
                           }`}
-                  </span>
+                    </span>
+                  ) : (
+                    <p className="dashboard-lede">
+                      <span className="dashboard-kicker">Learn. Model. <span className="mintr-word">Mint.</span></span>
+                      <span className="dashboard-lede-dot" aria-hidden="true">·</span>
+                      <span className="dashboard-count">
+                        {rootProjects.length === 0 && folderCount === 0
+                          ? "0 items"
+                          : `${rootProjects.length} ${rootProjects.length === 1 ? "design" : "designs"}${
+                              folderCount > 0 ? ` · ${folderCount} ${folderCount === 1 ? "folder" : "folders"}` : ""
+                            }`}
+                      </span>
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -3848,7 +3908,7 @@ function Dashboard({
                   <div className="dashboard-subsection-header">
                     <h2>Recents</h2>
                   </div>
-                  <div className={libraryGridClass} aria-label="Recent designs">
+                  <div className={`${libraryGridClass} project-grid-recents`} aria-label="Recent designs">
                     {recentProjects.map((project) => renderProjectCard(project, { recent: true }))}
                   </div>
                 </section>

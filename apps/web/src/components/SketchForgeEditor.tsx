@@ -35,6 +35,7 @@ import { ToolbarFlow } from "./workplane/ToolbarFlow";
 import { ShapeModeMark } from "./workplane/ShapeModeMark";
 import { classifySketchExtrude } from "@/lib/sketchExtrudeSwatch";
 import { EdgeModifierPanel } from "./workplane/EdgeModifierPanel";
+import { PushPullPanel } from "./workplane/PushPullPanel";
 import { ShellPanel } from "./workplane/ShellPanel";
 import { SplitPanel } from "./workplane/SplitPanel";
 import { CircularPatternPanel } from "./workplane/CircularPatternPanel";
@@ -89,7 +90,7 @@ import {
   withCsgMeta,
 } from "@/lib/csgTree";
 import type { CsgOp } from "@/types/sketchforge";
-import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCone, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForBakedShape } from "@/lib/cadBakeMetadata";
+import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCone, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForAnalyticPolygon, cadModifierPrimitiveForBakedShape, cadModifierPrimitiveForExactKind } from "@/lib/cadBakeMetadata";
 import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
 import {
   CAD_MODIFIER_MAX_SHARP_ANGLE,
@@ -98,6 +99,9 @@ import {
   cadModifierWorkerFailureMessage,
   type CadModifierRequestPhase,
 } from "@/lib/cadModifierRuntime";
+import { cadFailureCopy } from "@/lib/cadFailureCopy";
+import { prefersReducedMotion } from "@/lib/chromePresence";
+import { PUSH_PULL_APPLY_EPSILON, PUSH_PULL_COMMIT_MS, pushPullHistoryLabel } from "@/lib/pushPullGeometry";
 import { createCadPreviewQueue } from "@/lib/cadPreviewQueue";
 import { hardwareProfile } from "@/lib/desktopHardware";
 import {
@@ -153,7 +157,7 @@ import {
 import {
   isConstructionShape,
 } from "@/lib/holeFeature";
-import { dropPatchOntoFrame } from "@/lib/placementFrame";
+import { dropPatchOntoFrame, dropSurfaceY } from "@/lib/placementFrame";
 import { aabbsOverlap, shapeYawDegrees, worldAabb } from "@/lib/shapeBounds";
 import {
   applyPlacementOffsetsToSelection,
@@ -343,7 +347,7 @@ import { useSlicerChoice } from "@/components/workplane/useSlicerChoice";
 import { projectExportFileName } from "@/lib/exportNames";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets } from "@/lib/shapeCatalog";
 import { BlueprintExportModal } from "@/components/workplane/BlueprintExportModal";
-import { EditorTopBar } from "@/components/workplane/EditorTopBar";
+import { EditorTopBar, SketchFocusTabs } from "@/components/workplane/EditorTopBar";
 import type { BlueprintExportFormat } from "@/lib/blueprintExport";
 import { EditorModeStrip, EditorViewportToolbar } from "@/components/workplane/EditorViewportToolbar";
 import { SketchCreateMenu } from "@/components/workplane/SketchCreateMenu";
@@ -351,7 +355,7 @@ import { isPeakcadProSketchTool, SketchCoach, SketchFinishToolbar, SketchToolSid
 import { ShapeSidebar } from "@/components/workplane/ShapeSidebar";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import type { MeshSeatMode } from "@/lib/meshSeatOrientation";
-import { lengthDisplayUnit } from "@/lib/measurementUnits";
+import { displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import { importedShapeFrom3mf } from "@/lib/threeMfImport";
 import { to3mfForShapes } from "@/lib/threeMfExport";
 import { importedShapeFromSvg, invalidSvgMeshReason } from "@/lib/svgImport";
@@ -365,7 +369,7 @@ import {
   type SketchForgeMcpShapeSummary,
   type SketchForgeMcpViewFace,
 } from "@/lib/sketchforgeMcpProtocol";
-import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
+import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse, CadPlanarFace } from "@/lib/cadModifierTypes";
 import { takePreloadedCadModifierWorker } from "@/lib/cadModifierPreload";
 import {
   mapNativeCadModifierReply,
@@ -561,6 +565,8 @@ export type GroupBuildResult = {
   hasImportedMesh: boolean;
   consumed: boolean;
   failureNotice: string;
+  /** Mesh bodies left on the workplane so they do not poison an exact CAD Group. */
+  leftOutShapes?: WorkplaneShape[];
   /** Shown when exact OCCT boolean was eligible but mesh fallback was used. */
   qualityNotice?: string;
 };
@@ -672,8 +678,38 @@ function cadModifierPrimitiveForShape(shape: WorkplaneShape): CadModifierPrimiti
   return cadModifierPrimitiveForBakedShape(shape)
     ?? cadModifierPrimitiveForAnalyticCylinder(shape)
     ?? cadModifierPrimitiveForAnalyticCone(shape)
+    ?? cadModifierPrimitiveForAnalyticPolygon(shape)
+    ?? cadModifierPrimitiveForExactKind(shape)
     ?? (shapeHasTransformToBake(shape) ? cadModifierPrimitiveForAnalyticBox(shape) : null)
     ?? cadModifierPrimitiveForAnalyticBox(shape);
+}
+
+/** True when the stored B-Rep only needs a rigid move (plus uniform scale) to match the shape. */
+function cadBrepScaleIsUniform(shape: WorkplaneShape) {
+  const frame = shape.cadBrepFrame;
+  if (!frame) return false;
+  const sx = shapeWidth(shape) / Math.max(0.001, frame.width);
+  const sy = shape.height / Math.max(0.001, frame.height);
+  const sz = shapeDepth(shape) / Math.max(0.001, frame.depth);
+  const tolerance = 1e-4 * Math.max(1, sx);
+  return Math.abs(sx - sy) <= tolerance && Math.abs(sx - sz) <= tolerance;
+}
+
+/**
+ * Parts to prepare for Push Pull. A Group's own B-Rep is what is on screen, so
+ * use it whenever the kernel can restore it with a rigid transform; rebuilding
+ * from the children is the fallback for a missing or stretched B-Rep.
+ */
+function pushPullSourceParts(shape: WorkplaneShape): WorkplaneShape[] {
+  const parts = edgeTreatmentSourceParts(shape);
+  if (!shape.groupedShapes?.length) return parts;
+  const brepUsable = parts.length > 0 && parts.every((part) => (
+    cadModifierPrimitiveForShape(part) || (part.cadBrep && cadBrepScaleIsUniform(part))
+  ));
+  if (brepUsable) return parts;
+  const children = restoreGroupedChildren(shape).flatMap((child) => edgeTreatmentSourceParts(child));
+  const rebuildable = children.filter((child) => cadModifierPrimitiveForShape(child) || child.cadBrep);
+  return rebuildable.length >= 2 ? children : parts;
 }
 
 function shapeKeepsLiveParameters(shape: WorkplaneShape) {
@@ -1298,6 +1334,7 @@ export function SketchForgeEditor({
   const [modelAction, setModelAction] = useState("");
   const modelConsentSettleRef = useRef<((choice: "once" | "project" | "deny") => void) | null>(null);
   const [layFlat, setLayFlat] = useState(false);
+  const [dropSurface, setDropSurface] = useState(false);
   const faceSnapMotionRef = useRef<((
     shapeId: string,
     pose: { x: number; z: number; elevation: number; rotationX: number; rotation: number; rotationZ: number },
@@ -1408,6 +1445,23 @@ export function SketchForgeEditor({
   useEffect(() => {
     shellSessionRef.current = shellSession;
   }, [shellSession]);
+  const [pushPullSession, setPushPullSession] = useState<{
+    faces: CadPlanarFace[];
+    selectedFaceId: number | null;
+    hoverFaceId: number | null;
+    distance: number;
+    dragging: boolean;
+    settling: boolean;
+    ghostOpacity: number;
+    busy: boolean;
+    prepared: boolean;
+    error: string | null;
+    preview: WorkplaneShape | null;
+  } | null>(null);
+  const pushPullSessionRef = useRef(pushPullSession);
+  useEffect(() => {
+    pushPullSessionRef.current = pushPullSession;
+  }, [pushPullSession]);
   const [splitSession, setSplitSession] = useState<{
     shapeId: string;
     axis: SplitAxis;
@@ -1490,8 +1544,17 @@ export function SketchForgeEditor({
       cadModifierRequestRef.current += 1;
       cadModifierPrepareRef.current = cadModifierRequestRef.current;
       cadModifierWorkerRestartRef.current();
-      const message = cadModifierTimeoutMessage(phase);
+      const message = pushPullSessionRef.current
+        ? "Push Pull timed out loading faces. Close it and try again."
+        : cadModifierTimeoutMessage(phase);
       setEdgeModifier((current) => current ? {
+        ...current,
+        busy: false,
+        prepared: false,
+        preview: null,
+        error: message,
+      } : current);
+      setPushPullSession((current) => current ? {
         ...current,
         busy: false,
         prepared: false,
@@ -1517,7 +1580,7 @@ export function SketchForgeEditor({
       clearCadModifierWatchdog();
       worker?.terminate();
       cadModifierWorkerRef.current = null;
-      rejectPendingRequests("The CAD worker could not start");
+      rejectPendingRequests(cadModifierWorkerFailureMessage());
       const requestId = cadModifierRequestRef.current + 1;
       cadModifierRequestRef.current = requestId;
       cadModifierPrepareRef.current = requestId;
@@ -1576,6 +1639,17 @@ export function SketchForgeEditor({
       }
       if (message.type === "ready") {
         if (message.requestId !== cadModifierPrepareRef.current) return;
+        if (pushPullSessionRef.current) {
+          const faces = message.planarFaces ?? [];
+          setPushPullSession((current) => current ? {
+            ...current,
+            faces,
+            prepared: true,
+            busy: false,
+            error: faces.length > 0 ? null : "Push Pull needs a flat face.",
+          } : current);
+          return;
+        }
         if (shellSessionRef.current) {
           setShellSession((current) => current ? { ...current, prepared: true, busy: true, error: null } : current);
           return;
@@ -1608,14 +1682,39 @@ export function SketchForgeEditor({
           ? { status: "idle" as const, requestId: null }
           : cadPreviewQueueRef.current.settle(message.requestId);
         if (!isLatest) return;
+        if (pushPullSessionRef.current) {
+          const base = cadModifierBaseShapeRef.current;
+          const rawPreview = base ? shapeFromCadMesh(base, message.positions, message.normals, message.indices, message.brep, message.step) : null;
+          const preview = rawPreview ? {
+            ...rawPreview,
+            cadDisplayEdges: (message.displayEdges?.length ?? 0) > 0
+              ? cadDisplayEdgesForShape(rawPreview, message.displayEdges)
+              : (pushPullSessionRef.current.preview?.cadDisplayEdges ?? cadDisplayEdgesForShape(rawPreview, message.displayEdges ?? [])),
+            cadDisplayEdgesVersion: 2 as const,
+          } : null;
+          setPushPullSession((current) => current ? {
+            ...current,
+            preview,
+            busy: false,
+            error: preview ? null : cadFailureCopy("That push went through the part. Try a smaller distance.", "pushPull"),
+          } : current);
+          return;
+        }
         if (shellSessionRef.current) {
           const base = cadModifierBaseShapeRef.current;
           const rawPreview = base ? shapeFromCadMesh(base, message.positions, message.normals, message.indices, message.brep, message.step) : null;
+          const preview = rawPreview ? {
+            ...rawPreview,
+            cadDisplayEdges: (message.displayEdges?.length ?? 0) > 0
+              ? cadDisplayEdgesForShape(rawPreview, message.displayEdges)
+              : (shellSessionRef.current.preview?.cadDisplayEdges ?? cadDisplayEdgesForShape(rawPreview, message.displayEdges ?? [])),
+            cadDisplayEdgesVersion: 2 as const,
+          } : null;
           setShellSession((current) => current ? {
             ...current,
-            preview: rawPreview,
+            preview,
             busy: false,
-            error: rawPreview ? null : "The CAD kernel returned an empty body",
+            error: preview ? null : cadFailureCopy("The CAD kernel returned an empty body", "fillet"),
           } : current);
           if (rawPreview) setNotice("Hollow preview ready");
           return;
@@ -1673,6 +1772,10 @@ export function SketchForgeEditor({
         return;
       }
       if (message.type === "error") {
+        if (pushPullSessionRef.current) {
+          // The panel shows friendly copy; keep the kernel's own words in the console for triage.
+          console.warn("[push-pull] kernel error:", message.message);
+        }
         if (!message.resetSession && message.requestId === edgeRefineRequestRef.current) {
           edgeRefineRequestRef.current = null;
           setEdgeModifier((current) => current ? { ...current, busy: false } : current);
@@ -1695,16 +1798,21 @@ export function SketchForgeEditor({
           edgeRefineRequestRef.current = null;
           setEdgeModifier(null);
           setShellSession(null);
-          setNotice(message.message);
+          setPushPullSession(null);
+          setNotice(cadFailureCopy(message.message, pushPullSessionRef.current ? "pushPull" : "fillet"));
+          return;
+        }
+        if (pushPullSessionRef.current) {
+          setPushPullSession((current) => current ? { ...current, busy: false, preview: null, error: cadFailureCopy(message.message, "pushPull") } : current);
           return;
         }
         if (shellSessionRef.current) {
-          setShellSession((current) => current ? { ...current, busy: false, error: message.message } : current);
+          setShellSession((current) => current ? { ...current, busy: false, error: cadFailureCopy(message.message, "fillet") } : current);
           return;
         }
         // The edge modifier panel already renders message.message as its error state.
         if (settled.status === "sent") return;
-        setEdgeModifier((current) => current ? { ...current, busy: false, error: message.message } : current);
+        setEdgeModifier((current) => current ? { ...current, busy: false, error: cadFailureCopy(message.message, current.kind === "chamfer" ? "chamfer" : "fillet") } : current);
       }
     }
     cadModifierDispatchRef.current = (message) => {
@@ -1747,6 +1855,7 @@ export function SketchForgeEditor({
     edgeRefineRequestRef.current = null;
     setEdgeModifier(null);
     setShellSession(null);
+    setPushPullSession(null);
     return true;
   }, [clearCadModifierWatchdog]);
 
@@ -1776,6 +1885,7 @@ export function SketchForgeEditor({
     }
     setFaceSnap(null);
     setLayFlat(false);
+    setDropSurface(false);
   }, [invalidateCadModifierSession]);
 
   useEffect(() => {
@@ -1985,6 +2095,9 @@ export function SketchForgeEditor({
   );
   const alignHandleStatuses = useMemo(() => (alignMode ? alignmentStatuses(selectedShapes, effectiveAlignAnchorId) : []), [alignMode, effectiveAlignAnchorId, selectedShapes]);
   const activeToolChip = useMemo<{ label: string; hint: string } | null>(() => {
+    if (pushPullSession) {
+      return { label: "Push Pull", hint: "Drag, type, then Apply" };
+    }
     if (edgeModifier) {
       return { label: edgeModifier.kind === "fillet" ? "Fillet" : "Chamfer", hint: "Esc to cancel" };
     }
@@ -2007,7 +2120,7 @@ export function SketchForgeEditor({
       return { label: "Mirror", hint: "Esc to cancel" };
     }
     return null;
-  }, [alignMode, circularPattern, edgeModifier, hasSelection, linearPattern, mirrorMode, placementRuler]);
+  }, [alignMode, circularPattern, edgeModifier, hasSelection, linearPattern, mirrorMode, placementRuler, pushPullSession]);
   const sketchToolChip = useMemo<{ label: string; hint: string } | null>(() => {
     if (!sketchActive) return null;
     const coach = sketchCoach(
@@ -2044,7 +2157,7 @@ export function SketchForgeEditor({
         const entry = history[historyBrowse];
         if (entry) return expandHistoryShapes(entry.shapes, entry.meshVault).map(canonicalizeShape);
       }
-      const preview = edgeModifier?.preview;
+      const preview = edgeModifier?.preview ?? pushPullSession?.preview;
       if (preview && cadModifierBaseShapeRef.current) {
         return shapes.map((shape) => shape.id === cadModifierBaseShapeRef.current?.id ? preview : shape);
       }
@@ -2067,7 +2180,7 @@ export function SketchForgeEditor({
       }
       return shapes;
     },
-    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, selectedIds, selectedShapes, shapes, sweepPreview],
+    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
   );
   const debugState = useMemo(
     () =>
@@ -2451,10 +2564,44 @@ export function SketchForgeEditor({
     syncProjectShapes(baked);
   }, [syncProjectShapes]);
 
+  const importedBrepBakeInFlightRef = useRef(false);
+  const importedBrepBakePromiseRef = useRef<Promise<void> | null>(null);
+  const bakeImportedBrepForAutosave = useCallback(async () => {
+    if (historyWriteSuspendedRef.current > 0) return;
+    if (importedBrepBakePromiseRef.current) return importedBrepBakePromiseRef.current;
+    const current = pendingProjectShapesRef.current ?? shapesRef.current;
+    if (importedBrepStepsAwaitingSave(current).length === 0) return;
+    const run = (async () => {
+      importedBrepBakeInFlightRef.current = true;
+      try {
+        await bakeImportedBrepStepsForSave(pendingProjectShapesRef.current ?? shapesRef.current);
+        persistBakedImportedBrepSteps();
+      } finally {
+        importedBrepBakeInFlightRef.current = false;
+        importedBrepBakePromiseRef.current = null;
+      }
+    })();
+    importedBrepBakePromiseRef.current = run;
+    return run;
+  }, [persistBakedImportedBrepSteps]);
+
+  const flushImportedBrepBake = useCallback(async () => {
+    await importedBrepBakePromiseRef.current;
+    await bakeImportedBrepForAutosave();
+  }, [bakeImportedBrepForAutosave]);
+
+  useEffect(() => {
+    if (importedBrepStepsAwaitingSave(shapes).length === 0) return;
+    const timer = window.setTimeout(() => {
+      void bakeImportedBrepForAutosave();
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [bakeImportedBrepForAutosave, shapes]);
+
   const hasUnsavedProjectChanges = useCallback(() => {
     if (!projectId || !onSaveProject) return false;
     const current = pendingProjectShapesRef.current ?? shapesRef.current;
-    if (importedBrepStepsAwaitingSave(current).length > 0) return true;
+    if (importedBrepBakeInFlightRef.current || importedBrepStepsAwaitingSave(current).length > 0) return true;
     const baseline = explicitSaveFingerprintRef.current;
     return baseline !== null && projectShapesFingerprint(current) !== baseline;
   }, [onSaveProject, projectId]);
@@ -2468,6 +2615,7 @@ export function SketchForgeEditor({
     if (!projectId || !handler || explicitSaveInFlightRef.current) return false;
     explicitSaveInFlightRef.current = true;
     try {
+      await flushImportedBrepBake();
       let bake: { baked: number; failedNames: string[] } = { baked: 0, failedNames: [] };
       const awaiting = importedBrepStepsAwaitingSave(pendingProjectShapesRef.current ?? shapesRef.current);
       if (awaiting.length > 0) {
@@ -2517,16 +2665,17 @@ export function SketchForgeEditor({
       explicitSaveInFlightRef.current = false;
       setExactStepSaveProgress(null);
     }
-  }, [flushProjectShapesSync, onSaveProject, onSaveProjectAs, persistBakedImportedBrepSteps, projectId, setNotice]);
+  }, [flushImportedBrepBake, flushProjectShapesSync, onSaveProject, onSaveProjectAs, persistBakedImportedBrepSteps, projectId, setNotice]);
 
-  const confirmLeaveProject = useCallback((): Promise<boolean> => {
-    if (!hasUnsavedProjectChanges()) return Promise.resolve(true);
+  const confirmLeaveProject = useCallback(async (): Promise<boolean> => {
+    await flushImportedBrepBake();
+    if (!hasUnsavedProjectChanges()) return true;
     unsavedPromptResolveRef.current?.(false);
     return new Promise<boolean>((resolve) => {
       unsavedPromptResolveRef.current = resolve;
       setUnsavedPrompt({ saving: false });
     });
-  }, [hasUnsavedProjectChanges]);
+  }, [flushImportedBrepBake, hasUnsavedProjectChanges]);
 
   const settleUnsavedPrompt = useCallback((leave: boolean) => {
     const resolve = unsavedPromptResolveRef.current;
@@ -2642,6 +2791,7 @@ export function SketchForgeEditor({
         skipOcct,
         occtEligible: selectionSupportsOcctCsg(activeChildren),
         resultHasExactBrep: Boolean(next.importedMesh?.brepStep || next.cadBrep),
+        operands: activeChildren,
       });
       if (fallbackNotice) setNotice(fallbackNotice);
     }
@@ -2799,7 +2949,7 @@ export function SketchForgeEditor({
     setSketchFacePickMode(false);
     setToolbarMode("sketch");
     setSketchActive(true);
-    setSketchFocusMode("2d");
+    setSketchFocusMode("3d");
     setRevolvePrompt(null);
     setPolygonSidesPrompt(null);
     setExtrudeHeightPrompt(null);
@@ -2849,7 +2999,7 @@ export function SketchForgeEditor({
       setNotice("Select a body with a sketch feature, or Alt-click a feature then Edit sketch");
       return;
     }
-    const session = beginEditSketchSession(shape, "2d");
+    const session = beginEditSketchSession(shape, "3d");
     if (!session?.doc) {
       setNotice("That shape has no editable sketch");
       return;
@@ -4595,8 +4745,8 @@ export function SketchForgeEditor({
       if (cancelled) return;
       if (!result.ok) {
         setSweepPreview(null);
-        setSweepBuildError(result.message);
-        setNotice(result.message);
+        setSweepBuildError(cadFailureCopy(result.message, "sweep"));
+        setNotice(cadFailureCopy(result.message, "sweep"));
         return;
       }
       setSweepBuildError(null);
@@ -5240,10 +5390,11 @@ export function SketchForgeEditor({
         setNotice("Linear pattern cancelled");
         return;
       }
+      const pushPullWasActive = Boolean(pushPullSessionRef.current);
       const modifierCancelled = invalidateCadModifierSession();
       const currentIndex = historyIndexRef.current;
       if (currentIndex <= 0) {
-        setNotice(modifierCancelled ? "Edge modifier cancelled" : "Nothing to undo");
+        setNotice(modifierCancelled ? (pushPullWasActive ? "Push Pull cancelled" : "Edge modifier cancelled") : "Nothing to undo");
         return;
       }
       setHistoryBrowse(null);
@@ -5825,7 +5976,7 @@ export function SketchForgeEditor({
   }, [applyCircularPattern, cancelCircularPattern, circularPattern]);
 
   useEffect(() => {
-    if (!alignMode && !mirrorMode && !faceSnap && !layFlat) return;
+    if (!alignMode && !mirrorMode && !faceSnap && !layFlat && !dropSurface) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -5847,10 +5998,14 @@ export function SketchForgeEditor({
         setLayFlat(false);
         setNotice("Lay flat cancelled");
       }
+      if (dropSurface) {
+        setDropSurface(false);
+        setNotice("Drop cancelled");
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [alignMode, faceSnap, layFlat, mirrorMode]);
+  }, [alignMode, dropSurface, faceSnap, layFlat, mirrorMode]);
 
   const postToCadModifierWorker = (request: CadModifierWorkerPayload, requestId: number, transfer: Transferable[] = []) => {
     const worker = cadModifierWorkerRef.current ?? cadModifierWorkerRestartRef.current();
@@ -5884,7 +6039,11 @@ export function SketchForgeEditor({
         }
         if (request.type === "prepare") cadModifierNativeLiveRef.current = true;
         if (request.type === "dispose") cadModifierNativeLiveRef.current = false;
-        cadModifierDispatchRef.current(mapNativeCadModifierReply(reply, requestId));
+        cadModifierDispatchRef.current(mapNativeCadModifierReply(
+          reply,
+          requestId,
+          request.type === "pushPull" ? "pushPull" : "fillet",
+        ));
       }).catch(() => {
         cadModifierNativeLiveRef.current = false;
         if (!postToCadModifierWorker(request, requestId, transfer)) {
@@ -6098,6 +6257,70 @@ export function SketchForgeEditor({
     if (prepareRequestId === null) {
       const message = cadModifierWorkerFailureMessage();
       setShellSession((current) => current ? { ...current, busy: false, prepared: false, error: message } : current);
+      return;
+    }
+    cadModifierPrepareRef.current = prepareRequestId;
+    armCadModifierWatchdog(prepareRequestId, "prepare");
+  }, [armCadModifierWatchdog, clearEditorToolSessions, invalidateCadModifierSession, postCadModifierRequest, selectedShape, selectedShapes.length]);
+
+  const startPushPull = useCallback(() => {
+    if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
+      setNotice("Select one unlocked solid to Push Pull");
+      return;
+    }
+    const sourceParts = pushPullSourceParts(selectedShape);
+    const hasCad = sourceParts.some((part) => Boolean(cadModifierPrimitiveForShape(part) || part.cadBrep));
+    if (!hasCad) {
+      setNotice("Push Pull needs an exact CAD body. Group CAD parts first.");
+      return;
+    }
+    invalidateCadModifierSession();
+    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((shape) => {
+      const frame = shape.cadBrepFrame;
+      const primitive = cadModifierPrimitiveForShape(shape);
+      if (primitive) return { shape, primitive };
+      return shape.cadBrep && frame
+        ? { shape, brep: shape.cadBrep, brepTransform: cadBrepTransformForShape(shape) }
+        : { shape, mesh: meshForShape(shape) };
+    });
+    const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
+    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
+      setNotice("The selected object has no printable surface");
+      return;
+    }
+    cadModifierBaseShapeRef.current = selectedShape;
+    cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
+    cadModifierSourcePartsRef.current = sourceParts;
+    clearEditorToolSessions("fillet");
+    const session = {
+      faces: [] as CadPlanarFace[],
+      selectedFaceId: null as number | null,
+      hoverFaceId: null as number | null,
+      distance: 0,
+      dragging: false,
+      settling: false,
+      ghostOpacity: 1,
+      busy: true,
+      prepared: false,
+      error: null as string | null,
+      preview: null as WorkplaneShape | null,
+    };
+    pushPullSessionRef.current = session;
+    setPushPullSession(session);
+    setNotice("Drag a flat face");
+    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
+      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
+      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
+      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
+    });
+    const prepareRequestId = postCadModifierRequest({
+      type: "prepare",
+      parts,
+      sharpAngle: 12,
+    }, parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer, part.indices.buffer] : []));
+    if (prepareRequestId === null) {
+      const message = cadModifierWorkerFailureMessage();
+      setPushPullSession((current) => current ? { ...current, busy: false, prepared: false, error: message } : current);
       return;
     }
     cadModifierPrepareRef.current = prepareRequestId;
@@ -6350,6 +6573,15 @@ export function SketchForgeEditor({
     setNotice("Edge modifier cancelled because the object changed");
   }, [edgeModifier, invalidateCadModifierSession, shapes]);
 
+  useEffect(() => {
+    const base = cadModifierBaseShapeRef.current;
+    if (!pushPullSession || !base) return;
+    const current = shapes.find((shape) => shape.id === base.id);
+    if (current && projectShapesFingerprint([current]) === cadModifierBaseFingerprintRef.current) return;
+    invalidateCadModifierSession();
+    setNotice("Push Pull cancelled because the object changed");
+  }, [invalidateCadModifierSession, pushPullSession, shapes]);
+
   const applyEdgeModifier = useCallback(() => {
     const base = cadModifierBaseShapeRef.current;
     const session = edgeModifier;
@@ -6487,6 +6719,32 @@ export function SketchForgeEditor({
     return () => window.clearTimeout(timer);
   }, [edgeModifier?.amount, edgeModifier?.chamferAngle, edgeModifier?.kind, edgeModifier?.prepared, edgeModifier?.quality, edgeModifier?.selectedEdgeIds, postCadModifierRequest]);
 
+  useEffect(() => {
+    if (!pushPullSession?.prepared || pushPullSession.selectedFaceId === null) return;
+    if (Math.abs(pushPullSession.distance) < PUSH_PULL_APPLY_EPSILON) {
+      setPushPullSession((current) => current?.preview ? { ...current, preview: null, error: null } : current);
+      return;
+    }
+    const faceId = pushPullSession.selectedFaceId;
+    const distance = pushPullSession.distance;
+    const timer = window.setTimeout(() => {
+      setPushPullSession((current) => current ? { ...current, busy: true, error: null } : current);
+      const requestId = postCadModifierRequest({
+        type: "pushPull",
+        faceId,
+        distance,
+        quality: modifierPreviewQualityForDisplay(workspaceSettingsRef.current.displayQuality),
+      });
+      if (requestId === null) {
+        setPushPullSession((current) => current ? { ...current, busy: false, error: cadModifierWorkerFailureMessage() } : current);
+        return;
+      }
+      cadModifierLatestPreviewRef.current = requestId;
+      armCadModifierWatchdog(requestId, "preview");
+    }, pushPullSession.dragging ? 40 : 80);
+    return () => window.clearTimeout(timer);
+  }, [armCadModifierWatchdog, postCadModifierRequest, pushPullSession?.distance, pushPullSession?.dragging, pushPullSession?.prepared, pushPullSession?.selectedFaceId]);
+
   const applyShell = useCallback(() => {
     const base = cadModifierBaseShapeRef.current;
     const preview = shellSession?.preview;
@@ -6502,6 +6760,89 @@ export function SketchForgeEditor({
     flashCadApply(base.id);
     invalidateCadModifierSession();
   }, [commitShapes, flashCadApply, invalidateCadModifierSession, shellSession?.preview, shapes]);
+
+  const applyPushPull = useCallback((distanceOverride?: number) => {
+    const base = cadModifierBaseShapeRef.current;
+    const session = pushPullSessionRef.current;
+    const distance = distanceOverride ?? session?.distance ?? 0;
+    if (!base || !session) return;
+    if (Math.abs(distance) < PUSH_PULL_APPLY_EPSILON) {
+      setNotice("Drag a flat face");
+      return;
+    }
+    const preview = session.preview;
+    if (!preview) {
+      setNotice("Wait for a Push Pull preview before applying");
+      return;
+    }
+    const finish = (exact: WorkplaneShape) => {
+      commitShapes(
+        shapesRef.current.map((shape) => shape.id === base.id ? exact : shape),
+        base.id,
+        pushPullHistoryLabel(distance, workspaceSettingsRef.current.accuracy),
+      );
+      flashCadApply(base.id);
+      invalidateCadModifierSession();
+    };
+    void (async () => {
+      let next = preview;
+      if (!next.cadBrep) {
+        try {
+          const exact = await postCadModifierRequestAsync({ type: "finalize" }, [], 30000);
+          if (exact.type === "previewBrep" && exact.brep) {
+            next = { ...next, cadBrep: exact.brep };
+          }
+        } catch {
+          // The visible mesh is still applied if the exact solid is not ready.
+        }
+      }
+      finish(canonicalizeShape(next));
+    })();
+  }, [flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync]);
+
+  const playPushPullSettle = useCallback((distance: number) => {
+    const session = pushPullSessionRef.current;
+    if (!session?.preview || session.settling) {
+      applyPushPull(distance);
+      return;
+    }
+    if (prefersReducedMotion()) {
+      applyPushPull(distance);
+      return;
+    }
+    setPushPullSession((current) => current ? { ...current, settling: true, dragging: false, ghostOpacity: 1 } : current);
+    const started = performance.now();
+    const tick = (now: number) => {
+      if (!pushPullSessionRef.current) return;
+      const t = Math.min(1, (now - started) / PUSH_PULL_COMMIT_MS);
+      const eased = 1 - ((1 - t) ** 3);
+      setPushPullSession((current) => current ? { ...current, ghostOpacity: 1 - eased } : current);
+      if (t < 1) {
+        window.requestAnimationFrame(tick);
+        return;
+      }
+      applyPushPull(distance);
+    };
+    window.requestAnimationFrame(tick);
+  }, [applyPushPull]);
+
+  useEffect(() => {
+    if (!pushPullSession) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        invalidateCadModifierSession();
+        setNotice("Push Pull cancelled");
+      } else if (event.key === "Enter" && pushPullSession.preview && !pushPullSession.busy && !pushPullSession.error) {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        if (target?.closest("input, select, textarea, button, [contenteditable='true']")) return;
+        event.preventDefault();
+        playPushPullSettle(pushPullSession.distance);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [invalidateCadModifierSession, playPushPullSettle, pushPullSession]);
 
   const applySplit = useCallback(() => {
     if (!splitSession) return;
@@ -6836,18 +7177,104 @@ export function SketchForgeEditor({
     [commitShapes, hasSelection, recordShapeRepeatActions, selectedIds, shapes],
   );
 
+  const applyDropOntoSurface = useCallback((
+    surfaceY: number,
+    shift: { x: number; z: number } | undefined,
+    message: string,
+  ) => {
+    const selected = new Set(selectedIds);
+    const moving = shapes.filter((shape) => selected.has(shape.id) && !shape.locked);
+    if (moving.length === 0) {
+      setNotice("Select a shape first");
+      return;
+    }
+    const patches = new Map(moving.map((shape) => [
+      shape.id,
+      dropPatchOntoFrame(shape, meshAabb(shape), surfaceY, shift),
+    ] as const));
+    const finish = () => {
+      commitShapes(
+        shapesRef.current.map((shape) => {
+          const patch = patches.get(shape.id);
+          return patch && !shape.locked ? { ...shape, ...patch } : shape;
+        }),
+        [...selected],
+        message,
+      );
+      setNotice(message);
+    };
+    setDropSurface(false);
+    const primary = moving[0];
+    const patch = primary ? patches.get(primary.id) : undefined;
+    const motion = moving.length === 1 && primary && patch ? faceSnapMotionRef.current : null;
+    if (motion && primary && patch) {
+      motion(primary.id, {
+        x: patch.x ?? primary.x,
+        z: patch.z ?? primary.z,
+        elevation: patch.elevation ?? primary.elevation ?? 0,
+        rotationX: primary.rotationX ?? 0,
+        rotation: primary.rotation,
+        rotationZ: primary.rotationZ ?? 0,
+      }, finish);
+      return;
+    }
+    finish();
+  }, [commitShapes, selectedIds, shapes]);
+
   const dropSelectedToWorkplane = useCallback(() => {
+    if (dropSurface) {
+      setDropSurface(false);
+      setNotice("Drop cancelled");
+      return;
+    }
     if (!hasSelection) {
       setNotice("Select a shape first");
       return;
     }
+    clearEditorToolSessions();
+    setDropSurface(true);
+    setNotice("Click the workplane or a flat face to drop onto");
+  }, [clearEditorToolSessions, dropSurface, hasSelection]);
+
+  const pickDropSurface = useCallback((pick: {
+    kind: "workplane";
+  } | {
+    kind: "face";
+    shapeId: string;
+    point: [number, number, number];
+    normal: [number, number, number];
+  }) => {
+    if (!dropSurface) return;
     const selected = new Set(selectedIds);
-    commitShapes(
-      shapes.map((shape) => (selected.has(shape.id) && !shape.locked ? { ...shape, ...dropPatchOntoFrame(shape, meshAabb(shape)) } : shape)),
-      selectedIds,
-      "Dropped selection to the workplane",
-    );
-  }, [commitShapes, hasSelection, selectedIds, shapes]);
+    const moving = shapes.filter((shape) => selected.has(shape.id) && !shape.locked);
+    if (moving.length === 0) {
+      setNotice("Select a shape first");
+      return;
+    }
+    if (pick.kind === "workplane") {
+      applyDropOntoSurface(0, undefined, "Dropped onto the workplane");
+      return;
+    }
+    if (selected.has(pick.shapeId)) {
+      setNotice("Click the workplane or a different shape");
+      return;
+    }
+    const surfaceY = dropSurfaceY(pick.normal, pick.point);
+    if (surfaceY === null) {
+      setNotice("Click a flat face facing up, or the workplane");
+      return;
+    }
+    const group = boundsForCuboids(moving.map(meshAabb));
+    const shift = {
+      x: pick.point[0] - (group.minX + group.maxX) / 2,
+      z: pick.point[2] - (group.minZ + group.maxZ) / 2,
+    };
+    applyDropOntoSurface(surfaceY, shift, "Dropped onto the face");
+  }, [applyDropOntoSurface, dropSurface, selectedIds, shapes]);
+
+  useEffect(() => {
+    if (dropSurface && !hasSelection) setDropSurface(false);
+  }, [dropSurface, hasSelection]);
 
   const togglePlacementRuler = useCallback(() => {
     setPlacementRuler((current) => {
@@ -6964,8 +7391,10 @@ export function SketchForgeEditor({
     for (const solid of selectedShapes.filter((shape) => !shape.hole)) {
       linkedGroup = rewriteSketchHostIds(linkedGroup, solid.id, group.id);
     }
-    const groupedIds = new Set(groupable.map((shape) => shape.id));
-    commitShapes([...shapesRef.current.filter((shape) => !groupedIds.has(shape.id)), linkedGroup], linkedGroup.id, `Grouped ${groupable.length} shapes`);
+    const leftOutIds = new Set((result.leftOutShapes ?? []).map((shape) => shape.id));
+    const groupedIds = new Set(groupable.filter((shape) => !leftOutIds.has(shape.id)).map((shape) => shape.id));
+    const kept = shapesRef.current.filter((shape) => !groupedIds.has(shape.id));
+    commitShapes([...kept, linkedGroup], linkedGroup.id, `Grouped ${groupedIds.size} shapes`);
     flashCadApply(linkedGroup.id, undefined, "combine");
     setActiveFeatureId(null);
     if (result.qualityNotice) {
@@ -7453,7 +7882,9 @@ export function SketchForgeEditor({
           }
           throw new Error(result.failureNotice);
         }
-        commitShapes([...currentShapes().filter((shape) => !ids.has(shape.id)), result.group], result.group.id, `MCP grouped ${groupable.length} objects`);
+        const leftOutIds = new Set((result.leftOutShapes ?? []).map((shape) => shape.id));
+        const groupedIds = new Set(groupable.filter((shape) => !leftOutIds.has(shape.id)).map((shape) => shape.id));
+        commitShapes([...currentShapes().filter((shape) => !groupedIds.has(shape.id)), result.group], result.group.id, `MCP grouped ${groupedIds.size} objects`);
         flashCadApply(result.group.id, undefined, "combine");
         return { object: mcpShapeSummary(result.group) };
       }
@@ -7756,7 +8187,7 @@ export function SketchForgeEditor({
           ?? (selectedIdsRef.current[0] ? findShape(selectedIdsRef.current[0]) : null);
         const target = resolveEditableSketchShape(raw, { preferFaceFeatures: true });
         if (!target || !shapeHasEditableSketch(target)) throw new Error("edit_sketch requires a sketched solid or face sketch feature id");
-        const session = beginEditSketchSession(target, "2d");
+        const session = beginEditSketchSession(target, "3d");
         if (!session?.doc) throw new Error("Shape has no editable sketch document");
         const profile = target.sketchProfile ?? sketchDocToProfile(session.doc);
         beginSketch(profile, target.id, target.sketchPlane ?? session.doc.plane, session.doc);
@@ -8712,7 +9143,7 @@ export function SketchForgeEditor({
 
     const sourceProjectId = projectInfoRef.current.projectId;
     const loadingNotice = isStep
-      ? "Reading STEP… first import loads the OpenCascade kernel (~22 MB), one time per session"
+      ? "Reading STEP…"
       : isSvg ? `Importing SVG (${file.name})…` : undefined;
     const loadingToken = isStep || isSvg || is3mf ? await showModelLoading(file.name, loadingNotice) : 0;
     let stepBase: WorkplaneShape[] | null = null;
@@ -8767,6 +9198,7 @@ export function SketchForgeEditor({
           ? (importAsHole ? `Imported ${file.name} as a hole` : `Imported ${file.name}`)
           : `Imported ${imported.length} bodies from ${file.name}`;
       commitShapes([...(stepBase ?? shapesRef.current), ...imported], imported.map((shape) => shape.id), label);
+      if (isStep) void bakeImportedBrepForAutosave();
       setTopPanel(null);
       // Overrides the commit notice on purpose: a partial import needs to be seen.
       if (importWarnings.length > 0) setNotice(`Imported ${file.name} — ${importWarnings.join(" ")}`);
@@ -8779,7 +9211,7 @@ export function SketchForgeEditor({
     } finally {
       if (loadingToken) void hideModelLoading(loadingToken);
     }
-  }, [commitShapes, hideModelLoading, importAsHole, showModelLoading]);
+  }, [bakeImportedBrepForAutosave, commitShapes, hideModelLoading, importAsHole, showModelLoading]);
 
   const placeStlImport = useCallback(async (mode: MeshSeatMode) => {
     const prompt = stlSeatPrompt;
@@ -9093,7 +9525,11 @@ export function SketchForgeEditor({
             return;
           }
           event.preventDefault();
-          setSketchFocusMode((mode) => (mode === "2d" ? "3d" : "2d"));
+          setSketchFocusMode((mode) => {
+            const next = mode === "2d" ? "3d" : "2d";
+            if (next === "2d") setSketchFrameRequest(0);
+            return next;
+          });
           return;
         }
         if (action === "holeMode") {
@@ -9118,6 +9554,11 @@ export function SketchForgeEditor({
           }
           if (edgeModifier) {
             cancelEdgeModifier();
+            break;
+          }
+          if (pushPullSession) {
+            invalidateCadModifierSession();
+            setNotice("Push Pull cancelled");
             break;
           }
           if (linearPattern) {
@@ -9340,7 +9781,7 @@ export function SketchForgeEditor({
   ]);
 
   const geometryToolbarProps = {
-    canUndo: historyIndex > 0 || Boolean(edgeModifier) || Boolean(circularPattern) || Boolean(linearPattern),
+    canUndo: historyIndex > 0 || Boolean(edgeModifier) || Boolean(pushPullSession) || Boolean(circularPattern) || Boolean(linearPattern),
     canRedo: historyIndex < history.length - 1,
     hasClipboard: clipboard.length > 0 || systemClipboardSupported,
     hasSelection,
@@ -9379,6 +9820,8 @@ export function SketchForgeEditor({
     onLinearPattern: toggleLinearPattern,
     onChamfer: () => edgeModifier?.kind === "chamfer" ? cancelEdgeModifier() : startEdgeModifier("chamfer"),
     onFillet: () => edgeModifier?.kind === "fillet" ? cancelEdgeModifier() : startEdgeModifier("fillet"),
+    onPushPull: () => pushPullSession ? invalidateCadModifierSession() : startPushPull(),
+    pushPullActive: Boolean(pushPullSession),
     onHollow: () => shellSession ? invalidateCadModifierSession() : startShell(),
     hollowActive: Boolean(shellSession),
     onSplit: () => {
@@ -9389,7 +9832,7 @@ export function SketchForgeEditor({
       }
       if (!selectedShape || selectedShape.locked) return;
       if (edgeModifier) cancelEdgeModifier();
-      if (shellSession) invalidateCadModifierSession();
+      if (shellSession || pushPullSession) invalidateCadModifierSession();
       setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0, joint: "none", clearance: 0.2 });
     },
     splitActive: Boolean(splitSession),
@@ -9439,6 +9882,17 @@ export function SketchForgeEditor({
       ) : null}
     </div>
   ) : null;
+
+  const sketchFocusTabs = (
+    <SketchFocusTabs
+      focusMode={sketchFocusMode}
+      onFocusModeChange={(mode) => {
+        setSketchFocusMode(mode);
+        if (mode === "2d") setSketchFrameRequest(0);
+      }}
+      onReframe3d={() => setSketchFrameRequest((count) => count + 1)}
+    />
+  );
 
   return (
     <div className="peakcad-editor">
@@ -9712,11 +10166,8 @@ export function SketchForgeEditor({
                 setNotice("Constraint removed");
               }}
             />
-            <div className="sketch-project-actions">
-              <button type="button" className="sketch-view-3d-button" onClick={() => setSketchFocusMode("3d")}>
-                View in 3D
-              </button>
-              {sketchDoc.plane.hostShapeId ? (
+            {sketchDoc.plane.hostShapeId ? (
+              <div className="sketch-project-actions">
                 <button
                   type="button"
                   className="sketch-project-edges-button"
@@ -9744,8 +10195,8 @@ export function SketchForgeEditor({
                 >
                   Copy the part&apos;s edges
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
             <div className="sketch-stage-footer">
               <SketchCoach
                 tool={sketchHoverTool ?? sketchTool}
@@ -9754,9 +10205,11 @@ export function SketchForgeEditor({
                 placingPoint={Boolean(sketchActivePointId)}
                 hovering={Boolean(sketchHoverTool)}
               />
+              {sketchFocusTabs}
             </div>
             <SketchWorkspace
               profile={sketchProfile}
+              viewKey={sketchDoc.id}
               referenceShapes={shapes.filter((shape) => shape.id !== editingSketchShapeId)}
               tool={sketchTool}
               activePointId={sketchActivePointId}
@@ -9882,6 +10335,7 @@ export function SketchForgeEditor({
               onHoverTool={setSketchHoverTool}
               onSketchImage={() => {
                 setSketchFocusMode("2d");
+                setSketchFrameRequest(0);
                 setNotice("Choose Select on the flat sheet, then add the image");
               }}
             />
@@ -9923,10 +10377,11 @@ export function SketchForgeEditor({
                     setNotice("Constraint removed");
                   }}
                 />
-                <div className="sketch-3d-hint">
-                  <span>Orbit to check the sketch on the part. Draw when the face is toward you.</span>
-                  <button type="button" className="sketch-view-3d-button" onClick={() => setSketchFocusMode("2d")}>Flat sketch</button>
-                  <button type="button" onClick={() => setSketchFrameRequest((count) => count + 1)}>Look at face</button>
+                <div className="sketch-stage-footer">
+                  <div className="sketch-3d-hint">
+                    <span>Orbit to check the sketch on the part. Draw when the face is toward you.</span>
+                  </div>
+                  {sketchFocusTabs}
                 </div>
               </>
             ) : null}
@@ -10045,14 +10500,60 @@ export function SketchForgeEditor({
           onWorkspaceSettingsChange={updateProjectWorkspaceSettings}
           modifierActive={Boolean(edgeModifier)}
           modifierPreserveSelection={false}
-          modifierPreviewActive={Boolean(edgeModifier?.preview)}
+          modifierPreviewActive={Boolean(edgeModifier?.preview || pushPullSession?.preview)}
           modifierEdges={modifierSelectableEdges}
           selectedModifierEdgeIds={edgeModifier ? edgeModifier.selectedEdgeIds : []}
           onModifierEdgeToggle={toggleModifierEdge}
+          pushPullActive={Boolean(pushPullSession)}
+          pushPullFaces={pushPullSession?.faces ?? []}
+          pushPullHoverFaceId={pushPullSession?.hoverFaceId ?? null}
+          pushPullSelectedFaceId={pushPullSession?.selectedFaceId ?? null}
+          pushPullDistance={pushPullSession?.distance ?? 0}
+          pushPullShowGhost={Boolean(
+            pushPullSession
+            && pushPullSession.selectedFaceId !== null
+            && Math.abs(pushPullSession.distance) > 1e-4
+            && (pushPullSession.dragging || pushPullSession.settling || !pushPullSession.preview),
+          )}
+          pushPullGhostOpacity={pushPullSession?.ghostOpacity ?? 1}
+          pushPullChipText={pushPullSession && Math.abs(pushPullSession.distance) > 1e-3
+            ? `${formatMeasurementNumber(millimetersToDisplay(pushPullSession.distance, workspaceSettings), workspaceSettings.accuracy)} ${lengthDisplayUnit(workspaceSettings).label}`
+            : null}
+          onPushPullHover={(faceId) => setPushPullSession((current) => current ? { ...current, hoverFaceId: faceId } : current)}
+          onPushPullDragStart={(faceId, distance) => setPushPullSession((current) => current?.prepared ? {
+            ...current,
+            selectedFaceId: faceId,
+            distance,
+            dragging: true,
+            settling: false,
+            ghostOpacity: 1,
+            error: null,
+          } : current)}
+          onPushPullDrag={(distance) => setPushPullSession((current) => current?.prepared ? {
+            ...current,
+            distance,
+            dragging: true,
+            error: null,
+          } : current)}
+          onPushPullDragEnd={(distance) => {
+            const session = pushPullSessionRef.current;
+            if (!session?.prepared) return;
+            if (Math.abs(distance) < PUSH_PULL_APPLY_EPSILON) {
+              setPushPullSession({ ...session, distance: 0, dragging: false, preview: null, error: null });
+              return;
+            }
+            setPushPullSession({ ...session, distance, dragging: false });
+          }}
+          onPushPullDistanceCommit={(distance) => {
+            const millimeters = displayToMillimeters(distance, workspaceSettingsRef.current);
+            setPushPullSession((current) => current?.prepared ? { ...current, distance: millimeters, dragging: false } : current);
+          }}
           viewNudgeAxesRef={viewNudgeAxesRef}
           rotationEditApiRef={rotationEditApiRef}
           onDropToWorkplane={dropSelectedToWorkplane}
-          faceSnapActive={faceSnap !== null || layFlat}
+          dropSurfaceActive={dropSurface}
+          onDropSurfacePick={pickDropSurface}
+          faceSnapActive={faceSnap !== null || layFlat || dropSurface}
           faceSnapSource={faceSnap?.source ?? null}
           faceSnapMotionRef={faceSnapMotionRef}
           onFaceSnapPick={pickFaceSnap}
@@ -10075,6 +10576,30 @@ export function SketchForgeEditor({
                   onClearanceChange={(clearance) => setSplitSession((current) => current ? { ...current, clearance } : current)}
                   onApply={applySplit}
                   onCancel={cancelSplit}
+                />
+              </ToolbarFlow>
+            ) : pushPullSession && selectedShape ? (
+              <ToolbarFlow tool="Push Pull" label="Push Pull">
+                <PushPullPanel
+                  targetName={selectedShape.name}
+                  distance={pushPullSession.distance}
+                  maxDistance={Math.max(shapeWidth(selectedShape), shapeDepth(selectedShape), selectedShape.height) * 2}
+                  workspace={workspaceSettings}
+                  busy={pushPullSession.busy || pushPullSession.settling}
+                  prepared={pushPullSession.prepared}
+                  error={pushPullSession.error}
+                  onDistanceChange={(distance) => setPushPullSession((current) => current?.prepared ? {
+                    ...current,
+                    selectedFaceId: current.selectedFaceId ?? current.faces[0]?.id ?? null,
+                    distance,
+                    preview: null,
+                    error: null,
+                  } : current)}
+                  onApply={() => playPushPullSettle(pushPullSession.distance)}
+                  onCancel={() => {
+                    invalidateCadModifierSession();
+                    setNotice("Push Pull cancelled");
+                  }}
                 />
               </ToolbarFlow>
             ) : shellSession && selectedShape ? (

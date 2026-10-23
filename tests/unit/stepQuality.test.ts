@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStepExportPreflight,
+  cadOperandsForExactGroup,
+  mixedGroupLeftOutNotice,
   OCCT_MESH_FALLBACK_NOTICE,
   occtMeshFallbackNotice,
   selectionSupportsOcctCsg,
@@ -180,5 +182,30 @@ describe("stepQuality", () => {
       occtEligible: false,
       resultHasExactBrep: false,
     })).toBeUndefined();
+  });
+
+  it("names the mesh body when a CAD Group mixed in a mesh part", () => {
+    const plate = shape({ id: "a", name: "Plate" });
+    const label = shape({ id: "t", name: "Label", kind: "text", text: "Hi" });
+    expect(occtMeshFallbackNotice({
+      occtEligible: false,
+      resultHasExactBrep: false,
+      operands: [plate, label],
+    })).toBe("Label is mesh, so this Group is mesh. Group the CAD parts first, then cut that one.");
+    expect(occtMeshFallbackNotice({
+      skipOcct: true,
+      occtEligible: false,
+      resultHasExactBrep: false,
+      operands: [plate, label],
+    })).toBeUndefined();
+  });
+
+  it("groups CAD parts without a mesh body when the selection is mixed", () => {
+    const plate = shape({ id: "a", name: "Plate" });
+    const boss = shape({ id: "b", name: "Boss", x: 8 });
+    const label = shape({ id: "t", name: "Label", kind: "text", text: "Hi" });
+    expect(cadOperandsForExactGroup([plate, boss])).toBeNull();
+    expect(cadOperandsForExactGroup([plate, boss, label])?.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(mixedGroupLeftOutNotice([label])).toBe("Grouped the CAD parts. Label was left out because it is mesh.");
   });
 });

@@ -32,8 +32,18 @@ describe("cadModifierPrimitiveForAnalyticCylinder", () => {
     }));
   });
 
-  it("rejects elliptical cylinders and imported meshes", () => {
-    expect(cadModifierPrimitiveForAnalyticCylinder(cylinder({ depth: 12 }))).toBeNull();
+  it("encodes elliptical cylinders with width and depth instead of a single radius", () => {
+    const primitive = cadModifierPrimitiveForAnalyticCylinder(cylinder({ depth: 12 }));
+    expect(primitive).toEqual(expect.objectContaining({
+      kind: "cylinder",
+      width: 20,
+      depth: 12,
+      height: 30,
+    }));
+    expect(primitive && "radius" in primitive ? primitive.radius : undefined).toBeUndefined();
+  });
+
+  it("rejects imported meshes", () => {
     expect(cadModifierPrimitiveForAnalyticCylinder(cylinder({
       importedMesh: {
         positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],

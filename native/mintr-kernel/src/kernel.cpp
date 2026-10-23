@@ -7,11 +7,8 @@
 #include "split.hpp"
 
 #include <BRepAlgoAPI_Common.hxx>
-#include <BRepAlgoAPI_Cut.hxx>
-#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRep_Builder.hxx>
 #include <Standard_Failure.hxx>
-#include <TopTools_ListOfShape.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Shape.hxx>
 
@@ -30,34 +27,15 @@ bool booleanOp(
   if (solids.empty()) return false;
   TopoDS_Shape acc = solids[0];
   if (op == "union" || op == "subtract") {
-    if (solids.size() > 1) {
-      BRepAlgoAPI_Fuse fuse;
-      TopTools_ListOfShape args;
-      TopTools_ListOfShape tools;
-      args.Append(solids[0]);
-      for (size_t i = 1; i < solids.size(); ++i) tools.Append(solids[i]);
-      fuse.SetArguments(args);
-      fuse.SetTools(tools);
-      fuse.SetRunParallel(true);
-      fuse.SetFuzzyValue(0.04);
-      fuse.Build();
-      if (!fuse.IsDone()) return false;
-      acc = fuse.Shape();
-    }
-    if (op == "subtract" && !holes.empty()) {
-      BRepAlgoAPI_Cut cut;
-      TopTools_ListOfShape args;
-      TopTools_ListOfShape tools;
-      args.Append(acc);
-      for (const auto& hole : holes) tools.Append(hole);
-      cut.SetArguments(args);
-      cut.SetTools(tools);
-      cut.SetRunParallel(true);
-      cut.SetFuzzyValue(0.04);
-      cut.Build();
-      if (!cut.IsDone()) return false;
-      acc = cut.Shape();
-    }
+    // Two solids → one fuse. Three or more → one after another. Same helpers
+    // as Split/print so a pile of bosses matches 1-solid+1-hole cadence.
+    if (!kernelFuseSolids(solids, acc)) return false;
+    if (op == "subtract" && !kernelCutHoles(acc, holes, acc)) return false;
+    // Two-body Group (two solids, or one solid and one hole) stays as-is so a
+    // cylinder-into-box does not hitch. Three or more operands unify leftover
+    // faces so knurls match Split/print/export.
+    const std::size_t busy = solids.size() + (op == "subtract" ? holes.size() : 0);
+    if (busy >= 3) acc = kernelUnify(acc);
   } else if (op == "intersect") {
     std::vector<TopoDS_Shape> all = solids;
     all.insert(all.end(), holes.begin(), holes.end());
@@ -73,9 +51,6 @@ bool booleanOp(
   } else {
     return false;
   }
-  // Live Group returns the boolean as-is. UnifySameDomain on a cylinder-into-box
-  // fuse walks the intersection curve and is the difference between tens of
-  // milliseconds and a hitch; fillet/export still unify on their own paths.
   out = acc;
   return !out.IsNull();
 }
@@ -105,6 +80,7 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
     if (
       type == "prepare" || type == "preview" || type == "refine" || type == "finalize"
       || type == "dispose" || type == "warmup" || type == "hollow" || type == "previewThread"
+      || type == "pushPull"
     ) {
       return handleModifierJob(job);
     }
@@ -138,13 +114,9 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
       builder.MakeCompound(compound);
       int exported = 0;
       for (auto part : solids) {
-        for (const auto& hole : holes) {
-          BRepAlgoAPI_Cut cut(part, hole);
-          cut.SetRunParallel(true);
-          cut.Build();
-          if (cut.IsDone()) part = cut.Shape();
-        }
-        builder.Add(compound, part);
+        TopoDS_Shape cut = part;
+        if (!kernelCutHoles(part, holes, cut)) cut = part;
+        builder.Add(compound, cut);
         exported += 1;
       }
       if (exported == 0) return kernelFail("No solid geometry to export as STEP", false);

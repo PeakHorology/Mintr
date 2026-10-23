@@ -6,6 +6,7 @@ import { PeakTipButton, PeakTooltip, usePeakContextHelp, usePeakTooltip } from "
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 
 type ToolbarMode = "geometry" | "sketch";
+type SketchFocusMode = "2d" | "3d";
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 const DEFAULT_PROJECT_NAME = "Untitled design";
@@ -44,6 +45,53 @@ export function EditorModeTabs({
       >
         Sketch
         {sketchHelp.helpPortal}
+      </button>
+    </div>
+  );
+}
+
+export function SketchFocusTabs({
+  focusMode,
+  onFocusModeChange,
+  onReframe3d,
+}: {
+  focusMode: SketchFocusMode;
+  onFocusModeChange: (mode: SketchFocusMode) => void;
+  onReframe3d?: () => void;
+}) {
+  const flatHelp = usePeakContextHelp("Flat sketch", TOOL_DESCRIPTIONS.flatSketch);
+  const sketch3dHelp = usePeakContextHelp("3D sketch", TOOL_DESCRIPTIONS.sketch3dView);
+
+  return (
+    <div className="editor-mode-tabs editor-mode-tabs--focus" data-mode={focusMode} role="tablist" aria-label="Sketch view">
+      <div className="editor-mode-tabs-pill" aria-hidden="true" />
+      <button
+        className={focusMode === "2d" ? "active" : ""}
+        type="button"
+        role="tab"
+        aria-selected={focusMode === "2d"}
+        onClick={() => onFocusModeChange("2d")}
+        onContextMenu={flatHelp.onContextMenu}
+      >
+        Flat sketch
+        {flatHelp.helpPortal}
+      </button>
+      <button
+        className={focusMode === "3d" ? "active" : ""}
+        type="button"
+        role="tab"
+        aria-selected={focusMode === "3d"}
+        onClick={() => {
+          if (focusMode === "3d") {
+            onReframe3d?.();
+            return;
+          }
+          onFocusModeChange("3d");
+        }}
+        onContextMenu={sketch3dHelp.onContextMenu}
+      >
+        3D sketch
+        {sketch3dHelp.helpPortal}
       </button>
     </div>
   );

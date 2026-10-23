@@ -2,9 +2,11 @@ import type {
   CadCylindricalFace,
   CadModifierEdge,
   CadModifierMeshPart,
+  CadPlanarFace,
   CadModifierWorkerRequest,
   CadModifierWorkerResponse,
 } from "@/lib/cadModifierTypes";
+import { cadFailureCopy, type CadFailureKind } from "@/lib/cadFailureCopy";
 import { hasNativeOcctKernel, nativeKernelWindow, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
 
 type CadModifierWorkerPayload = CadModifierWorkerRequest extends infer Request
@@ -23,7 +25,7 @@ export function nativeCadModifierCanHandle(request: CadModifierWorkerPayload, na
   if (!hasNativeOcctKernel()) return false;
   if (request.type === "prepare") return nativeCadModifierPartsAreExact(request.parts);
   if (request.type === "warmup") return false;
-  if (request.type === "hollow" || request.type === "previewThread") return nativeSessionLive;
+  if (request.type === "hollow" || request.type === "previewThread" || request.type === "pushPull") return nativeSessionLive;
   return nativeSessionLive;
 }
 
@@ -60,6 +62,13 @@ function asEdges(value: NativeKernelReply["edges"]): CadModifierEdge[] {
   }));
 }
 
+function asVec3(value: unknown): { x: number; y: number; z: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const vec = value as { x?: unknown; y?: unknown; z?: unknown };
+  if (typeof vec.x !== "number" || typeof vec.y !== "number" || typeof vec.z !== "number") return null;
+  return { x: vec.x, y: vec.y, z: vec.z };
+}
+
 function asCylindricalFaces(value: NativeKernelReply["cylindricalFaces"]): CadCylindricalFace[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -79,12 +88,41 @@ function asCylindricalFaces(value: NativeKernelReply["cylindricalFaces"]): CadCy
   });
 }
 
-export function mapNativeCadModifierReply(reply: NativeKernelReply, requestId: number): CadModifierWorkerResponse {
+function asPlanarFaces(value: NativeKernelReply["planarFaces"]): CadPlanarFace[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const face = entry as Partial<CadPlanarFace> & { origin?: unknown; normal?: unknown };
+    const origin = asVec3(face.origin);
+    const normal = asVec3(face.normal);
+    if (typeof face.id !== "number" || !origin || !normal) return [];
+    return [{
+      id: face.id,
+      origin,
+      normal,
+      points: Array.isArray(face.points) ? face.points.filter((n): n is number => typeof n === "number") : [],
+      area: typeof face.area === "number" ? face.area : 0,
+    }];
+  });
+}
+
+function failureKindForReply(reply: NativeKernelReply, requested: CadFailureKind): CadFailureKind {
+  const text = reply.message ?? "";
+  if (/Push Pull|flat face|push went through|could not grow|could not move this face|broke this grouped/i.test(text)) return "pushPull";
+  return requested;
+}
+
+export function mapNativeCadModifierReply(
+  reply: NativeKernelReply,
+  requestId: number,
+  failureKind: CadFailureKind = "fillet",
+): CadModifierWorkerResponse {
+  const kind = failureKindForReply(reply, failureKind);
   if (reply.ok === false || reply.type === "error") {
     return {
       type: "error",
       requestId,
-      message: reply.message ?? "The CAD kernel failed",
+      message: cadFailureCopy(reply.message ?? "The CAD kernel failed", kind),
       resetSession: Boolean(reply.resetSession),
     };
   }
@@ -95,6 +133,7 @@ export function mapNativeCadModifierReply(reply: NativeKernelReply, requestId: n
       edges: asEdges(reply.edges),
       selectableEdgeIds: reply.selectableEdgeIds ?? [],
       cylindricalFaces: asCylindricalFaces(reply.cylindricalFaces),
+      planarFaces: asPlanarFaces(reply.planarFaces),
       sourceType: reply.sourceType ?? "solid",
     };
   }
@@ -119,7 +158,7 @@ export function mapNativeCadModifierReply(reply: NativeKernelReply, requestId: n
   return {
     type: "error",
     requestId,
-    message: reply.message ?? "The CAD kernel returned an unknown reply",
+    message: cadFailureCopy(reply.message ?? "The CAD kernel returned an unknown reply", kind),
     resetSession: false,
   };
 }

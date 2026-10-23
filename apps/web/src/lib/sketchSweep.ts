@@ -330,7 +330,7 @@ export async function shapeFromSketchSweep(
   if (typeof window !== "undefined") {
     const { runOcctKernelInWorker } = await import("@/lib/occtKernelClient");
     const result = await runOcctKernelInWorker({ type: "sketchSweep", profile, doc, spec, existing });
-    return result ?? { ok: false, message: "The CAD worker could not finish this sweep" };
+    return result ?? { ok: false, message: "Sweep could not follow that path. Keep the outline closed and the path from crossing itself." };
   }
   return shapeFromSketchSweepLocal(profile, doc, spec, existing);
 }

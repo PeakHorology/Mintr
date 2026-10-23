@@ -28,7 +28,7 @@ const ACTION_LABELS: Record<string, string> = {
   linear_pattern: "Make a linear pattern",
   duplicate_objects: "Duplicate objects",
   hide_objects: "Hide or show objects",
-  drop_objects: "Drop objects onto the workplane",
+  drop_objects: "Drop objects onto the workplane or a flat face",
   undo: "Undo",
   redo: "Redo",
   reduce_mesh: "Reduce an imported mesh",

@@ -6,6 +6,7 @@ import {
   peakcadNamesMatch,
   serializePeakcadDocument,
 } from "@/lib/peakcadDocument";
+import { editorHistoryEntry, expandHistoryShapes, hydrateEditorHistoryState } from "@/lib/editorHistory";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 function box(overrides: Partial<WorkplaneShape> = {}): WorkplaneShape {
@@ -146,5 +147,85 @@ describe("peakcad document", () => {
     expect(parsed.shapes[2]?.groupedShapes).toHaveLength(1);
     expect(parsed.shapes[2]?.groupedShapes?.[0]?.name).toBe("Inner box");
     expect(parsed.project.shapes).toBe(3);
+  });
+
+  it("round-trips model history including groups, holes, and step names", () => {
+    const solid = box({ id: "solid", name: "Solid" });
+    const hole = box({ id: "hole", name: "Hole", hole: true, x: 4 });
+    const grouped = box({
+      id: "group-1",
+      name: "Group",
+      groupedShapes: [solid, hole],
+      groupedBaseWidth: 20,
+      groupedBaseDepth: 20,
+      groupedBaseHeight: 20,
+    });
+    const document = buildPeakcadDocument({
+      project: {
+        id: "shared-1",
+        name: "Shared plate",
+        createdAt: 10,
+        updatedAt: 20,
+        accent: "cyan",
+        shapes: 1,
+      },
+      shapes: [grouped],
+      history: [
+        editorHistoryEntry([solid, hole], [], "Start"),
+        editorHistoryEntry([grouped], ["group-1"], "Grouped 2 shapes"),
+      ],
+      historyIndex: 1,
+    });
+
+    const parsed = parsePeakcadDocument(serializePeakcadDocument(document));
+    expect(parsed.history).toHaveLength(2);
+    expect(parsed.historyIndex).toBe(1);
+    expect(parsed.history?.[1]?.label).toBe("Grouped 2 shapes");
+    expect(parsed.history?.[0]?.shapes.map((shape) => shape.id)).toEqual(["solid", "hole"]);
+    expect(parsed.history?.[0]?.shapes[1]?.hole).toBe(true);
+    expect(parsed.history?.[1]?.shapes[0]?.groupedShapes).toHaveLength(2);
+    expect(parsed.shapes[0]?.groupedShapes?.map((shape) => shape.id)).toEqual(["solid", "hole"]);
+
+    const hydrated = hydrateEditorHistoryState(parsed.shapes, parsed.history, parsed.historyIndex);
+    expect(hydrated.entries).toHaveLength(2);
+    expect(hydrated.index).toBe(1);
+    expect(hydrated.entries[0]?.shapes).toHaveLength(2);
+  });
+
+  it("round-trips history mesh vaults so imported bodies can undo", () => {
+    const shape = box({
+      id: "import-1",
+      kind: "mesh",
+      importedMesh: {
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        baseWidth: 1,
+        baseDepth: 1,
+        baseHeight: 1,
+        triangleCount: 1,
+        sourceFormat: "stl",
+        brepStep: "ISO-10303-21;",
+      },
+    });
+    const document = buildPeakcadDocument({
+      project: {
+        id: "import-1",
+        name: "Imported body",
+        createdAt: 10,
+        updatedAt: 20,
+        accent: "gold",
+        shapes: 1,
+      },
+      shapes: [shape],
+      history: [editorHistoryEntry([shape], [shape.id], "Imported")],
+      historyIndex: 0,
+    });
+
+    const parsed = parsePeakcadDocument(serializePeakcadDocument(document));
+    expect(parsed.history?.[0]?.label).toBe("Imported");
+    expect(parsed.history?.[0]?.meshVault?.["import-1"]?.positions).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    expect(parsed.history?.[0]?.meshVault?.["import-1"]?.brepStep).toBe("ISO-10303-21;");
+    const restored = expandHistoryShapes(parsed.history![0].shapes, parsed.history![0].meshVault);
+    expect(restored[0]?.importedMesh?.positions).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    expect(hydrateEditorHistoryState(parsed.shapes, parsed.history, parsed.historyIndex).entries).toHaveLength(1);
   });
 });

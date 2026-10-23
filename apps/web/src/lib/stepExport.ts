@@ -158,11 +158,11 @@ function unifyBooleanSolid(brep: Brep, solid: BrepSolid): BrepSolid {
 function fuseAllUnified(brep: Brep, solids: BrepSolid[]): { ok: true; value: BrepSolid } | { ok: false; error?: unknown } {
   if (solids.length === 0) return { ok: false };
   if (solids.length === 1) return { ok: true, value: unifyBooleanSolid(brep, solids[0]) };
-  const native = brep.fuseAll(solids, BOOLEAN_UNIFY);
-  if (native.ok) return { ok: true, value: unifyBooleanSolid(brep, native.value) };
   const pairwise = brep.fuseAll(solids, { ...BOOLEAN_UNIFY, strategy: "pairwise" });
   if (pairwise.ok) return { ok: true, value: unifyBooleanSolid(brep, pairwise.value) };
-  return native;
+  const native = brep.fuseAll(solids, BOOLEAN_UNIFY);
+  if (native.ok) return { ok: true, value: unifyBooleanSolid(brep, native.value) };
+  return pairwise;
 }
 
 function cutAllUnified(
@@ -171,9 +171,13 @@ function cutAllUnified(
   holes: BrepSolid[],
 ): { ok: true; value: BrepSolid } | { ok: false; error?: unknown } {
   if (holes.length === 0) return { ok: true, value: unifyBooleanSolid(brep, base) };
-  const cut = brep.cutAll(base, holes, BOOLEAN_UNIFY);
-  if (!cut.ok) return cut;
-  return { ok: true, value: unifyBooleanSolid(brep, cut.value) };
+  let acc = base;
+  for (const hole of holes) {
+    const cut = brep.cutAll(acc, [hole], BOOLEAN_UNIFY);
+    if (!cut.ok) return cut;
+    acc = cut.value;
+  }
+  return { ok: true, value: unifyBooleanSolid(brep, acc) };
 }
 
 function intersectAllUnified(
@@ -657,7 +661,7 @@ export async function exportShapesToStepLocal(shapes: WorkplaneShape[]): Promise
           const solidBox = worldAabb(childWorld);
           const overlapping = holes.filter((hole) => aabbsOverlap(solidBox, hole.box));
           if (overlapping.length > 0) {
-            const cut = brep.cutAll(solid, overlapping.map((hole) => hole.solid));
+            const cut = cutAllUnified(brep, solid, overlapping.map((hole) => hole.solid));
             if (cut.ok) {
               solid = cut.value;
               if (overlapping.some((hole) => hole.quality === "faceted")) quality = "faceted";
@@ -692,7 +696,7 @@ export async function exportShapesToStepLocal(shapes: WorkplaneShape[]): Promise
       const solidBox = worldAabb(shape);
       const overlapping = holes.filter((hole) => aabbsOverlap(solidBox, hole.box));
       if (overlapping.length > 0) {
-        const cut = brep.cutAll(solid, overlapping.map((hole) => hole.solid));
+        const cut = cutAllUnified(brep, solid, overlapping.map((hole) => hole.solid));
         if (cut.ok) {
           solid = cut.value;
           if (overlapping.some((hole) => hole.quality === "faceted")) quality = "faceted";

@@ -230,37 +230,20 @@
   transform: translateX(-50%);
 }
 
-.editor-sketch-area .sketch-mode-badge {
-  top: calc(var(--editor-mode-notch-height) + 8px);
+.sketch-stage-footer .editor-mode-tabs {
+  pointer-events: auto;
 }
 
 .editor-sketch-area .sketch-solve-strip {
+  top: calc(var(--editor-mode-notch-height) + 8px);
+}
+
+.editor-sketch-area .sketch-plane-banner {
+  top: calc(var(--editor-mode-notch-height) + 8px);
+}
+
+.editor-sketch-area .sketch-solve-strip + .sketch-plane-banner {
   top: calc(var(--editor-mode-notch-height) + 36px);
-}
-
-.editor-sketch-area .sketch-plane-banner,
-.editor-sketch-area .sketch-mode-badge + .sketch-plane-banner {
-  top: calc(var(--editor-mode-notch-height) + 36px);
-}
-
-.editor-sketch-area .sketch-mode-badge + .sketch-solve-strip + .sketch-plane-banner {
-  top: calc(var(--editor-mode-notch-height) + 64px);
-}
-
-.sketch-view-3d-button {
-  padding: 8px 12px;
-  border: 1px solid #d2c4a8;
-  border-radius: var(--radius-lg);
-  background: var(--glass-surface-strong);
-  color: var(--ink-strong);
-  font-weight: 800;
-  font-size: var(--text-xs);
-  cursor: pointer;
-  box-shadow: var(--elevation-lg);
-}
-
-.sketch-view-3d-button:hover {
-  border-color: #655447;
 }
 
 .sketch-coach strong {
@@ -416,19 +399,15 @@
   min-height: 0;
 }
 
-.editor-sketch-area.has-viewport-toolbar .sketch-mode-badge {
+.editor-sketch-area.has-viewport-toolbar .sketch-solve-strip {
   top: calc(var(--editor-viewport-toolbar-height) + 8px);
 }
 
-.editor-sketch-area.has-viewport-toolbar .sketch-solve-strip {
-  top: calc(var(--editor-viewport-toolbar-height) + 36px);
+.editor-sketch-area.has-viewport-toolbar .sketch-plane-banner {
+  top: calc(var(--editor-viewport-toolbar-height) + 8px);
 }
 
-.editor-sketch-area.has-viewport-toolbar .sketch-mode-badge + .sketch-solve-strip + .sketch-plane-banner {
-  top: calc(var(--editor-viewport-toolbar-height) + 64px);
-}
-
-.editor-sketch-area.has-viewport-toolbar .sketch-mode-badge + .sketch-plane-banner {
+.editor-sketch-area.has-viewport-toolbar .sketch-solve-strip + .sketch-plane-banner {
   top: calc(var(--editor-viewport-toolbar-height) + 36px);
 }
 
@@ -1198,25 +1177,9 @@
   background: var(--control-surface-sunken);
 }
 
-.sketch-mode-badge {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  z-index: calc(var(--z-viewport-ui) + 8);
-  padding: 4px 10px;
-  color: var(--action-text);
-  background: var(--success-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elevation-sm);
-  font-size: var(--text-2xs);
-  font-weight: 900;
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-
 .sketch-solve-strip {
   position: absolute;
-  top: 36px;
+  top: 8px;
   left: 50%;
   z-index: calc(var(--z-viewport-ui) + 8);
   display: flex;
@@ -1251,13 +1214,13 @@
   color: var(--warning-text);
 }
 
-.sketch-mode-badge + .sketch-solve-strip + .sketch-plane-banner {
-  top: 64px;
+.sketch-solve-strip + .sketch-plane-banner {
+  top: 36px;
 }
 
 .sketch-plane-banner {
   position: absolute;
-  top: 36px;
+  top: 8px;
   left: 50%;
   z-index: calc(var(--z-viewport-ui) + 8);
   padding: 4px 12px;
@@ -1481,10 +1444,22 @@
   text-anchor: middle;
 }
 
+@keyframes sketch-fill-once {
+  from { fill-opacity: 0; }
+  to { fill-opacity: 1; }
+}
+
 .sketch-profile-fills path {
   fill: rgba(98, 148, 214, 0.2);
   fill-rule: evenodd;
   stroke: none;
+  animation: sketch-fill-once 340ms cubic-bezier(0.22, 1, 0.32, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-profile-fills path {
+    animation: none;
+  }
 }
 
 .sketch-segments path {
@@ -2345,7 +2320,7 @@
   padding: 16px 20px;
   color: var(--peak-text);
   text-align: center;
-  background: rgba(250, 248, 244, 0.72);
+  background: var(--glass-surface-strong);
   border: 1px solid var(--peak-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-md);
@@ -2366,7 +2341,7 @@
 }
 
 .workplane-empty-coach-secondary {
-  opacity: 0.85;
+  color: color-mix(in srgb, var(--peak-text-muted) 88%, var(--peak-text));
 }
 
 .ruler-overlay {
@@ -2784,6 +2759,19 @@
 .dimension-label:focus-visible {
   border-color: rgba(0, 159, 227, 0.75);
   box-shadow: 0 0 0 2px rgba(0, 159, 227, 0.16);
+}
+
+.workplane-wrap.push-pull-face-pick .three-workplane-host {
+  cursor: pointer;
+}
+
+.workplane-wrap.push-pull-dragging .three-workplane-host {
+  cursor: ns-resize;
+}
+
+button.push-pull-chip {
+  appearance: none;
+  font: inherit;
 }
 
 .object-snap-guides {

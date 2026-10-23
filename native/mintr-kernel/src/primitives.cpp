@@ -316,7 +316,56 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
   return false;
 }
 
+bool fuseOne(const TopoDS_Shape& a, const TopoDS_Shape& b, TopoDS_Shape& out) {
+  BRepAlgoAPI_Fuse fuse(a, b);
+  fuse.SetRunParallel(true);
+  fuse.SetFuzzyValue(0.04);
+  fuse.Build();
+  if (!fuse.IsDone()) return false;
+  out = fuse.Shape();
+  return !out.IsNull();
+}
+
+bool cutOne(const TopoDS_Shape& solid, const TopoDS_Shape& hole, TopoDS_Shape& out) {
+  BRepAlgoAPI_Cut cut;
+  TopTools_ListOfShape args;
+  TopTools_ListOfShape tools;
+  args.Append(solid);
+  tools.Append(hole);
+  cut.SetArguments(args);
+  cut.SetTools(tools);
+  cut.SetRunParallel(true);
+  cut.SetFuzzyValue(0.04);
+  cut.Build();
+  if (!cut.IsDone()) return false;
+  out = cut.Shape();
+  return !out.IsNull();
+}
+
 } // namespace
+
+bool kernelFuseSolids(const std::vector<TopoDS_Shape>& solids, TopoDS_Shape& out) {
+  if (solids.empty()) return false;
+  TopoDS_Shape acc = solids[0];
+  for (size_t i = 1; i < solids.size(); ++i) {
+    TopoDS_Shape next;
+    if (!fuseOne(acc, solids[i], next)) return false;
+    acc = next;
+  }
+  out = acc;
+  return !out.IsNull();
+}
+
+bool kernelCutHoles(const TopoDS_Shape& solid, const std::vector<TopoDS_Shape>& holes, TopoDS_Shape& out) {
+  TopoDS_Shape acc = solid;
+  for (const auto& hole : holes) {
+    TopoDS_Shape next;
+    if (!cutOne(acc, hole, next)) return false;
+    acc = next;
+  }
+  out = acc;
+  return !out.IsNull();
+}
 
 bool buildKernelSolid(const nlohmann::json& solid, TopoDS_Shape& out) {
   if (solid.contains("brepStep") && solid["brepStep"].is_string()) {
@@ -350,29 +399,9 @@ bool assembleKernelShape(const nlohmann::json& solids, TopoDS_Shape& out) {
     else bodies.push_back(shape);
   }
   if (bodies.empty()) return false;
-  TopoDS_Shape acc = bodies[0];
-  for (size_t i = 1; i < bodies.size(); ++i) {
-    BRepAlgoAPI_Fuse fuse(acc, bodies[i]);
-    fuse.SetRunParallel(true);
-    fuse.SetFuzzyValue(0.04);
-    fuse.Build();
-    if (!fuse.IsDone()) return false;
-    acc = fuse.Shape();
-  }
-  if (!holes.empty()) {
-    BRepAlgoAPI_Cut cut;
-    TopTools_ListOfShape args;
-    TopTools_ListOfShape tools;
-    args.Append(acc);
-    for (const auto& hole : holes) tools.Append(hole);
-    cut.SetArguments(args);
-    cut.SetTools(tools);
-    cut.SetRunParallel(true);
-    cut.SetFuzzyValue(0.04);
-    cut.Build();
-    if (!cut.IsDone()) return false;
-    acc = cut.Shape();
-  }
+  TopoDS_Shape acc;
+  if (!kernelFuseSolids(bodies, acc)) return false;
+  if (!kernelCutHoles(acc, holes, acc)) return false;
   out = kernelUnify(acc);
   return !out.IsNull();
 }

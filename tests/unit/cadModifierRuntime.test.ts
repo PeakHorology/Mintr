@@ -5,6 +5,7 @@ import {
   CAD_MODIFIER_RUNTIME_BASE,
   cadModifierRequestTimeoutMs,
   cadModifierTimeoutMessage,
+  cadModifierWorkerFailureMessage,
   edgeModifierSelectionStatus,
 } from "@/lib/cadModifierRuntime";
 
@@ -25,6 +26,8 @@ describe("CAD modifier runtime state", () => {
     expect(CAD_MODIFIER_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(45_000);
     expect(cadModifierRequestTimeoutMs()).toBeLessThanOrEqual(45_000);
     expect(cadModifierTimeoutMessage("prepare")).toMatch(/timed out|Draft quality|fewer edges/i);
+    expect(cadModifierWorkerFailureMessage()).toMatch(/Close Mintr/i);
+    expect(cadModifierWorkerFailureMessage()).not.toMatch(/PeakCAD|worker/i);
   });
 
   it("does not expose thresholds above the worker's folded edge-angle range", () => {

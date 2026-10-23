@@ -52,4 +52,25 @@ describe("shape measure", () => {
     expect(measure?.volume).toBeCloseTo(1000, 0);
     expect(measure?.area).toBeCloseTo(600, 0);
   });
+
+  it("measures a primitive box without a mesh or kernel", async () => {
+    const measure = await measureWorkplaneShape({
+      id: "box",
+      name: "Box",
+      kind: "box",
+      color: "#d41721",
+      x: 0,
+      z: 0,
+      elevation: 0,
+      size: 20,
+      width: 20,
+      depth: 20,
+      height: 20,
+      rotation: 0,
+      locked: false,
+      hidden: false,
+    });
+    expect(measure?.volume).toBeCloseTo(8000, 0);
+    expect(measure?.area).toBeCloseTo(2400, 0);
+  });
 });

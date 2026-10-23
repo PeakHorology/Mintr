@@ -125,6 +125,8 @@ type SketchWorkspaceProps = {
   onEditSegmentLength?: (segmentId: string, length: number, grow: "end" | "both") => void;
   onEditCornerAngle?: (pointId: string, degrees: number, leg: 0 | 1) => void;
   onEditCircleRadius?: (circleId: string, radius: number) => void;
+  /** Stable id for this sketch so Flat pan/zoom can return after 3D sketch. */
+  viewKey?: string;
 };
 
 type PathStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
@@ -161,6 +163,9 @@ function snapStep(size: GridSize) {
 function snapValue(value: number, step: number) {
   return step > 0 ? Math.round(value / step) * step : value;
 }
+
+/** Last Flat sketch pan/zoom, kept when 3D sketch unmounts the plate so return restores it. */
+let rememberedFlatSketchView: { key: string; zoom: number; pan: { x: number; z: number } } | null = null;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -738,6 +743,7 @@ export function SketchWorkspace({
   onEditSegmentLength,
   onEditCornerAngle,
   onEditCircleRadius,
+  viewKey,
 }: SketchWorkspaceProps) {
   const workspace = useMemo(() => normalizeWorkspaceSettings(initialWorkspace, DEFAULT_WORKPLANE_WORKSPACE), [initialWorkspace]);
   const [snap, setSnap] = useState<GridSize>(() => normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
@@ -748,9 +754,16 @@ export function SketchWorkspace({
   useEffect(() => {
     setSnap(normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
   }, [initialSnap]);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, z: 0 });
+  const resumeView = viewKey && rememberedFlatSketchView?.key === viewKey ? rememberedFlatSketchView : null;
+  const [zoom, setZoom] = useState(resumeView?.zoom ?? 1);
+  const [pan, setPan] = useState(resumeView?.pan ?? { x: 0, z: 0 });
   const faceFitKeyRef = useRef<string | null>(null);
+  const viewKeyLiveRef = useRef(viewKey ?? "");
+  viewKeyLiveRef.current = viewKey ?? "";
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  zoomRef.current = zoom;
+  panRef.current = pan;
 
   useEffect(() => {
     const loops = profile.faceReferenceLoops ?? [];
@@ -761,13 +774,30 @@ export function SketchWorkspace({
     const key = JSON.stringify(loops);
     if (faceFitKeyRef.current === key) return;
     faceFitKeyRef.current = key;
+    if (viewKey && rememberedFlatSketchView?.key === viewKey) return;
     const bounds = faceReferenceBounds(loops);
     if (!bounds) return;
-    setPan({ x: bounds.centerX, z: bounds.centerZ });
+    const nextPan = { x: bounds.centerX, z: bounds.centerZ };
     const plate = Math.max(workspace.width, workspace.depth);
     const span = Math.max(bounds.width, bounds.depth, 8);
-    setZoom(clamp(plate / (span * 1.6), 0.75, 6));
-  }, [profile.faceReferenceLoops, workspace.depth, workspace.width]);
+    const nextZoom = clamp(plate / (span * 1.6), 0.75, 6);
+    panRef.current = nextPan;
+    zoomRef.current = nextZoom;
+    setPan(nextPan);
+    setZoom(nextZoom);
+  }, [profile.faceReferenceLoops, viewKey, workspace.depth, workspace.width]);
+
+  useEffect(() => {
+    return () => {
+      const key = viewKeyLiveRef.current;
+      if (!key) return;
+      rememberedFlatSketchView = {
+        key,
+        zoom: zoomRef.current,
+        pan: panRef.current,
+      };
+    };
+  }, []);
   const [hover, setHover] = useState<{ x: number; z: number } | null>(null);
   const [lineEntry, setLineEntry] = useState("");
   const [lengthEdit, setLengthEdit] = useState<{ segmentId: string; value: number; grow: "end" | "both" } | null>(null);
@@ -1466,7 +1496,6 @@ export function SketchWorkspace({
 
   return (
     <main className="sketch-workspace-stage">
-      <div className="sketch-mode-badge">Flat sketch</div>
       {solveStatus !== "empty" ? (
         <div
           className={`sketch-solve-strip status-${solveStatus}${constraintConflicts.length ? " has-conflicts" : ""}`}

@@ -12,15 +12,19 @@ Mintr 1.0 is ready for real parts. These are the remaining gaps versus a full in
 ## Import & save
 
 - **STEP import:** each solid in the file becomes its own body (large assemblies import as separate bodies). Display meshes are indexed.
-- The exact STEP text for imported bodies is written the first time you **Save** (or export STEP) and is kept in the project after that. Autosave does not write it on its own.
-- If you leave without saving after a STEP import (and never exported it), a later STEP export of those new bodies is **faceted**. PeakCAD asks to save when you leave a project with unsaved changes.
+- The exact STEP text for imported bodies is baked onto the part shortly after import (autosave) and on **Save** or STEP export. After that it stays in the project.
+- Save, leave, and close wait for that bake so a later export of those bodies stays **exact**.
 - **STL** has no unit: one file unit is read as one workplane unit (stored internally in mm, shown in your workplane unit).
 - **Barrel sketches:** a circular profile on a cylinder face bakes as an exact radial cylinder at STEP export. Other barrel profiles loft between the inner and outer wraps, and stay faceted only if that loft fails.
 
 ## Group boolean
 
 - When every child is exact-capable, Group tries **OpenCascade** first (after syncing sketch B-Rep bake), then **unifies leftover same-plane faces** so overlapping boxes (knurls, hubs) become one solid.
-- If OCCT fails, PeakCAD falls back to **Manifold** mesh boolean and shows a notice — faceted STEP for that solid.
+- Several holes on one body are cut **one after another**, so the outer shape stays true. One hole is the same cut. Split and print marks use that same helper.
+- Several solids fuse **one after another** (two parts are still one fuse). Group, Split, and print marks share that path.
+- A live Group of **three or more** operands unifies leftover same-plane faces. Two-body Group stays fast.
+- Several simple circles or rectangles in one sketch hole become **separate exact cutters**. Freeform loops in one sketch still Group as a mesh; the notice asks you to draw one hole, then Group.
+- If OCCT fails, PeakCAD falls back to **Manifold** mesh boolean and names the mesh body when it can — faceted STEP for that solid.
 - Complex nested CSG stacks may still fall back to mesh.
 
 ## Assemblies (multi-body)
@@ -34,6 +38,7 @@ Mintr 1.0 is ready for real parts. These are the remaining gaps versus a full in
 
 - Edge modifiers store a recipe (amount, edge fingerprints, optional IDs) and **re-apply after CSG remesh** when possible (feature suppress/reorder, sketch leaf edits, undo).
 - Rematch prefers **geometry fingerprints** (midpoint / length / angle), then stable IDs, then sharpest-N fallback.
+- Rounding every selected edge at once can fail when they meet. Mintr then retries **one edge at a time**, so a window-select still rounds the edges that fit.
 - If auto re-apply fails (topology changed a lot), use the Edge tools again.
 - Exact STEP carries **baked** fillet/chamfer geometry (`cadBrep` / `brepStep`), not parametric CAD feature history.
 
@@ -41,7 +46,7 @@ Mintr 1.0 is ready for real parts. These are the remaining gaps versus a full in
 
 - Nested UV loops on cylinder barrels (outer + inner) bake as annular radial cutters (mesh).
 - Multiple separate barrel holes on one sketch are supported.
-- Planar face holes Group as a mesh while editing. Circular barrel holes bake as exact radial cylinders when the STEP file is written.
+- Planar face holes bake exact B-Rep when you Group, so the viewport stays CAD. Circular barrel holes bake as exact radial cylinders when the STEP file is written.
 - Prefer Group + check Exact vs Faceted on STEP.
 
 ## Sketch

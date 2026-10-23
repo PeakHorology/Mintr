@@ -5,10 +5,10 @@ type ImportedMesh = NonNullable<WorkplaneShape["importedMesh"]>;
 
 /**
  * Lazy exact B-Rep for STEP imports: import registers a thunk over the live kernel solid and the
- * first STEP export or explicit save runs exportSTEP; the text is cached here and attached to the
- * shape so that save persists it. Keyed by mesh geometry, so undo/duplicate/paste resolve too.
- * Kernel solids do not survive a reload — a project reopened before its first export or explicit
- * save exports faceted instead. Autosave never bakes (too slow for large assemblies).
+ * first STEP export, autosave bake, or explicit save runs exportSTEP; the text is cached here and
+ * attached to the shape so that save persists it. Keyed by mesh geometry, so undo/duplicate/paste
+ * resolve too. Kernel solids do not survive a reload — a project reopened before bake finishes
+ * exports faceted instead.
  */
 
 type PendingBake = () => Promise<string | undefined>;
@@ -128,6 +128,11 @@ export function importedBrepStepsAwaitingSave(shapes: WorkplaneShape[]): Awaitin
   const byKey = new Map<string, AwaitingBrepStep>();
   collectAwaitingBrepSteps(shapes, byKey);
   return [...byKey.values()];
+}
+
+/** True while a live kernel solid can still produce exact STEP text. */
+export function importedBrepBakePending(shapes: WorkplaneShape[]): boolean {
+  return inflightByKey.size > 0 || importedBrepStepsAwaitingSave(shapes).length > 0;
 }
 
 export type ImportedBrepSaveBake = {

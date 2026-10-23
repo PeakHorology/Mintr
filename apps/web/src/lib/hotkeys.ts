@@ -95,7 +95,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyActionMeta[] = [
   { id: "nudgeRight", label: "Nudge right", description: "Nudge the selection right in the view.", category: "Transform", ignoreShift: true },
   { id: "nudgeUp", label: "Nudge up", description: "Nudge the selection up in the view.", category: "Transform", ignoreShift: true },
   { id: "nudgeDown", label: "Nudge down", description: "Nudge the selection down in the view.", category: "Transform", ignoreShift: true },
-  { id: "dropToWorkplane", label: "Drop to workplane", description: "Drop the selection onto the workplane (geometry). In a sketch, D is Dimension.", category: "Transform" },
+  { id: "dropToWorkplane", label: "Drop", description: "Drop the selection onto the workplane or a flat face (geometry). In a sketch, D is Dimension.", category: "Transform" },
   { id: "holeMode", label: "Hole mode", description: "Set the selection to hole (geometry). H alone; Ctrl+H hides instead.", category: "Tools" },
   { id: "solidMode", label: "Solid mode", description: "Set the selection to solid mode.", category: "Tools" },
   { id: "align", label: "Align", description: "Toggle align mode (geometry). In a sketch, L is the line tool.", category: "Tools" },
@@ -111,7 +111,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyActionMeta[] = [
   { id: "sketchRectangle", label: "Sketch rectangle", description: "Activate the sketch rectangle tool.", category: "Sketch" },
   { id: "sketchDimension", label: "Sketch dimension", description: "Dimension tool while sketching. In geometry, D drops to the workplane.", category: "Sketch" },
   { id: "sketchExtrude", label: "Sketch extrude", description: "Finish the sketch with Extrude.", category: "Sketch" },
-  { id: "sketchFocusToggle", label: "Toggle sketch focus", description: "Switch between 2D focus and 3D sketch view.", category: "Sketch" },
+  { id: "sketchFocusToggle", label: "Toggle sketch focus", description: "Switch between Flat sketch and 3D sketch.", category: "Sketch" },
 ] as const;
 
 export const HOTKEY_CATEGORIES: readonly HotkeyCategory[] = [

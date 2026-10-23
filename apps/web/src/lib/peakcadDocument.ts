@@ -1,6 +1,6 @@
-import { hydrateClipboardShape, jsonSafeShape } from "@/lib/shapeJson";
+import { hydrateClipboardShape, hydrateHistoryMeshBlob, jsonSafeShape } from "@/lib/shapeJson";
 import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
-import type { EditorHistoryEntry, EditorHistoryMeshBlob } from "@/lib/editorHistory";
+import type { EditorHistoryEntry, EditorHistoryMeshBlob, EditorHistoryMeshVault } from "@/lib/editorHistory";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 /** Inside the file this stays "peakcad". Renaming it would reject every saved project. */
@@ -12,8 +12,6 @@ export const MINTR_FILE_EXTENSION = ".mintr";
 const PROJECT_FILE_EXTENSIONS = [MINTR_FILE_EXTENSION, PEAKCAD_FILE_EXTENSION] as const;
 /** Close to V8's max string length (JSON.stringify fails past it). Keep in sync with electron/peakcadPath.cjs. */
 export const PEAKCAD_MAX_BYTES = 512 * 1024 * 1024;
-/** Undo history is dropped from files past this size so large imports do not double the file. */
-const PEAKCAD_HISTORY_MAX_BYTES = 80 * 1024 * 1024;
 
 export type PeakcadAccent = "cyan" | "green" | "gold" | "red";
 
@@ -49,21 +47,45 @@ function asFiniteNumber(value: unknown, fallback: number) {
 }
 
 function jsonSafeMeshBlob(blob: EditorHistoryMeshBlob): EditorHistoryMeshBlob {
+  const { meshBlobRef: _blobRef, ...rest } = blob as EditorHistoryMeshBlob & { meshBlobRef?: unknown };
   return {
-    positions: Array.from(blob.positions),
-    ...(blob.indices ? { indices: Array.from(blob.indices) } : {}),
-    ...(blob.normals ? { normals: Array.from(blob.normals) } : {}),
-    ...(typeof blob.brepStep === "string" ? { brepStep: blob.brepStep } : {}),
+    positions: Array.from(rest.positions),
+    ...(rest.indices ? { indices: Array.from(rest.indices) } : {}),
+    ...(rest.normals ? { normals: Array.from(rest.normals) } : {}),
+    ...(typeof rest.brepStep === "string" ? { brepStep: rest.brepStep } : {}),
   };
 }
 
 function jsonSafeHistoryEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
+  const meshVault = entry.meshVault
+    ? Object.fromEntries(Object.entries(entry.meshVault).map(([key, blob]) => [key, jsonSafeMeshBlob(blob)]))
+    : undefined;
+  const label = typeof entry.label === "string" ? entry.label.trim() : "";
   return {
     ...entry,
     shapes: entry.shapes.map(jsonSafeShape),
-    meshVault: entry.meshVault
-      ? Object.fromEntries(Object.entries(entry.meshVault).map(([key, blob]) => [key, jsonSafeMeshBlob(blob)]))
-      : undefined,
+    selectedIds: Array.isArray(entry.selectedIds) ? entry.selectedIds.filter((id): id is string => typeof id === "string") : [],
+    fingerprint: typeof entry.fingerprint === "string" ? entry.fingerprint : "",
+    estimatedBytes: asFiniteNumber(entry.estimatedBytes, 0),
+    meshVault: meshVault && Object.keys(meshVault).length ? meshVault : undefined,
+    label: label || undefined,
+  };
+}
+
+function hydrateHistoryEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
+  const meshVault = entry.meshVault
+    ? Object.fromEntries(
+        Object.entries(entry.meshVault).map(([key, blob]) => [key, hydrateHistoryMeshBlob(blob)]),
+      )
+    : undefined;
+  return {
+    ...entry,
+    shapes: Array.isArray(entry.shapes) ? entry.shapes.map((shape) => hydrateClipboardShape(shape)) : [],
+    selectedIds: Array.isArray(entry.selectedIds) ? entry.selectedIds.filter((id): id is string => typeof id === "string") : [],
+    fingerprint: typeof entry.fingerprint === "string" ? entry.fingerprint : "",
+    estimatedBytes: asFiniteNumber(entry.estimatedBytes, 0),
+    ...(meshVault && Object.keys(meshVault).length ? { meshVault } : {}),
+    ...(typeof entry.label === "string" && entry.label.trim() ? { label: entry.label.trim() } : {}),
   };
 }
 
@@ -146,30 +168,84 @@ function stripDerivedMeshCaches(shapes: WorkplaneShape[]): WorkplaneShape[] {
   });
 }
 
+function shapeAtHistoryPath(shapes: WorkplaneShape[], path: string): WorkplaneShape | undefined {
+  const parts = path.split("/").filter(Boolean);
+  let list: WorkplaneShape[] | undefined = shapes;
+  let current: WorkplaneShape | undefined;
+  for (const part of parts) {
+    if (part === "edgeBefore" || !list) return undefined;
+    current = list.find((shape) => shape.id === part) ?? list[Number(part)];
+    if (!current) return undefined;
+    list = current.groupedShapes;
+  }
+  return current;
+}
+
+function historyShapeCanRemesh(shape: WorkplaneShape | undefined) {
+  const op = shape?.csg?.op;
+  return Boolean(shape?.groupedShapes?.length && op && op !== "assemble");
+}
+
+/** Keep every undo step; drop CSG tessellation that can remesh from children. Import meshes stay. */
+function compactHistoryMeshes(document: PeakcadDocument): PeakcadDocument {
+  if (!document.history?.length) return document;
+  return {
+    ...document,
+    history: document.history.map((entry) => {
+      const nextShapes = stripDerivedMeshCaches(entry.shapes);
+      if (!entry.meshVault) return { ...entry, shapes: nextShapes };
+      const keep: EditorHistoryMeshVault = {};
+      for (const [path, blob] of Object.entries(entry.meshVault)) {
+        if (!historyShapeCanRemesh(shapeAtHistoryPath(entry.shapes, path))) keep[path] = blob;
+      }
+      return {
+        ...entry,
+        shapes: nextShapes,
+        meshVault: Object.keys(keep).length ? keep : undefined,
+      };
+    }),
+  };
+}
+
+function dropFarthestHistory(document: PeakcadDocument, count: number): PeakcadDocument {
+  const history = document.history;
+  if (!history?.length || count <= 0) return { ...document, history: undefined, historyIndex: undefined };
+  if (history.length <= count) return { ...document, history: undefined, historyIndex: undefined };
+  const index = Math.min(Math.max(0, document.historyIndex ?? history.length - 1), history.length - 1);
+  if (index > 0) {
+    const drop = Math.min(count, index);
+    return { ...document, history: history.slice(drop), historyIndex: index - drop };
+  }
+  const drop = Math.min(count, history.length - 1);
+  return { ...document, history: history.slice(0, history.length - drop), historyIndex: 0 };
+}
+
+function* peakcadSaveAttempts(document: PeakcadDocument): Generator<PeakcadDocument> {
+  yield document;
+  const compacted = compactHistoryMeshes(document);
+  yield compacted;
+  let current = compacted;
+  while (current.history && current.history.length > 1) {
+    const drop = Math.max(1, Math.floor(current.history.length * 0.25));
+    current = dropFarthestHistory(current, drop);
+    yield current;
+  }
+  const withoutHistory = { ...document, history: undefined, historyIndex: undefined };
+  yield withoutHistory;
+  const withoutThumbs = {
+    ...withoutHistory,
+    project: { ...document.project, thumbnailUrl: null, thumbnailUrlDark: null },
+  };
+  yield withoutThumbs;
+  yield { ...withoutThumbs, shapes: stripDerivedMeshCaches(document.shapes) };
+}
+
 export function serializePeakcadDocument(document: PeakcadDocument) {
-  const attempts: PeakcadDocument[] = [
-    document,
-    { ...document, history: undefined, historyIndex: undefined },
-    {
-      ...document,
-      history: undefined,
-      historyIndex: undefined,
-      project: { ...document.project, thumbnailUrl: null, thumbnailUrlDark: null },
-    },
-    {
-      ...document,
-      history: undefined,
-      historyIndex: undefined,
-      project: { ...document.project, thumbnailUrl: null, thumbnailUrlDark: null },
-      shapes: stripDerivedMeshCaches(document.shapes),
-    },
-  ];
   let lastError: unknown = new Error("This PeakCAD file is too large to save.");
-  for (const attempt of attempts) {
+  for (const attempt of peakcadSaveAttempts(document)) {
     try {
       const text = encodePeakcadJson(buildPeakcadDocument(attempt));
-      const limit = attempt.history ? PEAKCAD_HISTORY_MAX_BYTES : PEAKCAD_MAX_BYTES;
-      if (peakcadByteLength(text) <= limit) {
+      if (peakcadByteLength(text) <= PEAKCAD_MAX_BYTES) {
         return text;
       }
     } catch (error) {
@@ -224,13 +300,7 @@ export function parsePeakcadDocument(raw: string): PeakcadDocument {
   const now = Date.now();
   const shapes = (record.shapes as WorkplaneShape[]).map((shape) => hydrateClipboardShape(shape));
   const history = Array.isArray(record.history)
-    ? (record.history as EditorHistoryEntry[]).map((entry) => ({
-        ...entry,
-        shapes: Array.isArray(entry.shapes) ? entry.shapes.map((shape) => hydrateClipboardShape(shape)) : [],
-        selectedIds: Array.isArray(entry.selectedIds) ? entry.selectedIds.filter((id): id is string => typeof id === "string") : [],
-        fingerprint: typeof entry.fingerprint === "string" ? entry.fingerprint : "",
-        estimatedBytes: asFiniteNumber(entry.estimatedBytes, 0),
-      }))
+    ? (record.history as EditorHistoryEntry[]).map((entry) => hydrateHistoryEntry(entry))
     : undefined;
   return {
     format: PEAKCAD_FORMAT,

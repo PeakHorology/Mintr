@@ -800,3 +800,20 @@ export function filterCoplanarDisplayEdges(
   }
   return kept;
 }
+
+/**
+ * Push Pull / fillet previews are triangle soups. Matching kernel outlines to
+ * those unique-vertex triangles often marks every crease as unsharp, so the
+ * viewport would drop the CAD edges and draw every mesh diagonal instead.
+ * Keep the kernel outlines when the filter cannot prove a crease.
+ */
+export function viewportCadDisplayEdges(
+  edges: Array<{ points: number[] }> | undefined,
+  meshPositions?: ArrayLike<number>,
+  meshIndices?: ArrayLike<number>,
+) {
+  if (!edges?.length) return [];
+  if (!meshPositions || meshPositions.length < 9) return edges;
+  const filtered = filterCoplanarDisplayEdges(edges, meshPositions, meshIndices);
+  return filtered.length > 0 ? filtered : edges;
+}

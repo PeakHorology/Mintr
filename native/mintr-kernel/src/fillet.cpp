@@ -1,19 +1,24 @@
 #include "fillet.hpp"
+#include "primitives.hpp"
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BOPAlgo_GlueEnum.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepFeat_MakePrism.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLProp_SLProps.hxx>
+#include <BRepLib_FindSurface.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
@@ -23,19 +28,23 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <Extrema_ExtPS.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <GProp_GProps.hxx>
+#include <Geom_Plane.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
@@ -44,6 +53,7 @@
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -74,12 +84,20 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kWireDeflection = 0.035;
 
+struct PlanarFaceRecord {
+  TopoDS_Face face;
+  gp_Dir normal;
+  gp_Pnt origin;
+};
+
 struct ModifierSession {
   TopoDS_Shape base;
   std::vector<TopoDS_Edge> edges;
   std::vector<TopoDS_Face> edgeFaces;
   std::vector<TopoDS_Face> cylinders;
   nlohmann::json cylinderFaces = nlohmann::json::array();
+  std::vector<PlanarFaceRecord> planars;
+  nlohmann::json planarFaces = nlohmann::json::array();
   TopoDS_Shape accumulated;
   bool live = false;
 };
@@ -133,6 +151,25 @@ bool readBrep(const std::string& text, TopoDS_Shape& out) {
   return !out.IsNull();
 }
 
+void zeroModifierPose(nlohmann::json& solid) {
+  solid["x"] = 0.0;
+  solid["z"] = 0.0;
+  solid["elevation"] = 0.0;
+  solid["rotation"] = 0.0;
+  solid["rotationX"] = 0.0;
+  solid["rotationZ"] = 0.0;
+  solid["mirrorX"] = false;
+  solid["mirrorY"] = false;
+  solid["mirrorZ"] = false;
+  solid.erase("transform");
+}
+
+bool buildKernelPrimitiveLocal(const nlohmann::json& primitive, TopoDS_Shape& local) {
+  nlohmann::json solid = primitive;
+  zeroModifierPose(solid);
+  return buildKernelSolid(solid, local);
+}
+
 bool buildPrimitive(const nlohmann::json& primitive, TopoDS_Shape& out) {
   const std::string kind = primitive.value("kind", "");
   TopoDS_Shape local;
@@ -145,9 +182,12 @@ bool buildPrimitive(const nlohmann::json& primitive, TopoDS_Shape& out) {
   } else if (kind == "cylinder") {
     const double radius = primitive.value("radius", 0.0);
     const double height = primitive.value("height", 0.0);
-    if (radius <= 1e-6 || height <= 1e-6) return false;
-    local = BRepPrimAPI_MakeCylinder(radius, height).Shape();
-    orientYUp(local);
+    if (radius > 1e-6 && height > 1e-6) {
+      local = BRepPrimAPI_MakeCylinder(radius, height).Shape();
+      orientYUp(local);
+    } else if (!buildKernelPrimitiveLocal(primitive, local)) {
+      return false;
+    }
   } else if (kind == "cone") {
     const double baseR = primitive.value("baseRadius", 0.0);
     const double topR = primitive.value("topRadius", 0.0);
@@ -156,7 +196,7 @@ bool buildPrimitive(const nlohmann::json& primitive, TopoDS_Shape& out) {
     if (std::abs(baseR - topR) <= 1e-6) local = BRepPrimAPI_MakeCylinder(std::max(baseR, topR), height).Shape();
     else local = BRepPrimAPI_MakeCone(baseR, topR, height).Shape();
     orientYUp(local);
-  } else {
+  } else if (!buildKernelPrimitiveLocal(primitive, local)) {
     return false;
   }
   if (primitive.contains("transform")) applyRowMajor(local, primitive["transform"]);
@@ -406,6 +446,141 @@ nlohmann::json collectEdges(const TopoDS_Shape& shape, double sharpAngle, bool s
   return { { "edges", edges }, { "selectableEdgeIds", selectable } };
 }
 
+nlohmann::json collectDisplayPolylines(const TopoDS_Shape& shape) {
+  auto savedEdges = gSession.edges;
+  auto savedFaces = gSession.edgeFaces;
+  const auto collected = collectEdges(shape, 0.0, false);
+  gSession.edges = std::move(savedEdges);
+  gSession.edgeFaces = std::move(savedFaces);
+  nlohmann::json display = nlohmann::json::array();
+  for (const auto& edge : collected["edges"]) {
+    if (!edge.value("display", false)) continue;
+    display.push_back({ { "points", edge["points"] } });
+  }
+  return display;
+}
+
+bool edgeMidAndLength(const TopoDS_Edge& edge, gp_Pnt& mid, double& length) {
+  try {
+    GProp_GProps props;
+    BRepGProp::LinearProperties(edge, props);
+    length = props.Mass();
+    BRepAdaptor_Curve curve(edge);
+    mid = curve.Value((curve.FirstParameter() + curve.LastParameter()) * 0.5);
+    return length > 1e-9;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool matchEdgeOnShape(
+  const TopoDS_Shape& shape,
+  const TopoDS_Edge& target,
+  TopoDS_Edge& outEdge,
+  TopoDS_Face& outFace
+) {
+  gp_Pnt targetMid;
+  double targetLen = 0;
+  if (!edgeMidAndLength(target, targetMid, targetLen)) return false;
+  TopTools_IndexedDataMapOfShapeListOfShape map;
+  TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, map);
+  double best = 1e9;
+  int bestIndex = 0;
+  for (int i = 1; i <= map.Extent(); ++i) {
+    const TopoDS_Edge edge = TopoDS::Edge(map.FindKey(i));
+    if (BRep_Tool::Degenerated(edge)) continue;
+    gp_Pnt mid;
+    double len = 0;
+    if (!edgeMidAndLength(edge, mid, len)) continue;
+    const double dist = targetMid.Distance(mid);
+    if (dist > 0.75) continue;
+    const double score = dist + std::abs(len - targetLen) * 0.05;
+    if (score < best) {
+      best = score;
+      bestIndex = i;
+      outEdge = edge;
+    }
+  }
+  if (bestIndex == 0) return false;
+  const TopTools_ListOfShape& faces = map.FindFromIndex(bestIndex);
+  if (faces.Extent() > 0) outFace = TopoDS::Face(faces.First());
+  return true;
+}
+
+bool filletOne(const TopoDS_Shape& solid, const TopoDS_Edge& edge, double amount, TopoDS_Shape& out) {
+  BRepFilletAPI_MakeFillet maker(solid);
+  maker.Add(amount, edge);
+  maker.Build();
+  if (!maker.IsDone()) return false;
+  out = maker.Shape();
+  return !out.IsNull();
+}
+
+bool chamferOne(
+  const TopoDS_Shape& solid,
+  const TopoDS_Edge& edge,
+  const TopoDS_Face& face,
+  double amount,
+  double chamferAngle,
+  TopoDS_Shape& out
+) {
+  BRepFilletAPI_MakeChamfer maker(solid);
+  if (std::abs(chamferAngle - 45.0) < 0.001 || face.IsNull()) maker.Add(amount, edge);
+  else maker.AddDA(amount, chamferAngle * kPi / 180.0, edge, face);
+  maker.Build();
+  if (!maker.IsDone()) return false;
+  out = maker.Shape();
+  return !out.IsNull();
+}
+
+bool treatEdgesTogether(const std::string& kind, const std::vector<int>& selected, double amount, double chamferAngle, TopoDS_Shape& out) {
+  if (kind == "fillet") {
+    BRepFilletAPI_MakeFillet maker(gSession.base);
+    for (int id : selected) maker.Add(amount, gSession.edges[static_cast<size_t>(id)]);
+    maker.Build();
+    if (!maker.IsDone()) return false;
+    out = unify(maker.Shape());
+    return !out.IsNull();
+  }
+  BRepFilletAPI_MakeChamfer maker(gSession.base);
+  for (int id : selected) {
+    const TopoDS_Edge& edge = gSession.edges[static_cast<size_t>(id)];
+    const TopoDS_Face& face = gSession.edgeFaces[static_cast<size_t>(id)];
+    if (std::abs(chamferAngle - 45.0) < 0.001 || face.IsNull()) maker.Add(amount, edge);
+    else maker.AddDA(amount, chamferAngle * kPi / 180.0, edge, face);
+  }
+  maker.Build();
+  if (!maker.IsDone()) return false;
+  out = unify(maker.Shape());
+  return !out.IsNull();
+}
+
+bool treatEdgesOneByOne(const std::string& kind, const std::vector<int>& selected, double amount, double chamferAngle, TopoDS_Shape& out) {
+  TopoDS_Shape acc = gSession.base;
+  bool any = false;
+  for (int id : selected) {
+    TopoDS_Edge edge;
+    TopoDS_Face face;
+    if (!matchEdgeOnShape(acc, gSession.edges[static_cast<size_t>(id)], edge, face)) continue;
+    TopoDS_Shape next;
+    bool ok = false;
+    try {
+      if (kind == "fillet") ok = filletOne(acc, edge, amount, next);
+      else ok = chamferOne(acc, edge, face, amount, chamferAngle, next);
+    } catch (const Standard_Failure&) {
+      ok = false;
+    } catch (...) {
+      ok = false;
+    }
+    if (!ok) continue;
+    acc = next;
+    any = true;
+  }
+  if (!any) return false;
+  out = unify(acc);
+  return !out.IsNull();
+}
+
 bool treatEdges(const std::string& kind, const std::vector<int>& edgeIds, double amount, double chamferAngle, TopoDS_Shape& out) {
   if (!gSession.live || gSession.base.IsNull()) return false;
   std::vector<int> selected;
@@ -415,25 +590,13 @@ bool treatEdges(const std::string& kind, const std::vector<int>& edgeIds, double
   }
   if (selected.empty()) return false;
   try {
-    if (kind == "fillet") {
-      BRepFilletAPI_MakeFillet maker(gSession.base);
-      for (int id : selected) maker.Add(amount, gSession.edges[static_cast<size_t>(id)]);
-      maker.Build();
-      if (!maker.IsDone()) return false;
-      out = unify(maker.Shape());
-      return !out.IsNull();
-    }
-    BRepFilletAPI_MakeChamfer maker(gSession.base);
-    for (int id : selected) {
-      const TopoDS_Edge& edge = gSession.edges[static_cast<size_t>(id)];
-      const TopoDS_Face& face = gSession.edgeFaces[static_cast<size_t>(id)];
-      if (std::abs(chamferAngle - 45.0) < 0.001 || face.IsNull()) maker.Add(amount, edge);
-      else maker.AddDA(amount, chamferAngle * kPi / 180.0, edge, face);
-    }
-    maker.Build();
-    if (!maker.IsDone()) return false;
-    out = unify(maker.Shape());
-    return !out.IsNull();
+    if (treatEdgesTogether(kind, selected, amount, chamferAngle, out)) return true;
+  } catch (const Standard_Failure&) {
+  } catch (...) {
+  }
+  if (selected.size() <= 1) return false;
+  try {
+    return treatEdgesOneByOne(kind, selected, amount, chamferAngle, out);
   } catch (const Standard_Failure&) {
     return false;
   } catch (...) {
@@ -460,8 +623,20 @@ gp_Pnt faceCenter(const TopoDS_Face& face) {
 }
 
 bool containsPoint(const TopoDS_Shape& solid, const gp_Pnt& point) {
-  BRepClass3d_SolidClassifier cls(solid, point, 1e-5);
-  return cls.State() == TopAbs_IN;
+  auto inside = [&](const TopoDS_Shape& body) {
+    try {
+      BRepClass3d_SolidClassifier cls(body, point, 1e-5);
+      return cls.State() == TopAbs_IN;
+    } catch (...) {
+      return false;
+    }
+  };
+  const TopAbs_ShapeEnum type = solid.ShapeType();
+  if (type == TopAbs_SOLID || type == TopAbs_COMPSOLID) return inside(solid);
+  for (TopExp_Explorer exp(solid, TopAbs_SOLID); exp.More(); exp.Next()) {
+    if (inside(exp.Current())) return true;
+  }
+  return false;
 }
 
 nlohmann::json sampleWirePoints(const TopoDS_Face& face) {
@@ -478,6 +653,56 @@ nlohmann::json sampleWirePoints(const TopoDS_Face& face) {
     }
   }
   return points;
+}
+
+// Ordered outer loop of a face: edges walked in wire order, each edge sampled
+// in the walk direction (reversed edges flipped), shared corners emitted once,
+// and no repeated closing point. Push Pull draws this as the face outline and
+// builds the drag ghost from it, so it has to be a real polygon.
+nlohmann::json sampleOuterWirePoints(const TopoDS_Face& face) {
+  nlohmann::json points = nlohmann::json::array();
+  const TopoDS_Wire wire = BRepTools::OuterWire(face);
+  if (wire.IsNull()) return sampleWirePoints(face);
+  const double joinTol = 1e-3;
+  gp_Pnt first;
+  gp_Pnt last;
+  bool haveLast = false;
+  for (BRepTools_WireExplorer exp(wire, face); exp.More(); exp.Next()) {
+    const TopoDS_Edge edge = exp.Current();
+    BRepAdaptor_Curve curve(edge);
+    GCPnts_QuasiUniformDeflection discret(curve, 0.35);
+    if (!discret.IsDone()) continue;
+    const int count = discret.NbPoints();
+    if (count < 2) continue;
+    std::vector<gp_Pnt> sampled;
+    sampled.reserve(static_cast<std::size_t>(count));
+    for (int p = 1; p <= count; ++p) sampled.push_back(discret.Value(p));
+    bool reversed = edge.Orientation() == TopAbs_REVERSED;
+    if (haveLast) {
+      // Trust the geometry over the flag: join whichever end touches the walk.
+      const double headGap = last.Distance(sampled.front());
+      const double tailGap = last.Distance(sampled.back());
+      if (tailGap + 1e-9 < headGap) reversed = true;
+      else if (headGap + 1e-9 < tailGap) reversed = false;
+    }
+    if (reversed) std::reverse(sampled.begin(), sampled.end());
+    for (std::size_t i = 0; i < sampled.size(); ++i) {
+      const gp_Pnt& pt = sampled[i];
+      if (haveLast && pt.Distance(last) <= joinTol) continue;
+      if (!haveLast) first = pt;
+      points.push_back(pt.X());
+      points.push_back(pt.Y());
+      points.push_back(pt.Z());
+      last = pt;
+      haveLast = true;
+    }
+  }
+  // Drop the closing point so consumers can treat the loop as open.
+  while (points.size() >= 9 && haveLast && last.Distance(first) <= joinTol) {
+    points.erase(points.end() - 3, points.end());
+    last = gp_Pnt(points[points.size() - 3], points[points.size() - 2], points[points.size() - 1]);
+  }
+  return points.size() >= 9 ? points : sampleWirePoints(face);
 }
 
 nlohmann::json collectCylindricalFaces(const TopoDS_Shape& shape) {
@@ -536,6 +761,345 @@ nlohmann::json collectCylindricalFaces(const TopoDS_Shape& shape) {
   }
   gSession.cylinderFaces = faces;
   return faces;
+}
+
+bool planarFaceGeometry(const TopoDS_Face& face, gp_Dir& normal, gp_Pnt& origin) {
+  origin = faceCenter(face);
+  try {
+    BRepAdaptor_Surface adaptor(face, Standard_True);
+    if (adaptor.GetType() == GeomAbs_Plane) {
+      return faceNormalAt(face, origin, normal);
+    }
+  } catch (...) {
+  }
+  try {
+    BRepLib_FindSurface finder(face, 0.05, true, false);
+    if (!finder.Found()) return false;
+    Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(finder.Surface());
+    if (plane.IsNull()) return false;
+    normal = plane->Pln().Axis().Direction();
+    if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+gp_Pnt pointOnPlanarFace(const TopoDS_Face& face, const gp_Pnt& origin) {
+  const TopoDS_Wire wire = BRepTools::OuterWire(face);
+  if (!wire.IsNull()) {
+    for (BRepTools_WireExplorer exp(wire); exp.More(); exp.Next()) {
+      BRepAdaptor_Curve curve(exp.Current());
+      const gp_Pnt mid = curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()));
+      gp_Vec inward(mid, origin);
+      const double mag = inward.Magnitude();
+      if (mag < 1e-8) continue;
+      inward.Divide(mag);
+      return mid.Translated(inward * std::min(0.35, mag * 0.25));
+    }
+  }
+  return origin;
+}
+
+nlohmann::json collectPlanarFaces(const TopoDS_Shape& shape) {
+  nlohmann::json faces = nlohmann::json::array();
+  gSession.planars.clear();
+  int id = 0;
+  for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
+    const TopoDS_Face face = TopoDS::Face(exp.Current());
+    const double area = faceArea(face);
+    if (area < 1e-6) continue;
+    gp_Pnt origin;
+    gp_Dir normal;
+    if (!planarFaceGeometry(face, normal, origin)) continue;
+    const gp_Pnt probe = pointOnPlanarFace(face, origin).Translated(gp_Vec(normal) * 0.05);
+    if (containsPoint(shape, probe)) normal.Reverse();
+    PlanarFaceRecord record;
+    record.face = face;
+    record.normal = normal;
+    record.origin = origin;
+    gSession.planars.push_back(record);
+    faces.push_back({
+      { "id", id },
+      { "normal", { { "x", normal.X() }, { "y", normal.Y() }, { "z", normal.Z() } } },
+      { "origin", { { "x", origin.X() }, { "y", origin.Y() }, { "z", origin.Z() } } },
+      { "points", sampleOuterWirePoints(face) },
+      { "area", area },
+    });
+    id += 1;
+  }
+  gSession.planarFaces = faces;
+  return faces;
+}
+
+int solidCountWithVolume(const TopoDS_Shape& shape) {
+  int count = 0;
+  for (TopExp_Explorer exp(shape, TopAbs_SOLID); exp.More(); exp.Next()) {
+    if (volumeOf(exp.Current()) > 1e-8) count += 1;
+  }
+  return count;
+}
+
+const char* pushPullEmptyMessage(double distance) {
+  return distance > 0
+    ? "That pull could not grow this face. Try a different face or a smaller distance."
+    : "That push went through the part. Try a smaller distance.";
+}
+
+const char* pushPullMoveMessage() {
+  return "Push Pull could not move this face. Try a smaller distance, or Group the parts again.";
+}
+
+bool shapeBounds(
+  const TopoDS_Shape& shape,
+  double& xmin, double& ymin, double& zmin,
+  double& xmax, double& ymax, double& zmax
+) {
+  Bnd_Box box;
+  BRepBndLib::Add(shape, box);
+  if (box.IsVoid()) return false;
+  box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+  return true;
+}
+
+bool pushPullLooksExploded(const TopoDS_Shape& before, const TopoDS_Shape& after, double distance) {
+  double ax0, ay0, az0, ax1, ay1, az1;
+  double bx0, by0, bz0, bx1, by1, bz1;
+  if (!shapeBounds(before, ax0, ay0, az0, ax1, ay1, az1)) return false;
+  if (!shapeBounds(after, bx0, by0, bz0, bx1, by1, bz1)) return true;
+  const double beforeDiag = std::hypot(ax1 - ax0, std::hypot(ay1 - ay0, az1 - az0));
+  const double afterDiag = std::hypot(bx1 - bx0, std::hypot(by1 - by0, bz1 - bz0));
+  const double budget = std::abs(distance) * 2.0 + 5.0;
+  if (afterDiag > beforeDiag + budget && afterDiag > beforeDiag * 1.35) return true;
+  return beforeDiag > 1e-6 && afterDiag < beforeDiag * 0.05;
+}
+
+TopoDS_Shape healShape(const TopoDS_Shape& shape) {
+  try {
+    ShapeFix_Shape fixer(shape);
+    fixer.Perform();
+    if (!fixer.Shape().IsNull()) return fixer.Shape();
+  } catch (...) {
+  }
+  return shape;
+}
+
+TopoDS_Shape unifyKeepVolume(const TopoDS_Shape& shape) {
+  const double before = volumeOf(shape);
+  const int solidsBefore = solidCountWithVolume(shape);
+  const TopoDS_Shape unified = unify(shape);
+  if (unified.IsNull()) return shape;
+  if (solidsBefore >= 1 && solidCountWithVolume(unified) < 1) return shape;
+  const double after = volumeOf(unified);
+  if (before > 1e-6 && after < before * 0.4) return shape;
+  return unified;
+}
+
+bool pushPullResultOk(const TopoDS_Shape& before, const TopoDS_Shape& after, double distance, std::string& message) {
+  if (after.IsNull() || solidCountWithVolume(after) < 1 || volumeOf(after) < 1e-8) {
+    message = pushPullEmptyMessage(distance);
+    return false;
+  }
+  if (pushPullLooksExploded(before, after, distance)) {
+    message = "Push Pull broke this grouped body. Try a smaller distance, or Group the parts again.";
+    return false;
+  }
+  return true;
+}
+
+TopoDS_Shape owningSolidOfFace(const TopoDS_Shape& shape, const TopoDS_Face& face) {
+  for (TopExp_Explorer exp(shape, TopAbs_SOLID); exp.More(); exp.Next()) {
+    for (TopExp_Explorer faces(exp.Current(), TopAbs_FACE); faces.More(); faces.Next()) {
+      if (faces.Current().IsSame(face)) return exp.Current();
+    }
+  }
+  return shape;
+}
+
+TopoDS_Face matchingPlanarFace(const TopoDS_Shape& shape, const PlanarFaceRecord& record) {
+  TopoDS_Face best;
+  double bestDist = 1e300;
+  for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
+    const TopoDS_Face face = TopoDS::Face(exp.Current());
+    gp_Pnt origin;
+    gp_Dir normal;
+    if (!planarFaceGeometry(face, normal, origin)) continue;
+    if (!normal.IsEqual(record.normal, 0.04)) continue;
+    const double dist = origin.Distance(record.origin);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = face;
+    }
+  }
+  return bestDist < 1.0 ? best : TopoDS_Face();
+}
+
+TopoDS_Shape replaceSolidInBody(const TopoDS_Shape& body, const TopoDS_Shape& oldSolid, const TopoDS_Shape& newSolid) {
+  if (body.IsSame(oldSolid) || body.ShapeType() == TopAbs_SOLID || body.ShapeType() == TopAbs_COMPSOLID) {
+    return newSolid;
+  }
+  int solidCount = 0;
+  for (TopExp_Explorer count(body, TopAbs_SOLID); count.More(); count.Next()) solidCount += 1;
+  if (solidCount <= 1) return newSolid;
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  bool replaced = false;
+  for (TopExp_Explorer exp(body, TopAbs_SOLID); exp.More(); exp.Next()) {
+    if (exp.Current().IsSame(oldSolid)) {
+      builder.Add(compound, newSolid);
+      replaced = true;
+    } else {
+      builder.Add(compound, exp.Current());
+    }
+  }
+  return replaced ? TopoDS_Shape(compound) : newSolid;
+}
+
+bool pushPullByFeature(const TopoDS_Shape& host, const PlanarFaceRecord& record, double distance, TopoDS_Shape& out) {
+  TopoDS_Shape copied;
+  try {
+    copied = BRepBuilderAPI_Copy(host).Shape();
+  } catch (...) {
+    return false;
+  }
+  const TopoDS_Face face = matchingPlanarFace(copied, record);
+  if (face.IsNull()) return false;
+  gp_Dir dir = record.normal;
+  if (distance < 0) dir.Reverse();
+  try {
+    BRepFeat_MakePrism feat(copied, face, face, dir, distance > 0 ? 1 : 0, Standard_True);
+    feat.Perform(std::abs(distance));
+    if (!feat.IsDone() || feat.Shape().IsNull()) return false;
+    out = feat.Shape();
+    return solidCountWithVolume(out) >= 1;
+  } catch (const Standard_Failure&) {
+    return false;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool pushPullBooleanOnce(
+  const TopoDS_Shape& host,
+  const TopoDS_Shape& lump,
+  double distance,
+  bool glue,
+  double fuzzy,
+  TopoDS_Shape& out
+) {
+  try {
+    if (distance > 0) {
+      BRepAlgoAPI_Fuse fuse;
+      TopTools_ListOfShape args;
+      TopTools_ListOfShape tools;
+      args.Append(host);
+      tools.Append(lump);
+      fuse.SetArguments(args);
+      fuse.SetTools(tools);
+      if (glue) fuse.SetGlue(BOPAlgo_GlueShift);
+      if (fuzzy > 0) fuse.SetFuzzyValue(fuzzy);
+      fuse.SetRunParallel(true);
+      fuse.Build();
+      if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) return false;
+      out = fuse.Shape();
+      return true;
+    }
+    BRepAlgoAPI_Cut cut;
+    TopTools_ListOfShape args;
+    TopTools_ListOfShape tools;
+    args.Append(host);
+    tools.Append(lump);
+    cut.SetArguments(args);
+    cut.SetTools(tools);
+    if (fuzzy > 0) cut.SetFuzzyValue(fuzzy);
+    cut.SetRunParallel(true);
+    cut.Build();
+    if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()) return false;
+    out = cut.Shape();
+    return true;
+  } catch (const Standard_Failure&) {
+    return false;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool pushPullByBoolean(const TopoDS_Shape& host, const PlanarFaceRecord& record, double distance, TopoDS_Shape& out) {
+  TopoDS_Shape faceCopy;
+  try {
+    faceCopy = BRepBuilderAPI_Copy(record.face).Shape();
+  } catch (...) {
+    faceCopy = record.face;
+  }
+  if (faceCopy.IsNull() || faceCopy.ShapeType() != TopAbs_FACE) return false;
+  gp_Vec vec(record.normal);
+  vec.Multiply(distance);
+  BRepPrimAPI_MakePrism prism(TopoDS::Face(faceCopy), vec, Standard_True);
+  if (!prism.IsDone()) return false;
+  const TopoDS_Shape lump = prism.Shape();
+  if (distance > 0 && pushPullBooleanOnce(host, lump, distance, true, 0.0, out)) return true;
+  const double fuzzies[] = { 0.0, 0.01 };
+  for (double fuzzy : fuzzies) {
+    if (pushPullBooleanOnce(host, lump, distance, false, fuzzy, out)) return true;
+  }
+  return false;
+}
+
+bool pushPullSolid(int faceId, double distance, TopoDS_Shape& out, std::string& message) {
+  if (gSession.base.IsNull()) {
+    message = "Prepare an object before Push Pull.";
+    return false;
+  }
+  if (faceId < 0 || faceId >= static_cast<int>(gSession.planars.size())) {
+    message = "Push Pull needs a flat face.";
+    return false;
+  }
+  if (std::abs(distance) < 1e-4) {
+    out = gSession.base;
+    return true;
+  }
+  const PlanarFaceRecord& record = gSession.planars[static_cast<size_t>(faceId)];
+  gp_Dir checkNormal;
+  gp_Pnt checkOrigin;
+  if (!planarFaceGeometry(record.face, checkNormal, checkOrigin)) {
+    message = "Push Pull needs a flat face.";
+    return false;
+  }
+  try {
+    const TopoDS_Shape owner = owningSolidOfFace(gSession.base, record.face);
+    TopoDS_Shape grown;
+    std::string local;
+    auto accept = [&](const TopoDS_Shape& candidate) {
+      const TopoDS_Shape healed = unifyKeepVolume(healShape(candidate));
+      if (!pushPullResultOk(owner, healed, distance, local)) return false;
+      grown = healed;
+      return true;
+    };
+    if (!pushPullByFeature(owner, record, distance, grown) || !accept(grown)) {
+      if (!pushPullByBoolean(owner, record, distance, grown) || !accept(grown)) {
+        message = local.empty() ? pushPullMoveMessage() : local;
+        return false;
+      }
+    }
+    const TopoDS_Shape combined = unifyKeepVolume(replaceSolidInBody(gSession.base, owner, grown));
+    if (!pushPullResultOk(gSession.base, combined, distance, message)) return false;
+    out = combined;
+    return true;
+  } catch (const Standard_Failure&) {
+    message = pushPullMoveMessage();
+    return false;
+  } catch (...) {
+    message = pushPullMoveMessage();
+    return false;
+  }
+}
+
+double previewLinearForQuality(const std::string& quality, double amount) {
+  if (quality == "draft") return std::max(0.16, std::abs(amount) / 3.0);
+  if (quality == "ultra") return std::max(0.02, std::abs(amount) / 20.0);
+  if (quality == "fine") return std::max(0.04, std::abs(amount) / 12.0);
+  return std::max(0.08, std::abs(amount) / 7.0);
 }
 
 bool openingFaces(const TopoDS_Shape& solid, const nlohmann::json& openings, TopTools_ListOfShape& faces, std::string& missing) {
@@ -808,7 +1372,7 @@ nlohmann::json previewMesh(const TopoDS_Shape& shape, int requestId, double line
     { "indices", indices },
     { "triangleCount", indices.size() / 3 },
     { "brep", includeBrep ? toBrep(shape) : "" },
-    { "displayEdges", nlohmann::json::array() },
+    { "displayEdges", collectDisplayPolylines(shape) },
   };
   return reply;
 }
@@ -846,16 +1410,22 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       for (size_t i = 1; i < rest.size(); ++i) {
         BRepAlgoAPI_Fuse fuse(body, rest[i]);
         fuse.SetRunParallel(true);
+        fuse.SetFuzzyValue(0.04);
         fuse.Build();
-        if (!fuse.IsDone()) return modifierFail("Could not fuse group for fillet", true, requestId);
-        body = unify(fuse.Shape());
+        if (!fuse.IsDone() || fuse.HasErrors()) return modifierFail("Could not fuse group for fillet", true, requestId);
+        body = fuse.Shape();
       }
+      // Two-body Group keeps the fuse as-is. Unify on a plate-plus-boss was
+      // merging offset parallel faces into one warped sheet.
+      const std::size_t busy = rest.size() + (!solids.empty() ? holes.size() : 0);
+      if (busy >= 3) body = unifyKeepVolume(body);
       if (!solids.empty()) {
         for (const auto& hole : holes) {
           BRepAlgoAPI_Cut cut(body, hole);
           cut.SetRunParallel(true);
+          cut.SetFuzzyValue(0.04);
           cut.Build();
-          if (cut.IsDone()) body = unify(cut.Shape());
+          if (cut.IsDone() && !cut.HasErrors()) body = unifyKeepVolume(cut.Shape());
         }
       }
     } catch (...) {
@@ -866,6 +1436,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
     gSession.live = true;
     const auto collected = collectEdges(body, job.value("sharpAngle", 20.0), job.value("suppressTreatmentDetailEdges", false));
     const auto cylinders = collectCylindricalFaces(body);
+    const auto planars = collectPlanarFaces(body);
     return {
       { "ok", true },
       { "type", "ready" },
@@ -873,6 +1444,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "edges", collected["edges"] },
       { "selectableEdgeIds", collected["selectableEdgeIds"] },
       { "cylindricalFaces", cylinders },
+      { "planarFaces", planars },
       { "sourceType", "solid" },
     };
   }
@@ -929,6 +1501,15 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       return modifierFail("Thread boolean produced unusable geometry. Try a smaller pitch, shorter length, or Draft quality.", false, requestId);
     }
   }
+  if (type == "pushPull") {
+    TopoDS_Shape result;
+    std::string message;
+    if (!pushPullSolid(job.value("faceId", -1), job.value("distance", 0.0), result, message)) {
+      return modifierFail(message, false, requestId);
+    }
+    gSession.accumulated = result;
+    return previewMesh(result, requestId, previewLinearForQuality(job.value("quality", "standard"), job.value("distance", 0.0)), true);
+  }
   if (type == "preview") {
     std::vector<int> edgeIds;
     if (job.contains("edgeIds")) {
@@ -953,7 +1534,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "indices", indices },
       { "triangleCount", indices.size() / 3 },
       { "brep", "" },
-      { "displayEdges", nlohmann::json::array() },
+      { "displayEdges", collectDisplayPolylines(result) },
     };
   }
   if (type == "refine") {
@@ -971,7 +1552,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "indices", indices },
       { "triangleCount", indices.size() / 3 },
       { "brep", "" },
-      { "displayEdges", nlohmann::json::array() },
+      { "displayEdges", collectDisplayPolylines(gSession.accumulated) },
       { "smooth", true },
     };
   }

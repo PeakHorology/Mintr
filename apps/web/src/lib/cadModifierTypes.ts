@@ -29,6 +29,15 @@ export type CadCylindricalFace = {
   points: number[];
 };
 
+export type CadPlanarFace = {
+  id: number;
+  origin: { x: number; y: number; z: number };
+  normal: { x: number; y: number; z: number };
+  /** Boundary polyline flattened as xyz for hover/ghost. */
+  points: number[];
+  area: number;
+};
+
 export type CadModifierPrimitivePart =
   | {
       kind: "box";
@@ -39,9 +48,12 @@ export type CadModifierPrimitivePart =
     }
   | {
       kind: "cylinder";
-      radius: number;
       height: number;
       transform?: number[];
+      /** Circular cylinders. Omit and send width/depth for an ellipse. */
+      radius?: number;
+      width?: number;
+      depth?: number;
     }
   | {
       kind: "cone";
@@ -56,6 +68,29 @@ export type CadModifierPrimitivePart =
        * this stretch is applied, matching the cone drawn on screen.
        */
       sectionScale?: number;
+    }
+  | {
+      kind: "polygon";
+      sides: number;
+      width: number;
+      depth: number;
+      height: number;
+      transform?: number[];
+    }
+  | {
+      kind: "sphere" | "pyramid" | "wedge" | "roof" | "roundRoof" | "halfSphere" | "torus" | "tube" | "ring" | "gear";
+      width: number;
+      depth: number;
+      height: number;
+      transform?: number[];
+      sides?: number;
+      radius?: number;
+      bevel?: number;
+      ridgeX?: number;
+      profileLoops?: {
+        outer: Array<[number, number]>;
+        holes: Array<Array<[number, number]>>;
+      };
     };
 
 export type CadModifierMeshPart = {
@@ -90,6 +125,14 @@ export type CadThreadPreviewRequest = {
   quality: CadModifierQuality;
 };
 
+export type CadPushPullRequest = {
+  type: "pushPull";
+  requestId: number;
+  faceId: number;
+  distance: number;
+  quality: CadModifierQuality;
+};
+
 export type CadModifierWorkerRequest =
   | { type: "prepare"; requestId: number; parts: CadModifierMeshPart[]; sharpAngle: number; suppressTreatmentDetailEdges?: boolean }
   | {
@@ -111,6 +154,7 @@ export type CadModifierWorkerRequest =
       quality: CadModifierQuality;
     }
   | CadThreadPreviewRequest
+  | CadPushPullRequest
   | { type: "refine"; requestId: number; linearDeflection: number; angularDeflection: number }
   | { type: "finalize"; requestId: number }
   | { type: "warmup"; requestId: number }
@@ -123,6 +167,7 @@ export type CadModifierWorkerResponse =
       edges: CadModifierEdge[];
       selectableEdgeIds: number[];
       cylindricalFaces: CadCylindricalFace[];
+      planarFaces: CadPlanarFace[];
       sourceType: string;
     }
   | {

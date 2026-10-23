@@ -1,4 +1,4 @@
-import { rebuildSketchHoleCutterIfPossible, restoreGroupedChildren } from "@/lib/editorBoolean";
+import { expandSketchHoleCuttersIfPossible, restoreGroupedChildren } from "@/lib/editorBoolean";
 import {
   containsHelicalThreadSolid,
   isHelicalThreadSolid,
@@ -29,7 +29,11 @@ function flattenEdgeTreatmentPart(
 ): WorkplaneShape[] {
   const hole = Boolean(shape.hole || forceHole);
   const marked = hole ? { ...shape, hole: true as const } : shape;
-  const prepared = marked.hole ? rebuildSketchHoleCutterIfPossible(marked) : marked;
+  const expanded = marked.hole ? expandSketchHoleCuttersIfPossible(marked) : [marked];
+  if (expanded.length > 1) {
+    return expanded.flatMap((part) => flattenEdgeTreatmentPart(part, true, ignoreThreads));
+  }
+  const prepared = expanded[0];
   if (ignoreThreads && isHelicalThreadSolid(prepared)) return [];
   // A display mesh is a cache of this recipe. Rebuild from the boxes and cylinders
   // so a slotted plate is an exact solid instead of an open triangle soup.

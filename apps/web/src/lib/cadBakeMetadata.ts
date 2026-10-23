@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import type { CadPrimitiveFrame, WorkplaneShape } from "@/types/sketchforge";
 import type { CadModifierPrimitivePart } from "@/lib/cadModifierTypes";
+import { gearPlanLoops, normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
+import { roofAnglesFromProfile } from "@/lib/roofGeometry";
+import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
 import { coneBaseRadius, coneMaxRadius, coneTopRadius, mirrorSign, resizedImportedCoordinates, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 
 export type BakedCadMetadataFrame = {
@@ -96,18 +99,24 @@ export function cadModifierPrimitiveForAnalyticCylinder(shape: WorkplaneShape): 
   if (!allFinitePositive([width, depth, height])) {
     return null;
   }
-  if (Math.abs(width - depth) >= 1e-4) {
-    return null;
+  const elliptical = Math.abs(width - depth) >= 1e-4;
+  // Circular cylinders are invariant about yaw; an ellipse has to keep it.
+  const transform = analyticPrimitiveTransform(shape, height, elliptical ? (shape.rotation ?? 0) : 0);
+  const bakedTransform = isIdentityCadTransform(transform) ? undefined : transform;
+  if (!elliptical) {
+    return {
+      kind: "cylinder",
+      radius: width / 2,
+      height,
+      transform: bakedTransform,
+    };
   }
-
-  const radius = width / 2;
-  // Circular cylinders are invariant about yaw; keep pitch/roll/mirrors.
-  const transform = analyticPrimitiveTransform(shape, height, 0);
   return {
     kind: "cylinder",
-    radius,
+    width,
+    depth,
     height,
-    transform: isIdentityCadTransform(transform) ? undefined : transform,
+    transform: bakedTransform,
   };
 }
 
@@ -116,6 +125,131 @@ export function cadModifierPrimitiveForAnalyticCylinder(shape: WorkplaneShape): 
  * filleting that ring of short lines fails. `makeCone` keeps each rim as one
  * circle. An elliptical footprint scales that circle after the cone is built.
  */
+/** Regular extruded polygons as exact OCCT solids so Push Pull matches CAD ready. */
+export function cadModifierPrimitiveForAnalyticPolygon(shape: WorkplaneShape): CadModifierPrimitivePart | null {
+  if (shape.kind !== "polygon" || shape.groupedShapes?.length || shape.cadBrep || shape.importedMesh) {
+    return null;
+  }
+
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  if (!allFinitePositive([width, depth, height])) {
+    return null;
+  }
+
+  const sides = Math.max(3, Math.round(shape.sides ?? 6));
+  const transform = analyticPrimitiveTransform(shape, height, shape.rotation ?? 0);
+  return {
+    kind: "polygon",
+    sides,
+    width,
+    depth,
+    height,
+    transform: isIdentityCadTransform(transform) ? undefined : transform,
+  };
+}
+
+const EXACT_PUSH_PULL_KINDS = new Set<WorkplaneShape["kind"]>([
+  "sphere",
+  "pyramid",
+  "wedge",
+  "roof",
+  "roundRoof",
+  "halfSphere",
+  "torus",
+  "tube",
+  "ring",
+  "gear",
+]);
+
+/**
+ * Remaining CAD-ready kinds the native kernel already knows how to rebuild.
+ * Box, circular cylinder, cone, and polygon have dedicated encoders above.
+ */
+export function cadModifierPrimitiveForExactKind(shape: WorkplaneShape): CadModifierPrimitivePart | null {
+  if (!EXACT_PUSH_PULL_KINDS.has(shape.kind) || !NATIVE_EXACT_KINDS.has(shape.kind)) {
+    return null;
+  }
+  if (shape.groupedShapes?.length || shape.cadBrep || shape.importedMesh) {
+    return null;
+  }
+
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  if (!allFinitePositive([width, depth, height])) {
+    return null;
+  }
+
+  const transform = analyticPrimitiveTransform(shape, height, shape.rotation ?? 0);
+  const bakedTransform = isIdentityCadTransform(transform) ? undefined : transform;
+  const base = {
+    width,
+    depth,
+    height,
+    transform: bakedTransform,
+  };
+
+  if (shape.kind === "gear") {
+    const spec = normalizeGearSpec(shape.gearSpec);
+    if (spec.form === "rack") {
+      return {
+        kind: "gear",
+        ...base,
+        profileLoops: { outer: rackPlanLoop(spec, depth).map((point) => [point.x, point.z] as [number, number]), holes: [] },
+      };
+    }
+    const loops = gearPlanLoops(spec);
+    return {
+      kind: "gear",
+      ...base,
+      profileLoops: {
+        outer: loops.outer.map((point) => [point.x, point.z] as [number, number]),
+        holes: loops.holes.map((hole) => hole.map((point) => [point.x, point.z] as [number, number])),
+      },
+    };
+  }
+
+  if (shape.kind === "roof" || shape.kind === "wedge") {
+    return {
+      kind: shape.kind,
+      ...base,
+      ridgeX: roofAnglesFromProfile(width, height, shape.leftAngle, shape.rightAngle).ridgeX,
+    };
+  }
+
+  if (shape.kind === "pyramid") {
+    return {
+      kind: "pyramid",
+      ...base,
+      sides: Math.max(3, Math.round(shape.sides ?? 4)),
+    };
+  }
+
+  if (shape.kind === "torus") {
+    return {
+      kind: "torus",
+      ...base,
+      radius: shape.radius,
+    };
+  }
+
+  if (shape.kind === "tube" || shape.kind === "ring") {
+    return {
+      kind: shape.kind,
+      ...base,
+      bevel: shape.bevel,
+    };
+  }
+
+  return {
+    // EXACT_PUSH_PULL_KINDS.has() does not narrow the union for the compiler.
+    kind: shape.kind as "sphere" | "pyramid" | "wedge" | "roof" | "roundRoof" | "halfSphere" | "torus" | "tube" | "ring" | "gear",
+    ...base,
+  };
+}
+
 export function cadModifierPrimitiveForAnalyticCone(shape: WorkplaneShape): CadModifierPrimitivePart | null {
   if (shape.kind !== "cone" || shape.groupedShapes?.length || shape.cadBrep || shape.importedMesh) {
     return null;
@@ -295,9 +429,12 @@ function bakeCadPrimitiveFrameForShapeTransform(shape: WorkplaneShape, frame: Ba
   if (!primitive || (primitive.kind !== "box" && primitive.kind !== "cylinder")) {
     return undefined;
   }
+  if (primitive.kind === "cylinder" && !(typeof primitive.radius === "number" && primitive.radius > 0)) {
+    return undefined;
+  }
 
   // Diameter is stored in width/depth so the frame stays one shape for both kinds.
-  const diameter = primitive.kind === "cylinder" ? primitive.radius * 2 : 0;
+  const diameter = primitive.kind === "cylinder" && typeof primitive.radius === "number" ? primitive.radius * 2 : 0;
   return {
     kind: primitive.kind,
     width: primitive.kind === "cylinder" ? diameter : primitive.width,

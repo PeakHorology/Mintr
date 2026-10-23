@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkplaneWorkspaceSettings } from "@/types/sketchforge";
-import { formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay, normalizeScaleForUnits, scaleOptionsForUnits } from "@/lib/measurementUnits";
+import { formatMeasurementNumber, formatVolumeWithMilliliters, lengthDisplayUnit, millimetersToDisplay, normalizeScaleForUnits, scaleOptionsForUnits } from "@/lib/measurementUnits";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, GLOBAL_WORKSPACE_DEFAULT_STORAGE_KEY, normalizeSnapGrid, normalizeWorkspaceSettings, PEAKCAD_PRO_STORAGE_KEY, peakcadProEnabled, savePeakcadPro, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 
 afterEach(() => {
@@ -128,6 +128,7 @@ describe("workplane settings helpers", () => {
     expect(formatMeasurementNumber(20, 1, 0.01)).toBe("20.0");
     expect(formatMeasurementNumber(20, 3, 0.01)).toBe("20.000");
     expect(formatMeasurementNumber(0.0004, 1, 0.001)).toBe("0.0004");
+    expect(formatVolumeWithMilliliters(8000, 1)).toBe("Volume 8000.0 mm³ (8.0 mL)");
   });
 
   it("fingerprints workspace and snap settings together", () => {

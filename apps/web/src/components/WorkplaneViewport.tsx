@@ -56,14 +56,21 @@ import {
 } from "@/lib/modifierEdgePick";
 import { defaultSketchPlane, sketchPlaneFromThreeVectors } from "@/lib/sketchPlane";
 import {
+  applySketchCameraPose,
+  captureSketchCameraPose,
   clearSketchOnModel,
   emptySketch3DPointer,
-  frameSketchCamera,
+  interpolateSketchCameraPose,
   sketch3DPointerDown,
   sketch3DPointerMove,
   sketch3DPointerUp,
+  sketchCameraEase,
+  sketchCameraNearlyFramed,
+  sketchCameraTweenMs,
+  sketchFramingPose,
   syncSketchOnModel,
   type Sketch3DPointerState,
+  type SketchCameraPose,
   type SketchOnModelSession,
 } from "@/lib/sketch/sketch3d";
 import {
@@ -97,7 +104,7 @@ import type { PrintOverlayMarks } from "@/lib/printOverlayCollect";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
-import { filterCoplanarDisplayEdges, hasUsableCsgResultMesh, viewportGroupChildren } from "@/lib/csgTree";
+import { hasUsableCsgResultMesh, viewportCadDisplayEdges, viewportGroupChildren } from "@/lib/csgTree";
 import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, fallbackSolidColor, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, roofPatchForHeight, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
@@ -149,7 +156,15 @@ import {
   type TransformOverlayState,
 } from "@/components/workplane/TransformOverlay";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchPlane, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
-import type { CadModifierEdge } from "@/lib/cadModifierTypes";
+import type { CadModifierEdge, CadPlanarFace } from "@/lib/cadModifierTypes";
+import {
+  ghostPrismMesh,
+  pickPlanarFaceId,
+  pushPullChipWorld,
+  pushPullDistanceFromDrag,
+  pushPullScreenAxis,
+  type PushPullScreenAxis,
+} from "@/lib/pushPullGeometry";
 import { prefersReducedMotion } from "@/lib/chromePresence";
 import { hardwareProfile, resolvePixelRatio } from "@/lib/desktopHardware";
 import { projectShapesFingerprint } from "@/lib/editorHistory";
@@ -172,6 +187,8 @@ const WORKSPACE_DEFAULTS_STORAGE_PREFIX = "sketchForge.workspaceDefault.";
 const DEFAULT_WORKSPACE = DEFAULT_WORKPLANE_WORKSPACE;
 const CAMERA_HOME = new THREE.Vector3(118, 96, 118);
 const CAMERA_TARGET = new THREE.Vector3(0, 0, 0);
+/** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
+let rememberedSketchCamera: { planeKey: string; pose: SketchCameraPose } | null = null;
 const MIN_SHAPE_SIZE = 0.01;
 const CUT_PREVIEW_PADDING = 0.01;
 const MIN_ELEVATION = -180;
@@ -207,7 +224,7 @@ const SHAPE_KINDS = new Set<ShapeAsset["kind"]>([
 ]);
 const importedGeometryCache = new WeakMap<
   NonNullable<WorkplaneShape["importedMesh"]>,
-  { geometry: THREE.BufferGeometry; edges: Map<number, THREE.EdgesGeometry> }
+  { geometry: THREE.BufferGeometry; edges: Map<number, THREE.EdgesGeometry>; welded?: THREE.BufferGeometry }
 >();
 const preservedImportedGeometryCache = new WeakMap<WorkplaneShape, THREE.BufferGeometry>();
 const imageTextureLoader = new THREE.TextureLoader();
@@ -323,10 +340,28 @@ export type WorkplaneViewportProps = {
   modifierEdges?: CadModifierEdge[];
   selectedModifierEdgeIds?: number[];
   onModifierEdgeToggle?: (id: number, singleEdge: boolean) => void;
+  pushPullActive?: boolean;
+  pushPullFaces?: CadPlanarFace[];
+  pushPullHoverFaceId?: number | null;
+  pushPullSelectedFaceId?: number | null;
+  pushPullDistance?: number;
+  pushPullShowGhost?: boolean;
+  pushPullGhostOpacity?: number;
+  pushPullChipText?: string | null;
+  onPushPullHover?: (faceId: number | null) => void;
+  onPushPullDragStart?: (faceId: number, distance: number) => void;
+  onPushPullDrag?: (distance: number) => void;
+  onPushPullDragEnd?: (distance: number) => void;
+  onPushPullDistanceCommit?: (distance: number) => void;
   viewNudgeAxesRef?: MutableRefObject<ViewNudgeAxes>;
   /** Lets the editor dismiss the degree box (and bake) before toolbar actions. */
   rotationEditApiRef?: MutableRefObject<{ dismiss: () => void } | null>;
   onDropToWorkplane?: () => void;
+  dropSurfaceActive?: boolean;
+  onDropSurfacePick?: (pick:
+    | { kind: "workplane" }
+    | { kind: "face"; shapeId: string; point: [number, number, number]; normal: [number, number, number] }
+  ) => void;
   sketchGuides?: {
     showGuides: boolean;
     drawAsGuides: boolean;
@@ -441,6 +476,13 @@ export type ThreeState = {
   dragPlane: THREE.Plane;
   animationId: number;
   needsRender: boolean;
+  cameraTween: {
+    handle: number;
+    started: number;
+    duration: number;
+    from: SketchCameraPose;
+    to: SketchCameraPose;
+  } | null;
   wasCameraMoving: boolean;
   cameraStillFrames: number;
   /** True after measurements were projected from a camera that had finished moving. */
@@ -1574,6 +1616,61 @@ function pickModifierEdgeFromScreen(state: ThreeState, edges: CadModifierEdge[],
   return chooseModifierEdgeCandidate(candidates.values());
 }
 
+function pointerWorldRay(state: ThreeState, clientX: number, clientY: number) {
+  const rect = state.renderer.domElement.getBoundingClientRect();
+  state.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  state.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  state.raycaster.setFromCamera(state.pointer, state.camera);
+  const origin = state.raycaster.ray.origin;
+  const dir = state.raycaster.ray.direction;
+  return {
+    origin: { x: origin.x, y: origin.y, z: origin.z },
+    dir: { x: dir.x, y: dir.y, z: dir.z },
+  };
+}
+
+/** Screen pixel position of a world point (CSS pixels relative to the canvas). */
+function projectToCanvasPx(state: ThreeState, point: { x: number; y: number; z: number }) {
+  const rect = state.renderer.domElement.getBoundingClientRect();
+  const projected = new THREE.Vector3(point.x, point.y, point.z).project(state.camera);
+  return {
+    x: ((projected.x + 1) / 2) * rect.width,
+    y: ((1 - projected.y) / 2) * rect.height,
+  };
+}
+
+/** World millimetres covered by one CSS pixel at the depth of `point`. */
+function mmPerPixelAt(state: ThreeState, point: { x: number; y: number; z: number }) {
+  const rect = state.renderer.domElement.getBoundingClientRect();
+  const look = new THREE.Vector3();
+  state.camera.getWorldDirection(look);
+  const toPoint = new THREE.Vector3(point.x, point.y, point.z).sub(state.camera.position);
+  const depth = Math.max(1e-3, toPoint.dot(look));
+  const viewHeight = 2 * depth * Math.tan(THREE.MathUtils.degToRad(state.camera.fov) / 2);
+  return viewHeight / Math.max(1, rect.height);
+}
+
+/** Pointer-travel mapping for a Push Pull drag on `face`, fixed at pointer-down. */
+function pushPullDragAxis(state: ThreeState, face: CadPlanarFace): PushPullScreenAxis {
+  const tipMm = 10;
+  const tip = {
+    x: face.origin.x + face.normal.x * tipMm,
+    y: face.origin.y + face.normal.y * tipMm,
+    z: face.origin.z + face.normal.z * tipMm,
+  };
+  return pushPullScreenAxis(
+    projectToCanvasPx(state, face.origin),
+    projectToCanvasPx(state, tip),
+    tipMm,
+    mmPerPixelAt(state, face.origin),
+  );
+}
+
+function canvasPx(state: ThreeState, clientX: number, clientY: number) {
+  const rect = state.renderer.domElement.getBoundingClientRect();
+  return { x: clientX - rect.left, y: clientY - rect.top };
+}
+
 function syncRulerOverlay(
   state: ThreeState,
   model: RulerModel,
@@ -2463,9 +2560,24 @@ export function WorkplaneViewport({
   modifierEdges = [],
   selectedModifierEdgeIds = [],
   onModifierEdgeToggle,
+  pushPullActive = false,
+  pushPullFaces = [],
+  pushPullHoverFaceId = null,
+  pushPullSelectedFaceId = null,
+  pushPullDistance = 0,
+  pushPullShowGhost = false,
+  pushPullGhostOpacity = 1,
+  pushPullChipText = null,
+  onPushPullHover,
+  onPushPullDragStart,
+  onPushPullDrag,
+  onPushPullDragEnd,
+  onPushPullDistanceCommit,
   viewNudgeAxesRef,
   rotationEditApiRef,
   onDropToWorkplane,
+  dropSurfaceActive = false,
+  onDropSurfacePick,
   sketchGuides,
   faceSnapActive = false,
   faceSnapSource = null,
@@ -2555,6 +2667,10 @@ export function WorkplaneViewport({
   faceSnapActiveRef.current = faceSnapActive;
   const onFaceSnapPickRef = useRef(onFaceSnapPick);
   onFaceSnapPickRef.current = onFaceSnapPick;
+  const dropSurfaceActiveRef = useRef(false);
+  dropSurfaceActiveRef.current = dropSurfaceActive;
+  const onDropSurfacePickRef = useRef(onDropSurfacePick);
+  onDropSurfacePickRef.current = onDropSurfacePick;
   const faceSnapSourceRef = useRef(faceSnapSource);
   faceSnapSourceRef.current = faceSnapSource;
   const alignReferenceShapesRef = useRef(alignReferenceShapes);
@@ -2611,6 +2727,8 @@ export function WorkplaneViewport({
   sketchOnModelRef.current = sketchOnModel;
   const sketch3DPointerRef = useRef<Sketch3DPointerState>(emptySketch3DPointer());
   const sketch3DPlaneKeyRef = useRef("");
+  const sketchPlaneKeyLiveRef = useRef("");
+  const skipSketchFrameOnMountRef = useRef(false);
   const sketchDrawKey = sketchOnModel
     ? [
       sketchOnModel.tool,
@@ -2632,6 +2750,7 @@ export function WorkplaneViewport({
       sketchOnModel.plane.surface?.kind ?? "plane",
     ].join("|")
     : "";
+  sketchPlaneKeyLiveRef.current = sketchPlaneKey;
   const onSketchPlanePickedRef = useRef(onSketchPlanePicked);
   const onSketchFacePickRejectedRef = useRef(onSketchFacePickRejected);
   const onSketchFacePickCancelRef = useRef(onSketchFacePickCancel);
@@ -2645,6 +2764,24 @@ export function WorkplaneViewport({
   modifierPreviewActiveRef.current = modifierPreviewActive;
   const modifierEdgesRef = useRef(modifierEdges);
   const [hoverModifierEdgeId, setHoverModifierEdgeId] = useState<number | null>(null);
+  const pushPullActiveRef = useRef(pushPullActive);
+  const pushPullFacesRef = useRef(pushPullFaces);
+  const pushPullSelectedFaceIdRef = useRef(pushPullSelectedFaceId);
+  const pushPullDistanceRef = useRef(pushPullDistance);
+  const pushPullDragRef = useRef<{
+    faceId: number;
+    pointerId: number;
+    startPx: { x: number; y: number };
+    axis: PushPullScreenAxis;
+  } | null>(null);
+  const onPushPullHoverRef = useRef(onPushPullHover);
+  const onPushPullDragStartRef = useRef(onPushPullDragStart);
+  const onPushPullDragRef = useRef(onPushPullDrag);
+  const onPushPullDragEndRef = useRef(onPushPullDragEnd);
+  const [pushPullChipScreen, setPushPullChipScreen] = useState<{ x: number; y: number } | null>(null);
+  const [pushPullChipEditing, setPushPullChipEditing] = useState(false);
+  const [pushPullChipDraft, setPushPullChipDraft] = useState("");
+  const [pushPullDragging, setPushPullDragging] = useState(false);
   const selectedIdsKeyRef = useRef(selectedIds.join("|"));
   const perfRef = useRef({
     fps: 0,
@@ -2706,6 +2843,30 @@ export function WorkplaneViewport({
     modifierEdgesRef.current = modifierEdges;
     rebuildModifierEdges(threeRef.current, modifierEdges, selectedModifierEdgeIds, modifierPreviewActive, hoverModifierEdgeId);
   }, [hoverModifierEdgeId, modifierEdges, modifierPreviewActive, selectedModifierEdgeIds]);
+
+  useEffect(() => {
+    pushPullActiveRef.current = pushPullActive;
+    pushPullFacesRef.current = pushPullFaces;
+    pushPullSelectedFaceIdRef.current = pushPullSelectedFaceId;
+    pushPullDistanceRef.current = pushPullDistance;
+    onPushPullHoverRef.current = onPushPullHover;
+    onPushPullDragStartRef.current = onPushPullDragStart;
+    onPushPullDragRef.current = onPushPullDrag;
+    onPushPullDragEndRef.current = onPushPullDragEnd;
+    if (pushPullActive) cancelActiveInteraction();
+    rebuildPushPullFaces(threeRef.current, pushPullFaces, pushPullHoverFaceId, pushPullSelectedFaceId);
+    rebuildPushPullGhost(threeRef.current, pushPullFaces, pushPullSelectedFaceId, pushPullDistance, pushPullShowGhost, pushPullGhostOpacity);
+    const state = threeRef.current;
+    const face = pushPullFaces.find((entry) => entry.id === pushPullSelectedFaceId);
+    if (state && face && Math.abs(pushPullDistance) > 1e-4) {
+      const world = pushPullChipWorld(face, pushPullDistance);
+      const screen = projectToScreen(new THREE.Vector3(world.x, world.y, world.z), state);
+      setPushPullChipScreen({ x: screen.x, y: screen.y - 18 });
+    } else {
+      setPushPullChipScreen(null);
+    }
+    if (state) state.needsRender = true;
+  }, [cancelActiveInteraction, pushPullActive, pushPullDistance, pushPullFaces, pushPullGhostOpacity, pushPullHoverFaceId, pushPullSelectedFaceId, pushPullShowGhost, onPushPullDrag, onPushPullDragEnd, onPushPullDragStart, onPushPullHover]);
 
   const placementRulerModeRef = useRef(placementRulerMode);
   const [objectSnapGuide, setObjectSnapGuide] = useState<ObjectSnapResult | null>(null);
@@ -3229,7 +3390,15 @@ export function WorkplaneViewport({
       return captureSceneImage(state);
     };
     perfRef.current.lastSample = performance.now();
-    resetCamera(state);
+    const resumeKey = sketchPlaneKeyLiveRef.current;
+    const resume = resumeKey && rememberedSketchCamera?.planeKey === resumeKey ? rememberedSketchCamera.pose : null;
+    if (resume) {
+      applyRememberedSketchCamera(state, resume);
+      sketch3DPlaneKeyRef.current = resumeKey;
+      skipSketchFrameOnMountRef.current = true;
+    } else {
+      resetCamera(state);
+    }
     if (viewNudgeAxesRef) {
       viewNudgeAxesRef.current = computeViewNudgeAxes(state.camera);
     }
@@ -3271,7 +3440,9 @@ export function WorkplaneViewport({
     const animate = () => {
       state.animationId = window.requestAnimationFrame(animate);
       const now = performance.now();
-      const controlsChanged = state.controls.update();
+      // The sketch tween owns the camera. OrbitControls.update() would apply leftover
+      // spherical delta / damping and yank the pose back toward the pre-sketch orbit.
+      const controlsChanged = state.cameraTween ? false : state.controls.update();
       // Stay in the loop for the still frame that republishes the overlays.
       // That frame has no controls change, but the camera move has not been cleared yet.
       if (!controlsChanged && !state.needsRender && !state.wasCameraMoving) {
@@ -3281,7 +3452,7 @@ export function WorkplaneViewport({
         }
         return;
       }
-      constrainCamera(state, workspaceRef.current);
+      if (!state.cameraTween) constrainCamera(state, workspaceRef.current);
       // Future edits: keep this before any view cube or transform-overlay projection.
       // OrbitControls changes camera position/quaternion, but manual Vector3.project()
       // can read the previous matrix unless we force the matrix world current here.
@@ -3387,6 +3558,9 @@ export function WorkplaneViewport({
     window.addEventListener("resize", state.resize);
 
     return () => {
+      if (sketchOnModelRef.current && sketchPlaneKeyLiveRef.current) {
+        rememberSketchCamera(state, sketchPlaneKeyLiveRef.current);
+      }
       transformRef.current = null;
       dragRef.current = null;
       marqueeRef.current = null;
@@ -3427,6 +3601,8 @@ export function WorkplaneViewport({
     const session = sketchOnModelRef.current;
     if (!state) return;
     if (!session || !sketchDrawKey) {
+      cancelSketchCameraTween(state);
+      if (sketch3DPlaneKeyRef.current) rememberedSketchCamera = null;
       clearSketchOnModel(state.scene);
       sketch3DPointerRef.current = emptySketch3DPointer();
       sketch3DPlaneKeyRef.current = "";
@@ -3436,21 +3612,22 @@ export function WorkplaneViewport({
     const host = { scene: state.scene, camera: state.camera, domElement: state.renderer.domElement, controls: state.controls };
     if (sketch3DPlaneKeyRef.current !== sketchPlaneKey) {
       sketch3DPlaneKeyRef.current = sketchPlaneKey;
-      frameSketchCamera(host, session);
+      startSketchCameraTween(state, session);
     }
     syncSketchOnModel(host, session, sketch3DPointerRef.current);
     state.needsRender = true;
   }, [sketchDrawKey, sketchPlaneKey]);
 
   useEffect(() => {
+    if (skipSketchFrameOnMountRef.current) {
+      skipSketchFrameOnMountRef.current = false;
+      return;
+    }
     if (!sketchFrameRequest) return;
     const state = threeRef.current;
     const session = sketchOnModelRef.current;
     if (!state || !session) return;
-    frameSketchCamera(
-      { scene: state.scene, camera: state.camera, domElement: state.renderer.domElement, controls: state.controls },
-      session,
-    );
+    startSketchCameraTween(state, session);
     sketch3DPlaneKeyRef.current = sketchPlaneKey;
     state.needsRender = true;
   }, [sketchFrameRequest]);
@@ -4668,8 +4845,10 @@ export function WorkplaneViewport({
     const face = pickShapeFaceAt(clientX, clientY);
     const locked = faceSnapSourceRef.current;
     const sameSide = Boolean(face && locked && face.shapeId === locked.shapeId && face.normal.every((value, index) => value === locked.normal[index]));
-    const shape = face && !sameSide ? shapesRef.current.find((item) => item.id === face.shapeId) ?? null : null;
-    syncFaceSnapHighlight(state, FACE_SNAP_HOVER_NAME, shape, sameSide ? null : face, 0.28);
+    const dropBlocked = Boolean(dropSurfaceActiveRef.current && face && selectedIdsRef.current.includes(face.shapeId));
+    const highlight = face && !sameSide && !dropBlocked ? face : null;
+    const shape = highlight ? shapesRef.current.find((item) => item.id === highlight.shapeId) ?? null : null;
+    syncFaceSnapHighlight(state, FACE_SNAP_HOVER_NAME, shape, highlight, 0.28);
   }, [pickShapeFaceAt]);
 
   const clearFaceSnapHover = useCallback(() => {
@@ -4809,6 +4988,18 @@ export function WorkplaneViewport({
         flushSync(() => setBusyLabel("Selecting…"));
       }
       pickCacheRef.current = null;
+      if (dropSurfaceActiveRef.current) {
+        event.preventDefault();
+        const face = pickShapeFaceAt(event.clientX, event.clientY);
+        if (face) {
+          onDropSurfacePickRef.current?.({ kind: "face", ...face });
+          return;
+        }
+        if (toPlanePoint(event.clientX, event.clientY)) {
+          onDropSurfacePickRef.current?.({ kind: "workplane" });
+        }
+        return;
+      }
       if (faceSnapActiveRef.current) {
         event.preventDefault();
         const face = pickShapeFaceAt(event.clientX, event.clientY);
@@ -4827,6 +5018,27 @@ export function WorkplaneViewport({
           onSelectFeature(featureHit.featureId);
           return;
         }
+      }
+
+      if (pushPullActiveRef.current) {
+        event.preventDefault();
+        const live = threeRef.current ?? state;
+        const ray = pointerWorldRay(live, event.clientX, event.clientY);
+        const faceId = pickPlanarFaceId(pushPullFacesRef.current, ray.origin, ray.dir);
+        if (faceId === null) return;
+        const face = pushPullFacesRef.current.find((entry) => entry.id === faceId);
+        if (!face) return;
+        pushPullDragRef.current = {
+          faceId,
+          pointerId: event.pointerId,
+          startPx: canvasPx(live, event.clientX, event.clientY),
+          axis: pushPullDragAxis(live, face),
+        };
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        live.controls.enabled = false;
+        setPushPullDragging(true);
+        onPushPullDragStartRef.current?.(faceId, 0);
+        return;
       }
 
       if (modifierActive) {
@@ -5114,6 +5326,7 @@ export function WorkplaneViewport({
       pickCsgFeatureAt,
       pickModifierEdge,
       pickShape,
+      pickShapeFaceAt,
       pickShapesAt,
       pickSketchFaceAt,
       clearSketchFaceHover,
@@ -5136,7 +5349,7 @@ export function WorkplaneViewport({
       shapeHoverFrameRef.current = null;
       const state = threeRef.current;
       const point = shapeHoverPointRef.current;
-      if (!state || orbitingRef.current || modifierActiveRef.current || rulerModeRef.current || rulerMoveModeRef.current || sketchFacePickModeRef.current || placementRulerModeRef.current || dragRef.current || marqueeRef.current || transformRef.current) {
+      if (!state || orbitingRef.current || modifierActiveRef.current || pushPullActiveRef.current || rulerModeRef.current || rulerMoveModeRef.current || sketchFacePickModeRef.current || placementRulerModeRef.current || dragRef.current || marqueeRef.current || transformRef.current) {
         if (shapeHoverIdRef.current) {
           shapeHoverIdRef.current = null;
           if (state) showShapeHoverOutline(state, null);
@@ -5169,6 +5382,19 @@ export function WorkplaneViewport({
       }
       if (faceSnapActiveRef.current) {
         updateFaceSnapHover(event.clientX, event.clientY);
+      }
+      if (pushPullActiveRef.current) {
+        const live = threeRef.current;
+        if (!live) return;
+        const ray = pointerWorldRay(live, event.clientX, event.clientY);
+        const drag = pushPullDragRef.current;
+        if (drag) {
+          onPushPullDragRef.current?.(pushPullDistanceFromDrag(drag.axis, drag.startPx, canvasPx(live, event.clientX, event.clientY)));
+          return;
+        }
+        const faceId = pickPlanarFaceId(pushPullFacesRef.current, ray.origin, ray.dir);
+        onPushPullHoverRef.current?.(faceId);
+        return;
       }
       if (modifierActiveRef.current) {
         updateModifierEdgeHover(event.clientX, event.clientY);
@@ -5323,6 +5549,7 @@ export function WorkplaneViewport({
       showShapeHoverOutline(threeRef.current, null);
     }
     if (modifierActiveRef.current) clearModifierEdgeHover();
+    if (pushPullActiveRef.current && !pushPullDragRef.current) onPushPullHoverRef.current?.(null);
     if (sketchFacePickModeRef.current) clearSketchFaceHover();
   }, [clearModifierEdgeHover, clearSketchFaceHover]);
 
@@ -5350,6 +5577,22 @@ export function WorkplaneViewport({
 
   const finishDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      const pushPullDrag = pushPullDragRef.current;
+      if (pushPullDrag && event.pointerId === pushPullDrag.pointerId) {
+        const live = threeRef.current;
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        pushPullDragRef.current = null;
+        setPushPullDragging(false);
+        if (live) live.controls.enabled = true;
+        if (live) {
+          onPushPullDragEndRef.current?.(pushPullDistanceFromDrag(pushPullDrag.axis, pushPullDrag.startPx, canvasPx(live, event.clientX, event.clientY)));
+        } else {
+          onPushPullDragEndRef.current?.(pushPullDistanceRef.current);
+        }
+        return;
+      }
       const sketchSession = sketchOnModelRef.current;
       if (sketchSession && sketch3DPointerRef.current.gesture) {
         sketch3DPointerUp(sketchSession, sketch3DPointerRef.current);
@@ -6082,7 +6325,7 @@ export function WorkplaneViewport({
         )}
       </div>
 
-      <section className={`workplane-wrap ${sketchOnModel ? "sketch-on-model" : ""} ${sketchFacePickMode ? "sketch-face-pick-mode" : ""} ${sketchFacePickMode && sketchFaceHovering ? "sketch-face-hover" : ""} ${sketchFacePickMode && sketchFaceHoverBlocked ? "sketch-face-hover-blocked" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${rulerMoveMode ? "ruler-move-mode" : ""} ${placementRulerMode ? "placement-ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
+      <section className={`workplane-wrap ${sketchOnModel ? "sketch-on-model" : ""} ${sketchFacePickMode ? "sketch-face-pick-mode" : ""} ${sketchFacePickMode && sketchFaceHovering ? "sketch-face-hover" : ""} ${sketchFacePickMode && sketchFaceHoverBlocked ? "sketch-face-hover-blocked" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${rulerMoveMode ? "ruler-move-mode" : ""} ${placementRulerMode ? "placement-ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""} ${pushPullActive ? "push-pull-face-pick" : ""} ${pushPullDragging ? "push-pull-dragging" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -6150,7 +6393,49 @@ export function WorkplaneViewport({
             </div>
           ) : null}
           <div className={`measurement-fade${measurementsConcealed ? " is-concealed" : ""}`}>
-          {transformOverlay && !sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive ? (
+          {pushPullChipText && pushPullChipScreen ? (
+            pushPullChipEditing ? (
+              <input
+                className="dimension-label push-pull-chip"
+                style={{ "--overlay-x": `${pushPullChipScreen.x}px`, "--overlay-y": `${pushPullChipScreen.y}px` } as CSSProperties}
+                value={pushPullChipDraft}
+                inputMode="decimal"
+                aria-label="Push Pull distance"
+                autoFocus
+                onChange={(event) => setPushPullChipDraft(event.currentTarget.value)}
+                onBlur={() => {
+                  const next = Number(pushPullChipDraft);
+                  setPushPullChipEditing(false);
+                  if (Number.isFinite(next)) onPushPullDistanceCommit?.(next);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.currentTarget.blur();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setPushPullChipEditing(false);
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="dimension-label push-pull-chip"
+                style={{ "--overlay-x": `${pushPullChipScreen.x}px`, "--overlay-y": `${pushPullChipScreen.y}px` } as CSSProperties}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  setPushPullChipDraft((pushPullChipText ?? "").replace(/[^\d.+-]/g, ""));
+                  setPushPullChipEditing(true);
+                }}
+              >
+                {pushPullChipText}
+              </button>
+            )
+          ) : null}
+          {transformOverlay && !sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive && !pushPullActive ? (
             <TransformOverlay
               box={transformOverlay}
               measureKey={pinnedMeasureKey ?? hoverMeasureKey}
@@ -6221,10 +6506,11 @@ export function WorkplaneViewport({
         <WorkplaneDimensionsControl workspace={workspace} onChange={applyWorkspaceSettings} />
         {onDropToWorkplane ? (
           <PeakTipButton
-            className={`workplane-viewport-bar-snap ${selectedIds.length > 0 ? "" : "disabled"}`}
+            className={`workplane-viewport-bar-snap ${dropSurfaceActive ? "active" : ""} ${selectedIds.length > 0 ? "" : "disabled"}`}
             label="Drop"
             description={TOOL_DESCRIPTIONS.drop}
             disabled={selectedIds.length === 0}
+            aria-pressed={dropSurfaceActive}
             onClick={onDropToWorkplane}
           >
             <ToolbarDropToWorkplaneIcon />
@@ -6450,6 +6736,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     dragPlane,
     animationId: 0,
     needsRender: true,
+    cameraTween: null,
     wasCameraMoving: false,
     cameraStillFrames: 0,
     cameraOverlayHold: false,
@@ -6498,7 +6785,95 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
   return state;
 }
 
+function sketch3dHost(state: ThreeState) {
+  return {
+    scene: state.scene,
+    camera: state.camera,
+    domElement: state.renderer.domElement,
+    controls: state.controls,
+  };
+}
+
+function rememberSketchCamera(state: ThreeState, planeKey: string) {
+  if (!planeKey) return;
+  rememberedSketchCamera = {
+    planeKey,
+    pose: captureSketchCameraPose(sketch3dHost(state)),
+  };
+}
+
+function applyRememberedSketchCamera(state: ThreeState, pose: SketchCameraPose) {
+  cancelSketchCameraTween(state);
+  applySketchCameraPose(sketch3dHost(state), pose);
+  stopCameraCoast(state.controls);
+  state.controls.enabled = true;
+  state.controls.enableDamping = true;
+  state.controls.update();
+  state.needsRender = true;
+}
+
+function restoreOrbitCameraUp(state: ThreeState) {
+  const up = state.camera.up;
+  if (up.x === 0 && up.y === 1 && up.z === 0) return;
+  state.camera.up.set(0, 1, 0);
+  state.camera.lookAt(state.controls.target);
+  state.camera.updateProjectionMatrix();
+  state.needsRender = true;
+}
+
+function cancelSketchCameraTween(state: ThreeState) {
+  const tween = state.cameraTween;
+  if (tween?.handle) cancelAnimationFrame(tween.handle);
+  const hadTween = Boolean(tween);
+  state.cameraTween = null;
+  restoreOrbitCameraUp(state);
+  if (!hadTween) return;
+  state.controls.enabled = true;
+  state.controls.enableDamping = true;
+}
+
+function startSketchCameraTween(state: ThreeState, session: SketchOnModelSession) {
+  const host = sketch3dHost(state);
+  const to = sketchFramingPose(session);
+  const from = captureSketchCameraPose(host);
+  cancelSketchCameraTween(state);
+  if (prefersReducedMotion() || sketchCameraNearlyFramed(from, to)) {
+    applySketchCameraPose(host, to);
+    state.needsRender = true;
+    return;
+  }
+  state.controls.enabled = false;
+  state.controls.enableDamping = false;
+  stopCameraCoast(state.controls);
+  state.wasCameraMoving = true;
+  state.cameraStillFrames = 0;
+  state.cameraOverlayHold = false;
+  const tween = {
+    handle: 0,
+    started: performance.now(),
+    duration: sketchCameraTweenMs(from, to),
+    from,
+    to,
+  };
+  state.cameraTween = tween;
+  const tick = (now: number) => {
+    if (state.cameraTween !== tween) return;
+    const t = Math.min(1, (now - tween.started) / tween.duration);
+    applySketchCameraPose(host, interpolateSketchCameraPose(tween.from, tween.to, sketchCameraEase(t)));
+    state.needsRender = true;
+    if (t < 1) {
+      tween.handle = requestAnimationFrame(tick);
+      return;
+    }
+    applySketchCameraPose(host, tween.to);
+    cancelSketchCameraTween(state);
+  };
+  tween.handle = requestAnimationFrame(tick);
+  state.needsRender = true;
+}
+
 function resetCamera(state: ThreeState) {
+  cancelSketchCameraTween(state);
   state.controls.enabled = true;
   state.camera.up.set(0, 1, 0);
   state.camera.position.copy(CAMERA_HOME);
@@ -6519,6 +6894,7 @@ function viewCubeFaceFromTarget(target: EventTarget | null): ViewCubeFace | null
 }
 
 function setCameraToViewFace(state: ThreeState, face: ViewCubeFace) {
+  cancelSketchCameraTween(state);
   const offset = state.camera.position.clone().sub(state.controls.target);
   const distance = clamp(offset.length(), 22, 4200);
   const directionByFace: Record<ViewCubeFace, THREE.Vector3> = {
@@ -6542,6 +6918,7 @@ function setCameraToViewFace(state: ThreeState, face: ViewCubeFace) {
 const VIEW_CUBE_ORBIT_RADIANS_PER_PX = 0.0075;
 
 function orbitCameraByPointerDelta(state: ThreeState, deltaX: number, deltaY: number) {
+  cancelSketchCameraTween(state);
   const offset = state.camera.position.clone().sub(state.controls.target);
   const spherical = new THREE.Spherical().setFromVector3(offset);
   spherical.theta -= deltaX * VIEW_CUBE_ORBIT_RADIANS_PER_PX;
@@ -7161,9 +7538,7 @@ function rebuildPrintOverlays(state: ThreeState, skipRebuild = false) {
   if (key === state.printLayer.userData.overlayJobKey) return;
   const alreadyShown = Boolean(state.printLayer.userData.overlayFadedIn);
   const gen = ++printOverlayGeneration;
-  const triangles = collectAllPrintTriangles(state);
   void runPrintOverlayInWorker({
-    triangles,
     overhang: state.showOverhangStripes,
     angle: state.printerAngle,
     thinWalls: state.showThinWalls,
@@ -7171,6 +7546,7 @@ function rebuildPrintOverlays(state: ThreeState, skipRebuild = false) {
     trappedResin: state.showTrappedResin,
     nozzleMm: state.nozzleMm,
     shapes: state.printShapes,
+    collectTriangles: () => collectAllPrintTriangles(state),
   }).then((marks) => {
     if (gen !== printOverlayGeneration) return;
     if (!marks) return;
@@ -7532,6 +7908,8 @@ function shapeGeometryFingerprint(shape: WorkplaneShape) {
 
 const NEW_SOLID_SETTLE_MM = 2.5;
 const NEW_SOLID_SETTLE_MS = 180;
+const SKETCH_EXTRUDE_RISE_MS = 420;
+const SKETCH_EXTRUDE_START_SCALE = 0.06;
 const MAX_SETTLE_SHAPES = 6;
 /** Group/Tie/Intersect start slightly large and ease in — not the new-solid drop. */
 const COMBINE_START_SCALE = 1.08;
@@ -7564,6 +7942,10 @@ function clearShapeSettle(object: THREE.Object3D) {
   delete object.userData.settleRestY;
   delete object.userData.combining;
   delete object.userData.combineRestScale;
+  delete object.userData.rising;
+  delete object.userData.riseRestPos;
+  delete object.userData.riseHeight;
+  delete object.userData.riseRestScale;
 }
 
 function settleLiftMm() {
@@ -7574,6 +7956,15 @@ function pauseShapeSettle(object: THREE.Object3D) {
   if (object.userData.combining) {
     const rest = object.userData.combineRestScale;
     if (rest instanceof THREE.Vector3) object.scale.copy(rest);
+    clearShapeSettle(object);
+    object.updateMatrixWorld(true);
+    return;
+  }
+  if (object.userData.rising) {
+    const rest = object.userData.riseRestScale;
+    const origin = object.userData.riseRestPos;
+    if (rest instanceof THREE.Vector3) object.scale.copy(rest);
+    if (origin instanceof THREE.Vector3) object.position.copy(origin);
     clearShapeSettle(object);
     object.updateMatrixWorld(true);
     return;
@@ -7625,6 +8016,61 @@ function startShapeSettle(state: ThreeState, object: THREE.Object3D) {
       return;
     }
     object.position.y = targetY;
+    object.updateMatrixWorld(true);
+    clearShapeSettle(object);
+  };
+  object.userData.motionHandle = requestAnimationFrame(tick);
+  state.needsRender = true;
+}
+
+function startSketchExtrudeRise(state: ThreeState, object: THREE.Object3D) {
+  if (prefersReducedMotion()) {
+    clearShapeSettle(object);
+    object.updateMatrixWorld(true);
+    state.needsRender = true;
+    return;
+  }
+  cancelShapeMotion(object);
+  const restPos = object.position.clone();
+  const restScale = object.scale.clone();
+  const height = typeof object.userData.riseHeight === "number"
+    ? object.userData.riseHeight
+    : Math.max(object.userData.rulerDimensions?.[1] ?? 1, 1);
+  object.userData.rising = true;
+  object.userData.riseRestPos = restPos;
+  object.userData.riseRestScale = restScale;
+  object.userData.riseHeight = height;
+  const poseAt = (scaleY: number) => {
+    const rest = object.userData.riseRestScale instanceof THREE.Vector3
+      ? object.userData.riseRestScale
+      : restScale;
+    const origin = object.userData.riseRestPos instanceof THREE.Vector3
+      ? object.userData.riseRestPos
+      : restPos;
+    const liveHeight = typeof object.userData.riseHeight === "number" ? object.userData.riseHeight : height;
+    object.scale.set(rest.x, rest.y * scaleY, rest.z);
+    const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(object.quaternion);
+    object.position.copy(origin).addScaledVector(localUp, -(liveHeight / 2) * (1 - scaleY));
+  };
+  poseAt(SKETCH_EXTRUDE_START_SCALE);
+  object.updateMatrixWorld(true);
+  const started = performance.now();
+  const tick = (now: number) => {
+    if (!object.parent || !object.userData.rising) {
+      clearShapeSettle(object);
+      return;
+    }
+    const t = Math.min(1, (now - started) / SKETCH_EXTRUDE_RISE_MS);
+    const eased = 1 - (1 - t) ** 3;
+    const scaleY = SKETCH_EXTRUDE_START_SCALE + (1 - SKETCH_EXTRUDE_START_SCALE) * eased;
+    poseAt(scaleY);
+    object.updateMatrixWorld(true);
+    state.needsRender = true;
+    if (t < 1) {
+      object.userData.motionHandle = requestAnimationFrame(tick);
+      return;
+    }
+    poseAt(1);
     object.updateMatrixWorld(true);
     clearShapeSettle(object);
   };
@@ -7966,6 +8412,10 @@ function applyShapePose(object: THREE.Object3D, shape: WorkplaneShape) {
   if (object.userData.settling || object.userData.pendingSettle) {
     object.userData.settleRestY = restY;
     if (object.userData.pendingSettle) object.position.y = restY + settleLiftMm();
+  } else if (object.userData.rising) {
+    const restPos = object.userData.riseRestPos;
+    if (restPos instanceof THREE.Vector3) restPos.set(shape.x, restY, shape.z);
+    else object.userData.riseRestPos = new THREE.Vector3(shape.x, restY, shape.z);
   } else {
     object.position.y = restY;
   }
@@ -7981,6 +8431,10 @@ function applyShapePose(object: THREE.Object3D, shape: WorkplaneShape) {
     const rest = object.userData.combineRestScale;
     if (rest instanceof THREE.Vector3) rest.set(restScaleX, restScaleY, restScaleZ);
     else object.userData.combineRestScale = new THREE.Vector3(restScaleX, restScaleY, restScaleZ);
+  } else if (object.userData.rising) {
+    const rest = object.userData.riseRestScale;
+    if (rest instanceof THREE.Vector3) rest.set(restScaleX, restScaleY, restScaleZ);
+    else object.userData.riseRestScale = new THREE.Vector3(restScaleX, restScaleY, restScaleZ);
   } else {
     object.scale.set(restScaleX, restScaleY, restScaleZ);
   }
@@ -8007,6 +8461,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
 
   const keepIds = new Set<string>();
   const newSolids: THREE.Object3D[] = [];
+  const riseSolids: THREE.Object3D[] = [];
   const combineSolids: THREE.Object3D[] = [];
   const previewActive = state.modifierPreviewActive;
   visibleShapes.forEach((shape) => {
@@ -8089,6 +8544,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
       startEdgeWipe(state, outgoing, object, wipe.polylines);
     } else if (!existing && !held && !shape.hole && !shape.construction) {
       if (pendingScaleIntro?.ids.has(shape.id)) combineSolids.push(object);
+      else if (shape.sketchFinish === "extrude" || shape.sketchFinish === "revolve") riseSolids.push(object);
       else newSolids.push(object);
     }
   });
@@ -8124,6 +8580,9 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
       object.position.y = object.position.y + settleLiftMm();
       startShapeSettle(state, object);
     });
+  }
+  if (!initialSync) {
+    riseSolids.forEach((object) => startSketchExtrudeRise(state, object));
   }
   const introScale = pendingScaleIntro?.startScale ?? COMBINE_START_SCALE;
   combineSolids.forEach((object) => startShapeCombine(state, object, introScale));
@@ -8392,6 +8851,130 @@ function rebuildModifierEdges(state: ThreeState | null, edges: CadModifierEdge[]
   state.modifierLayer.add(lines, hover);
   state.modifierLayer.userData.modifierEdgeBatch = batch;
   applyXrayClipping(state);
+  state.needsRender = true;
+}
+
+const PUSH_PULL_FACE_BRONZE = new THREE.Color("#c6a15b");
+const PUSH_PULL_FACE_HOVER = new THREE.Color("#d4b37a");
+
+/** Face outlines arrive as an open ordered loop; draw it closed. */
+function polylineToLinePositions(points: number[]) {
+  const count = Math.floor(points.length / 3);
+  if (count < 2) return new Float32Array(0);
+  const last = (count - 1) * 3;
+  const alreadyClosed = count > 2
+    && Math.hypot(points[0] - points[last], points[1] - points[last + 1], points[2] - points[last + 2]) < 1e-5;
+  const segments = count > 2 && !alreadyClosed ? count : count - 1;
+  const positions = new Float32Array(segments * 6);
+  let cursor = 0;
+  for (let index = 0; index < segments; index += 1) {
+    const from = index * 3;
+    const to = ((index + 1) % count) * 3;
+    positions[cursor++] = points[from];
+    positions[cursor++] = points[from + 1];
+    positions[cursor++] = points[from + 2];
+    positions[cursor++] = points[to];
+    positions[cursor++] = points[to + 1];
+    positions[cursor++] = points[to + 2];
+  }
+  return positions;
+}
+
+function rebuildPushPullFaces(
+  state: ThreeState | null,
+  faces: CadPlanarFace[],
+  hoverId: number | null,
+  selectedId: number | null,
+) {
+  if (!state) return;
+  const existing = state.modifierLayer.userData.pushPullFaceLines as THREE.LineSegments | undefined;
+  if (existing) {
+    state.modifierLayer.remove(existing);
+    existing.geometry.dispose();
+    (existing.material as THREE.Material).dispose();
+  }
+  delete state.modifierLayer.userData.pushPullFaceLines;
+  const drawable = faces.filter((face) => face.points.length >= 6);
+  if (drawable.length === 0) {
+    state.needsRender = true;
+    return;
+  }
+  const chunks = drawable.map((face) => polylineToLinePositions(face.points));
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const positions = new Float32Array(total);
+  const colors = new Float32Array(total);
+  let offset = 0;
+  drawable.forEach((face, faceIndex) => {
+    const chunk = chunks[faceIndex];
+    positions.set(chunk, offset);
+    const color = face.id === selectedId ? PUSH_PULL_FACE_BRONZE : face.id === hoverId ? PUSH_PULL_FACE_HOVER : PUSH_PULL_FACE_BRONZE;
+    const opacityScale = face.id === selectedId || face.id === hoverId ? 1 : 0.42;
+    for (let index = 0; index < chunk.length; index += 3) {
+      colors[offset + index] = color.r * opacityScale;
+      colors[offset + index + 1] = color.g * opacityScale;
+      colors[offset + index + 2] = color.b * opacityScale;
+    }
+    offset += chunk.length;
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+    vertexColors: true,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+  }));
+  lines.renderOrder = 1003;
+  lines.frustumCulled = false;
+  state.modifierLayer.add(lines);
+  state.modifierLayer.userData.pushPullFaceLines = lines;
+  state.needsRender = true;
+}
+
+function rebuildPushPullGhost(
+  state: ThreeState | null,
+  faces: CadPlanarFace[],
+  selectedId: number | null,
+  distance: number,
+  show: boolean,
+  opacity: number,
+) {
+  if (!state) return;
+  const existing = state.modifierLayer.userData.pushPullGhost as THREE.Mesh | undefined;
+  if (existing) {
+    state.modifierLayer.remove(existing);
+    existing.geometry.dispose();
+    (existing.material as THREE.Material).dispose();
+  }
+  delete state.modifierLayer.userData.pushPullGhost;
+  const face = faces.find((entry) => entry.id === selectedId);
+  if (!show || !face || Math.abs(distance) < 1e-4) {
+    state.needsRender = true;
+    return;
+  }
+  const mesh = ghostPrismMesh(face, distance);
+  if (mesh.positions.length < 9) {
+    state.needsRender = true;
+    return;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+  geometry.computeVertexNormals();
+  const ghost = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+    color: "#efebe8",
+    transparent: true,
+    opacity: Math.max(0, Math.min(1, opacity)) * 0.42,
+    depthWrite: false,
+    metalness: 0.06,
+    roughness: 0.55,
+    side: THREE.DoubleSide,
+  }));
+  ghost.renderOrder = 1001;
+  ghost.frustumCulled = false;
+  state.modifierLayer.add(ghost);
+  state.modifierLayer.userData.pushPullGhost = ghost;
   state.needsRender = true;
 }
 
@@ -9593,7 +10176,7 @@ function applyDragItemPreview(state: ThreeState, item: DragItem) {
     if (state.edgeWipe && (state.edgeWipe.incoming === item.visual || state.edgeWipe.outgoing === item.visual)) {
       finishEdgeWipe(state);
     }
-    if (item.visual.userData.settling || item.visual.userData.pendingSettle || item.visual.userData.combining) {
+    if (item.visual.userData.settling || item.visual.userData.pendingSettle || item.visual.userData.combining || item.visual.userData.rising) {
       pauseShapeSettle(item.visual);
     }
     if (!item.hadPreviewSimplified) {
@@ -9912,6 +10495,8 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
   group.userData.radialSnap = isConstantRadiusRoundKind(shape.kind)
     && Math.abs(shapeWidth(shape) - shapeDepth(shape)) <= 0.05;
   group.userData.shapeKind = shape.kind;
+  group.userData.sketchFinish = shape.sketchFinish;
+  group.userData.riseHeight = shape.height;
   group.userData.showEdges = showEdges;
   group.userData.rulerDimensions = [shapeWidth(shape), shape.height, shapeDepth(shape)] satisfies [number, number, number];
   group.userData.rulerTopologyKey = rulerShapeTopologyKey(shape);
@@ -10282,7 +10867,7 @@ function addMesh(
 function addCadDisplayEdges(group: THREE.Group, shape: WorkplaneShape, color: string, opacity: number) {
   if (!shape.cadDisplayEdges?.length || !shape.importedMesh) return false;
   // Compare in the baked mesh frame. Resizing happens once, when the line is drawn.
-  const edges = filterCoplanarDisplayEdges(
+  const edges = viewportCadDisplayEdges(
     shape.cadDisplayEdges,
     shape.importedMesh.positions,
     shape.importedMesh.indices,

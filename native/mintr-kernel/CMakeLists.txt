@@ -36,6 +36,7 @@ target_link_libraries(MintrKernel PRIVATE
   TKMesh
   TKGeomAlgo
   TKFillet
+  TKFeat
   TKOffset
   TKXSBase
   TKDE

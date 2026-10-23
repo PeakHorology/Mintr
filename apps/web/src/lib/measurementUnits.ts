@@ -83,3 +83,13 @@ export function formatMeasurementNumber(value: number, accuracy: MeasurementAccu
   const zeroThreshold = 0.5 * 10 ** -decimals;
   return (Math.abs(value) < zeroThreshold ? 0 : value).toFixed(decimals);
 }
+
+const MM3_PER_ML = 1000;
+
+/** Inspector line: `Volume 8000 mm³ (8 mL)`. */
+export function formatVolumeWithMilliliters(volumeMm3: number, accuracy: MeasurementAccuracy) {
+  const mm3 = formatMeasurementNumber(volumeMm3, accuracy);
+  const mlAccuracy: MeasurementAccuracy = volumeMm3 >= 100 ? Math.max(accuracy, 1) as MeasurementAccuracy : Math.max(accuracy, 2) as MeasurementAccuracy;
+  const ml = formatMeasurementNumber(volumeMm3 / MM3_PER_ML, mlAccuracy);
+  return `Volume ${mm3} mm³ (${ml} mL)`;
+}

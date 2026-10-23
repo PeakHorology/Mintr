@@ -2937,15 +2937,12 @@
 }
 
 .sketch-3d-hint {
-  position: absolute;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  z-index: calc(var(--z-overlay) + 3);
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  max-width: min(640px, calc(100% - 48px));
+  justify-content: center;
+  max-width: min(640px, 100%);
   padding: 8px 12px;
   pointer-events: none;
   color: var(--ink-strong);
@@ -2956,18 +2953,6 @@
   font-size: var(--text-xs);
   font-weight: 650;
   text-align: center;
-}
-
-.sketch-3d-hint button {
-  pointer-events: auto;
-  flex: none;
-  padding: 6px 10px;
-  border: 1px solid var(--peak-border);
-  border-radius: var(--radius-md);
-  background: var(--action-surface);
-  color: var(--action-text);
-  cursor: pointer;
-  font-weight: 700;
 }
 
 .workplane-wrap.sketch-on-model,
@@ -3010,12 +2995,6 @@
   background: var(--action-surface);
   color: var(--action-text);
   border-color: var(--action-surface);
-}
-
-.sketch-3d-hint button.sketch-view-3d-button {
-  background: var(--glass-surface-strong);
-  color: var(--ink-strong);
-  border-color: #d2c4a8;
 }
 
 .sketch-utility-sidebar .editor-tool-sidebar-scroll,
@@ -3118,10 +3097,22 @@
   display: none;
 }
 
+@keyframes sketch-fill-once {
+  from { fill-opacity: 0; }
+  to { fill-opacity: 1; }
+}
+
 .sketch-profile-fills path {
   fill: rgba(64, 140, 220, 0.22);
   stroke: none;
   cursor: pointer;
+  animation: sketch-fill-once 340ms cubic-bezier(0.22, 1, 0.32, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-profile-fills path {
+    animation: none;
+  }
 }
 
 .sketch-profile-fills path.selected-profile {

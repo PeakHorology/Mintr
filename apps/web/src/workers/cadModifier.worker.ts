@@ -13,6 +13,7 @@ import type {
   CadModifierQuality,
   CadModifierWorkerRequest,
   CadModifierWorkerResponse,
+  CadPlanarFace,
 } from "@/lib/cadModifierTypes";
 import {
   isAnalyticConeSeam,
@@ -24,6 +25,7 @@ import {
   treatmentDetailFaceAreaLimit,
 } from "@/lib/cadModifierEdges";
 import { inferThreadSideFromFace, resolveThreadParams, type ResolvedThreadParams } from "@/lib/metricThreads";
+import { edgePolylinesFromWireframe, orderWireLoop } from "@/lib/wireLoop";
 
 const HASH_UPPER_BOUND = 2_147_483_647;
 const CAD_EDGE_WIREFRAME_DEFLECTION = 0.035;
@@ -44,6 +46,8 @@ let edgeHandles: ShapeHandle[] = [];
 let edgeOwners: number[] = [];
 let cylindricalFaceHandles: ShapeHandle[] = [];
 let cylindricalFaces: CadCylindricalFace[] = [];
+let planarFaceHandles: ShapeHandle[] = [];
+let planarFaces: CadPlanarFace[] = [];
 let sourcePartCount = 0;
 let accumulatedShape: ShapeHandle | null = null;
 let accumulatedEdgeIds: number[] = [];
@@ -96,6 +100,8 @@ function releaseSession(cad: OcctKernel) {
   edgeOwners = [];
   cylindricalFaceHandles = [];
   cylindricalFaces = [];
+  planarFaceHandles = [];
+  planarFaces = [];
   sourcePartCount = 0;
   accumulatedShape = null;
   accumulatedEdgeIds = [];
@@ -173,6 +179,40 @@ function planarFaceNormal(cad: OcctKernel, face: ShapeHandle) {
   }
   const length = Math.hypot(normal.x, normal.y, normal.z) || 1;
   return { x: normal.x / length, y: normal.y / length, z: normal.z / length };
+}
+
+function geometricallyPlanarNormal(cad: OcctKernel, face: ShapeHandle) {
+  try {
+    if (cad.surfaceType(face) === "plane") return planarFaceNormal(cad, face);
+  } catch {
+    // Fall through and sample the surface.
+  }
+  try {
+    const bounds = cad.uvBounds(face);
+    const samples: Array<{ x: number; y: number; z: number }> = [];
+    for (const u of [0.2, 0.5, 0.8]) {
+      for (const v of [0.2, 0.5, 0.8]) {
+        samples.push(cad.surfaceNormal(
+          face,
+          bounds.uMin + (bounds.uMax - bounds.uMin) * u,
+          bounds.vMin + (bounds.vMax - bounds.vMin) * v,
+        ));
+      }
+    }
+    if (samples.length < 3) return null;
+    const n0 = unitVec(samples[0]);
+    const planar = samples.every((sample) => {
+      const n = unitVec(sample);
+      return Math.abs(n.x * n0.x + n.y * n0.y + n.z * n0.z) > 0.999;
+    });
+    if (!planar) return null;
+    if (cad.shapeOrientation(face) === "reversed") {
+      return { x: -n0.x, y: -n0.y, z: -n0.z };
+    }
+    return n0;
+  } catch {
+    return null;
+  }
 }
 
 function edgeAngle(cad: OcctKernel, points: number[], faceHashes: number[], faceByHash: Map<number, ShapeHandle>, planarNormals?: Map<number, { x: number; y: number; z: number } | null>) {
@@ -315,19 +355,101 @@ function orientPrimitiveUp(cad: OcctKernel, solid: ShapeHandle) {
   return cad.rotate(solid, { point: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 } }, -Math.PI / 2);
 }
 
+type OcctPrimitiveKernel = OcctKernel & {
+  makeSphere(radius: number): ShapeHandle;
+  makeTorus(majorRadius: number, minorRadius: number): ShapeHandle;
+  makeEllipsoid(rx: number, ry: number, rz: number): ShapeHandle;
+};
+
+function primitiveKernel(cad: OcctKernel): OcctPrimitiveKernel {
+  return cad as OcctPrimitiveKernel;
+}
+
+function finishPrimitiveSolid(cad: OcctKernel, solid: ShapeHandle, transform: number[] | undefined, label: string) {
+  const transformed = applyCadTransform(cad, solid, transform);
+  if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
+    throw new Error(`The selected ${label} could not be prepared as a valid CAD solid`);
+  }
+  return transformed;
+}
+
+function liftCenteredSolid(cad: OcctKernel, solid: ShapeHandle, height: number) {
+  return applyCadTransform(cad, solid, [1, 0, 0, 0, 0, 1, 0, height / 2, 0, 0, 1, 0]);
+}
+
+function extrudeXzLoop(cad: OcctKernel, loop: Array<[number, number]>, height: number) {
+  if (loop.length < 3) {
+    throw new Error("The selected profile could not be prepared as a valid CAD solid");
+  }
+  const points = loop.map(([x, z]) => ({ x, y: 0, z }));
+  const edges = points.map((point, index) => cad.makeLineEdge(point, points[(index + 1) % points.length]));
+  return cad.extrude(cad.makeFace(cad.makeWire(edges)), 0, height, 0);
+}
+
+function extrudeXyLoop(cad: OcctKernel, loop: Array<[number, number]>, depth: number) {
+  if (loop.length < 3) {
+    throw new Error("The selected profile could not be prepared as a valid CAD solid");
+  }
+  const points = loop.map(([x, y]) => ({ x, y, z: -depth / 2 }));
+  const edges = points.map((point, index) => cad.makeLineEdge(point, points[(index + 1) % points.length]));
+  return cad.extrude(cad.makeFace(cad.makeWire(edges)), 0, 0, depth);
+}
+
+function reconstructPyramidSolid(cad: OcctKernel, width: number, depth: number, height: number, sides: number) {
+  const apex = { x: 0, y: height, z: 0 };
+  const base = sides === 4
+    ? [
+        { x: -width / 2, y: 0, z: -depth / 2 },
+        { x: width / 2, y: 0, z: -depth / 2 },
+        { x: width / 2, y: 0, z: depth / 2 },
+        { x: -width / 2, y: 0, z: depth / 2 },
+      ]
+    : Array.from({ length: sides }, (_, index) => {
+        const radius = Math.min(width, depth) / 2;
+        const angle = (2 * Math.PI * index) / sides;
+        return { x: Math.cos(angle) * radius, y: 0, z: Math.sin(angle) * radius };
+      });
+  const faces = [
+    cad.makeFace(cad.makeWire(base.map((point, index) => cad.makeLineEdge(point, base[(index + 1) % base.length])))),
+    ...base.map((point, index) => {
+      const next = base[(index + 1) % base.length];
+      return cad.makeFace(cad.makeWire([
+        cad.makeLineEdge(point, next),
+        cad.makeLineEdge(next, apex),
+        cad.makeLineEdge(apex, point),
+      ]));
+    }),
+  ];
+  let solid = cad.fixShape(cad.sewAndSolidify(faces, 1e-3));
+  try {
+    solid = cad.fixFaceOrientations(solid);
+  } catch {
+    // Orientation repair is best-effort; sewAndSolidify already produced a solid.
+  }
+  return solid;
+}
+
 function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimitivePart) {
+  const prim = primitiveKernel(cad);
   if (primitive.kind === "cylinder") {
-    const radius = primitive.radius;
     const height = primitive.height;
-    if (![radius, height].every((value) => Number.isFinite(value) && value > 0)) {
+    if (!(height > 0)) {
       throw new Error("The selected cylinder has invalid dimensions");
     }
-    const solid = orientPrimitiveUp(cad, cad.makeCylinder(radius, height));
-    const transformed = applyCadTransform(cad, solid, primitive.transform);
-    if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
-      throw new Error("The selected cylinder could not be prepared as a valid CAD solid");
+    if (typeof primitive.radius === "number" && primitive.radius > 0) {
+      return finishPrimitiveSolid(cad, orientPrimitiveUp(cad, cad.makeCylinder(primitive.radius, height)), primitive.transform, "cylinder");
     }
-    return transformed;
+    const width = primitive.width ?? 0;
+    const depth = primitive.depth ?? 0;
+    if (![width, depth].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected cylinder has invalid dimensions");
+    }
+    const stretched = applyCadTransform(
+      cad,
+      orientPrimitiveUp(cad, cad.makeCylinder(1, height)),
+      [width / 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, depth / 2, 0],
+    );
+    return finishPrimitiveSolid(cad, stretched, primitive.transform, "cylinder");
   }
   if (primitive.kind === "cone") {
     const baseRadius = primitive.baseRadius;
@@ -354,11 +476,142 @@ function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimit
     const placement = sectionScale && Math.abs(sectionScale - 1) > 1e-6
       ? placementWithSectionScale(primitive.transform, sectionScale)
       : primitive.transform;
-    const transformed = applyCadTransform(cad, solid, placement);
-    if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
-      throw new Error("The selected cone could not be prepared as a valid CAD solid");
+    return finishPrimitiveSolid(cad, solid, placement, "cone");
+  }
+  if (primitive.kind === "polygon") {
+    const width = primitive.width;
+    const depth = primitive.depth;
+    const height = primitive.height;
+    const sides = Math.max(3, Math.round(primitive.sides));
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected polygon has invalid dimensions");
     }
-    return transformed;
+    const points = Array.from({ length: sides }, (_, index) => {
+      const angle = (2 * Math.PI * index) / sides;
+      return {
+        x: Math.cos(angle) * (width / 2),
+        y: 0,
+        z: Math.sin(angle) * (depth / 2),
+      };
+    });
+    const edges = points.map((point, index) => cad.makeLineEdge(point, points[(index + 1) % points.length]));
+    return finishPrimitiveSolid(cad, cad.extrude(cad.makeFace(cad.makeWire(edges)), 0, height, 0), primitive.transform, "polygon");
+  }
+  if (primitive.kind === "sphere") {
+    const { width, depth, height } = primitive;
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected sphere has invalid dimensions");
+    }
+    return finishPrimitiveSolid(
+      cad,
+      liftCenteredSolid(cad, prim.makeEllipsoid(width / 2, height / 2, depth / 2), height),
+      primitive.transform,
+      "sphere",
+    );
+  }
+  if (primitive.kind === "halfSphere") {
+    const { width, depth, height } = primitive;
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected half sphere has invalid dimensions");
+    }
+    const ball = prim.makeEllipsoid(width / 2, height, depth / 2);
+    const cutter = cad.makeBoxFromCorners(
+      { x: -width, y: -height * 2, z: -depth },
+      { x: width, y: 0, z: depth },
+    );
+    return finishPrimitiveSolid(cad, cad.cut(ball, cutter), primitive.transform, "half sphere");
+  }
+  if (primitive.kind === "torus") {
+    const { width, depth, height } = primitive;
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected torus has invalid dimensions");
+    }
+    const maxTube = Math.max(0.1, Math.min(width, depth) / 2 - 0.2);
+    const tube = Math.min(Math.max(0.1, primitive.radius ?? height / 2), maxTube);
+    const major = Math.max(0.2, Math.min(width, depth) / 2 - tube);
+    const outer = (major + tube) * 2;
+    const scaled = applyCadTransform(
+      cad,
+      orientPrimitiveUp(cad, prim.makeTorus(major, tube)),
+      [width / Math.max(1e-6, outer), 0, 0, 0, 0, height / Math.max(1e-6, tube * 2), 0, 0, 0, 0, depth / Math.max(1e-6, outer), 0],
+    );
+    return finishPrimitiveSolid(cad, liftCenteredSolid(cad, scaled, height), primitive.transform, "torus");
+  }
+  if (primitive.kind === "roundRoof") {
+    const { width, depth, height } = primitive;
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected round roof has invalid dimensions");
+    }
+    const radius = width / 2;
+    const disk = applyCadTransform(cad, cad.makeCylinder(radius, depth), [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -depth / 2]);
+    const cutter = cad.makeBoxFromCorners(
+      { x: -radius * 2 - 1, y: -(radius * 2 + 1) - 1, z: -depth / 2 - 2 },
+      { x: radius * 2 + 1, y: 0, z: depth / 2 + 2 },
+    );
+    const scaled = applyCadTransform(
+      cad,
+      cad.cut(disk, cutter),
+      [1, 0, 0, 0, 0, height / Math.max(1e-6, radius), 0, 0, 0, 0, 1, 0],
+    );
+    return finishPrimitiveSolid(cad, scaled, primitive.transform, "round roof");
+  }
+  if (primitive.kind === "tube" || primitive.kind === "ring") {
+    const { width, depth, height } = primitive;
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected tube has invalid dimensions");
+    }
+    const outerX = width / 2;
+    const outerZ = depth / 2;
+    const thickness = Math.min(Math.max(0.1, primitive.bevel ?? 4), Math.max(0.1, Math.min(outerX, outerZ) - 0.1));
+    const innerX = Math.max(0.1, outerX - thickness);
+    const innerZ = Math.max(0.1, outerZ - thickness);
+    const circular = Math.abs(width - depth) < 1e-4;
+    const outer = circular
+      ? orientPrimitiveUp(cad, cad.makeCylinder(outerX, height))
+      : applyCadTransform(cad, orientPrimitiveUp(cad, cad.makeCylinder(1, height)), [outerX, 0, 0, 0, 0, 1, 0, 0, 0, 0, outerZ, 0]);
+    const inner = circular
+      ? applyCadTransform(cad, orientPrimitiveUp(cad, cad.makeCylinder(innerX, height + 2)), [1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 1, 0])
+      : applyCadTransform(cad, orientPrimitiveUp(cad, cad.makeCylinder(1, height + 2)), [innerX, 0, 0, 0, 0, 1, 0, -1, 0, 0, innerZ, 0]);
+    return finishPrimitiveSolid(cad, cad.cut(outer, inner), primitive.transform, primitive.kind);
+  }
+  if (primitive.kind === "roof" || primitive.kind === "wedge") {
+    const { width, depth, height } = primitive;
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected triangle has invalid dimensions");
+    }
+    const half = width / 2;
+    const ridgeX = primitive.kind === "roof" ? (primitive.ridgeX ?? 0) : half;
+    return finishPrimitiveSolid(
+      cad,
+      extrudeXyLoop(cad, [[-half, 0], [half, 0], [ridgeX, height]], depth),
+      primitive.transform,
+      primitive.kind,
+    );
+  }
+  if (primitive.kind === "pyramid") {
+    const { width, depth, height } = primitive;
+    const sides = Math.max(3, Math.round(primitive.sides ?? 4));
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("The selected pyramid has invalid dimensions");
+    }
+    return finishPrimitiveSolid(cad, reconstructPyramidSolid(cad, width, depth, height, sides), primitive.transform, "pyramid");
+  }
+  if (primitive.kind === "gear") {
+    const { height } = primitive;
+    const outer = primitive.profileLoops?.outer;
+    if (!(height > 0) || !outer || outer.length < 3) {
+      throw new Error("The selected gear has invalid dimensions");
+    }
+    let solid = extrudeXzLoop(cad, outer, height);
+    for (const hole of primitive.profileLoops?.holes ?? []) {
+      if (hole.length < 3) continue;
+      try {
+        solid = cad.cut(solid, extrudeXzLoop(cad, hole, height + 2));
+      } catch {
+        // A degenerate bore can be skipped; the outer tooth profile still stands.
+      }
+    }
+    return finishPrimitiveSolid(cad, solid, primitive.transform, "gear");
   }
   if (primitive.kind !== "box") {
     throw new Error(`Unsupported CAD primitive: ${(primitive as { kind: string }).kind}`);
@@ -373,11 +626,7 @@ function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimit
     { x: -width / 2, y: 0, z: -depth / 2 },
     { x: width / 2, y: height, z: depth / 2 },
   );
-  const transformed = applyCadTransform(cad, solid, primitive.transform);
-  if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
-    throw new Error("The selected primitive could not be prepared as a valid CAD solid");
-  }
-  return transformed;
+  return finishPrimitiveSolid(cad, solid, primitive.transform, "primitive");
 }
 
 function splitClosedMeshShells(part: CadModifierMeshPart): CadModifierMeshPart[] {
@@ -629,7 +878,9 @@ export function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart): Sh
   }
   if (part.brep) {
     let exact = cad.fromBREP(part.brep);
-    if (part.brepTransform?.length === 12) exact = cad.generalTransform(exact, part.brepTransform);
+    // A moved or turned body is a rigid transform; GTransform breaks shape
+    // validity even for a plain translation, so only stretches go through it.
+    if (part.brepTransform?.length === 12) exact = applyCadTransform(cad, exact, part.brepTransform);
     const restoredSolids = cad.getSubShapes(exact, "solid");
     if (cadShapeIsValid(cad, exact) && (cad.isSolid(exact) || restoredSolids.length > 0)) {
       return restoredSolids.length === 1 ? restoredSolids[0] : exact;
@@ -720,16 +971,20 @@ function reconstructParts(cad: OcctKernel, parts: CadModifierMeshPart[]) {
   for (let index = 1; index < solids.length; index += 1) {
     result = cad.fuse(result, solids[index]);
     result = cad.simplify(result);
+  }
+  const busy = solids.length + holes.length;
+  if (busy >= 3) {
     result = cad.unifySameDomain(result);
   }
   for (const hole of holes) {
     result = cad.cut(result, hole);
     result = cad.simplify(result);
-    result = cad.unifySameDomain(result);
   }
   result = cad.fixShape(result);
   result = cad.simplify(result);
-  result = cad.unifySameDomain(result);
+  if (busy >= 3 || holes.length > 0) {
+    result = cad.unifySameDomain(result);
+  }
   const pieces = cad.isSolid(result) ? [result] : cad.getSubShapes(result, "solid");
   if (pieces.length === 1) result = pieces[0];
   if (pieces.length === 0 || !pieces.every((piece) => cadShapeIsValid(cad, piece))) {
@@ -817,6 +1072,121 @@ function singleSolid(cad: OcctKernel, shape: ShapeHandle) {
   if (cad.isSolid(shape)) return shape;
   const solids = cad.getSubShapes(shape, "solid");
   return solids.length === 1 ? solids[0] : shape;
+}
+
+function bodyDiagonal(cad: OcctKernel, shape: ShapeHandle) {
+  try {
+    const box = cad.getBoundingBox(shape, false);
+    return Math.hypot(box.xmax - box.xmin, box.ymax - box.ymin, box.zmax - box.zmin);
+  } catch {
+    return 0;
+  }
+}
+
+function pointInsideBody(
+  cad: OcctKernel,
+  shape: ShapeHandle,
+  point: { x: number; y: number; z: number },
+) {
+  const tryOne = (body: ShapeHandle) => {
+    try {
+      return cad.containsPoint(body, point, 1e-4);
+    } catch {
+      return false;
+    }
+  };
+  if (tryOne(shape)) return true;
+  try {
+    const solids = cad.isSolid(shape) ? [] : cad.getSubShapes(shape, "solid");
+    return solids.some(tryOne);
+  } catch {
+    return false;
+  }
+}
+
+function owningSolidHandle(cad: OcctKernel, body: ShapeHandle, face: ShapeHandle) {
+  if (cad.isSolid(body)) return { solid: body, others: [] as ShapeHandle[] };
+  const solids = cad.getSubShapes(body, "solid");
+  if (solids.length <= 1) return { solid: solids[0] ?? body, others: [] as ShapeHandle[] };
+  let origin = { x: 0, y: 0, z: 0 };
+  try {
+    origin = cad.getSurfaceCenterOfMass(face);
+  } catch {
+    origin = { x: 0, y: 0, z: 0 };
+  }
+  let best = solids[0];
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const solid of solids) {
+    if (pointInsideBody(cad, solid, origin)) {
+      return { solid, others: solids.filter((entry) => entry !== solid) };
+    }
+    try {
+      const box = cad.getBoundingBox(solid, false);
+      const cx = (box.xmin + box.xmax) / 2;
+      const cy = (box.ymin + box.ymax) / 2;
+      const cz = (box.zmin + box.zmax) / 2;
+      const dist = Math.hypot(origin.x - cx, origin.y - cy, origin.z - cz);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = solid;
+      }
+    } catch {
+      // Keep scanning solids if a bounding box is unavailable.
+    }
+  }
+  return { solid: best, others: solids.filter((entry) => entry !== best) };
+}
+
+function finishPushPullBody(cad: OcctKernel, shape: ShapeHandle) {
+  let result = shape;
+  const beforeVolume = shapeVolume(cad, result);
+  try {
+    const fixed = cad.fixShape(result);
+    if (fixed !== result) {
+      releaseQuiet(cad, result);
+      result = fixed;
+    }
+  } catch {
+    // Keep the boolean result if heal is unavailable.
+  }
+  try {
+    const simplified = cad.unifySameDomain(cad.simplify(result));
+    if (simplified !== result) {
+      const afterVolume = shapeVolume(cad, simplified);
+      if (beforeVolume > 1e-6 && afterVolume < beforeVolume * 0.4) {
+        releaseQuiet(cad, simplified);
+      } else {
+        releaseQuiet(cad, result);
+        result = simplified;
+      }
+    }
+  } catch {
+    // Keep the healed boolean if unify fails.
+  }
+  const extracted = singleSolid(cad, result);
+  if (extracted !== result) releaseQuiet(cad, result);
+  return extracted;
+}
+
+function pushPullLooksExploded(cad: OcctKernel, before: ShapeHandle, after: ShapeHandle, distance: number) {
+  const beforeDiag = bodyDiagonal(cad, before);
+  const afterDiag = bodyDiagonal(cad, after);
+  const budget = Math.abs(distance) * 2 + 5;
+  if (afterDiag > beforeDiag + budget && afterDiag > beforeDiag * 1.35) return true;
+  return beforeDiag > 1e-6 && afterDiag < beforeDiag * 0.05;
+}
+
+function pushPullFailCopy(distance: number, kind: "empty" | "move" | "exploded") {
+  if (kind === "exploded") {
+    return "Push Pull broke this grouped body. Try a smaller distance, or Group the parts again.";
+  }
+  if (kind === "empty" && distance < 0) {
+    return "That push went through the part. Try a smaller distance.";
+  }
+  if (kind === "empty") {
+    return "That pull could not grow this face. Try a different face or a smaller distance.";
+  }
+  return "Push Pull could not move this face. Try a smaller distance, or Group the parts again.";
 }
 
 function unitVec(v: { x: number; y: number; z: number }) {
@@ -1238,7 +1608,28 @@ function applyRemovingTreatment(
       try { cad.release(treated); } catch { /* The filled corner is discarded. */ }
     }
   } catch {
-    // A concave corner can reject the direct fillet. Classify it below.
+    // Rounding every selected edge at once can fail when they meet. Try one at a time.
+  }
+  if (edges.length > 1) {
+    let current = solid;
+    let progressed = false;
+    for (const edge of edges) {
+      try {
+        const treated = treat(current, [edge]);
+        if (shapeVolume(cad, treated) + 1e-3 < shapeVolume(cad, current)) {
+          if (current !== solid) {
+            try { cad.release(current); } catch { /* Replaced by the edge that worked. */ }
+          }
+          current = treated;
+          progressed = true;
+        } else if (treated !== current) {
+          try { cad.release(treated); } catch { /* This edge did not remove material. */ }
+        }
+      } catch {
+        // Skip this edge and keep rounding the rest.
+      }
+    }
+    if (progressed) return singleSolid(cad, current);
   }
   const { concave, convex } = classifyCornerEdges(cad, solid, edges);
   let component = convex.length > 0 || concave.length === 0
@@ -1583,6 +1974,138 @@ function collectCylindricalFaces(cad: OcctKernel, shape: ShapeHandle, solids: Sh
   }
 }
 
+function pointOnPlanarFace(
+  origin: { x: number; y: number; z: number },
+  points: number[],
+) {
+  if (points.length < 6) return origin;
+  const mid = {
+    x: (points[0] + points[3]) / 2,
+    y: (points[1] + points[4]) / 2,
+    z: (points[2] + points[5]) / 2,
+  };
+  const ix = origin.x - mid.x;
+  const iy = origin.y - mid.y;
+  const iz = origin.z - mid.z;
+  const mag = Math.hypot(ix, iy, iz);
+  if (mag < 1e-8) return mid;
+  const step = Math.min(0.35, mag * 0.25);
+  return {
+    x: mid.x + (ix / mag) * step,
+    y: mid.y + (iy / mag) * step,
+    z: mid.z + (iz / mag) * step,
+  };
+}
+
+export function collectPlanarFaces(cad: OcctKernel, shape: ShapeHandle): {
+  handles: ShapeHandle[];
+  faces: CadPlanarFace[];
+} {
+  const faces = cad.getSubShapes(shape, "face");
+  const handles: ShapeHandle[] = [];
+  const collected: CadPlanarFace[] = [];
+  try {
+    faces.forEach((face) => {
+      let area = 0;
+      try {
+        area = Math.abs(cad.getSurfaceArea(face));
+      } catch {
+        area = 0;
+      }
+      if (area < 1e-6) return;
+      const origin = cad.getSurfaceCenterOfMass(face);
+      const normal = geometricallyPlanarNormal(cad, face);
+      if (!normal) return;
+      let points: number[] = [];
+      try {
+        const wire = cad.outerWire(face);
+        const wireData = cad.wireframe(wire, CAD_EDGE_WIREFRAME_DEFLECTION);
+        // Order the edge samples into one loop; the raw wireframe lists edges
+        // in explorer order, which draws as diagonals across the face.
+        points = orderWireLoop(edgePolylinesFromWireframe(wireData));
+        cad.release(wire);
+      } catch {
+        points = [origin.x, origin.y, origin.z];
+      }
+      const onFace = pointOnPlanarFace(origin, points);
+      const probe = {
+        x: onFace.x + normal.x * 0.05,
+        y: onFace.y + normal.y * 0.05,
+        z: onFace.z + normal.z * 0.05,
+      };
+      let outward = { ...normal };
+      if (pointInsideBody(cad, shape, probe)) {
+        outward = { x: -normal.x, y: -normal.y, z: -normal.z };
+      }
+      handles.push(face);
+      collected.push({
+        id: collected.length,
+        origin,
+        normal: outward,
+        points,
+        area,
+      });
+    });
+    return { handles, faces: collected };
+  } finally {
+    const kept = new Set(handles);
+    faces.forEach((face) => {
+      if (!kept.has(face)) cad.release(face);
+    });
+  }
+}
+
+function applyPushPull(
+  cad: OcctKernel,
+  solid: ShapeHandle,
+  face: ShapeHandle,
+  record: CadPlanarFace,
+  distance: number,
+) {
+  if (Math.abs(distance) < 1e-4) return cad.copy(solid);
+  const dx = record.normal.x * distance;
+  const dy = record.normal.y * distance;
+  const dz = record.normal.z * distance;
+  const owned = owningSolidHandle(cad, solid, face);
+  const basis = cad.copy(face);
+  let prism: ShapeHandle;
+  try {
+    prism = cad.extrude(basis, dx, dy, dz);
+  } catch {
+    releaseQuiet(cad, basis);
+    throw new Error("Push Pull needs a flat face.");
+  }
+  if (prism !== basis) releaseQuiet(cad, basis);
+  const host = cad.copy(owned.solid);
+  let combined: ShapeHandle;
+  try {
+    combined = distance > 0 ? cad.fuse(host, prism) : cad.cut(host, prism);
+  } catch {
+    releaseQuiet(cad, host);
+    releaseQuiet(cad, prism);
+    throw new Error(pushPullFailCopy(distance, "move"));
+  }
+  if (combined !== host) releaseQuiet(cad, host);
+  if (combined !== prism) releaseQuiet(cad, prism);
+  const grown = finishPushPullBody(cad, combined);
+  const pieces = cad.isSolid(grown) ? [grown] : cad.getSubShapes(grown, "solid");
+  const volume = pieces.reduce((total, piece) => total + shapeVolume(cad, piece), 0);
+  if (pieces.length < 1 || volume < 1e-8) {
+    releaseQuiet(cad, grown);
+    throw new Error(pushPullFailCopy(distance, "empty"));
+  }
+  if (pushPullLooksExploded(cad, owned.solid, grown, distance)) {
+    releaseQuiet(cad, grown);
+    throw new Error(pushPullFailCopy(distance, "exploded"));
+  }
+  if (owned.others.length === 0) return grown;
+  try {
+    return cad.makeCompound([grown, ...owned.others.map((other) => cad.copy(other))]);
+  } catch {
+    return grown;
+  }
+}
+
 function orthonormalFrame(axis: { x: number; y: number; z: number }) {
   const a = normalizeVec(axis);
   const helper = Math.abs(a.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
@@ -1801,8 +2324,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
           const hash = activeCad.hashCode(edge, HASH_UPPER_BOUND);
           const candidates = ownerCandidates.get(hash) ?? [];
           const exact = candidates.find((candidate) => activeCad.isSame(edge, candidate.edge));
-          if (!exact) throw new Error("A CAD edge could not be mapped to its solid component; restart the edge tool");
-          return exact.owner;
+          return exact?.owner ?? candidates[0]?.owner ?? 0;
         });
       } finally {
         ownerEdgeHandles.forEach((componentEdges) => releaseHandles(activeCad, componentEdges));
@@ -1810,12 +2332,16 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       const cyl = collectCylindricalFaces(activeCad, baseShape, baseSolids);
       cylindricalFaceHandles = cyl.handles;
       cylindricalFaces = cyl.faces;
+      const planar = collectPlanarFaces(activeCad, baseShape);
+      planarFaceHandles = planar.handles;
+      planarFaces = planar.faces;
       post({
         type: "ready",
         requestId: request.requestId,
         edges: collected.edges.map((edge) => ({ ...edge, owner: edgeOwners[edge.id] ?? 0 })),
         selectableEdgeIds: collected.selectableEdgeIds,
         cylindricalFaces,
+        planarFaces,
         sourceType: activeCad.getShapeType(baseShape),
       });
       return;
@@ -1854,6 +2380,46 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         );
       } finally {
         if (result !== null) activeCad.release(result);
+      }
+      return;
+    }
+    if (request.type === "pushPull") {
+      const face = planarFaces.find((entry) => entry.id === request.faceId);
+      const handle = planarFaceHandles[request.faceId];
+      if (!face || handle === undefined) throw new Error("Push Pull needs a flat face.");
+      let result: ShapeHandle | null = null;
+      try {
+        result = applyPushPull(activeCad, baseShape, handle, face, request.distance);
+        const options = tessellationOptions(request.quality, Math.abs(request.distance) || 1);
+        const mesh = copyCadMesh(activeCad.tessellate(result, options));
+        if (!mesh.triangleCount) throw new Error(pushPullFailCopy(request.distance, "empty"));
+        const displayEdges = collectEdges(activeCad, result, 0).displayEdges;
+        let brep = "";
+        try {
+          brep = activeCad.toBREP(result);
+        } catch {
+          brep = "";
+        }
+        if (accumulatedShape && accumulatedShape !== result) {
+          try { activeCad.release(accumulatedShape); } catch { /* released with the session */ }
+        }
+        accumulatedShape = result;
+        result = null;
+        post(
+          {
+            type: "preview",
+            requestId: request.requestId,
+            positions: mesh.positions,
+            normals: mesh.normals,
+            indices: mesh.indices,
+            triangleCount: mesh.triangleCount,
+            brep,
+            displayEdges,
+          },
+          [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer],
+        );
+      } finally {
+        if (result !== null && result !== accumulatedShape) activeCad.release(result);
       }
       return;
     }

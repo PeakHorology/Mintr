@@ -1,6 +1,6 @@
 # Mintr — Getting Started
 
-Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.1.0). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
+Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.1.2). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
 
 ## Use Mintr (the app)
 
@@ -12,8 +12,8 @@ npm run package:desktop
 
 This creates files in the `dist-release/` folder:
 
-- `PeakCAD-Setup-1.1.0.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
-- `PeakCAD-1.1.0-portable.exe` — portable build (no install needed; not an upgrader)
+- `PeakCAD-Setup-1.1.2.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
+- `PeakCAD-1.1.2-portable.exe` — portable build (no install needed; not an upgrader)
 
 Close any running Mintr window before packaging. Run the Setup or portable exe. The wizard, shortcuts, and Windows apps entry are named Mintr3d. The program file is Mintr.exe. Existing projects and settings stay where they are.
 
@@ -21,7 +21,7 @@ Close any running Mintr window before packaging. Run the Setup or portable exe. 
 
 You do **not** need to uninstall first. The Setup installer upgrades in place and keeps your projects and settings.
 
-1. Bump `"version"` in `package.json` (for example `1.0.9` → `1.1.0`)
+1. Bump `"version"` in `package.json` (for example `1.1.0` → `1.1.2`)
 2. Close Mintr
 3. Run `npm run package:desktop`
 4. Run the new `PeakCAD-Setup-*.exe` from `dist-release/`

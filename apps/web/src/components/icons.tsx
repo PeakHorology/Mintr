@@ -340,6 +340,17 @@ export function ToolbarFilletIcon(props: IconProps) {
   );
 }
 
+export function ToolbarPushPullIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M5 19V9h14v10" />
+      <path d="M9 9V5h6v4" />
+      <path d="M12 3.5v7" />
+      <path d="M9.5 5.5 12 3.5 14.5 5.5" />
+    </CadGlyph>
+  );
+}
+
 export function ToolbarCircularPatternIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>

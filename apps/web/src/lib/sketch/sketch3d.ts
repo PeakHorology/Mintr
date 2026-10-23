@@ -1,10 +1,11 @@
 import * as THREE from "three";
 import type { GridSize, SketchPlane, SketchProfile, SketchSegment } from "@/types/sketchforge";
 import { cylinderUVToWorld, cylinderOutwardNormalAtUV, worldToCylinderUV } from "@/lib/sketchCylinder";
-import { planeUVToWorld, resolveSketchPlane, worldToPlaneUV } from "@/lib/sketchPlane";
+import { planeUVToWorld, resolveSketchPlane, sketchPlaneVAxis, worldToPlaneUV } from "@/lib/sketchPlane";
 import type { SketchTool } from "@/components/SketchWorkspace";
 import { curveStandInOwner } from "./migrate";
 import { snapHeading } from "./lineEntry";
+import { orderedSketchPaths } from "./profiles";
 import { snapSketchPoint } from "./snaps";
 
 const GROUP_NAME = "sketch-on-model";
@@ -101,6 +102,15 @@ export type Sketch3DHost = {
   domElement: HTMLElement;
   controls: { target: THREE.Vector3; update: () => void };
 };
+
+export type SketchCameraPose = {
+  target: { x: number; y: number; z: number };
+  position: { x: number; y: number; z: number };
+  up: { x: number; y: number; z: number };
+};
+
+const SKETCH_CAMERA_TILT = 0.14;
+const SKETCH_CAMERA_NEAR_MM = 3;
 
 function gridStepOf(snap: GridSize) {
   if (snap === "Off") return 0;
@@ -380,7 +390,7 @@ export function sketch3DPointerDown(
   }
   if (!drawingAngleOk(host, session.plane, uv)) {
     pointer.hover = null;
-    session.onNotice?.("That angle is too shallow to draw. Orbit until the face is toward you, or use Look at face.");
+    session.onNotice?.("That angle is too shallow to draw. Orbit until the face is toward you, or click 3D sketch again.");
     syncSketchOnModel(host, session, pointer);
     return;
   }
@@ -602,6 +612,151 @@ function addLine(group: THREE.Group, positions: number[], color: string, dashed 
   group.add(line);
 }
 
+function addFill(group: THREE.Group, plane: SketchPlane, loop: UV[], color: string, opacity: number) {
+  if (loop.length < 3) return;
+  let geometry: THREE.ShapeGeometry;
+  try {
+    const shape = new THREE.Shape(loop.map((point) => new THREE.Vector2(point.x, point.z)));
+    geometry = new THREE.ShapeGeometry(shape);
+  } catch {
+    return;
+  }
+  const position = geometry.getAttribute("position");
+  for (let index = 0; index < position.count; index += 1) {
+    const world = uvWorld(plane, position.getX(index), position.getY(index));
+    position.setXYZ(index, world.x, world.y, world.z);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }));
+  mesh.renderOrder = 19;
+  group.add(mesh);
+}
+
+function roundedBoxLoop(origin: UV, corner: UV, radius: number, steps = 4): UV[] {
+  const x0 = Math.min(origin.x, corner.x);
+  const x1 = Math.max(origin.x, corner.x);
+  const z0 = Math.min(origin.z, corner.z);
+  const z1 = Math.max(origin.z, corner.z);
+  const width = x1 - x0;
+  const height = z1 - z0;
+  const r = Math.min(radius, width / 2, height / 2);
+  if (r <= 0.01) {
+    return [
+      { x: x0, z: z0 },
+      { x: x1, z: z0 },
+      { x: x1, z: z1 },
+      { x: x0, z: z1 },
+      { x: x0, z: z0 },
+    ];
+  }
+  const corners: Array<{ cx: number; cz: number; start: number }> = [
+    { cx: x1 - r, cz: z0 + r, start: -Math.PI / 2 },
+    { cx: x1 - r, cz: z1 - r, start: 0 },
+    { cx: x0 + r, cz: z1 - r, start: Math.PI / 2 },
+    { cx: x0 + r, cz: z0 + r, start: Math.PI },
+  ];
+  const loop: UV[] = [];
+  for (const cornerArc of corners) {
+    for (let step = 0; step <= steps; step += 1) {
+      const angle = cornerArc.start + (step / steps) * (Math.PI / 2);
+      loop.push({
+        x: cornerArc.cx + Math.cos(angle) * r,
+        z: cornerArc.cz + Math.sin(angle) * r,
+      });
+    }
+  }
+  loop.push(loop[0]);
+  return loop;
+}
+
+function regularLoop(origin: UV, vertex: UV, sides: number, inner = 1): UV[] {
+  const radius = Math.hypot(vertex.x - origin.x, vertex.z - origin.z);
+  if (radius < 0.01) return [];
+  const start = Math.atan2(vertex.z - origin.z, vertex.x - origin.x);
+  const count = inner < 1 ? sides * 2 : sides;
+  const loop: UV[] = [];
+  for (let step = 0; step <= count; step += 1) {
+    const angle = start + (step / count) * Math.PI * 2;
+    const span = inner < 1 && step % 2 === 1 ? radius * inner : radius;
+    loop.push({ x: origin.x + Math.cos(angle) * span, z: origin.z + Math.sin(angle) * span });
+  }
+  return loop;
+}
+
+function dragPreviewLoop(tool: SketchTool, origin: UV, current: UV): UV[] {
+  if (tool === "circle") {
+    const radius = Math.hypot(current.x - origin.x, current.z - origin.z);
+    if (radius < 0.01) return [];
+    const ring: UV[] = [];
+    for (let step = 0; step <= 48; step += 1) {
+      const angle = (step / 48) * Math.PI * 2;
+      ring.push({ x: origin.x + Math.cos(angle) * radius, z: origin.z + Math.sin(angle) * radius });
+    }
+    return ring;
+  }
+  if (tool === "ellipse") {
+    const cx = (origin.x + current.x) / 2;
+    const cz = (origin.z + current.z) / 2;
+    const rx = Math.abs(current.x - origin.x) / 2;
+    const rz = Math.abs(current.z - origin.z) / 2;
+    if (rx < 0.01 || rz < 0.01) return [];
+    const ring: UV[] = [];
+    for (let step = 0; step <= 48; step += 1) {
+      const angle = (step / 48) * Math.PI * 2;
+      ring.push({ x: cx + Math.cos(angle) * rx, z: cz + Math.sin(angle) * rz });
+    }
+    return ring;
+  }
+  if (tool === "square") {
+    const dx = current.x - origin.x;
+    const dz = current.z - origin.z;
+    const side = Math.max(Math.abs(dx), Math.abs(dz));
+    if (side < 0.01) return [];
+    const sx = Math.sign(dx) || 1;
+    const sz = Math.sign(dz) || 1;
+    return [
+      origin,
+      { x: origin.x + sx * side, z: origin.z },
+      { x: origin.x + sx * side, z: origin.z + sz * side },
+      { x: origin.x, z: origin.z + sz * side },
+      origin,
+    ];
+  }
+  if (tool === "rectangle") {
+    if (Math.abs(current.x - origin.x) < 0.01 || Math.abs(current.z - origin.z) < 0.01) return [];
+    return [
+      origin,
+      { x: current.x, z: origin.z },
+      current,
+      { x: origin.x, z: current.z },
+      origin,
+    ];
+  }
+  if (tool === "roundRect") {
+    const width = Math.abs(current.x - origin.x);
+    const height = Math.abs(current.z - origin.z);
+    if (width < 0.01 || height < 0.01) return [];
+    return roundedBoxLoop(origin, current, Math.min(width, height) * 0.22);
+  }
+  if (tool === "slot") {
+    const width = Math.abs(current.x - origin.x);
+    const height = Math.abs(current.z - origin.z);
+    if (width < 0.01 || height < 0.01) return [];
+    return roundedBoxLoop(origin, current, Math.min(width, height) / 2, 8);
+  }
+  if (tool === "triangle") return regularLoop(origin, current, 3);
+  if (tool === "polygon") return regularLoop(origin, current, 6);
+  if (tool === "star") return regularLoop(origin, current, 5, 0.4);
+  return [origin, current];
+}
+
 function disposeGroup(group: THREE.Object3D) {
   group.traverse((child) => {
     if (!(child instanceof THREE.Mesh) && !(child instanceof THREE.Line)) return;
@@ -639,25 +794,160 @@ function sketchBounds(profile: SketchProfile) {
   return { minX: minX - pad, maxX: maxX + pad, minZ: minZ - pad, maxZ: maxZ + pad, span: span + pad * 2 };
 }
 
-export function frameSketchCamera(host: Sketch3DHost, session: SketchOnModelSession) {
+function vec3(x: number, y: number, z: number) {
+  return { x, y, z };
+}
+
+function hypot3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function sphericalFromOffset(offset: { x: number; y: number; z: number }) {
+  const radius = Math.max(Math.hypot(offset.x, offset.y, offset.z), 1e-6);
+  return {
+    radius,
+    phi: Math.acos(Math.min(1, Math.max(-1, offset.y / radius))),
+    theta: Math.atan2(offset.x, offset.z),
+  };
+}
+
+function offsetFromSpherical(radius: number, phi: number, theta: number) {
+  const sinPhi = Math.sin(phi);
+  return vec3(
+    radius * sinPhi * Math.sin(theta),
+    radius * Math.cos(phi),
+    radius * sinPhi * Math.cos(theta),
+  );
+}
+
+function shortestAngle(from: number, to: number) {
+  let delta = to - from;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
+export function sketchCameraEase(t: number) {
+  const x = Math.min(1, Math.max(0, t));
+  return 1 - (1 - x) ** 3;
+}
+
+export function sketchFramingPose(session: Pick<SketchOnModelSession, "plane" | "profile">): SketchCameraPose {
   const resolved = resolveSketchPlane(session.plane);
   const bounds = sketchBounds(session.profile);
   const centerUV = { x: (bounds.minX + bounds.maxX) / 2, z: (bounds.minZ + bounds.maxZ) / 2 };
   const focus = uvWorld(resolved, centerUV.x, centerUV.z);
   const normal = resolved.surface?.kind === "cylinder"
-    ? new THREE.Vector3(
-      cylinderOutwardNormalAtUV(resolved.surface, centerUV.x).x,
-      cylinderOutwardNormalAtUV(resolved.surface, centerUV.x).y,
-      cylinderOutwardNormalAtUV(resolved.surface, centerUV.x).z,
-    )
-    : new THREE.Vector3(resolved.normal.x, resolved.normal.y, resolved.normal.z);
+    ? cylinderOutwardNormalAtUV(resolved.surface, centerUV.x)
+    : resolved.normal;
   const distance = THREE.MathUtils.clamp(bounds.span * 2.6, 48, 900);
-  host.controls.target.copy(focus);
+  const position = vec3(
+    focus.x + normal.x * distance,
+    focus.y + normal.y * distance,
+    focus.z + normal.z * distance,
+  );
+  // A hair of pitch keeps lookAt stable. Offset along -V (not the isometric XZ
+  // diagonal) so sketch U is screen-right and the grid sits square, not diamond.
+  if (Math.abs(normal.y) > 0.94) {
+    const v = sketchPlaneVAxis(resolved);
+    const hx = -v.x;
+    const hz = -v.z;
+    const hLen = Math.hypot(hx, hz) || 1;
+    position.x += (hx / hLen) * distance * SKETCH_CAMERA_TILT;
+    position.z += (hz / hLen) * distance * SKETCH_CAMERA_TILT;
+  }
+  // OrbitControls captures its up-axis quaternion once. A sketch-aligned camera.up
+  // rolls lookAt while orbit/pan/zoom still use world Y, so the view feels stuck
+  // after the enter tween and after Extrude. Keep world up; the tilt is enough.
+  return { target: vec3(focus.x, focus.y, focus.z), position, up: vec3(0, 1, 0) };
+}
+
+export function captureSketchCameraPose(host: Sketch3DHost): SketchCameraPose {
+  return {
+    target: vec3(host.controls.target.x, host.controls.target.y, host.controls.target.z),
+    position: vec3(host.camera.position.x, host.camera.position.y, host.camera.position.z),
+    up: vec3(host.camera.up.x, host.camera.up.y, host.camera.up.z),
+  };
+}
+
+export function applySketchCameraPose(host: Sketch3DHost, pose: SketchCameraPose) {
+  host.controls.target.set(pose.target.x, pose.target.y, pose.target.z);
   host.camera.up.set(0, 1, 0);
-  host.camera.position.copy(focus).addScaledVector(normal, distance);
-  host.camera.lookAt(focus);
+  host.camera.position.set(pose.position.x, pose.position.y, pose.position.z);
+  host.camera.lookAt(host.controls.target);
   host.camera.updateProjectionMatrix();
   host.controls.update();
+}
+
+export function interpolateSketchCameraPose(
+  from: SketchCameraPose,
+  to: SketchCameraPose,
+  t: number,
+): SketchCameraPose {
+  const u = Math.min(1, Math.max(0, t));
+  const target = vec3(
+    from.target.x + (to.target.x - from.target.x) * u,
+    from.target.y + (to.target.y - from.target.y) * u,
+    from.target.z + (to.target.z - from.target.z) * u,
+  );
+  const fromOff = vec3(
+    from.position.x - from.target.x,
+    from.position.y - from.target.y,
+    from.position.z - from.target.z,
+  );
+  const toOff = vec3(
+    to.position.x - to.target.x,
+    to.position.y - to.target.y,
+    to.position.z - to.target.z,
+  );
+  const a = sphericalFromOffset(fromOff);
+  const b = sphericalFromOffset(toOff);
+  const offset = offsetFromSpherical(
+    a.radius + (b.radius - a.radius) * u,
+    a.phi + (b.phi - a.phi) * u,
+    a.theta + shortestAngle(a.theta, b.theta) * u,
+  );
+  const up = vec3(
+    from.up.x + (to.up.x - from.up.x) * u,
+    from.up.y + (to.up.y - from.up.y) * u,
+    from.up.z + (to.up.z - from.up.z) * u,
+  );
+  const upLen = Math.hypot(up.x, up.y, up.z) || 1;
+  return {
+    target,
+    position: vec3(target.x + offset.x, target.y + offset.y, target.z + offset.z),
+    up: vec3(up.x / upLen, up.y / upLen, up.z / upLen),
+  };
+}
+
+export function sketchCameraNearlyFramed(from: SketchCameraPose, to: SketchCameraPose) {
+  return hypot3(from.position, to.position) < SKETCH_CAMERA_NEAR_MM
+    && hypot3(from.target, to.target) < SKETCH_CAMERA_NEAR_MM;
+}
+
+export function sketchCameraTweenMs(from: SketchCameraPose, to: SketchCameraPose) {
+  const fromOff = vec3(
+    from.position.x - from.target.x,
+    from.position.y - from.target.y,
+    from.position.z - from.target.z,
+  );
+  const toOff = vec3(
+    to.position.x - to.target.x,
+    to.position.y - to.target.y,
+    to.position.z - to.target.z,
+  );
+  const fromLen = Math.hypot(fromOff.x, fromOff.y, fromOff.z) || 1;
+  const toLen = Math.hypot(toOff.x, toOff.y, toOff.z) || 1;
+  const dot = Math.min(1, Math.max(-1,
+    (fromOff.x * toOff.x + fromOff.y * toOff.y + fromOff.z * toOff.z) / (fromLen * toLen),
+  ));
+  const angle = Math.acos(dot);
+  const targetTravel = hypot3(from.target, to.target);
+  return THREE.MathUtils.clamp(300 + angle * 280 + Math.min(targetTravel, 140) * 1.35, 380, 640);
+}
+
+export function frameSketchCamera(host: Sketch3DHost, session: SketchOnModelSession) {
+  applySketchCameraPose(host, sketchFramingPose(session));
 }
 
 export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSession, pointer: Sketch3DPointerState) {
@@ -705,6 +995,17 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
     addLine(group, positions, "#2f6f9f");
   }
 
+  for (const path of orderedSketchPaths(session.profile)) {
+    if (!path.closed || path.steps.every((step) => step.segment.construction)) continue;
+    const loop: UV[] = [];
+    for (const step of path.steps) {
+      const samples = sampleCurve(step.from, step.to, step.segment.kind);
+      if (loop.length === 0) loop.push(...samples);
+      else loop.push(...samples.slice(1));
+    }
+    addFill(group, plane, loop, "#4a8cc8", 0.22);
+  }
+
   for (const segment of session.profile.segments) {
     const start = byId.get(segment.startId);
     const end = byId.get(segment.endId);
@@ -734,23 +1035,18 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
   const preview: number[] = [];
   const drag = pointer.gesture?.kind === "drag" ? pointer.gesture : null;
   if (drag) {
-    if (drag.tool === "circle") {
-      const radius = Math.hypot(drag.current.x - drag.origin.x, drag.current.z - drag.origin.z);
-      const ring: UV[] = [];
-      for (let step = 0; step <= 48; step += 1) {
-        const angle = (step / 48) * Math.PI * 2;
-        ring.push({ x: drag.origin.x + Math.cos(angle) * radius, z: drag.origin.z + Math.sin(angle) * radius });
-      }
-      pushWorld(preview, plane, ring, curved);
-    } else {
-      pushWorld(preview, plane, [drag.origin, drag.current], curved);
+    const loop = dragPreviewLoop(drag.tool, drag.origin, drag.current);
+    if (loop.length >= 3 && (loop[0].x !== loop[loop.length - 1].x || loop[0].z !== loop[loop.length - 1].z)) {
+      loop.push(loop[0]);
     }
+    if (loop.length >= 4) addFill(group, plane, loop, "#169fce", 0.12);
+    pushWorld(preview, plane, loop.length >= 2 ? loop : [drag.origin, drag.current], curved || drag.tool === "circle" || drag.tool === "ellipse");
   } else if (pointer.hover && (session.tool === "line" || session.tool === "arc")) {
     const anchor = session.activePointId ? byId.get(session.activePointId) : null;
     const from = anchor ?? pointer.arc[pointer.arc.length - 1];
     if (from) pushWorld(preview, plane, [from, pointer.hover], curved);
   }
-  addLine(group, preview, "#e07a00");
+  addLine(group, preview, "#169fce");
 
   host.scene.add(group);
 }
