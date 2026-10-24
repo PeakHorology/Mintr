@@ -16,6 +16,7 @@ add_executable(MintrKernel
   src/fillet.cpp
   src/split.cpp
   src/print.cpp
+  src/recipe.cpp
 )
 
 target_include_directories(MintrKernel PRIVATE

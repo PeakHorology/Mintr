@@ -148,6 +148,7 @@ export function mapNativeCadModifierReply(
       brep: reply.brep ?? "",
       displayEdges: reply.displayEdges ?? [],
       smooth: reply.smooth,
+      ...(reply.skippedEdgeIds?.length ? { skippedEdgeCount: reply.skippedEdgeIds.length } : {}),
     };
   }
   if (reply.type === "previewBrep") {

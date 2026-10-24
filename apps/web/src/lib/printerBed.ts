@@ -288,10 +288,10 @@ function quantizedVertexKey(x: number, y: number, z: number, quantize: number) {
  * owning triangle's normal so interior edges still cancel.
  */
 export function appendOverhangBoundaryLines(
-  positions: number[],
+  positions: ArrayLike<number>,
   lines: number[],
   quantize = 1000,
-  normals?: number[],
+  normals?: ArrayLike<number>,
   lift = 0,
 ) {
   const edges = new Map<string, { count: number; ax: number; ay: number; az: number; bx: number; by: number; bz: number; nx: number; ny: number; nz: number }>();

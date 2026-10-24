@@ -3,6 +3,7 @@
 #include "occtio.hpp"
 #include "primitives.hpp"
 #include "print.hpp"
+#include "recipe.hpp"
 #include "sketch.hpp"
 #include "split.hpp"
 
@@ -77,6 +78,7 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
     if (type == "sketchExtrude") return handleSketchExtrude(job);
     if (type == "sketchSweep") return handleSketchSweep(job);
     if (type == "importStep") return handleImportStep(job);
+    if (type == "buildRecipe") return handleBuildRecipe(job);
     if (
       type == "prepare" || type == "preview" || type == "refine" || type == "finalize"
       || type == "dispose" || type == "warmup" || type == "hollow" || type == "previewThread"
@@ -94,6 +96,9 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
       TopoDS_Shape result;
       if (!booleanOp(job.value("op", "union"), solids, holes, result)) {
         return kernelFail("native boolean failed", true);
+      }
+      if (!kernelShapeIsValid(result)) {
+        return kernelFail("native boolean produced an invalid solid", true);
       }
       std::vector<double> positions;
       if (!kernelTessellate(result, positions)) return kernelFail("native tessellation failed", true);

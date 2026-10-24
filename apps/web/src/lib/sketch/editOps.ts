@@ -617,7 +617,18 @@ export function patternSelectionCenter(doc: SketchDoc, entityIds: string[]): Ske
   return { x, z };
 }
 
-/** Rectangular pattern of selected geometry. */
+/** Most copies one sketch pattern may create along a single axis. */
+export const SKETCH_PATTERN_MAX_AXIS_COUNT = 50;
+/** Most copies one sketch pattern may create in total (rows × columns, or around a circle). */
+export const SKETCH_PATTERN_MAX_TOTAL = 400;
+
+/** Clamps a typed pattern count to a sane integer; unparsable text yields the fallback. */
+export function clampSketchPatternCount(value: number, fallback: number, min = 1, max = SKETCH_PATTERN_MAX_AXIS_COUNT) {
+  const rounded = Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.max(min, Math.min(max, rounded));
+}
+
+/** Rectangular pattern of selected geometry. Counts are clamped so a typo cannot create thousands of entities. */
 export function rectangularPattern(
   doc: SketchDoc,
   entityIds: string[],
@@ -628,8 +639,13 @@ export function rectangularPattern(
 ): SketchDoc {
   const next = cloneSketchDoc(doc);
   const sources = patternSources(next, entityIds);
-  for (let ix = 0; ix < countX; ix += 1) {
-    for (let iz = 0; iz < countZ; iz += 1) {
+  const boundedX = clampSketchPatternCount(countX, 1);
+  let boundedZ = clampSketchPatternCount(countZ, 1);
+  if (boundedX * boundedZ > SKETCH_PATTERN_MAX_TOTAL) {
+    boundedZ = Math.max(1, Math.floor(SKETCH_PATTERN_MAX_TOTAL / boundedX));
+  }
+  for (let ix = 0; ix < boundedX; ix += 1) {
+    for (let iz = 0; iz < boundedZ; iz += 1) {
       if (ix === 0 && iz === 0) continue;
       const ox = ix * spacingX;
       const oz = iz * spacingZ;
@@ -646,11 +662,12 @@ export function circularPatternSketch(
   center: SketchVec2,
   count: number,
 ): SketchDoc {
-  if (count < 2) return doc;
+  if (!Number.isFinite(count) || count < 2) return doc;
+  const bounded = clampSketchPatternCount(count, 2, 2, SKETCH_PATTERN_MAX_TOTAL);
   const next = cloneSketchDoc(doc);
   const sources = patternSources(next, entityIds);
-  for (let i = 1; i < count; i += 1) {
-    const angle = (i / count) * Math.PI * 2;
+  for (let i = 1; i < bounded; i += 1) {
+    const angle = (i / bounded) * Math.PI * 2;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
     appendTransformedCopy(next, sources, (x, z) => {

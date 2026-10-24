@@ -62,7 +62,7 @@ describe("peakcad document", () => {
   });
 
   it("rejects a non-PeakCAD JSON file", () => {
-    expect(() => parsePeakcadDocument(JSON.stringify({ name: "nope" }))).toThrow(/not a PeakCAD project/i);
+    expect(() => parsePeakcadDocument(JSON.stringify({ name: "nope" }))).toThrow(/not a Mintr project/i);
   });
 
   it("keeps the saved format so older projects still open", () => {
@@ -227,5 +227,60 @@ describe("peakcad document", () => {
     const restored = expandHistoryShapes(parsed.history![0].shapes, parsed.history![0].meshVault);
     expect(restored[0]?.importedMesh?.positions).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     expect(hydrateEditorHistoryState(parsed.shapes, parsed.history, parsed.historyIndex).entries).toHaveLength(1);
+  });
+
+  it("writes an unchanged imported mesh once across history entries and restores every step", () => {
+    const positions = Array.from({ length: 3000 }, (_, i) => i * 0.5);
+    const shape = box({
+      id: "import-1",
+      kind: "mesh",
+      importedMesh: { positions, baseWidth: 1, baseDepth: 1, baseHeight: 1, triangleCount: 1000, sourceFormat: "stl" },
+    });
+    const moved = { ...shape, x: 10 };
+    const rotated = { ...moved, rotation: 45 };
+    const history = [
+      editorHistoryEntry([shape], [shape.id], "Imported"),
+      editorHistoryEntry([moved], [shape.id], "Moved"),
+      editorHistoryEntry([rotated], [shape.id], "Rotated"),
+    ];
+    const document = buildPeakcadDocument({
+      project: { id: "import-1", name: "Imported body", createdAt: 10, updatedAt: 20, accent: "gold", shapes: 1 },
+      shapes: [rotated],
+      history,
+      historyIndex: 2,
+    });
+
+    const text = serializePeakcadDocument(document);
+    // The shape itself plus one history copy; the other two entries point back.
+    expect(text.split("1499.5").length - 1).toBe(2);
+    expect(text).toContain('"sameAs":"0/import-1"');
+
+    const parsed = parsePeakcadDocument(text);
+    for (const index of [0, 1, 2]) {
+      const vault = parsed.history?.[index]?.meshVault?.["import-1"];
+      expect(vault?.positions).toHaveLength(3000);
+      expect(vault?.positions[2999]).toBe(1499.5);
+      expect(vault?.sameAs).toBeUndefined();
+    }
+    expect(parsed.history?.[2]?.shapes[0]?.rotation).toBe(45);
+    expect(hydrateEditorHistoryState(parsed.shapes, parsed.history, parsed.historyIndex).entries).toHaveLength(3);
+  });
+
+  it("opens a file that Notepad re-saved with a UTF-8 BOM", () => {
+    const document = buildPeakcadDocument({
+      project: { id: "p", name: "Plate", createdAt: 1, updatedAt: 2, accent: "gold", shapes: 0 },
+      shapes: [],
+    });
+    expect(parsePeakcadDocument(`\uFEFF${serializePeakcadDocument(document)}`).project.name).toBe("Plate");
+  });
+
+  it("refuses a file written by a newer Mintr instead of silently downgrading it", () => {
+    const document = buildPeakcadDocument({
+      project: { id: "p", name: "Plate", createdAt: 1, updatedAt: 2, accent: "gold", shapes: 0 },
+      shapes: [],
+    });
+    const record = JSON.parse(serializePeakcadDocument(document));
+    record.version = 999;
+    expect(() => parsePeakcadDocument(JSON.stringify(record))).toThrow(/newer Mintr/i);
   });
 });

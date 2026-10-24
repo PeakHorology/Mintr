@@ -172,7 +172,7 @@ function safeFileName(filename, format) {
   const base = path.basename(typeof filename === "string" ? filename : "")
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
     .trim();
-  if (!base.toLowerCase().endsWith(ext)) return `PeakCAD design${ext}`;
+  if (!base.toLowerCase().endsWith(ext)) return `Mintr design${ext}`;
   return base;
 }
 
@@ -188,7 +188,7 @@ function uniqueFile(dir, filename) {
   return candidate;
 }
 
-function openInSlicer(payload) {
+async function openInSlicer(payload) {
   const slicer = identifyExe(payload?.exePath);
   const format = slicer.format;
   const bytes = Buffer.from(typeof payload?.base64 === "string" ? payload.base64 : "", "base64");
@@ -202,8 +202,19 @@ function openInSlicer(payload) {
   fs.mkdirSync(dir, { recursive: true });
   const filePath = uniqueFile(dir, safeFileName(payload?.filename, format));
   fs.writeFileSync(filePath, bytes);
-  const child = spawn(slicer.path, [filePath], { detached: true, stdio: "ignore", windowsHide: false });
-  child.unref();
+  // Wait for the spawn to succeed. A slicer that was uninstalled since the
+  // last scan, or blocked by policy, would otherwise emit an unhandled "error"
+  // event that crashes the main process instead of telling the user.
+  await new Promise((resolve, reject) => {
+    const child = spawn(slicer.path, [filePath], { detached: true, stdio: "ignore", windowsHide: false });
+    child.once("error", (error) => {
+      reject(new Error(`Mintr couldn't start ${slicer.name}${error?.message ? ` (${error.message})` : ""}. The file was saved to ${filePath}.`));
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
   return { path: filePath, name: slicer.name, format };
 }
 

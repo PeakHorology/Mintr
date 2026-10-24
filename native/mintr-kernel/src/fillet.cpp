@@ -1,4 +1,5 @@
 #include "fillet.hpp"
+#include "occtio.hpp"
 #include "primitives.hpp"
 
 #include <BRepAdaptor_Curve.hxx>
@@ -29,6 +30,12 @@
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <gp_Circ.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
@@ -196,6 +203,13 @@ bool buildPrimitive(const nlohmann::json& primitive, TopoDS_Shape& out) {
     if (std::abs(baseR - topR) <= 1e-6) local = BRepPrimAPI_MakeCylinder(std::max(baseR, topR), height).Shape();
     else local = BRepPrimAPI_MakeCone(baseR, topR, height).Shape();
     orientYUp(local);
+    // An elliptical cone is drawn as a circle stretched along local Z (depth /
+    // width). Ignoring this rebuilt a circular cone, so the preview and the
+    // body on screen disagreed. Same order as the WASM path: orient, then stretch.
+    const double sectionScale = primitive.value("sectionScale", 1.0);
+    if (std::isfinite(sectionScale) && sectionScale > 1e-6 && std::abs(sectionScale - 1.0) > 1e-6) {
+      local = kernelScale(local, 1.0, 1.0, sectionScale);
+    }
   } else if (!buildKernelPrimitiveLocal(primitive, local)) {
     return false;
   }
@@ -533,7 +547,94 @@ bool chamferOne(
   return !out.IsNull();
 }
 
-bool treatEdgesTogether(const std::string& kind, const std::vector<int>& selected, double amount, double chamferAngle, TopoDS_Shape& out) {
+double volumeOf(const TopoDS_Shape& shape);
+
+/**
+ * The solid a cove removes along one edge: a cylinder of the cove radius on a
+ * straight edge, a torus on a full circle, otherwise a disc swept along the
+ * curve. The groove is centred on the edge line and meets both faces square.
+ */
+bool coveToolForEdge(const TopoDS_Edge& edge, double radius, TopoDS_Shape& tool) {
+  BRepAdaptor_Curve curve(edge);
+  const double first = curve.FirstParameter();
+  const double last = curve.LastParameter();
+  if (curve.GetType() == GeomAbs_Line) {
+    const gp_Pnt a = curve.Value(first);
+    const gp_Pnt b = curve.Value(last);
+    const gp_Vec along(a, b);
+    if (along.Magnitude() < 1e-6) return false;
+    tool = BRepPrimAPI_MakeCylinder(gp_Ax2(a, gp_Dir(along)), radius, along.Magnitude()).Shape();
+    return !tool.IsNull();
+  }
+  if (curve.GetType() == GeomAbs_Circle && curve.IsClosed()) {
+    const gp_Circ circ = curve.Circle();
+    // A cove as wide as the circle would eat the whole hole or boss.
+    if (circ.Radius() <= radius + 1e-6) return false;
+    tool = BRepPrimAPI_MakeTorus(gp_Ax2(circ.Location(), circ.Axis().Direction()), circ.Radius(), radius).Shape();
+    return !tool.IsNull();
+  }
+  const gp_Pnt start = curve.Value(first);
+  gp_Vec tangent = curve.DN(first, 1);
+  if (tangent.Magnitude() < 1e-9) return false;
+  const gp_Circ profile(gp_Ax2(start, gp_Dir(tangent)), radius);
+  const TopoDS_Edge profileEdge = BRepBuilderAPI_MakeEdge(profile);
+  const TopoDS_Wire profileWire = BRepBuilderAPI_MakeWire(profileEdge);
+  const TopoDS_Face disc = BRepBuilderAPI_MakeFace(profileWire, Standard_True);
+  const TopoDS_Wire spine = BRepBuilderAPI_MakeWire(edge);
+  BRepOffsetAPI_MakePipe pipe(spine, disc);
+  pipe.Build();
+  if (!pipe.IsDone()) return false;
+  tool = pipe.Shape();
+  return !tool.IsNull();
+}
+
+/**
+ * Cut a concave quarter-round groove along each edge. Where two or more coved
+ * edges share a vertex a ball of the same radius is removed too, so the grooves
+ * run into each other the way a ball-end cutter would leave them.
+ */
+bool coveEdges(const TopoDS_Shape& solid, const std::vector<TopoDS_Edge>& edges, double radius, TopoDS_Shape& out) {
+  if (edges.empty() || !(radius > 1e-6)) return false;
+  TopTools_ListOfShape tools;
+  TopTools_IndexedMapOfShape vertices;
+  std::vector<int> vertexUse;
+  for (const auto& edge : edges) {
+    TopoDS_Shape tool;
+    if (!coveToolForEdge(edge, radius, tool)) return false;
+    tools.Append(tool);
+    for (TopExp_Explorer exp(edge, TopAbs_VERTEX); exp.More(); exp.Next()) {
+      const int index = vertices.Add(exp.Current());
+      if (index > static_cast<int>(vertexUse.size())) vertexUse.push_back(0);
+      vertexUse[static_cast<size_t>(index - 1)] += 1;
+    }
+  }
+  for (int index = 1; index <= vertices.Extent(); ++index) {
+    if (vertexUse[static_cast<size_t>(index - 1)] < 2) continue;
+    const gp_Pnt point = BRep_Tool::Pnt(TopoDS::Vertex(vertices.FindKey(index)));
+    tools.Append(BRepPrimAPI_MakeSphere(point, radius).Shape());
+  }
+  TopTools_ListOfShape arguments;
+  arguments.Append(solid);
+  BRepAlgoAPI_Cut cut;
+  cut.SetArguments(arguments);
+  cut.SetTools(tools);
+  cut.SetRunParallel(true);
+  cut.Build();
+  if (!cut.IsDone()) return false;
+  const double before = volumeOf(solid);
+  const double after = volumeOf(cut.Shape());
+  // A cove always removes material; anything else means the tool missed the edge.
+  if (!(after > 1e-6) || after >= before - 1e-6) return false;
+  out = unify(cut.Shape());
+  return !out.IsNull();
+}
+
+bool treatEdgesTogether(const std::string& kind, const std::vector<int>& selected, double amount, double chamferAngle, const std::string& filletProfile, TopoDS_Shape& out) {
+  if (kind == "fillet" && filletProfile == "cove") {
+    std::vector<TopoDS_Edge> edges;
+    for (int id : selected) edges.push_back(gSession.edges[static_cast<size_t>(id)]);
+    return coveEdges(gSession.base, edges, amount, out);
+  }
   if (kind == "fillet") {
     BRepFilletAPI_MakeFillet maker(gSession.base);
     for (int id : selected) maker.Add(amount, gSession.edges[static_cast<size_t>(id)]);
@@ -555,24 +656,42 @@ bool treatEdgesTogether(const std::string& kind, const std::vector<int>& selecte
   return !out.IsNull();
 }
 
-bool treatEdgesOneByOne(const std::string& kind, const std::vector<int>& selected, double amount, double chamferAngle, TopoDS_Shape& out) {
+bool treatEdgesOneByOne(
+  const std::string& kind,
+  const std::vector<int>& selected,
+  double amount,
+  double chamferAngle,
+  const std::string& filletProfile,
+  TopoDS_Shape& out,
+  std::vector<int>& skipped
+) {
   TopoDS_Shape acc = gSession.base;
   bool any = false;
   for (int id : selected) {
     TopoDS_Edge edge;
     TopoDS_Face face;
-    if (!matchEdgeOnShape(acc, gSession.edges[static_cast<size_t>(id)], edge, face)) continue;
+    if (!matchEdgeOnShape(acc, gSession.edges[static_cast<size_t>(id)], edge, face)) {
+      skipped.push_back(id);
+      continue;
+    }
     TopoDS_Shape next;
     bool ok = false;
     try {
-      if (kind == "fillet") ok = filletOne(acc, edge, amount, next);
+      if (kind == "fillet" && filletProfile == "cove") ok = coveEdges(acc, { edge }, amount, next);
+      else if (kind == "fillet") ok = filletOne(acc, edge, amount, next);
       else ok = chamferOne(acc, edge, face, amount, chamferAngle, next);
     } catch (const Standard_Failure&) {
       ok = false;
     } catch (...) {
       ok = false;
     }
-    if (!ok) continue;
+    // A fillet that "succeeds" with a broken solid is worse than one that is
+    // skipped and reported.
+    if (ok && !kernelShapeIsValid(next)) ok = false;
+    if (!ok) {
+      skipped.push_back(id);
+      continue;
+    }
     acc = next;
     any = true;
   }
@@ -581,7 +700,16 @@ bool treatEdgesOneByOne(const std::string& kind, const std::vector<int>& selecte
   return !out.IsNull();
 }
 
-bool treatEdges(const std::string& kind, const std::vector<int>& edgeIds, double amount, double chamferAngle, TopoDS_Shape& out) {
+bool treatEdges(
+  const std::string& kind,
+  const std::vector<int>& edgeIds,
+  double amount,
+  double chamferAngle,
+  const std::string& filletProfile,
+  TopoDS_Shape& out,
+  std::vector<int>& skipped
+) {
+  skipped.clear();
   if (!gSession.live || gSession.base.IsNull()) return false;
   std::vector<int> selected;
   for (int id : edgeIds) {
@@ -590,13 +718,13 @@ bool treatEdges(const std::string& kind, const std::vector<int>& edgeIds, double
   }
   if (selected.empty()) return false;
   try {
-    if (treatEdgesTogether(kind, selected, amount, chamferAngle, out)) return true;
+    if (treatEdgesTogether(kind, selected, amount, chamferAngle, filletProfile, out) && kernelShapeIsValid(out)) return true;
   } catch (const Standard_Failure&) {
   } catch (...) {
   }
   if (selected.size() <= 1) return false;
   try {
-    return treatEdgesOneByOne(kind, selected, amount, chamferAngle, out);
+    return treatEdgesOneByOne(kind, selected, amount, chamferAngle, filletProfile, out, skipped);
   } catch (const Standard_Failure&) {
     return false;
   } catch (...) {
@@ -1361,6 +1489,9 @@ bool threadRidge(const nlohmann::json& face, const nlohmann::json& job, TopoDS_S
 nlohmann::json previewMesh(const TopoDS_Shape& shape, int requestId, double linear, bool includeBrep) {
   nlohmann::json positions, normals, indices;
   if (!tessellatePreview(shape, linear, positions, normals, indices)) {
+    // Callers store the shape as `accumulated` before meshing; an unmeshable
+    // result must not be what a later `finalize` hands back.
+    if (gSession.accumulated.IsSame(shape)) gSession.accumulated = TopoDS_Shape();
     return modifierFail("The chosen size creates invalid or overlapping edge geometry", false, requestId);
   }
   nlohmann::json reply = {
@@ -1425,7 +1556,11 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
           cut.SetRunParallel(true);
           cut.SetFuzzyValue(0.04);
           cut.Build();
-          if (cut.IsDone() && !cut.HasErrors()) body = unifyKeepVolume(cut.Shape());
+          // A hole that fails to cut must not be dropped quietly: the fillet
+          // would then be computed on a body with that hole filled in and the
+          // result would silently differ from what the user sees on screen.
+          if (!cut.IsDone() || cut.HasErrors()) return modifierFail("Could not cut group holes for fillet", true, requestId);
+          body = unifyKeepVolume(cut.Shape());
         }
       }
     } catch (...) {
@@ -1507,6 +1642,9 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
     if (!pushPullSolid(job.value("faceId", -1), job.value("distance", 0.0), result, message)) {
       return modifierFail(message, false, requestId);
     }
+    if (!kernelShapeIsValid(result)) {
+      return modifierFail("Push Pull produced an invalid solid at this distance. Try a smaller move.", false, requestId);
+    }
     gSession.accumulated = result;
     return previewMesh(result, requestId, previewLinearForQuality(job.value("quality", "standard"), job.value("distance", 0.0)), true);
   }
@@ -1516,15 +1654,18 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       for (const auto& id : job["edgeIds"]) edgeIds.push_back(id.get<int>());
     }
     TopoDS_Shape result;
-    if (!treatEdges(job.value("kind", "fillet"), edgeIds, job.value("amount", 1.0), job.value("chamferAngle", 45.0), result)) {
+    std::vector<int> skipped;
+    if (!treatEdges(job.value("kind", "fillet"), edgeIds, job.value("amount", 1.0), job.value("chamferAngle", 45.0), job.value("filletProfile", "round"), result, skipped)) {
       return modifierFail("The chosen size creates invalid or overlapping edge geometry", false, requestId);
     }
-    gSession.accumulated = result;
     nlohmann::json positions, normals, indices;
     const double linear = std::max(0.16, job.value("amount", 1.0) / 4.0);
     if (!tessellatePreview(result, linear, positions, normals, indices)) {
       return modifierFail("The chosen size creates invalid or overlapping edge geometry", false, requestId);
     }
+    // Only a result that could be meshed becomes the shape `finalize` applies;
+    // otherwise Apply after a failed preview would commit an unseen solid.
+    gSession.accumulated = result;
     return {
       { "ok", true },
       { "type", "preview" },
@@ -1535,6 +1676,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "triangleCount", indices.size() / 3 },
       { "brep", "" },
       { "displayEdges", collectDisplayPolylines(result) },
+      { "skippedEdgeIds", skipped },
     };
   }
   if (type == "refine") {

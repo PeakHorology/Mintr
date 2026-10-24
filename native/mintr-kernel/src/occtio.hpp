@@ -33,3 +33,10 @@ bool kernelTessellateIndexed(
 double kernelVolume(const TopoDS_Shape& shape);
 double kernelArea(const TopoDS_Shape& shape);
 nlohmann::json kernelFail(const std::string& message, bool fallback = true);
+/**
+ * BRepCheck validity gate for results we are about to hand back as exact
+ * geometry. Shapes with more than maxFaces faces are assumed valid (the check
+ * would cost more than the operation). A false here means "fall back", never
+ * "ship it anyway" — silent-wrong geometry is the bug we are guarding against.
+ */
+bool kernelShapeIsValid(const TopoDS_Shape& shape, int maxFaces = 4000);

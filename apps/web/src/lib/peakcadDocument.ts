@@ -56,9 +56,57 @@ function jsonSafeMeshBlob(blob: EditorHistoryMeshBlob): EditorHistoryMeshBlob {
   };
 }
 
+/**
+ * Undo entries shallow-copy shapes, so an imported mesh that never changed is
+ * one array referenced by every entry. Writing it per entry made a 20-step
+ * history of a dense STL twenty times the size of the mesh. Each distinct
+ * array is written once; later entries carry a `sameAs` pointer, which older
+ * Mintr builds read as an empty mesh for that undo step and nothing worse.
+ */
+function dedupeHistoryMeshVaults(history: EditorHistoryEntry[]): EditorHistoryEntry[] {
+  const firstSeen = new Map<ArrayLike<number>, string>();
+  return history.map((entry, entryIndex) => {
+    if (!entry.meshVault) return entry;
+    let changed = false;
+    const meshVault: EditorHistoryMeshVault = {};
+    for (const [path, blob] of Object.entries(entry.meshVault)) {
+      const existing = firstSeen.get(blob.positions);
+      if (existing) {
+        meshVault[path] = { positions: [], sameAs: existing };
+        changed = true;
+      } else {
+        firstSeen.set(blob.positions, `${entryIndex}/${path}`);
+        meshVault[path] = blob;
+      }
+    }
+    return changed ? { ...entry, meshVault } : entry;
+  });
+}
+
+/** Inverse of dedupeHistoryMeshVaults: point every `sameAs` blob at the blob it names. */
+function resolveHistoryMeshVaults(history: EditorHistoryEntry[]): EditorHistoryEntry[] {
+  const resolved = history.map((entry) => (entry.meshVault ? { ...entry, meshVault: { ...entry.meshVault } } : entry));
+  for (const entry of resolved) {
+    if (!entry.meshVault) continue;
+    for (const [path, blob] of Object.entries(entry.meshVault)) {
+      if (typeof blob.sameAs !== "string") continue;
+      const slash = blob.sameAs.indexOf("/");
+      const sourceIndex = Number(blob.sameAs.slice(0, slash));
+      const sourcePath = blob.sameAs.slice(slash + 1);
+      const source = Number.isInteger(sourceIndex) ? resolved[sourceIndex]?.meshVault?.[sourcePath] : undefined;
+      // A dangling pointer leaves the entry with an empty mesh, as an old build would.
+      entry.meshVault[path] = source && typeof source.sameAs !== "string" ? source : { positions: [] };
+    }
+  }
+  return resolved;
+}
+
 function jsonSafeHistoryEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
   const meshVault = entry.meshVault
-    ? Object.fromEntries(Object.entries(entry.meshVault).map(([key, blob]) => [key, jsonSafeMeshBlob(blob)]))
+    ? Object.fromEntries(Object.entries(entry.meshVault).map(([key, blob]) => [
+        key,
+        typeof blob.sameAs === "string" ? { positions: [], sameAs: blob.sameAs } : jsonSafeMeshBlob(blob),
+      ]))
     : undefined;
   const label = typeof entry.label === "string" ? entry.label.trim() : "";
   return {
@@ -75,7 +123,12 @@ function jsonSafeHistoryEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
 function hydrateHistoryEntry(entry: EditorHistoryEntry): EditorHistoryEntry {
   const meshVault = entry.meshVault
     ? Object.fromEntries(
-        Object.entries(entry.meshVault).map(([key, blob]) => [key, hydrateHistoryMeshBlob(blob)]),
+        Object.entries(entry.meshVault).map(([key, blob]) => [
+          key,
+          blob && typeof (blob as { sameAs?: unknown }).sameAs === "string"
+            ? { positions: [], sameAs: (blob as { sameAs: string }).sameAs }
+            : hydrateHistoryMeshBlob(blob),
+        ]),
       )
     : undefined;
   return {
@@ -141,7 +194,7 @@ export function buildPeakcadDocument(input: {
       snapGrid: normalizeSnapGrid(input.project.snapGrid),
     },
     shapes,
-    history: input.history?.map(jsonSafeHistoryEntry),
+    history: input.history ? dedupeHistoryMeshVaults(input.history).map(jsonSafeHistoryEntry) : undefined,
     historyIndex: input.historyIndex,
   };
 }
@@ -241,7 +294,7 @@ function* peakcadSaveAttempts(document: PeakcadDocument): Generator<PeakcadDocum
 }
 
 export function serializePeakcadDocument(document: PeakcadDocument) {
-  let lastError: unknown = new Error("This PeakCAD file is too large to save.");
+  let lastError: unknown = new Error("This Mintr file is too large to save.");
   for (const attempt of peakcadSaveAttempts(document)) {
     try {
       const text = encodePeakcadJson(buildPeakcadDocument(attempt));
@@ -252,55 +305,61 @@ export function serializePeakcadDocument(document: PeakcadDocument) {
       lastError = error;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("This PeakCAD file is too large to save.");
+  throw lastError instanceof Error ? lastError : new Error("This Mintr file is too large to save.");
 }
 
 export function parsePeakcadDocument(raw: string): PeakcadDocument {
   if (typeof raw !== "string" || raw.length === 0) {
-    throw new Error("This PeakCAD file is empty.");
+    throw new Error("This Mintr file is empty.");
   }
   if (new TextEncoder().encode(raw).length > PEAKCAD_MAX_BYTES) {
-    throw new Error("This PeakCAD file is too large to open.");
+    throw new Error("This Mintr file is too large to open.");
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    // Notepad and some sync tools re-save JSON with a UTF-8 BOM, which JSON.parse rejects.
+    parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
   } catch {
-    throw new Error("This is not a valid PeakCAD file.");
+    throw new Error("This is not a valid Mintr file.");
   }
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("This is not a valid PeakCAD file.");
+    throw new Error("This is not a valid Mintr file.");
   }
   const record = parsed as Record<string, unknown>;
   if (record.format !== PEAKCAD_FORMAT) {
-    throw new Error("This file is not a PeakCAD project.");
+    throw new Error("This file is not a Mintr project.");
   }
   if (typeof record.lock === "string") {
-    throw new Error("This PeakCAD file is password protected.");
+    throw new Error("This Mintr file is password protected.");
   }
   const version = asFiniteNumber(record.version, 0);
   if (version < 1) {
-    throw new Error("This PeakCAD file is too old to open.");
+    throw new Error("This Mintr file is too old to open.");
+  }
+  if (version > PEAKCAD_DOCUMENT_VERSION) {
+    // Loading it would drop whatever the newer format added, and the next
+    // autosave would overwrite the file with the downgraded copy.
+    throw new Error("This file was saved by a newer Mintr. Update Mintr to open it.");
   }
   const projectRaw = record.project;
   if (!projectRaw || typeof projectRaw !== "object") {
-    throw new Error("This PeakCAD file is missing project data.");
+    throw new Error("This Mintr file is missing project data.");
   }
   const project = projectRaw as Record<string, unknown>;
   if (typeof project.id !== "string" || !project.id.trim()) {
-    throw new Error("This PeakCAD file is missing a project id.");
+    throw new Error("This Mintr file is missing a project id.");
   }
   if (typeof project.name !== "string" || !project.name.trim()) {
-    throw new Error("This PeakCAD file is missing a project name.");
+    throw new Error("This Mintr file is missing a project name.");
   }
   if (!Array.isArray(record.shapes)) {
-    throw new Error("This PeakCAD file is missing shapes.");
+    throw new Error("This Mintr file is missing shapes.");
   }
   const accent = ACCENTS.has(project.accent as PeakcadAccent) ? (project.accent as PeakcadAccent) : "cyan";
   const now = Date.now();
   const shapes = (record.shapes as WorkplaneShape[]).map((shape) => hydrateClipboardShape(shape));
   const history = Array.isArray(record.history)
-    ? (record.history as EditorHistoryEntry[]).map((entry) => hydrateHistoryEntry(entry))
+    ? resolveHistoryMeshVaults((record.history as EditorHistoryEntry[]).map((entry) => hydrateHistoryEntry(entry)))
     : undefined;
   return {
     format: PEAKCAD_FORMAT,

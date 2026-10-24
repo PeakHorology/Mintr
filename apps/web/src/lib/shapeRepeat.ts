@@ -336,20 +336,15 @@ function applyNonRotationDelta(shape: WorkplaneShape, delta: ShapeRepeatDelta): 
 }
 
 export function createDuplicateForRepeat(shape: WorkplaneShape, id: string): WorkplaneShape {
-  const duplicate: WorkplaneShape = {
+  // Mesh arrays are never mutated in place (every transform builds new arrays),
+  // so duplicates share the source positions/normals by reference. Copying a
+  // million-vertex import for each of a 10×10 pattern's 100 copies took seconds
+  // and multiplied memory; sharing also lets undo history dedupe them.
+  return {
     ...shape,
     id,
+    importedMesh: shape.importedMesh ? { ...shape.importedMesh } : shape.importedMesh,
   };
-
-  if (shape.importedMesh) {
-    duplicate.importedMesh = {
-      ...shape.importedMesh,
-      positions: [...shape.importedMesh.positions],
-      normals: shape.importedMesh.normals ? [...shape.importedMesh.normals] : undefined,
-    };
-  }
-
-  return duplicate;
 }
 
 export function applyRepeatActionToDuplicate(

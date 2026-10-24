@@ -8,7 +8,7 @@ import {
   shapeYawDegrees,
   worldAabb,
 } from "@/lib/stepExport";
-import { facetedStepTriangleLimit, localBoxMesh, meshToBinaryStlBlob } from "@/lib/stepFacetedExport";
+import { facetedStepTriangleLimit, localBoxMesh, meshToBinaryStlBlob, weldFacetedMesh } from "@/lib/stepFacetedExport";
 
 function shape(overrides: Partial<WorkplaneShape> = {}): WorkplaneShape {
   return {
@@ -195,5 +195,38 @@ describe("faceted STEP mesh helpers", () => {
 
   it("exposes a positive triangle cap", () => {
     expect(facetedStepTriangleLimit()).toBeGreaterThan(1000);
+  });
+
+  it("welds near-coincident soup vertices so a CSG seam sews as one edge", () => {
+    // Two triangles sharing an edge, but the second copy of the shared vertices
+    // drifted by 1e-9 mm the way BVH/Manifold cut output does.
+    const soup = {
+      name: "Seam",
+      vertices: [
+        [0, 0, 0], [10, 0, 0], [0, 10, 0],
+        [10, 0, 1e-9], [10, 10, 0], [0, 10, -1e-9],
+      ] as [number, number, number][],
+      faces: [[0, 1, 2], [3, 4, 5]] as [number, number, number][],
+    };
+    const welded = weldFacetedMesh(soup);
+    expect(welded.vertices.length).toBe(4);
+    expect(welded.faces.length).toBe(2);
+    const [a, b] = welded.faces;
+    const shared = a.filter((index) => b.includes(index));
+    expect(shared.length).toBe(2);
+  });
+
+  it("drops triangles that collapse after welding and keeps distinct vertices apart", () => {
+    const mesh = {
+      name: "Sliver",
+      vertices: [[0, 0, 0], [5, 0, 0], [5, 0, 1e-7], [0, 3, 0]] as [number, number, number][],
+      faces: [[0, 1, 2], [0, 1, 3]] as [number, number, number][],
+    };
+    const welded = weldFacetedMesh(mesh);
+    expect(welded.faces).toEqual([[0, 1, 2]]);
+    expect(welded.vertices.length).toBe(3);
+    // Vertices 1 mm apart are not welded at the default tolerance.
+    const apart = weldFacetedMesh({ name: "Apart", vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0]], faces: [[0, 1, 2]] });
+    expect(apart.vertices.length).toBe(3);
   });
 });

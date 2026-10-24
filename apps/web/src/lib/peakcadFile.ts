@@ -23,6 +23,7 @@ export type PeakcadFileApi = {
   onOpenPath?: (listener: (filePath: string) => void) => () => void;
   onMenu?: (listener: (action: PeakcadMenuAction) => void) => () => void;
   onSaveBeforeClose?: (handler: () => Promise<boolean>) => () => void;
+  onFlushBeforeClose?: (handler: () => Promise<boolean>) => () => void;
 };
 
 export type PeakcadMenuAction = "new" | "open" | "save" | "save-as" | "import" | "export" | "settings";
@@ -60,6 +61,40 @@ export function hasDesktopProjectFiles() {
   return Boolean(fileApi()?.isDesktop && fileApi()?.open && fileApi()?.write);
 }
 
+const FRIENDLY_FS_ERRORS: Array<[RegExp, string]> = [
+  [/\bENOENT\b/, "That folder is no longer there. Pick a new place to save with Save As."],
+  [/\bEBUSY\b|\bEPERM\b|\bEACCES\b/, "The file is locked or read-only (a sync tool or another program may have it open). Close it and try again, or use Save As."],
+  [/\bENOSPC\b/, "The drive is full. Free some space or save somewhere else."],
+  [/\bEROFS\b/, "That drive is read-only. Save somewhere else."],
+  [/\bENAMETOOLONG\b/, "That file name or folder path is too long for Windows."],
+];
+
+/**
+ * Electron wraps renderer-facing rejections as
+ * "Error invoking remote method 'peakcad:file-write': Error: <message>", and
+ * Node file errors arrive as "ENOENT: no such file or directory, open 'E:\…'".
+ * People should see the message, not the plumbing.
+ */
+export function friendlyProjectFileError(error: unknown): Error {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  let message = raw.replace(/^Error invoking remote method '[^']*':\s*/i, "").replace(/^Error:\s*/i, "").trim();
+  for (const [pattern, text] of FRIENDLY_FS_ERRORS) {
+    if (pattern.test(message)) {
+      message = text;
+      break;
+    }
+  }
+  return new Error(message || "Could not access the project file.");
+}
+
+async function desktopCall<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw friendlyProjectFileError(error);
+  }
+}
+
 function pickBrowserFile() {
   return new Promise<File | null>((resolve) => {
     const input = document.createElement("input");
@@ -74,7 +109,7 @@ function pickBrowserFile() {
 export async function openPeakcadFileText(): Promise<{ text: string; path: string | null } | null> {
   const desktop = fileApi();
   if (desktop?.open) {
-    const result = await desktop.open();
+    const result = await desktopCall(() => desktop.open!());
     if (!result) return null;
     return { text: result.text, path: result.path };
   }
@@ -94,7 +129,7 @@ export async function readPeakcadPathText(filePath: string): Promise<{ text: str
   if (!desktop?.read) {
     throw new Error("Opening a file path is only available in the Mintr desktop app.");
   }
-  const result = await desktop.read(filePath);
+  const result = await desktopCall(() => desktop.read!(filePath));
   return { text: result.text, path: result.path };
 }
 
@@ -113,7 +148,7 @@ export async function writePeakcadText(filePath: string, text: string) {
   if (!desktop?.write) {
     throw new Error("Saving to a file path is only available in the Mintr desktop app.");
   }
-  await desktop.write({ path: filePath, text });
+  await desktopCall(() => desktop.write!({ path: filePath, text }));
 }
 
 export async function savePeakcadAs(document: PeakcadDocument, suggestedName: string): Promise<string | null> {
@@ -124,7 +159,7 @@ export async function savePeakcadTextAs(text: string, suggestedName: string): Pr
   const defaultName = peakcadFilename(suggestedName);
   const desktop = fileApi();
   if (desktop?.saveAs) {
-    const result = await desktop.saveAs({ text, defaultName });
+    const result = await desktopCall(() => desktop.saveAs!({ text, defaultName }));
     return result?.path ?? null;
   }
   await downloadTextFile(defaultName, text, "application/json");
@@ -134,7 +169,7 @@ export async function savePeakcadTextAs(text: string, suggestedName: string): Pr
 export async function resolveDesktopPeakcadTextByName(suggestedName: string): Promise<{ path: string; text: string } | null> {
   const desktop = fileApi();
   if (!desktop?.resolveName) return null;
-  const result = await desktop.resolveName(peakcadFilename(suggestedName));
+  const result = await desktopCall(() => desktop.resolveName!(peakcadFilename(suggestedName)));
   if (!result) return null;
   return { path: result.path, text: result.text };
 }
@@ -201,4 +236,9 @@ export function subscribePeakcadMenu(listener: (action: PeakcadMenuAction) => vo
 /** Desktop window close chose Save: the window closes only if `handler` resolves true. */
 export function subscribePeakcadSaveBeforeClose(handler: () => Promise<boolean>) {
   return fileApi()?.onSaveBeforeClose?.(handler);
+}
+
+/** Desktop window is about to close: flush debounced edits to the store and wait for the write. */
+export function subscribePeakcadFlushBeforeClose(handler: () => Promise<boolean>) {
+  return fileApi()?.onFlushBeforeClose?.(handler);
 }

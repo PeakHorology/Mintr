@@ -6,7 +6,7 @@
   <p>Local Windows CAD. Your files stay on this computer.</p>
   <p>
     <a href="LICENSE"><img alt="GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-2aa77e"></a>
-    <img alt="Version 1.1.2" src="https://img.shields.io/badge/version-1.1.2-655447">
+    <img alt="Version 1.1.3" src="https://img.shields.io/badge/version-1.1.3-655447">
     <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-655447">
   </p>
   <p>
@@ -16,6 +16,12 @@
 </div>
 
 Installer, shortcuts, and the Windows apps entry are named **Mintr3d**. The program file is `Mintr.exe`. New projects save as `.mintr`. Older `.peakcad` files still open.
+
+## 1.1.3
+
+- Gridfinity bins and baseplates, including a split that fits the printer bed
+- Concave fillet, with the groove running through the corner
+- Polygon edges, X-ray, and a Light / Dark start page
 
 ## 1.1.2
 
@@ -34,7 +40,7 @@ npm install
 npm run package:desktop
 ```
 
-That writes `dist-release/PeakCAD-Setup-1.1.2.exe`. `npm run dev` previews `http://127.0.0.1:3000` on this machine only.
+That writes `dist-release/PeakCAD-Setup-1.1.3.exe`. `npm run dev` previews `http://127.0.0.1:3000` on this machine only.
 
 ## License
 

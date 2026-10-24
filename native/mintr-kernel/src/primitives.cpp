@@ -1,5 +1,6 @@
 #include "primitives.hpp"
 #include "occtio.hpp"
+#include "recipe.hpp"
 
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
@@ -299,9 +300,10 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
 
   if (kind == "polygon") {
     const int sides = std::max(3, solid.value("sides", 6));
+    // Same vertices as CylinderGeometry: first vertex on +Z, still counterclockwise.
     std::vector<Uv> pts;
     for (int i = 0; i < sides; ++i) {
-      const double a = (2.0 * kKernelPi * i) / sides;
+      const double a = kKernelPi / 2.0 + (2.0 * kKernelPi * i) / sides;
       pts.emplace_back(std::cos(a), std::sin(a));
     }
     if (!extrudeXz(pts, height, out)) return false;
@@ -380,6 +382,15 @@ bool buildKernelSolid(const nlohmann::json& solid, TopoDS_Shape& out) {
     if (!kernelReadBrep(solid["cadBrep"].get<std::string>(), imported)) return false;
     const double height = solid.value("height", 0.0);
     out = kernelPlaced(kernelFitImportedLocal(imported, solid), solid, height > 1e-6 ? height : 0.0);
+    return true;
+  }
+  if (solid.value("kind", "") == "recipe" && solid.contains("recipe")) {
+    // Generator body (Gridfinity) whose exact build is still pending on the JS side.
+    TopoDS_Shape built;
+    std::string error;
+    if (!buildRecipeLocal(solid["recipe"], built, error)) return false;
+    const double height = solid["recipe"].value("height", solid.value("height", 0.0));
+    out = kernelPlaced(centerOnY(built, height), solid, height);
     return true;
   }
   TopoDS_Shape local;

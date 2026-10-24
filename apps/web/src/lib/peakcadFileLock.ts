@@ -51,32 +51,32 @@ function subtleCrypto() {
 
 export function isEncryptedPeakcadText(raw: string): boolean {
   if (typeof raw !== "string" || raw.length === 0) return false;
-  const head = raw.slice(0, 240);
+  const head = raw.slice(0, 241);
   return head.includes(`"lock":"${PEAKCAD_FILE_LOCK}"`);
 }
 
 function readEnvelope(raw: string): PeakcadFileEnvelope {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
   } catch {
-    throw new Error("This is not a valid PeakCAD file.");
+    throw new Error("This is not a valid Mintr file.");
   }
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("This is not a valid PeakCAD file.");
+    throw new Error("This is not a valid Mintr file.");
   }
   const record = parsed as Partial<PeakcadFileEnvelope>;
   if (record.format !== "peakcad" || record.lock !== PEAKCAD_FILE_LOCK || record.kdf !== PEAKCAD_FILE_KDF) {
-    throw new Error("This PeakCAD file is not password protected.");
+    throw new Error("This Mintr file is not password protected.");
   }
   if (typeof record.iterations !== "number" || !Number.isInteger(record.iterations)) {
-    throw new Error("This PeakCAD file is not password protected.");
+    throw new Error("This Mintr file is not password protected.");
   }
   if (record.iterations < MIN_ITERATIONS || record.iterations > MAX_ITERATIONS) {
-    throw new Error("This PeakCAD file is not password protected.");
+    throw new Error("This Mintr file is not password protected.");
   }
   if (typeof record.salt !== "string" || typeof record.iv !== "string" || typeof record.ciphertext !== "string") {
-    throw new Error("This PeakCAD file is not password protected.");
+    throw new Error("This Mintr file is not password protected.");
   }
   return record as PeakcadFileEnvelope;
 }
@@ -138,7 +138,7 @@ export async function decryptPeakcadText(raw: string, password: string): Promise
   const iv = base64ToBytes(envelope.iv);
   const ciphertext = base64ToBytes(envelope.ciphertext);
   if (!salt || !iv || !ciphertext) {
-    throw new Error("This PeakCAD file is not password protected.");
+    throw new Error("This Mintr file is not password protected.");
   }
   try {
     const key = await deriveFileKey(password, salt, envelope.iterations);

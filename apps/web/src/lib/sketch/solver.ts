@@ -245,7 +245,9 @@ function applyDimension(doc: SketchDoc, dim: SketchDimension, points: Map<string
     const circle = doc.entities.find((e) => e.id === dim.entityIds[0] && e.kind === "circle");
     if (!circle || circle.kind !== "circle") return 0;
     const targetR = dim.kind === "diameter" ? dim.value / 2 : dim.value;
-    circle.radius = targetR;
+    // A typed 0 or negative dimension would collapse the circle to a point (or
+    // flip it) and every later tangency would divide by that radius.
+    if (Number.isFinite(targetR) && targetR > 0) circle.radius = Math.max(0.01, targetR);
   } else if (dim.kind === "angular" && dim.entityIds.length >= 2) {
     // Soft-align second line angle relative to first
     const l1 = lineEndpoints(doc, dim.entityIds[0], points);

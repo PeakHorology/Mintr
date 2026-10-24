@@ -258,10 +258,31 @@ let stepWorker: Worker | null = null;
 let stepRequestSerial = 0;
 const importListeners = new Map<number, (message: StepWorkerMessage) => void>();
 
+/** Longest silence tolerated from the STEP worker before it is presumed hung. */
+const STEP_WORKER_IDLE_TIMEOUT_MS = 120_000;
+
 function failPendingStepWork(message: string) {
   const pending = [...importListeners.values()];
   importListeners.clear();
   for (const listener of pending) listener({ type: "error", requestId: -1, message });
+}
+
+/**
+ * Drop the worker so the next import starts a fresh WASM heap. An OCCT
+ * failure inside WASM often leaves the module unable to read the next file,
+ * and a hung import would otherwise block every later one.
+ */
+function recycleStepWorker(reason: string) {
+  const worker = stepWorker;
+  stepWorker = null;
+  if (worker) {
+    try {
+      worker.terminate();
+    } catch {
+      // Already gone.
+    }
+  }
+  failPendingStepWork(reason);
 }
 
 function ensureStepWorker(): Worker {
@@ -272,8 +293,7 @@ function ensureStepWorker(): Worker {
     importListeners.get(message.requestId)?.(message);
   };
   worker.onerror = () => {
-    stepWorker = null;
-    failPendingStepWork("STEP import stopped unexpectedly");
+    if (stepWorker === worker) recycleStepWorker("STEP import stopped unexpectedly");
   };
   stepWorker = worker;
   return worker;
@@ -300,13 +320,31 @@ async function collectedFromWorker(fileName: string, buffer: ArrayBuffer, hooks?
   const preview = previewCollector(hooks);
   const collected: CollectedBody[] = [];
   await new Promise<void>((resolve, reject) => {
-    const finish = () => importListeners.delete(requestId);
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const finish = () => {
+      importListeners.delete(requestId);
+      if (watchdog !== null) clearTimeout(watchdog);
+    };
+    const armWatchdog = () => {
+      if (watchdog !== null) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        if (!importListeners.has(requestId)) return;
+        recycleStepWorker(`${fileName} took too long to read. The file may be corrupt or far larger than Mintr can open here.`);
+      }, STEP_WORKER_IDLE_TIMEOUT_MS);
+    };
     importListeners.set(requestId, (message) => {
       if (message.type === "error") {
         finish();
+        // A worker-reported error for this file means its WASM heap may be
+        // damaged; start the next import on a clean one.
+        if (message.requestId === requestId && stepWorker === worker) {
+          stepWorker = null;
+          try { worker.terminate(); } catch { /* Already gone. */ }
+        }
         reject(new Error(message.message));
         return;
       }
+      armWatchdog();
       if (message.type === "progress") {
         hooks?.onProgress?.({ index: message.index, total: message.total, name: message.name, phase: "mesh" });
         return;
@@ -327,6 +365,7 @@ async function collectedFromWorker(fileName: string, buffer: ArrayBuffer, hooks?
         resolve();
       }
     });
+    armWatchdog();
     worker.postMessage({ type: "import", requestId, fileName, buffer }, [buffer]);
   });
   return collected;

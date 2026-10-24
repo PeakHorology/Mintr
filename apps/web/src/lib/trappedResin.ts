@@ -1,4 +1,12 @@
-import type { PickTriangle } from "@/lib/meshPickBvh";
+import {
+  readPickTriangle,
+  scratchPickTriangle,
+  triangleCount,
+  triangleSoupOf,
+  type PickTriangle,
+  type TriangleSoup,
+  type TriangleSource,
+} from "@/lib/meshPickBvh";
 
 const MAX_AXIS = 40;
 
@@ -8,18 +16,22 @@ const MAX_AXIS = 40;
  * through-hole stays clear. Does not add drain holes.
  */
 export function collectTrappedCavityTriangles(
-  triangles: PickTriangle[],
+  source: TriangleSource,
   positions: number[],
   normals: number[],
 ) {
-  if (triangles.length === 0) return;
-  const grid = buildOccupancy(triangles);
+  const triangles = triangleSoupOf(source);
+  const count = triangleCount(triangles);
+  if (count === 0) return;
+  const grid = buildOccupancy(triangles, count);
   if (!grid) return;
   floodFromOutside(grid);
   // Past the surface splat (reach is 0.87*voxel) so the sample is in the
   // pocket, not in the wall voxel that the face itself painted solid.
   const offset = grid.voxel * 1.2;
-  for (const tri of triangles) {
+  const tri = scratchPickTriangle();
+  for (let index = 0; index < count; index += 1) {
+    readPickTriangle(triangles, index, tri);
     const nx = (tri.by - tri.ay) * (tri.cz - tri.az) - (tri.bz - tri.az) * (tri.cy - tri.ay);
     const ny = (tri.bz - tri.az) * (tri.cx - tri.ax) - (tri.bx - tri.ax) * (tri.cz - tri.az);
     const nz = (tri.bx - tri.ax) * (tri.cy - tri.ay) - (tri.by - tri.ay) * (tri.cx - tri.ax);
@@ -47,20 +59,23 @@ type Occupancy = {
   cells: Uint8Array;
 };
 
-function buildOccupancy(triangles: PickTriangle[]): Occupancy | null {
+function buildOccupancy(triangles: TriangleSoup, count: number): Occupancy | null {
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
   let maxZ = -Infinity;
-  for (const tri of triangles) {
-    minX = Math.min(minX, tri.ax, tri.bx, tri.cx);
-    minY = Math.min(minY, tri.ay, tri.by, tri.cy);
-    minZ = Math.min(minZ, tri.az, tri.bz, tri.cz);
-    maxX = Math.max(maxX, tri.ax, tri.bx, tri.cx);
-    maxY = Math.max(maxY, tri.ay, tri.by, tri.cy);
-    maxZ = Math.max(maxZ, tri.az, tri.bz, tri.cz);
+  for (let at = 0; at < count * 9; at += 3) {
+    const x = triangles[at];
+    const y = triangles[at + 1];
+    const z = triangles[at + 2];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (z < minZ) minZ = z;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+    if (z > maxZ) maxZ = z;
   }
   const spanX = maxX - minX;
   const spanY = maxY - minY;
@@ -77,7 +92,9 @@ function buildOccupancy(triangles: PickTriangle[]): Occupancy | null {
   const nz = Math.max(4, Math.min(MAX_AXIS, Math.ceil((spanZ + pad * 2) / voxel)));
   const cells = new Uint8Array(nx * ny * nz);
   const reach = voxel * 0.87;
-  for (const tri of triangles) {
+  const tri = scratchPickTriangle();
+  for (let index = 0; index < count; index += 1) {
+    readPickTriangle(triangles, index, tri);
     const tMinX = Math.min(tri.ax, tri.bx, tri.cx);
     const tMinY = Math.min(tri.ay, tri.by, tri.cy);
     const tMinZ = Math.min(tri.az, tri.bz, tri.cz);

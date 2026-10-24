@@ -39,6 +39,21 @@ import {
   normalizeGearSpec,
   type GearSpec,
 } from "@/lib/gearProfile";
+import {
+  GRIDFINITY_BIN_CLEARANCE,
+  GRIDFINITY_HEIGHT_UNIT,
+  GRIDFINITY_LIP_HEIGHT,
+  GRIDFINITY_MAX_COMPARTMENTS,
+  GRIDFINITY_MAX_HEIGHT_UNITS,
+  GRIDFINITY_MAX_PADDING,
+  GRIDFINITY_MAX_UNITS,
+  GRIDFINITY_PITCH,
+  GRIDFINITY_SIDES,
+  gridfinityDrawerFit,
+  normalizeGridfinityBaseplateSpec,
+  normalizeGridfinityBinSpec,
+} from "@/lib/gridfinity";
+import { withGridfinityBaseplateSpec, withGridfinityBinSpec } from "@/lib/gridfinityShape";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
 import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
 import { isConstructionShape } from "@/lib/holeFeature";
@@ -52,7 +67,15 @@ import {
 import { resolveEditableSketchShape } from "@/lib/sketch";
 import { DEFAULT_TEXT_FONT, TEXT_FONT_OPTIONS } from "@/lib/textFonts";
 import { measureWorkplaneShape, type ShapeMeasure } from "@/lib/shapeMeasure";
-import type { GridSize, MeasurementAccuracy, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
+import type {
+  GridfinityBaseplateSpec,
+  GridfinityBinSpec,
+  GridfinitySide,
+  GridSize,
+  MeasurementAccuracy,
+  WorkplaneShape,
+  WorkplaneWorkspaceSettings,
+} from "@/types/sketchforge";
 
 const MAX_SHAPE_STEPS = 128;
 
@@ -146,13 +169,17 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+// Length / Width / Height may be typed past the slider range for large prints,
+// but a stray "1e9" must not build a kilometre-scale mesh that freezes the tab.
+export const TYPED_DIMENSION_MAX_MM = 2000;
+
 function formatPropertyNumber(value: number, accuracy: MeasurementAccuracy, step: number) {
   if (step >= 1) return String(Math.round(value));
   return formatMeasurementNumber(value, accuracy, step);
 }
 
 function propertyUsesLengthUnit(label: string) {
-  return /length|width|height|radius|bevel|thickness|clearance|module|backlash|rim|hole/i.test(label);
+  return /length|width|height|radius|bevel|thickness|clearance|module|backlash|rim|hole|padding/i.test(label);
 }
 
 function propertyUsesDegreeUnit(label: string) {
@@ -176,7 +203,169 @@ function withNameProperty(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate,
   ];
 }
 
+const ON_OFF = ["On", "Off"] as const;
+const onOff = (value: boolean) => (value ? "On" : "Off");
+const WALL_OPTIONS = ["Closed", "Open"] as const;
+const SCOOP_OPTIONS = ["None", "Front", "Back", "Left", "Right"] as const;
+const GRIDFINITY_SIDE_LABELS: Record<GridfinitySide, string> = { left: "Left", right: "Right", front: "Front", back: "Back" };
+
+function gridfinityBinProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
+  const spec = normalizeGridfinityBinSpec(shape.gridfinityBin);
+  const apply = (patch: Partial<GridfinityBinSpec>) => {
+    const next = withGridfinityBinSpec(shape, patch);
+    onUpdate({
+      gridfinityBin: next.gridfinityBin,
+      width: next.width,
+      depth: next.depth,
+      height: next.height,
+      size: next.size,
+      name: next.name,
+    });
+  };
+  const wall = (side: GridfinitySide): SelectPropertyConfig => ({
+    type: "select",
+    label: `${GRIDFINITY_SIDE_LABELS[side]} wall`,
+    value: spec.openSides.includes(side) ? "Open" : "Closed",
+    options: [...WALL_OPTIONS],
+    onChange: (value) => {
+      const open = new Set(spec.openSides);
+      if (value === "Open") open.add(side);
+      else open.delete(side);
+      apply({ openSides: GRIDFINITY_SIDES.filter((entry) => open.has(entry)) });
+    },
+  });
+  const units = (label: string, value: number, key: "unitsX" | "unitsZ"): RangePropertyConfig => ({
+    label,
+    value,
+    min: 1,
+    max: GRIDFINITY_MAX_UNITS,
+    step: 1,
+    hint: `${value * GRIDFINITY_PITCH - GRIDFINITY_BIN_CLEARANCE} mm on the 42 mm grid`,
+    onChange: (next) => apply({ [key]: Math.round(next) }),
+  });
+  return [
+    units("Units wide", spec.unitsX, "unitsX"),
+    units("Units deep", spec.unitsZ, "unitsZ"),
+    {
+      label: "Units tall",
+      value: spec.heightUnits,
+      min: 1,
+      max: GRIDFINITY_MAX_HEIGHT_UNITS,
+      step: 1,
+      hint: `${spec.heightUnits * GRIDFINITY_HEIGHT_UNIT} mm at 7 mm per unit${spec.stackingLip ? `, plus a ${GRIDFINITY_LIP_HEIGHT} mm lip` : ""}`,
+      onChange: (heightUnits) => apply({ heightUnits: Math.round(heightUnits) }),
+    },
+    { type: "select", label: "Stacking lip", value: onOff(spec.stackingLip), options: [...ON_OFF], onChange: (value) => apply({ stackingLip: value === "On" }) },
+    { type: "select", label: "Body", value: spec.solid ? "Solid" : "Hollow", options: ["Hollow", "Solid"], onChange: (value) => apply({ solid: value === "Solid" }) },
+    ...(spec.solid
+      ? []
+      : [
+        { label: "Wall thickness", value: spec.wallThickness, min: 0.8, max: 3, step: 0.05, onChange: (wallThickness: number) => apply({ wallThickness }) },
+        { label: "Floor thickness", value: spec.floorThickness, min: 0.8, max: 10, step: 0.05, hint: "Above the 4.75 mm foot.", onChange: (floorThickness: number) => apply({ floorThickness }) },
+        { label: "Compartments across", value: spec.compartmentsX, min: 1, max: GRIDFINITY_MAX_COMPARTMENTS, step: 1, onChange: (compartmentsX: number) => apply({ compartmentsX: Math.round(compartmentsX) }) },
+        { label: "Compartments deep", value: spec.compartmentsZ, min: 1, max: GRIDFINITY_MAX_COMPARTMENTS, step: 1, onChange: (compartmentsZ: number) => apply({ compartmentsZ: Math.round(compartmentsZ) }) },
+        {
+          type: "select" as const,
+          label: "Finger scoop",
+          value: spec.scoop === "none" ? "None" : GRIDFINITY_SIDE_LABELS[spec.scoop],
+          options: SCOOP_OPTIONS.filter((option) => option === "None" || !spec.openSides.includes(option.toLowerCase() as GridfinitySide)),
+          onChange: (value: string) => apply({ scoop: value === "None" ? "none" : (value.toLowerCase() as GridfinitySide) }),
+        },
+        ...(spec.scoop !== "none"
+          ? [{ label: "Scoop radius", value: spec.scoopRadius, min: 0, max: 60, step: 0.5, hint: "0 fits the scoop to the compartment.", onChange: (scoopRadius: number) => apply({ scoopRadius }) }]
+          : []),
+      ]),
+    { type: "select", label: "Magnets", value: onOff(spec.magnets), options: [...ON_OFF], onChange: (value) => apply({ magnets: value === "On" }) },
+    { type: "select", label: "Screw holes", value: onOff(spec.screws), options: [...ON_OFF], onChange: (value) => apply({ screws: value === "On" }) },
+    wall("left"),
+    wall("right"),
+    wall("front"),
+    wall("back"),
+  ];
+}
+
+function gridfinityBaseplateProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
+  const spec = normalizeGridfinityBaseplateSpec(shape.gridfinityBaseplate);
+  const apply = (patch: Partial<GridfinityBaseplateSpec>) => {
+    const next = withGridfinityBaseplateSpec(shape, patch);
+    onUpdate({
+      gridfinityBaseplate: next.gridfinityBaseplate,
+      width: next.width,
+      depth: next.depth,
+      height: next.height,
+      size: next.size,
+      name: next.name,
+    });
+  };
+  const applySpec = (next: GridfinityBaseplateSpec) => apply({ ...next, connectors: next.connectors });
+  const drawer = (label: string, value: number, key: "drawerWidth" | "drawerLength"): RangePropertyConfig => ({
+    label,
+    value,
+    min: 0,
+    max: 600,
+    step: 0.1,
+    hint: key === "drawerWidth" ? "Inside size of the drawer. Set both and the plate fills it with even padding." : undefined,
+    onChange: (next) => {
+      const drawerWidth = key === "drawerWidth" ? next : spec.drawerWidth;
+      const drawerLength = key === "drawerLength" ? next : spec.drawerLength;
+      if (drawerWidth > 0 && drawerLength > 0) {
+        applySpec(gridfinityDrawerFit(drawerWidth, drawerLength, spec));
+      } else {
+        apply({ [key]: next });
+      }
+    },
+  });
+  const pad = (label: string, key: "padLeft" | "padRight" | "padFront" | "padBack"): RangePropertyConfig => ({
+    label,
+    value: spec[key],
+    min: 0,
+    max: GRIDFINITY_MAX_PADDING,
+    step: 0.1,
+    onChange: (value) => apply({ [key]: value, drawerWidth: 0, drawerLength: 0 }),
+  });
+  const connector = (side: GridfinitySide): SelectPropertyConfig => ({
+    type: "select",
+    label: `${GRIDFINITY_SIDE_LABELS[side]} edge`,
+    value: spec.connectors?.[side] === "tab" ? "Tab" : spec.connectors?.[side] === "slot" ? "Slot" : "Plain",
+    options: ["Plain", "Tab", "Slot"],
+    onChange: (value) => {
+      const connectors = { ...(spec.connectors ?? {}) };
+      if (value === "Tab") connectors[side] = "tab";
+      else if (value === "Slot") connectors[side] = "slot";
+      else delete connectors[side];
+      apply({ connectors: Object.keys(connectors).length ? connectors : undefined });
+    },
+  });
+  return [
+    { label: "Units wide", value: spec.unitsX, min: 1, max: GRIDFINITY_MAX_UNITS, step: 1, onChange: (unitsX) => apply({ unitsX: Math.round(unitsX), drawerWidth: 0, drawerLength: 0 }) },
+    { label: "Units deep", value: spec.unitsZ, min: 1, max: GRIDFINITY_MAX_UNITS, step: 1, onChange: (unitsZ) => apply({ unitsZ: Math.round(unitsZ), drawerWidth: 0, drawerLength: 0 }) },
+    drawer("Drawer width", spec.drawerWidth, "drawerWidth"),
+    drawer("Drawer length", spec.drawerLength, "drawerLength"),
+    pad("Padding left", "padLeft"),
+    pad("Padding right", "padRight"),
+    pad("Padding front", "padFront"),
+    pad("Padding back", "padBack"),
+    {
+      label: "Floor thickness",
+      value: spec.floorThickness,
+      min: 0,
+      max: 12,
+      step: 0.1,
+      hint: spec.floorThickness > 0 ? "Under the sockets." : "0 is an open frame. Magnets, screws and edge tabs add a 3 mm floor.",
+      onChange: (floorThickness) => apply({ floorThickness }),
+    },
+    { type: "select", label: "Magnets", value: onOff(spec.magnets), options: [...ON_OFF], onChange: (value) => apply({ magnets: value === "On" }) },
+    { type: "select", label: "Screw holes", value: onOff(spec.screws), options: [...ON_OFF], onChange: (value) => apply({ screws: value === "On" }) },
+    connector("left"),
+    connector("right"),
+    connector("front"),
+    connector("back"),
+  ];
+}
+
 function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate, sceneShapes: readonly WorkplaneShape[] = []): ShapePropertyConfig[] {
+  if (shape.kind === "gridfinityBin") return gridfinityBinProperties(shape, onUpdate);
+  if (shape.kind === "gridfinityBaseplate") return gridfinityBaseplateProperties(shape, onUpdate);
   if (shape.kind === "gear") {
     const spec = normalizeGearSpec(shape.gearSpec);
     const metrics = gearMetrics(spec);
@@ -658,6 +847,8 @@ export function ShapeInspector({
   onEditSketchDimension,
   canSeparateParts = false,
   onSeparateParts,
+  canSplitForPrintBed = false,
+  onSplitForPrintBed,
   onReduceTriangles,
   onInteractionActiveChange,
   activeFeatureId = null,
@@ -678,6 +869,9 @@ export function ShapeInspector({
   onEditSketchDimension?: (dimensionId: string, value: number) => void;
   canSeparateParts?: boolean;
   onSeparateParts?: () => void;
+  /** Gridfinity baseplate larger than the printer bed. */
+  canSplitForPrintBed?: boolean;
+  onSplitForPrintBed?: () => void;
   onReduceTriangles?: (keepFraction: number) => void;
   onInteractionActiveChange?: (active: boolean) => void;
   /** In-body feature selection (CSG child id). */
@@ -982,6 +1176,20 @@ export function ShapeInspector({
         </button>
       ) : null}
 
+      {canSplitForPrintBed && onSplitForPrintBed && shape.kind === "gridfinityBaseplate" ? (
+        <PeakTipButton
+          className="inspector-action-button"
+          type="button"
+          label="Split for print bed"
+          description={TOOL_DESCRIPTIONS.gridfinitySplit}
+          disabled={locked}
+          onClick={onSplitForPrintBed}
+        >
+          <Split size={17} strokeWidth={2.5} />
+          <span>Split for Print Bed</span>
+        </PeakTipButton>
+      ) : null}
+
       <div className="property-card">
         <button
           className="property-card-header"
@@ -1028,7 +1236,7 @@ export function ShapeInspector({
               {(shape.edgeTreatments ?? []).map((feature, index) => (
                 <div key={`edge-${index}`} className="csg-feature-row">
                   <span className="csg-feature-name">
-                    {feature.kind === "fillet" ? "Fillet" : "Chamfer"} {feature.amount} mm
+                    {feature.kind === "fillet" ? (feature.filletProfile === "cove" ? "Concave fillet" : "Fillet") : "Chamfer"} {feature.amount} mm
                     {feature.edgeCount ? ` · ${feature.edgeCount} edges` : ""}
                   </span>
                 </div>
@@ -1266,23 +1474,39 @@ function RangeProperty({
   const sliderValue = clamp(controlValue, controlMin, controlMax);
   const position = ((sliderValue - controlMin) / Math.max(Number.EPSILON, controlMax - controlMin)) * 100;
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(formatPropertyNumber(controlValue, accuracy, controlStep));
+  const displayText = formatPropertyNumber(controlValue, accuracy, controlStep);
+  const [draft, setDraft] = useState(displayText);
+  // Text shown when the field took focus. Tabbing through must not commit the
+  // rounded display value (0.79 in → 20.066 mm) or push a history entry.
+  const focusTextRef = useRef(displayText);
+  const cancelCommitRef = useRef(false);
   const unit = isLength ? lengthDisplayUnit(workspace).label : isAngle ? "°" : null;
   useEffect(() => {
     if (!editing) {
-      setDraft(formatPropertyNumber(controlValue, accuracy, controlStep));
+      setDraft(displayText);
     }
-  }, [accuracy, controlStep, controlValue, editing]);
+  }, [displayText, editing]);
   const toModelValue = (nextValue: number) => isLength ? displayToMillimeters(nextValue, workspace) : nextValue;
+  const boundTyped = (nextValue: number) => (
+    allowsAboveSliderMax ? clamp(nextValue, min, TYPED_DIMENSION_MAX_MM) : clamp(nextValue, min, max)
+  );
   const withCenterDetent = (nextValue: number) => {
-    const bounded = allowsAboveSliderMax ? Math.max(min, nextValue) : clamp(nextValue, min, max);
+    const bounded = clamp(nextValue, min, max);
     return centerDetent && Math.abs(bounded) <= 3 ? 0 : bounded;
   };
   const commitDraft = () => {
-    const next = Number(draft);
-    const finiteNext = Number.isFinite(next) ? next : controlValue;
-    onChange(withCenterDetent(toModelValue(finiteNext)));
     setEditing(false);
+    if (cancelCommitRef.current) {
+      cancelCommitRef.current = false;
+      return;
+    }
+    const text = draft.trim();
+    // Blank or unparsable text (cleared field, "10 mm", "12,5") reverts instead
+    // of collapsing the shape to the minimum; unchanged text is not a change.
+    if (text === "" || text === focusTextRef.current) return;
+    const next = Number(text);
+    if (!Number.isFinite(next)) return;
+    onChange(boundTyped(toModelValue(next)));
   };
   const handleSliderChange = (nextValue: number) => {
     const next = clamp(Number.isFinite(nextValue) ? nextValue : controlMin, controlMin, controlMax);
@@ -1304,7 +1528,9 @@ function RangeProperty({
             disabled={disabled}
             inputMode="decimal"
             onFocus={() => {
-              setDraft(formatPropertyNumber(controlValue, accuracy, controlStep));
+              focusTextRef.current = displayText;
+              cancelCommitRef.current = false;
+              setDraft(displayText);
               setEditing(true);
             }}
             onChange={(event) => setDraft(event.currentTarget.value)}
@@ -1313,8 +1539,8 @@ function RangeProperty({
               if (event.key === "Enter") {
                 event.currentTarget.blur();
               } else if (event.key === "Escape") {
-                setDraft(formatPropertyNumber(controlValue, accuracy, controlStep));
-                setEditing(false);
+                cancelCommitRef.current = true;
+                setDraft(displayText);
                 event.currentTarget.blur();
               }
             }}
@@ -1346,10 +1572,36 @@ function TextProperty({
   onChange,
 }: TextPropertyConfig & { disabled?: boolean }) {
   const [draft, setDraft] = useState(value);
+  const cancelRef = useRef(false);
 
   useEffect(() => {
     setDraft(value);
   }, [value]);
+
+  // Commit once per edit, not per keystroke: typing "Bracket" used to record
+  // seven undo steps and seven autosaves.
+  const commit = () => {
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      setDraft(value);
+      return;
+    }
+    const committed = draft.replace(/\s+/g, " ").trim();
+    if (!committed) {
+      const fallback = value.trim() || (label === "Name" ? "Shape" : draft);
+      setDraft(fallback);
+      if (fallback !== value) {
+        onChange(fallback);
+      }
+      return;
+    }
+    if (committed !== draft) {
+      setDraft(committed);
+    }
+    if (committed !== value) {
+      onChange(committed);
+    }
+  };
 
   return (
     <label className="text-property">
@@ -1360,27 +1612,20 @@ function TextProperty({
         disabled={disabled}
         maxLength={maxLength}
         spellCheck={false}
-        onBlur={() => {
-          const committed = draft.replace(/\s+/g, " ").trim();
-          if (!committed) {
-            const fallback = value.trim() || (label === "Name" ? "Shape" : draft);
-            setDraft(fallback);
-            if (fallback !== value) {
-              onChange(fallback);
-            }
-            return;
-          }
-          if (committed !== draft) {
-            setDraft(committed);
-          }
-          if (committed !== value) {
-            onChange(committed);
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            event.currentTarget.blur();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelRef.current = true;
+            event.currentTarget.blur();
           }
         }}
         onChange={(event) => {
-          const next = event.currentTarget.value.slice(0, maxLength);
-          setDraft(next);
-          onChange(next);
+          setDraft(event.currentTarget.value.slice(0, maxLength));
         }}
       />
     </label>

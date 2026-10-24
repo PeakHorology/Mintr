@@ -8,7 +8,7 @@ const FALLBACK_ROUTE = "/api/sketchforge-mcp";
 const editorTargetSchema = {
   type: "object",
   properties: {
-    editorNumber: { type: "number", description: "The 5-digit PeakCAD project number from peakcad_list_editors." },
+    editorNumber: { type: "number", description: "The 5-digit Mintr project number from peakcad_list_editors." },
     editorId: { type: "string", description: "Optional internal editor id. Prefer editorNumber." },
     timeoutMs: { type: "number", description: "Command timeout in milliseconds. Defaults to 15000, or 120000 for changes." },
   },
@@ -19,7 +19,7 @@ function tool(name, description, inputSchema) {
 }
 
 const tools = [
-  tool("peakcad_list_editors", "List PeakCAD projects that are open, including editorNumber and projectName.", { type: "object", properties: {} }),
+  tool("peakcad_list_editors", "List Mintr projects that are open, including editorNumber and projectName.", { type: "object", properties: {} }),
   tool("peakcad_read_scene", "Read the current project, selection, units, and object dimensions.", {
     ...editorTargetSchema,
     properties: { ...editorTargetSchema.properties, includeRawShapes: { type: "boolean" } },
@@ -247,7 +247,7 @@ const tools = [
     required: ["id"],
     properties: { ...editorTargetSchema.properties, id: { type: "string" }, sharpAngle: { type: "number" } },
   }),
-  tool("peakcad_apply_edge_treatment", "Chamfer or fillet edge ids from peakcad_list_edges.", {
+  tool("peakcad_apply_edge_treatment", "Chamfer or fillet edge ids from peakcad_list_edges. filletProfile \"cove\" is a concave fillet: it scoops a groove into the edge instead of rounding it.", {
     ...editorTargetSchema,
     required: ["id", "kind", "edgeIds", "amount"],
     properties: {
@@ -257,6 +257,7 @@ const tools = [
       edgeIds: { anyOf: [{ type: "array", items: { type: "number" } }, { type: "string", enum: ["all"] }] },
       amount: { type: "number" },
       chamferAngle: { type: "number" },
+      filletProfile: { type: "string", enum: ["round", "cove"] },
       sharpAngle: { type: "number" },
       quality: { type: "string", enum: ["draft", "standard", "fine"] },
     },
@@ -409,12 +410,12 @@ async function bridgeGet(session) {
     try {
       const { response, payload } = await bridgeFetch(session, route, { method: "GET" });
       if (response.ok) return payload;
-      lastError = new Error(payload?.error || `PeakCAD returned HTTP ${response.status}`);
+      lastError = new Error(payload?.error || `Mintr returned HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("PeakCAD is not open");
+  throw lastError instanceof Error ? lastError : new Error("Mintr is not open");
 }
 
 async function bridgeCommand(action, args = {}, defaultTimeoutMs = 15000) {
@@ -425,7 +426,7 @@ async function bridgeCommand(action, args = {}, defaultTimeoutMs = 15000) {
   if (!targetNumber && !targetId) {
     const { editors = [] } = await bridgeGet(session);
     if (editors.length === 1) targetNumber = editors[0].editorNumber;
-    else throw new Error(editors.length === 0 ? "No open PeakCAD project" : "Provide editorNumber because more than one project is open");
+    else throw new Error(editors.length === 0 ? "No open Mintr project" : "Provide editorNumber because more than one project is open");
   }
   const body = JSON.stringify({
     type: "command",
@@ -442,12 +443,12 @@ async function bridgeCommand(action, args = {}, defaultTimeoutMs = 15000) {
       const { response, payload } = await bridgeFetch(session, route, { method: "POST", body });
       if (payload?.ok) return payload.data;
       if (response.status === 404) continue;
-      throw new Error(payload?.error || `PeakCAD command failed with HTTP ${response.status}`);
+      throw new Error(payload?.error || `Mintr command failed with HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("PeakCAD is not open");
+  throw lastError instanceof Error ? lastError : new Error("Mintr is not open");
 }
 
 function actionOf(name) {
@@ -628,6 +629,16 @@ async function handleMessage(message) {
 
 let buffer = "";
 process.stdin.setEncoding("utf8");
+// When the MCP client (Claude Desktop, Cursor, a script) exits, it closes our
+// stdin. Without this the --mcp process lingered as a headless Mintr forever.
+const exitOnClientGone = () => {
+  setTimeout(() => process.exit(0), 50).unref();
+};
+process.stdin.on("end", exitOnClientGone);
+process.stdin.on("close", exitOnClientGone);
+process.stdout.on("error", (error) => {
+  if (error && error.code === "EPIPE") exitOnClientGone();
+});
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
   const lines = buffer.split(/\r?\n/);

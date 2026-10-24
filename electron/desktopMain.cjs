@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { allowPath, findPeakcadArg, registerProjectFileIpc } = require("./projectFile.cjs");
 const { createModelServer } = require("./mcpBridge.cjs");
-const { registerUpdateIpc } = require("./updateCheck.cjs");
+const { registerUpdateIpc, deferPendingInstaller, launchPendingInstaller } = require("./updateCheck.cjs");
 const { registerSlicerIpc } = require("./slicerIpc.cjs");
 const { registerKernelIpc, stopKernel } = require("./kernelHost.cjs");
 const { installCrashReports, openFeedback, openProblemReport, registerCrashReportIpc } = require("./crashReport.cjs");
@@ -194,14 +194,24 @@ function startStaticServer() {
       command: process.execPath,
       args: ["--mcp"],
     }));
+    // Only requests addressed to the loopback origin are served. A web page
+    // whose DNS name is rebound to 127.0.0.1 reaches this port with the
+    // browser believing it is same-origin, but its Host header gives it away.
+    const allowedHosts = new Set([`${HOST}:${APP_PORT}`, `localhost:${APP_PORT}`]);
     const instance = http.createServer((request, response) => {
+      const host = typeof request.headers.host === "string" ? request.headers.host.trim().toLowerCase() : "";
+      if (!allowedHosts.has(host)) {
+        response.writeHead(421, { "Content-Type": "text/plain; charset=utf-8" });
+        response.end("Misdirected request");
+        return;
+      }
       void models.handle(request, response).then((handled) => {
         if (handled) return;
         serveStatic(request, response);
       }).catch(() => {
         if (!response.headersSent) {
           response.writeHead(500);
-          response.end("PeakCAD model bridge failed");
+          response.end("Mintr model bridge failed");
         }
       });
     });
@@ -253,7 +263,7 @@ function startStaticServer() {
 
     instance.on("error", (error) => {
       if (error && typeof error === "object" && "code" in error && error.code === "EADDRINUSE") {
-        reject(new Error(`PeakCAD could not bind ${HOST}:${APP_PORT}. Close any other PeakCAD instance and try again.`));
+        reject(new Error(`Mintr could not bind ${HOST}:${APP_PORT}. Close any other Mintr instance and try again.`));
         return;
       }
       reject(error);
@@ -314,6 +324,41 @@ let saveBeforeCloseRequestId = 0;
  * Runs the renderer's explicit Save (exact-STEP bake + project persist) and resolves whether it
  * succeeded. Resolves false if the page goes away before answering.
  */
+let flushBeforeCloseRequestId = 0;
+
+/** Ask the page to land its debounced autosave. Resolves within a bounded time either way. */
+function requestRendererFlush(window, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const contents = window.webContents;
+    if (contents.isDestroyed() || contents.isLoading()) {
+      resolve(false);
+      return;
+    }
+    flushBeforeCloseRequestId += 1;
+    const requestId = flushBeforeCloseRequestId;
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ipcMain.removeListener("peakcad:flush-before-close-result", onResult);
+      contents.removeListener("render-process-gone", onGone);
+      contents.removeListener("destroyed", onGone);
+      resolve(ok);
+    };
+    const onResult = (event, id, ok) => {
+      if (event.sender !== contents || id !== requestId) return;
+      finish(ok === true);
+    };
+    const onGone = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    ipcMain.on("peakcad:flush-before-close-result", onResult);
+    contents.on("render-process-gone", onGone);
+    contents.on("destroyed", onGone);
+    contents.send("peakcad:flush-before-close", requestId);
+  });
+}
+
 function requestRendererSave(window) {
   return new Promise((resolve) => {
     const contents = window.webContents;
@@ -376,9 +421,28 @@ function createWindow(port) {
   const window = mainWindow;
   let closeRequested = false;
   let saveBeforeCloseInFlight = false;
+  let flushedForClose = false;
+  let flushInFlight = false;
   // "close" fires before the page's beforeunload, so this tells a window close apart from a reload.
-  window.on("close", () => {
+  window.on("close", (event) => {
     closeRequested = true;
+    if (flushedForClose) {
+      flushedForClose = false;
+      return;
+    }
+    // First pass: let the renderer land its debounced autosave before the
+    // window goes away, then close again. Without this the store worker's
+    // in-flight IndexedDB transaction dies with the renderer and the last
+    // edit is gone, even for a project the user never asked to "save".
+    event.preventDefault();
+    if (flushInFlight) return;
+    flushInFlight = true;
+    void requestRendererFlush(window).then(() => {
+      flushInFlight = false;
+      if (window.isDestroyed()) return;
+      flushedForClose = true;
+      window.close();
+    });
   });
 
   // Electron shows no prompt for a page's beforeunload veto; without this the window just refuses to close.
@@ -401,9 +465,14 @@ function createWindow(port) {
     });
     if (choice === 1) {
       event.preventDefault();
+      // A downloaded update waits for the next close instead of killing the app now.
+      deferPendingInstaller();
       return;
     }
-    if (choice !== 0) return;
+    if (choice !== 0) {
+      deferPendingInstaller();
+      return;
+    }
     saveBeforeCloseInFlight = true;
     void requestRendererSave(window).then((ok) => {
       saveBeforeCloseInFlight = false;
@@ -494,7 +563,11 @@ if (!gotSingleInstanceLock) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
       if (opened) {
-        mainWindow.webContents.send("peakcad:open-path", grantOpenPath(opened));
+        // A file double-clicked while the first window is still loading has no
+        // renderer listening yet; park it for did-finish-load instead of
+        // sending into the void.
+        if (mainWindow.webContents.isLoading()) pendingOpenPath = grantOpenPath(opened);
+        else mainWindow.webContents.send("peakcad:open-path", grantOpenPath(opened));
       }
     } else if (opened) {
       pendingOpenPath = grantOpenPath(opened);
@@ -514,6 +587,14 @@ if (!gotSingleInstanceLock) {
     return bootstrap();
   }).catch((error) => {
     console.error(error);
+    // A failed launch used to exit with no window and no message, which looks
+    // like the shortcut is broken. Say what happened before leaving.
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      dialog.showErrorBox("Mintr could not start", message);
+    } catch {
+      // Dialogs may be unavailable before app is ready; the console still has it.
+    }
     app.exit(1);
   });
 }
@@ -528,6 +609,9 @@ app.on("window-all-closed", () => {
 // (Cancel) or keep the window open while Save runs, and the page still needs its asset server then.
 app.on("will-quit", () => {
   stopKernel();
+  // Every window is closed here, so no renderer save can still be writing a
+  // project when the installer's taskkill step runs.
+  launchPendingInstaller();
   if (server) {
     server.close();
     server = null;

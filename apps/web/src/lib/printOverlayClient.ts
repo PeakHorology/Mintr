@@ -1,11 +1,14 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
 import { collectPrintOverlayMarks, type PrintOverlayCollectRequest, type PrintOverlayMarks } from "@/lib/printOverlayCollect";
 import { requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
-import type { PickTriangle } from "@/lib/meshPickBvh";
+import { triangleCount, triangleSoupOf, type TriangleSource } from "@/lib/meshPickBvh";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
-type WorkerRequest = PrintOverlayCollectRequest & { requestId: number };
-type WorkerResponse =
+export type PrintOverlayWorkerRequest = Omit<PrintOverlayCollectRequest, "triangles"> & {
+  requestId: number;
+  triangles: Float64Array;
+};
+export type PrintOverlayWorkerResponse =
   | { requestId: number; type: "result"; value: PrintOverlayMarks }
   | { requestId: number; type: "error"; message: string };
 
@@ -14,8 +17,8 @@ type Pending = {
 };
 
 export type PrintOverlayClientRequest = Omit<PrintOverlayCollectRequest, "triangles"> & {
-  triangles?: PickTriangle[];
-  collectTriangles?: () => PickTriangle[];
+  triangles?: TriangleSource;
+  collectTriangles?: () => TriangleSource;
 };
 
 let worker: Worker | null = null;
@@ -37,7 +40,7 @@ function recycleWorker() {
 function ensureWorker() {
   if (worker) return worker;
   worker = new Worker(new URL("../workers/printOverlay.worker.ts", import.meta.url), { type: "module" });
-  worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+  worker.onmessage = (event: MessageEvent<PrintOverlayWorkerResponse>) => {
     const message = event.data;
     settle(message.requestId, message.type === "error" ? null : message.value);
   };
@@ -48,8 +51,17 @@ function ensureWorker() {
   return worker;
 }
 
-function numbersFrom(value: unknown): number[] {
-  return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number") : [];
+function numbersFrom(value: unknown): Float32Array {
+  if (!Array.isArray(value)) return new Float32Array(0);
+  const out = new Float32Array(value.length);
+  let length = 0;
+  for (const entry of value) {
+    if (typeof entry === "number") {
+      out[length] = entry;
+      length += 1;
+    }
+  }
+  return length === out.length ? out : out.subarray(0, length);
 }
 
 function visiblePrintShapes(shapes: WorkplaneShape[] | undefined) {
@@ -98,9 +110,14 @@ export function collectPrintOverlayMarksSync(request: PrintOverlayCollectRequest
 export async function runPrintOverlayInWorker(request: PrintOverlayClientRequest): Promise<PrintOverlayMarks | null> {
   const native = await tryNativePrintOverlay(request);
   if (native) return native;
-  const triangles = request.triangles?.length
-    ? request.triangles
-    : (request.collectTriangles?.() ?? []);
+  const provided = request.triangles;
+  const source: TriangleSource = provided && triangleCount(provided) > 0
+    ? provided
+    : (request.collectTriangles?.() ?? new Float64Array(0));
+  // One flat buffer, transferred (not cloned) to the worker. Posting an array
+  // of per-triangle objects serialised every field on the main thread and
+  // stalled the viewport for up to a second on dense imports.
+  const triangles = triangleSoupOf(source);
   const meshRequest: PrintOverlayCollectRequest = {
     triangles,
     overhang: request.overhang,
@@ -109,7 +126,8 @@ export async function runPrintOverlayInWorker(request: PrintOverlayClientRequest
     smallHoles: request.smallHoles,
     trappedResin: request.trappedResin,
     nozzleMm: request.nozzleMm,
-    shapes: request.shapes,
+    // The mesh path only reads triangles; cloning every shape (imported meshes
+    // included) into the worker on each overlay refresh was the slowest step.
   };
   if (typeof window === "undefined") {
     return collectPrintOverlayMarks(meshRequest);
@@ -121,7 +139,15 @@ export async function runPrintOverlayInWorker(request: PrintOverlayClientRequest
     return new Promise((resolve) => {
       pending.set(requestId, { resolve });
       try {
-        active.postMessage({ ...meshRequest, requestId } satisfies WorkerRequest);
+        const message: PrintOverlayWorkerRequest = { ...meshRequest, triangles, requestId };
+        // Transfer only a buffer this call produced (collected or packed here);
+        // a caller-supplied Float64Array must stay usable, so it is cloned.
+        const owned = triangles !== provided
+          && triangles.buffer instanceof ArrayBuffer
+          && triangles.byteOffset === 0
+          && triangles.byteLength === triangles.buffer.byteLength;
+        const transfer = owned ? [triangles.buffer] : [];
+        active.postMessage(message, transfer);
       } catch {
         settle(requestId, null);
         recycleWorker();

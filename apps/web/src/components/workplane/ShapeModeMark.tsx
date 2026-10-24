@@ -66,8 +66,22 @@ function rodPath() {
   return commands.join(" ");
 }
 
+/** Rounded Gridfinity outline; the bin keeps a cavity, the baseplate shows a 2×2 grid of sockets. */
+function gridfinityPath(kind: "gridfinityBin" | "gridfinityBaseplate") {
+  const outer = "M8 2 H56 Q62 2 62 8 V56 Q62 62 56 62 H8 Q2 62 2 56 V8 Q2 2 8 2 Z";
+  if (kind === "gridfinityBin") {
+    return `${outer} M14 10 H50 Q54 10 54 14 V50 Q54 54 50 54 H14 Q10 54 10 50 V14 Q10 10 14 10 Z`;
+  }
+  const socket = (x: number, y: number) =>
+    `M${x + 3} ${y} H${x + 19} Q${x + 22} ${y} ${x + 22} ${y + 3} V${y + 19} Q${x + 22} ${y + 22} ${x + 19} ${y + 22} H${x + 3} Q${x} ${y + 22} ${x} ${y + 19} V${y + 3} Q${x} ${y} ${x + 3} ${y} Z`;
+  return `${outer} ${socket(8, 8)} ${socket(34, 8)} ${socket(8, 34)} ${socket(34, 34)}`;
+}
+
 export function shapeModePath(kind: ShapeKind, sides?: number) {
   switch (kind) {
+    case "gridfinityBin":
+    case "gridfinityBaseplate":
+      return gridfinityPath(kind);
     case "box":
     case "sketch":
     case "scribble":
@@ -120,7 +134,8 @@ export function ShapeModeMark({
 }) {
   const hatchId = `hole-hatch-${useId().replace(/:/g, "")}`;
   const path = silhouette ? extrudeSilhouettePath(silhouette) : shapeModePath(kind, sides);
-  const holed = kind === "torus" || kind === "tube" || kind === "ring" || kind === "text" || kind === "gear";
+  const holed = kind === "torus" || kind === "tube" || kind === "ring" || kind === "text" || kind === "gear"
+    || kind === "gridfinityBin" || kind === "gridfinityBaseplate";
   return (
     <svg className={hole ? "large-hole-swatch" : "large-solid-swatch"} viewBox="0 0 64 64" aria-hidden="true">
       {hole ? (

@@ -38,7 +38,7 @@ function createBridge() {
         entry.resolve({
           commandId,
           ok: false,
-          error: `PeakCAD project ${editor.editorNumber} is no longer open`,
+          error: `Mintr project ${editor.editorNumber} is no longer open`,
           completedAt: current,
         });
       }
@@ -109,7 +109,7 @@ function createBridge() {
       return Promise.resolve({
         commandId: "",
         ok: false,
-        error: typeof editorNumber === "number" ? `No open PeakCAD project ${editorNumber}` : "No open PeakCAD project",
+        error: typeof editorNumber === "number" ? `No open Mintr project ${editorNumber}` : "No open Mintr project",
         completedAt: Date.now(),
       });
     }
@@ -117,7 +117,7 @@ function createBridge() {
       return Promise.resolve({
         commandId: "",
         ok: false,
-        error: "Models are turned off in PeakCAD Settings",
+        error: "Models are turned off in Mintr Settings",
         completedAt: Date.now(),
       });
     }
@@ -142,7 +142,7 @@ function createBridge() {
         resolve({
           commandId: command.id,
           ok: false,
-          error: `Timed out waiting for PeakCAD project ${editor.editorNumber}`,
+          error: `Timed out waiting for Mintr project ${editor.editorNumber}`,
           completedAt: Date.now(),
         });
       }, Math.max(1000, Math.min(timeoutMs, 180000)));
@@ -241,9 +241,54 @@ function createModelServer({ userData, port, origin }) {
   const sessionPath = path.join(userData, "mcp-session.json");
   writeSession(sessionPath, session);
 
+  // The pairing code has a million possibilities; without this a local
+  // process could try them all in a few seconds. Wrong tokens earn a growing
+  // lockout, and ten misses rotate the code so a guess in flight is useless.
+  const auth = { failures: 0, lockedUntil: 0 };
+  const AUTH_ROTATE_AFTER = 10;
+  const AUTH_LOCK_BASE_MS = 500;
+  const AUTH_LOCK_MAX_MS = 60_000;
+
+  function sameSecret(presented, expected) {
+    const a = Buffer.from(String(presented));
+    const b = Buffer.from(String(expected));
+    return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+  }
+
+  function authLockedMs() {
+    return Math.max(0, auth.lockedUntil - Date.now());
+  }
+
   function authorized(request) {
     const token = presentedToken(request);
-    return token === session.token || token === session.pairingCode;
+    if (!token) return false;
+    const locked = authLockedMs() > 0;
+    if (!locked && (sameSecret(token, session.token) || sameSecret(token, session.pairingCode))) {
+      auth.failures = 0;
+      return true;
+    }
+    // Attempts during a lockout count too: a guesser does not wait politely.
+    auth.failures += 1;
+    if (auth.failures >= 3) {
+      const wait = Math.min(AUTH_LOCK_MAX_MS, AUTH_LOCK_BASE_MS * 2 ** (auth.failures - 3));
+      auth.lockedUntil = Math.max(auth.lockedUntil, Date.now() + wait);
+    }
+    if (auth.failures >= AUTH_ROTATE_AFTER) {
+      session.pairingCode = pairingCode();
+      writeSession(sessionPath, session);
+      auth.failures = 0;
+    }
+    return false;
+  }
+
+  function unauthorized(response) {
+    const wait = authLockedMs();
+    if (wait > 0) {
+      response.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
+      sendJson(response, 429, { error: `Too many wrong tokens. Try again in ${Math.ceil(wait / 1000)} s.` });
+      return;
+    }
+    sendJson(response, 401, { error: "Mintr needs the session token from this computer." });
   }
 
   async function handle(request, response) {
@@ -253,11 +298,13 @@ function createModelServer({ userData, port, origin }) {
     }
     try {
       if (request.method === "GET") {
-        if (!isPageRequest(request, origin) && !authorized(request)) {
-          sendJson(response, 401, { error: "PeakCAD needs the session token from this computer." });
+        const page = isPageRequest(request, origin);
+        const tokenOk = page ? Boolean(presentedToken(request)) && authorized(request) : authorized(request);
+        if (!page && !tokenOk) {
+          unauthorized(response);
           return true;
         }
-        if (authorized(request)) bridge.noteClient();
+        if (tokenOk) bridge.noteClient();
         sendJson(response, 200, {
           editors: bridge.listEditors(),
           pairingCode: isPageRequest(request, origin) ? session.pairingCode : undefined,
@@ -306,7 +353,7 @@ function createModelServer({ userData, port, origin }) {
       }
       if (body.type === "command") {
         if (!authorized(request)) {
-          sendJson(response, 401, { error: "PeakCAD needs the session token from this computer." });
+          unauthorized(response);
           return true;
         }
         if (typeof body.action !== "string") {
@@ -324,7 +371,7 @@ function createModelServer({ userData, port, origin }) {
         sendJson(response, 200, result);
         return true;
       }
-      sendJson(response, 400, { error: "Invalid PeakCAD model request." });
+      sendJson(response, 400, { error: "Invalid Mintr model request." });
     } catch (error) {
       if (!response.headersSent) {
         sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid request" });

@@ -17,6 +17,45 @@ export function facetedStepTriangleLimit() {
   return Math.min(profile.booleanTriangleLimit, 500_000);
 }
 
+/** Vertices closer than this are the same point for sewing purposes (mm). */
+export const FACETED_WELD_TOLERANCE_MM = 1e-4;
+
+/**
+ * Snap near-coincident vertices together and drop collapsed triangles.
+ *
+ * CSG results (Split, Manifold/BVH cuts) arrive as float64 soups whose shared
+ * vertices differ by 1e-9..1e-6 mm. OCCT's STL reader merges only exact matches
+ * after float32 rounding, so those seams become free edges and the sew into a
+ * solid fails with "BRep_API: command not done". Welding first makes the
+ * triangulation genuinely connected; the result is otherwise the same mesh.
+ */
+export function weldFacetedMesh(mesh: FacetedMeshInput, tolerance = FACETED_WELD_TOLERANCE_MM): FacetedMeshInput {
+  const inv = 1 / tolerance;
+  const indexByKey = new Map<string, number>();
+  const remap = new Array<number>(mesh.vertices.length);
+  const vertices: [number, number, number][] = [];
+  mesh.vertices.forEach((vertex, index) => {
+    const key = `${Math.round(vertex[0] * inv)},${Math.round(vertex[1] * inv)},${Math.round(vertex[2] * inv)}`;
+    let target = indexByKey.get(key);
+    if (target === undefined) {
+      target = vertices.length;
+      indexByKey.set(key, target);
+      vertices.push(vertex);
+    }
+    remap[index] = target;
+  });
+  const faces: [number, number, number][] = [];
+  for (const [a, b, c] of mesh.faces) {
+    const ra = remap[a];
+    const rb = remap[b];
+    const rc = remap[c];
+    if (ra === undefined || rb === undefined || rc === undefined) continue;
+    if (ra === rb || rb === rc || ra === rc) continue;
+    faces.push([ra, rb, rc]);
+  }
+  return { name: mesh.name, vertices, faces };
+}
+
 /** Build a binary STL blob from indexed triangle mesh data. */
 export function meshToBinaryStlBlob(mesh: FacetedMeshInput): Blob {
   const triangleCount = mesh.faces.length;
@@ -133,14 +172,19 @@ export async function importFacetedSolidFromMesh(
   if (mesh.faces.length > limit) {
     return { skip: `mesh has ${mesh.faces.length} triangles (limit ${limit}); simplify before STEP` };
   }
-  if (mesh.faces.length === 0 || mesh.vertices.length < 3) {
+  const welded = weldFacetedMesh(mesh);
+  if (welded.faces.length === 0 || welded.vertices.length < 3) {
     return { skip: "mesh has no triangles" };
   }
   try {
-    const blob = meshToBinaryStlBlob(mesh);
+    const blob = meshToBinaryStlBlob(welded);
     const imported = await brep.importSTL(blob);
     if (!imported.ok) {
-      return { skip: `faceted STL import failed: ${String(imported.error.message ?? imported.error)}` };
+      const cause = (imported.error as { cause?: unknown }).cause;
+      const causeText = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "";
+      return {
+        skip: `faceted STL import failed: ${String(imported.error.message ?? imported.error)}${causeText ? ` (${causeText})` : ""}`,
+      };
     }
     return { solid: imported.value as unknown as BrepSolid };
   } catch (error) {

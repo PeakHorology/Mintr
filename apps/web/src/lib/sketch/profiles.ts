@@ -5,6 +5,26 @@ import type { SketchClosedProfile, SketchDoc, SketchEntity, SketchPointEntity, S
 export type OrderedSketchStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
 export type OrderedSketchPath = { points: SketchPoint[]; steps: OrderedSketchStep[]; closed: boolean };
 
+/**
+ * A loop of straight segments whose corners are collinear (drawn out and back
+ * along one line) encloses nothing. Reporting it closed sent a zero-area face to
+ * the kernel, which either failed or returned an empty solid with no explanation.
+ * Curved loops are left alone: a two-point arc-and-line encloses area the
+ * corner polygon cannot see.
+ */
+function straightLoopHasArea(points: SketchPoint[], steps: OrderedSketchStep[]): boolean {
+  if (steps.some((step) => step.segment.kind && step.segment.kind !== "line")) return true;
+  let twiceArea = 0;
+  let extent = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const a = points[index];
+    const b = points[(index + 1) % points.length];
+    twiceArea += a.x * b.z - b.x * a.z;
+    extent = Math.max(extent, Math.abs(a.x), Math.abs(a.z));
+  }
+  return Math.abs(twiceArea) > Math.max(1e-9, extent * 1e-6);
+}
+
 export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] {
   const pointById = new Map(profile.points.map((point) => [point.id, point]));
   const adjacency = new Map<string, Array<{ pointId: string; segment: SketchSegment }>>();
@@ -76,7 +96,7 @@ export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] 
         if (from && to) {
           unvisited.delete(closing.segment.id);
           steps.push({ segment: closing.segment, from, to });
-          paths.push({ points, steps, closed: true });
+          paths.push({ points, steps, closed: straightLoopHasArea(points, steps) });
           continue;
         }
       }
@@ -92,7 +112,8 @@ export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] 
       });
     }
     const loopSteps = steps.slice(loopStart);
-    paths.push({ points: points.slice(loopStart), steps: loopSteps, closed: loopSteps.length >= 3 });
+    const loopPoints = points.slice(loopStart);
+    paths.push({ points: loopPoints, steps: loopSteps, closed: loopSteps.length >= 3 && straightLoopHasArea(loopPoints, loopSteps) });
   }
   return paths;
 }

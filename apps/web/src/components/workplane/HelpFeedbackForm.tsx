@@ -48,7 +48,7 @@ function HelpFeedbackFields({ version, onRestart }: { version: string; onRestart
 
       <label className="help-feedback-field">
         <span>{kind === "problem" ? "What happened?" : "Your note"}</span>
-        <textarea name="message" required rows={5} placeholder={kind === "problem" ? "What were you doing when this happened?" : "What should PeakCAD do better?"} />
+        <textarea name="message" required rows={5} placeholder={kind === "problem" ? "What were you doing when this happened?" : "What should Mintr do better?"} />
         <ValidationError field="message" errors={state.errors} className="help-feedback-error" />
       </label>
 
@@ -77,7 +77,7 @@ function HelpFeedbackFields({ version, onRestart }: { version: string; onRestart
       ) : null}
 
       <input type="hidden" name="version" value={version || "browser"} />
-      <input type="hidden" name="_subject" value={kind === "problem" ? "PeakCAD problem" : "PeakCAD feedback"} />
+      <input type="hidden" name="_subject" value={kind === "problem" ? "Mintr problem" : "Mintr feedback"} />
 
       <ValidationError errors={state.errors} className="help-feedback-error" />
 

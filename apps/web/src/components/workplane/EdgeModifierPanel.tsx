@@ -4,7 +4,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { Check, LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
-import type { CadModifierKind, CadModifierQuality } from "@/lib/cadModifierTypes";
+import type { CadModifierKind, CadModifierQuality, FilletProfile } from "@/lib/cadModifierTypes";
 import { CAD_MODIFIER_MAX_SHARP_ANGLE, edgeModifierSelectionStatus } from "@/lib/cadModifierRuntime";
 import type { WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -140,6 +140,7 @@ export function EdgeModifierPanel({
   amount,
   maxAmount,
   chamferAngle,
+  filletProfile = "round",
   quality,
   sharpAngle,
   workspace,
@@ -157,6 +158,7 @@ export function EdgeModifierPanel({
   error,
   onAmountChange,
   onChamferAngleChange,
+  onFilletProfileChange,
   onQualityChange,
   onSharpAngleChange,
   onTangentChainChange,
@@ -172,6 +174,7 @@ export function EdgeModifierPanel({
   amount: number;
   maxAmount: number;
   chamferAngle: number;
+  filletProfile?: FilletProfile;
   quality: CadModifierQuality;
   sharpAngle: number;
   workspace: WorkplaneWorkspaceSettings;
@@ -189,6 +192,7 @@ export function EdgeModifierPanel({
   error: string | null;
   onAmountChange: (value: number) => void;
   onChamferAngleChange: (value: number) => void;
+  onFilletProfileChange?: (value: FilletProfile) => void;
   onQualityChange: (value: CadModifierQuality) => void;
   onSharpAngleChange: (value: number) => void;
   onTangentChainChange: (value: boolean) => void;
@@ -200,9 +204,10 @@ export function EdgeModifierPanel({
   onCancel: () => void;
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const cove = kind === "fillet" && filletProfile === "cove";
   const title = editing
-    ? (kind === "fillet" ? "Edit fillet" : "Edit chamfer")
-    : (kind === "fillet" ? "Fillet edges" : "Chamfer edges");
+    ? (kind === "fillet" ? (cove ? "Edit concave fillet" : "Edit fillet") : "Edit chamfer")
+    : (kind === "fillet" ? (cove ? "Concave fillet edges" : "Fillet edges") : "Chamfer edges");
   const amountMin = Math.min(MIN_EDGE_MODIFIER_AMOUNT, Math.max(Number.EPSILON, maxAmount));
   const amountMax = Math.max(amountMin, maxAmount);
   return (
@@ -262,6 +267,26 @@ export function EdgeModifierPanel({
               ))}
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {kind === "fillet" && onFilletProfileChange ? (
+        <div className="editor-mode-tabs edge-modifier-fillet-tabs" data-mode={filletProfile} role="tablist" aria-label="Fillet type">
+          <div className="editor-mode-tabs-pill" aria-hidden="true" />
+          {(["round", "cove"] as const).map((profile) => (
+            <button
+              key={profile}
+              type="button"
+              role="tab"
+              className={filletProfile === profile ? "active" : ""}
+              aria-selected={filletProfile === profile}
+              disabled={!prepared || busy}
+              title={profile === "round" ? "Rounds the edge outward, blending the two faces" : "Scoops a concave groove into the edge"}
+              onClick={() => onFilletProfileChange(profile)}
+            >
+              {profile === "round" ? "Fillet" : "Concave fillet"}
+            </button>
+          ))}
         </div>
       ) : null}
 

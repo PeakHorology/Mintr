@@ -2,6 +2,7 @@ import type { ManifoldToplevel } from "manifold-3d";
 import { ADDITION, Brush, Evaluator, HOLLOW_INTERSECTION, INTERSECTION, SUBTRACTION, type CSGOperation } from "three-bvh-csg";
 import * as THREE from "three";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { shapeUsesImportedMesh } from "@/lib/gridfinity";
 import { getManifoldRuntime } from "@/lib/manifoldRuntime";
 import {
   resolveHollowCylinderSegments,
@@ -109,7 +110,7 @@ export const ALIGN_TARGETS: AlignTarget[] = ["min", "center", "max"];
 
 /** Bounds used by Align. Primitives use their width × depth × height box, same as a rectangle. */
 export function alignmentBounds(shape: WorkplaneShape): Cuboid {
-  if ((shape.kind === "mesh" || shape.kind === "thread") && shape.importedMesh) {
+  if (shapeUsesImportedMesh(shape)) {
     return meshAabb(shape);
   }
   const box = worldAabb(shape);

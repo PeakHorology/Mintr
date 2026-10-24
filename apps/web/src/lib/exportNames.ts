@@ -11,7 +11,7 @@ export function projectExportFileName(projectName: string, format: ProjectExport
     .replace(/[. ]+$/g, "")
     .slice(0, 120);
   if (!safeProjectName) {
-    return `PeakCAD design.${format}`;
+    return `Mintr design.${format}`;
   }
   const usableName = WINDOWS_RESERVED_NAMES.test(safeProjectName) ? `${safeProjectName}-design` : safeProjectName;
   return `${usableName}.${format}`;

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  LINEAR_PATTERN_MAX_INSTANCES,
+  boundLinearPatternCounts,
   clampLinearPatternCount,
   clampLinearPatternSpacing,
   linearPatternCopyId,
@@ -42,6 +44,30 @@ describe("clampLinearPatternCount", () => {
     expect(clampLinearPatternCount(0)).toBe(1);
     expect(clampLinearPatternCount(3.6)).toBe(4);
     expect(clampLinearPatternCount(40)).toBe(24);
+  });
+});
+
+describe("boundLinearPatternCounts", () => {
+  it("keeps a full 24 × 24 grid but caps the total instance budget", () => {
+    expect(boundLinearPatternCounts({ countX: 24, countZ: 24, countY: 1 })).toEqual({ countX: 24, countZ: 24, countY: 1 });
+    const bounded = boundLinearPatternCounts({ countX: 24, countZ: 24, countY: 24 });
+    expect(bounded.countX * bounded.countZ * bounded.countY).toBeLessThanOrEqual(LINEAR_PATTERN_MAX_INSTANCES);
+    // Height was the last axis to grow, so it is the one brought back to fit.
+    expect(bounded).toEqual({ countX: 24, countZ: 24, countY: 1 });
+  });
+
+  it("reduces the axis the user just changed", () => {
+    const bounded = boundLinearPatternCounts({ countX: 24, countZ: 24, countY: 24 }, "countX");
+    expect(bounded.countX).toBe(1);
+    expect(bounded.countZ).toBe(24);
+    expect(bounded.countY).toBe(24);
+  });
+
+  it("never builds more instances than the budget per source", () => {
+    const source = box({ id: "a", x: 0, z: 0 });
+    const result = linearPatternInstances([source], { countX: 24, countZ: 24, countY: 24 }, { spacingX: 1, spacingZ: 1, spacingY: 1 });
+    expect(result.length).toBeLessThanOrEqual(LINEAR_PATTERN_MAX_INSTANCES);
+    expect(linearPatternInstanceCount({ countX: 24, countZ: 24, countY: 24 })).toBe(result.length);
   });
 });
 

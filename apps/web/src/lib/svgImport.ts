@@ -1018,7 +1018,9 @@ function appendValidatedSolid(
     throw new Error(`SVG is too complex (maximum ${MAX_SVG_TRIANGLES} triangles)`);
   }
   if (candidateAnalysis) {
-    rawPositions.push(...candidatePositions);
+    // Spread-push throws past ~65k–120k arguments; a detailed path can carry
+    // millions of floats under the desktop triangle budget.
+    for (let i = 0; i < candidatePositions.length; i += 1) rawPositions.push(candidatePositions[i]);
     acceptedAnalyses.push(candidateAnalysis);
     return true;
   }
@@ -1045,7 +1047,7 @@ export function describeSvgImportFailure(source: string, paths: readonly THREE.S
     const inkscapeTip = " Recommended action: Use Inkscape to convert your PNG into a usable SVG.";
     return looksLikeCanva
       ? `This Canva SVG is an image wrapper, not real vector paths. Canva often embeds a PNG/JPG inside the .svg file.${inkscapeTip}`
-      : `This SVG embeds a raster image (PNG/JPG) instead of vector paths. PeakCAD needs real fills/strokes.${inkscapeTip}`;
+      : `This SVG embeds a raster image (PNG/JPG) instead of vector paths. Mintr needs real fills/strokes.${inkscapeTip}`;
   }
   if (textCount > 0 && vectorTagCount === 0 && importableCount === 0) {
     return "This SVG only contains text objects. Convert text to outlines/paths in your design tool, then export SVG again.";

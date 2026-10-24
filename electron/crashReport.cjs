@@ -1,5 +1,6 @@
 const { app, clipboard, shell } = require("electron");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 /** Change this if problem reports should arrive somewhere else. */
@@ -68,17 +69,39 @@ function writeTextReport(prefix, lines) {
   return filePath;
 }
 
+/**
+ * Stack traces carry C:\Users\<name>\… paths. People paste crash reports into
+ * public issues, so the account name is replaced before anything is written.
+ */
+function redactUserPaths(text) {
+  let out = String(text ?? "");
+  try {
+    const home = os.homedir();
+    if (home) {
+      const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(escaped.replace(/\\\\/g, "[\\\\/]"), "gi"), "~");
+    }
+    const user = os.userInfo().username;
+    if (user) {
+      out = out.replace(new RegExp(`([\\\\/]Users[\\\\/])${user.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=[\\\\/])`, "gi"), "$1<user>");
+    }
+  } catch {
+    // Redaction is best effort; the report is still written.
+  }
+  return out;
+}
+
 function recordCrash(kind, details) {
   try {
     const lines = [
-      "PeakCAD crash report",
+      "Mintr crash report",
       "====================",
       ...appFacts(),
       `Kind: ${kind}`,
       "",
       "Details",
       "-------",
-      details.trim() || "(no details)",
+      redactUserPaths(details).trim() || "(no details)",
       "",
       "Recent notes",
       "------------",
@@ -106,7 +129,7 @@ function latestCrashText() {
 
 function buildProblemReport() {
   return [
-    "PeakCAD problem report",
+    "Mintr problem report",
     "======================",
     ...appFacts(),
     "",
@@ -150,9 +173,9 @@ async function openMailDraft(subject, body) {
 }
 
 async function openFeedback() {
-  const subject = `PeakCAD feedback (${app.getVersion()})`;
+  const subject = `Mintr feedback (${app.getVersion()})`;
   const body = [
-    `PeakCAD ${app.getVersion()}`,
+    `Mintr ${app.getVersion()}`,
     "",
     "We'd love to hear what you think.",
     "",
@@ -170,9 +193,9 @@ async function openProblemReport() {
   } catch {
     // The email still opens with the report written in it.
   }
-  const subject = `PeakCAD problem report (${app.getVersion()})`;
+  const subject = `Mintr problem report (${app.getVersion()})`;
   const body = [
-    `PeakCAD ${app.getVersion()}`,
+    `Mintr ${app.getVersion()}`,
     "",
     "What were you doing when this happened?",
     "",

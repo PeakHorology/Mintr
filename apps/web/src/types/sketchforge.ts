@@ -21,7 +21,56 @@ export type ShapeKind =
   | "icosahedron"
   | "mesh"
   | "thread"
-  | "gear";
+  | "gear"
+  | "gridfinityBin"
+  | "gridfinityBaseplate";
+
+export type GridfinitySide = "left" | "right" | "front" | "back";
+
+/**
+ * Gridfinity bin on the 42 mm grid (7 mm height units). The body is built by the
+ * CAD kernel from this spec; `importedMesh` and `cadBrep` are its build cache.
+ */
+export type GridfinityBinSpec = {
+  unitsX: number;
+  unitsZ: number;
+  heightUnits: number;
+  stackingLip: boolean;
+  wallThickness: number;
+  /** Solid floor above the feet, in mm (the spec floor sits at 7 mm → 2.25). */
+  floorThickness: number;
+  compartmentsX: number;
+  compartmentsZ: number;
+  magnets: boolean;
+  screws: boolean;
+  scoop: "none" | GridfinitySide;
+  /** 0 = automatic (fills the cavity height). */
+  scoopRadius: number;
+  openSides: GridfinitySide[];
+  /** No cavity — a blank to carve with Push Pull or Hollow. */
+  solid: boolean;
+};
+
+export type GridfinityConnector = "tab" | "slot";
+
+/** Gridfinity baseplate (the rails bins click into). */
+export type GridfinityBaseplateSpec = {
+  unitsX: number;
+  unitsZ: number;
+  padLeft: number;
+  padRight: number;
+  padFront: number;
+  padBack: number;
+  /** Drawer inner size that chose the units and padding, or 0 when sized by units. */
+  drawerWidth: number;
+  drawerLength: number;
+  /** 0 = open frame. Magnets or screws need a floor. */
+  floorThickness: number;
+  magnets: boolean;
+  screws: boolean;
+  /** Set by Split for print bed: alignment tabs / slots on the cut edges. */
+  connectors?: Partial<Record<GridfinitySide, GridfinityConnector>>;
+};
 
 export type ShapeAsset = {
   id: string;
@@ -168,6 +217,8 @@ export type EdgeTreatmentFeature = {
   amount: number;
   edgeCount: number;
   chamferAngle?: number;
+  /** Fillet only. `cove` is a concave groove cut into the edge; absent means the convex round. */
+  filletProfile?: "round" | "cove";
   /** Durable recipe so remesh can re-apply after edge IDs change. */
   edgeIds?: number[];
   /** Geometric fingerprints (mid/length/angle) for rematch after remesh. */
@@ -392,6 +443,15 @@ export type WorkplaneShape = {
   };
   threadFeatures?: ThreadFeature[];
   threadHistory?: ThreadHistoryEntry[];
+  /** `kind: "gridfinityBin"` parameters. */
+  gridfinityBin?: GridfinityBinSpec;
+  /** `kind: "gridfinityBaseplate"` parameters. */
+  gridfinityBaseplate?: GridfinityBaseplateSpec;
+  /**
+   * Spec key the stored Gridfinity mesh / B-Rep was built from. A mismatch with
+   * the current spec means the kernel build is still pending.
+   */
+  gridfinityBuilt?: string;
   cadDisplayEdges?: CadDisplayEdge[];
   cadDisplayEdgesVersion?: 2;
   edgeResizeMode?: "scale" | "preserve";

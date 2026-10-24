@@ -358,7 +358,8 @@ function pathArea(path: OrderedSketchPath) {
   return Math.abs(sum) * 0.5;
 }
 
-function meshInLocalFrame(vertices: Float32Array, normals: Float32Array, triangles: Uint32Array) {
+/** Recentre a kernel mesh on its footprint with the base at y = 0; returns the pose it had. */
+export function meshInLocalFrame(vertices: Float32Array, normals: Float32Array, triangles: Uint32Array) {
   if (vertices.length < 9 || triangles.length < 3) return null;
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;

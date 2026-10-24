@@ -1,5 +1,16 @@
 export type CadModifierKind = "chamfer" | "fillet";
 
+/**
+ * How a fillet meets the edge. `round` is the usual convex quarter-round that
+ * blends the two faces; `cove` scoops a concave quarter-round groove centred on
+ * the edge line, the way a cove router bit or ball-end cutter would.
+ */
+export type FilletProfile = "round" | "cove";
+
+export function normalizeFilletProfile(value: unknown): FilletProfile {
+  return value === "cove" ? "cove" : "round";
+}
+
 export type CadModifierEdge = {
   id: number;
   owner?: number;
@@ -143,6 +154,8 @@ export type CadModifierWorkerRequest =
       amount: number;
       quality: CadModifierQuality;
       chamferAngle: number;
+      /** Fillet only; omitted means `round`. */
+      filletProfile?: FilletProfile;
     }
   | {
       type: "hollow";
@@ -184,6 +197,13 @@ export type CadModifierWorkerResponse =
       components?: CadModifierComponentMesh[];
       /** True when this mesh matches the viewport curve, not the fast slider picture. */
       smooth?: boolean;
+      /**
+       * Edges that were selected but could not be treated at this size (the
+       * kernel fell back to one-edge-at-a-time and skipped them). The preview
+       * is still valid for the rest; the UI must say so instead of implying all
+       * selected edges were rounded.
+       */
+      skippedEdgeCount?: number;
     }
   | { type: "previewBrep"; requestId: number; brep: string; componentBreps?: string[] }
   | { type: "disposed"; requestId: number }

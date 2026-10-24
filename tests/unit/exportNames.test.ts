@@ -15,7 +15,7 @@ describe("project export filenames", () => {
   });
 
   it("falls back to a useful name when the project name cannot be used", () => {
-    expect(projectExportFileName("...", "obj")).toBe("PeakCAD design.obj");
+    expect(projectExportFileName("...", "obj")).toBe("Mintr design.obj");
   });
 
   it("sidesteps Windows reserved device names", () => {

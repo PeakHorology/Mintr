@@ -57,6 +57,79 @@ export function setUiTheme(theme: UiTheme) {
   }
 }
 
+export type ThemeTransitionOrigin = { x: number; y: number };
+export type ThemeTransitionKind = "skip" | "instant" | "view-transition";
+
+export function themeTransitionKind(
+  current: UiTheme,
+  next: UiTheme,
+  options: { reducedMotion: boolean; canViewTransition: boolean },
+): ThemeTransitionKind {
+  if (current === next) return "skip";
+  if (options.reducedMotion || !options.canViewTransition) return "instant";
+  return "view-transition";
+}
+
+export type ThemeWipeDirection = "expand" | "contract";
+
+/**
+ * Dark grows out of the control that chose it; light is uncovered as the dark
+ * circle shrinks back into the control. Mirrored motions, same origin.
+ */
+export function themeWipeDirection(next: UiTheme): ThemeWipeDirection {
+  return next === "dark" ? "expand" : "contract";
+}
+
+/** Circle that just covers the window when it expands from the control. */
+export function themeRevealRadius(origin: ThemeTransitionOrigin, width: number, height: number) {
+  return Math.hypot(Math.max(origin.x, width - origin.x), Math.max(origin.y, height - origin.y));
+}
+
+function canStartViewTransition(target: Document): target is Document & {
+  startViewTransition: (update: () => void) => { finished: Promise<void> };
+} {
+  return typeof (target as Document & { startViewTransition?: unknown }).startViewTransition === "function";
+}
+
+function prefersReducedThemeMotion() {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** Apply the theme with an Apple-style circle wipe from the control that chose it. */
+export function setUiThemeWithTransition(theme: UiTheme, origin?: ThemeTransitionOrigin) {
+  const kind = themeTransitionKind(readAppliedUiTheme(), theme, {
+    reducedMotion: prefersReducedThemeMotion(),
+    canViewTransition: typeof document !== "undefined" && canStartViewTransition(document),
+  });
+  if (kind === "skip") {
+    saveUiTheme(theme);
+    return;
+  }
+  if (kind === "instant" || typeof document === "undefined" || !canStartViewTransition(document)) {
+    setUiTheme(theme);
+    return;
+  }
+
+  const root = document.documentElement;
+  if (origin && typeof window !== "undefined") {
+    root.style.setProperty("--theme-origin-x", `${origin.x}px`);
+    root.style.setProperty("--theme-origin-y", `${origin.y}px`);
+    root.style.setProperty("--theme-spread", `${Math.ceil(themeRevealRadius(origin, window.innerWidth, window.innerHeight))}px`);
+  }
+  root.classList.add("is-theme-switching");
+  root.dataset.themeWipe = themeWipeDirection(theme);
+  const transition = document.startViewTransition(() => {
+    setUiTheme(theme);
+  });
+  void transition.finished.finally(() => {
+    root.classList.remove("is-theme-switching");
+    delete root.dataset.themeWipe;
+    root.style.removeProperty("--theme-origin-x");
+    root.style.removeProperty("--theme-origin-y");
+    root.style.removeProperty("--theme-spread");
+  });
+}
+
 export function readAppliedUiTheme(): UiTheme {
   if (typeof document === "undefined") return DEFAULT_UI_THEME;
   return document.documentElement.dataset.theme === "dark" ? "dark" : "light";

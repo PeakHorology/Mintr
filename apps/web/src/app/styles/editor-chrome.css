@@ -121,6 +121,25 @@
   box-shadow: inset 0 -2px 0 #2aa77e;
 }
 
+.edge-modifier-fillet-tabs {
+  margin: 0 0 12px;
+}
+
+.edge-modifier-fillet-tabs button {
+  padding-left: 8px;
+  padding-right: 8px;
+  white-space: nowrap;
+}
+
+.edge-modifier-fillet-tabs button:disabled {
+  color: var(--ink-disabled);
+  cursor: default;
+}
+
+.edge-modifier-fillet-tabs[data-mode="cove"] .editor-mode-tabs-pill {
+  transform: translateX(calc(100% + 2px));
+}
+
 .shell-opening-row button:disabled {
   color: var(--ink-disabled);
   cursor: default;
@@ -2378,6 +2397,38 @@
   height: 16px;
   margin-bottom: 0;
   border-width: 3px;
+}
+
+/* WebGL unavailable or the driver reset: say so instead of a blank panel. */
+.viewport-gpu-failure {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  background: var(--glass-surface-strong);
+}
+
+.viewport-gpu-failure > div {
+  max-width: 420px;
+  padding: 18px 22px;
+  color: var(--peak-charcoal);
+  border: 1px solid var(--peak-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-lg);
+  background: var(--glass-surface-strong);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.viewport-gpu-failure strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: var(--text-base);
+  font-weight: 800;
 }
 
 /* Leave-project prompt: Keep in PeakCAD sits apart from Save file. */

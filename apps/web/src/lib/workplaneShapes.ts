@@ -2,6 +2,22 @@ import type { WorkplaneShape } from "@/types/sketchforge";
 
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { gearFootprint, gearSpecKey, moduleForSpan, normalizeGearSpec } from "@/lib/gearProfile";
+import {
+  GRIDFINITY_TAB_LENGTH,
+  defaultGridfinityBaseplateSpec,
+  defaultGridfinityBinSpec,
+  gridfinityBaseplateFootprint,
+  gridfinityBaseplateKey,
+  gridfinityBaseplateName,
+  gridfinityBinFootprint,
+  gridfinityBinKey,
+  gridfinityBinName,
+  gridfinityHeightUnitsForHeight,
+  gridfinityUnitsForSpan,
+  isDefaultGridfinityName,
+  normalizeGridfinityBaseplateSpec,
+  normalizeGridfinityBinSpec,
+} from "@/lib/gridfinity";
 
 export const MAX_SHAPE_SIDES = hardwareProfile().maxShapeSides;
 
@@ -314,7 +330,8 @@ export function proportionalResizeScale(startWidth: number, startDepth: number, 
 
 export function fallbackSolidColor(shape: WorkplaneShape) {
   if (shape.kind === "cylinder" || shape.kind === "thread") return "#d97813";
-  if (shape.kind === "gear") return "#2aa77e";
+  if (shape.kind === "gear" || shape.kind === "gridfinityBin") return "#2aa77e";
+  if (shape.kind === "gridfinityBaseplate") return "#655447";
   if (shape.kind === "sphere") return "#0098c7";
   if (shape.kind === "cone") return "#6e2786";
   if (shape.kind === "pyramid") return "#f2cf10";
@@ -362,6 +379,19 @@ export function mirrorSign(value?: boolean) {
 
 export function mirroredAxisCount(shape: WorkplaneShape) {
   return [shape.mirrorX, shape.mirrorY, shape.mirrorZ].filter(Boolean).length;
+}
+
+/**
+ * A Gridfinity spec edit leaves the previous exact body behind. Keep the mesh as a
+ * stand-in until the kernel answers, but never let the old B-Rep reach STEP or a
+ * boolean: without cadBrep the kernel rebuilds the body from its recipe instead.
+ */
+function dropStaleGridfinityBrep(next: WorkplaneShape, key: string) {
+  if (!next.cadBrep || !next.gridfinityBuilt || next.gridfinityBuilt === key) return;
+  next.cadBrep = undefined;
+  next.cadBrepFrame = undefined;
+  next.cadDisplayEdges = undefined;
+  next.cadDisplayEdgesVersion = undefined;
 }
 
 export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
@@ -413,6 +443,61 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
     next.width = foot.width;
     next.depth = foot.depth;
     next.size = Math.max(foot.width, foot.depth);
+  }
+  if (shape.kind === "gridfinityBin") {
+    // Dragged sizes snap to whole grid / height units; the spec is the source of truth.
+    const spec = normalizeGridfinityBinSpec(next.gridfinityBin ?? defaultGridfinityBinSpec());
+    const expected = gridfinityBinFootprint(spec);
+    const width = shapeWidth(next);
+    const depth = shapeDepth(next);
+    let resolved = spec;
+    if (Math.abs(width - expected.width) > 0.02 || Math.abs(depth - expected.depth) > 0.02 || Math.abs(next.height - expected.height) > 0.02) {
+      resolved = normalizeGridfinityBinSpec({
+        ...spec,
+        unitsX: Math.abs(width - expected.width) > 0.02 ? gridfinityUnitsForSpan(width) : spec.unitsX,
+        unitsZ: Math.abs(depth - expected.depth) > 0.02 ? gridfinityUnitsForSpan(depth) : spec.unitsZ,
+        heightUnits: Math.abs(next.height - expected.height) > 0.02 ? gridfinityHeightUnitsForHeight(next.height, spec.stackingLip) : spec.heightUnits,
+      });
+    }
+    const foot = gridfinityBinFootprint(resolved);
+    next.gridfinityBin = next.gridfinityBin && gridfinityBinKey(next.gridfinityBin) === gridfinityBinKey(resolved) ? next.gridfinityBin : resolved;
+    if (isDefaultGridfinityName(next.name) && next.name !== gridfinityBinName(resolved)) next.name = gridfinityBinName(resolved);
+    next.width = foot.width;
+    next.depth = foot.depth;
+    next.height = foot.height;
+    next.size = Math.max(foot.width, foot.depth);
+    dropStaleGridfinityBrep(next, gridfinityBinKey(resolved));
+  }
+  if (shape.kind === "gridfinityBaseplate") {
+    const spec = normalizeGridfinityBaseplateSpec(next.gridfinityBaseplate ?? defaultGridfinityBaseplateSpec());
+    const expected = gridfinityBaseplateFootprint(spec);
+    const width = shapeWidth(next);
+    const depth = shapeDepth(next);
+    let resolved = spec;
+    if (Math.abs(width - expected.width) > 0.02 || Math.abs(depth - expected.depth) > 0.02) {
+      const tab = (side: "left" | "right" | "front" | "back") => (spec.connectors?.[side] === "tab" ? GRIDFINITY_TAB_LENGTH : 0);
+      resolved = normalizeGridfinityBaseplateSpec({
+        ...spec,
+        unitsX: Math.abs(width - expected.width) > 0.02
+          ? gridfinityUnitsForSpan(width, spec.padLeft + spec.padRight + tab("left") + tab("right"))
+          : spec.unitsX,
+        unitsZ: Math.abs(depth - expected.depth) > 0.02
+          ? gridfinityUnitsForSpan(depth, spec.padFront + spec.padBack + tab("front") + tab("back"))
+          : spec.unitsZ,
+        drawerWidth: 0,
+        drawerLength: 0,
+      });
+    }
+    const foot = gridfinityBaseplateFootprint(resolved);
+    next.gridfinityBaseplate = next.gridfinityBaseplate && gridfinityBaseplateKey(next.gridfinityBaseplate) === gridfinityBaseplateKey(resolved)
+      ? next.gridfinityBaseplate
+      : resolved;
+    if (isDefaultGridfinityName(next.name) && next.name !== gridfinityBaseplateName(resolved)) next.name = gridfinityBaseplateName(resolved);
+    next.width = foot.width;
+    next.depth = foot.depth;
+    next.height = foot.height;
+    next.size = Math.max(foot.width, foot.depth);
+    dropStaleGridfinityBrep(next, gridfinityBaseplateKey(resolved));
   }
   if (shape.groupedShapes) {
     next.groupedShapes = shape.groupedShapes.map(canonicalizeShape);
@@ -480,6 +565,9 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.construction === b.construction &&
     a.patternFeature === b.patternFeature &&
     a.holeSpec === b.holeSpec &&
+    a.gridfinityBin === b.gridfinityBin &&
+    a.gridfinityBaseplate === b.gridfinityBaseplate &&
+    a.gridfinityBuilt === b.gridfinityBuilt &&
     (a.kind === "gear" ? gearSpecKey(a.gearSpec) === gearSpecKey(b.gearSpec) : true)
   );
 }

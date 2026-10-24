@@ -4,6 +4,7 @@ import {
   boundedEditorHistory,
   compactHistoryShape,
   editorHistoryEntry,
+  estimateHistoryBytes,
   expandHistoryShapes,
   groupingMotionForSceneChange,
   historyShapeMissingTessellation,
@@ -174,6 +175,19 @@ describe("editor history snapshots", () => {
     expect(bounded.length).toBeGreaterThanOrEqual(2);
     expect(bounded.reduce((total, entry) => total + entry.estimatedBytes, 0)).toBeLessThanOrEqual(MAX_EDITOR_HISTORY_BYTES);
     expect(bounded.at(-1)?.shapes[0].id).toBe("box-139");
+  });
+
+  it("counts a shared imported mesh once when bounding undo depth", () => {
+    // 40 MB of mesh shared by reference across 30 moves of the same body.
+    const positions = new Array(10 * 1024 * 1024).fill(0.5);
+    const shape = box({
+      id: "import-1",
+      kind: "mesh",
+      importedMesh: { positions, baseWidth: 1, baseDepth: 1, baseHeight: 1, triangleCount: 1, sourceFormat: "stl" },
+    });
+    const entries = Array.from({ length: 30 }, (_, index) => editorHistoryEntry([{ ...shape, x: index }], [shape.id]));
+    expect(estimateHistoryBytes(entries)).toBeLessThan(entries[0].estimatedBytes * 2);
+    expect(boundedEditorHistory(entries)).toHaveLength(30);
   });
 
   it("trims redo only for a real new edit and preserves it for a no-op", () => {

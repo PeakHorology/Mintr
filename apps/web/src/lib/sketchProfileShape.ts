@@ -29,6 +29,24 @@ export function cloneSketchProfile(profile: SketchProfile): SketchProfile {
   };
 }
 
+/**
+ * Equality for the "did this commit change anything" check. A sketch image is
+ * a base64 dataUrl of several megabytes; stringifying it twice per commit made
+ * every line placed on a traced photo stall. Compare image identity instead.
+ */
+export function sketchProfilesEqual(a: SketchProfile, b: SketchProfile): boolean {
+  if (a === b) return true;
+  const imagesA = a.images ?? [];
+  const imagesB = b.images ?? [];
+  if (imagesA.length !== imagesB.length) return false;
+  for (let index = 0; index < imagesA.length; index += 1) {
+    const { dataUrl: urlA, ...restA } = imagesA[index];
+    const { dataUrl: urlB, ...restB } = imagesB[index];
+    if (urlA !== urlB || JSON.stringify(restA) !== JSON.stringify(restB)) return false;
+  }
+  return JSON.stringify({ ...a, images: undefined }) === JSON.stringify({ ...b, images: undefined });
+}
+
 export type SketchClipboard = {
   points: SketchPoint[];
   segments: SketchProfile["segments"];

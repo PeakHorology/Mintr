@@ -14,7 +14,9 @@ import type {
   CadModifierWorkerRequest,
   CadModifierWorkerResponse,
   CadPlanarFace,
+  FilletProfile,
 } from "@/lib/cadModifierTypes";
+import { normalizeFilletProfile } from "@/lib/cadModifierTypes";
 import {
   isAnalyticConeSeam,
   isDegenerateCurve,
@@ -25,6 +27,7 @@ import {
   treatmentDetailFaceAreaLimit,
 } from "@/lib/cadModifierEdges";
 import { inferThreadSideFromFace, resolveThreadParams, type ResolvedThreadParams } from "@/lib/metricThreads";
+import { polygonFootprint } from "@/lib/polygonFootprint";
 import { edgePolylinesFromWireframe, orderWireLoop } from "@/lib/wireLoop";
 
 const HASH_UPPER_BOUND = 2_147_483_647;
@@ -54,6 +57,7 @@ let accumulatedEdgeIds: number[] = [];
 let accumulatedKind: CadModifierKind | null = null;
 let accumulatedAmount = Number.NaN;
 let accumulatedChamferAngle = Number.NaN;
+let accumulatedFilletProfile: FilletProfile = "round";
 let coneFilletPrimitive: Extract<CadModifierPrimitivePart, { kind: "cone" }> | null = null;
 let coneFilletEdgeMap: number[] | null = null;
 
@@ -108,6 +112,7 @@ function releaseSession(cad: OcctKernel) {
   accumulatedKind = null;
   accumulatedAmount = Number.NaN;
   accumulatedChamferAngle = Number.NaN;
+  accumulatedFilletProfile = "round";
   coneFilletPrimitive = null;
   coneFilletEdgeMap = null;
 }
@@ -486,14 +491,7 @@ function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimit
     if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error("The selected polygon has invalid dimensions");
     }
-    const points = Array.from({ length: sides }, (_, index) => {
-      const angle = (2 * Math.PI * index) / sides;
-      return {
-        x: Math.cos(angle) * (width / 2),
-        y: 0,
-        z: Math.sin(angle) * (depth / 2),
-      };
-    });
+    const points = polygonFootprint(sides, width, depth).map((point) => ({ x: point.x, y: 0, z: point.z }));
     const edges = points.map((point, index) => cad.makeLineEdge(point, points[(index + 1) % points.length]));
     return finishPrimitiveSolid(cad, cad.extrude(cad.makeFace(cad.makeWire(edges)), 0, height, 0), primitive.transform, "polygon");
   }
@@ -1024,6 +1022,7 @@ function stretchedConeTreatment(
   kind: CadModifierKind,
   amount: number,
   chamferAngle: number,
+  filletProfile: FilletProfile,
 ) {
   const primitive = coneFilletPrimitive;
   const edgeMap = coneFilletEdgeMap;
@@ -1040,15 +1039,7 @@ function stretchedConeTreatment(
     try { cad.release(host); } catch { /* Rebuilt only when the circle still lines up. */ }
     return null;
   }
-  const treat = (target: ShapeHandle, edges: ShapeHandle[]) => (
-    edges.length === 0
-      ? cad.copy(target)
-      : kind === "fillet"
-        ? cad.fillet(target, edges, amount)
-        : Math.abs(chamferAngle - 45) < 0.001
-          ? cad.chamfer(target, edges, amount)
-          : cad.chamferDistAngle(target, edges, amount, chamferAngle)
-  );
+  const treat = edgeTreatment(cad, kind, amount, chamferAngle, filletProfile);
   const treated = applyRemovingTreatment(cad, host, selected, treat, kind, amount, chamferAngle);
   const placed = applyCadTransform(cad, treated, placementWithSectionScale(primitive.transform, sectionScale));
   if (treated !== host) {
@@ -1382,6 +1373,80 @@ function cylinderAlong(
   return cad.translate(tool, start.x, start.y, start.z);
 }
 
+/**
+ * The solid a cove removes along one edge: a cylinder of the cove radius on a
+ * straight edge, otherwise a disc swept along the curve. Either way the groove is
+ * centred on the edge line and meets both faces square.
+ */
+function coveToolForEdge(cad: OcctKernel, edge: ShapeHandle, radius: number) {
+  const params = cad.curveParameters(edge);
+  const start = cad.curvePointAtParam(edge, params.first);
+  if (cad.curveType(edge) === "line") {
+    const end = cad.curvePointAtParam(edge, params.last);
+    const length = Math.hypot(end.x - start.x, end.y - start.y, end.z - start.z);
+    if (!(length > 1e-6)) throw new Error("That edge is too short to cove.");
+    return cylinderAlong(cad, start, unitVec(subVec(end, start)), length, radius);
+  }
+  const tangent = unitVec(cad.curveTangent(edge, params.first));
+  const disc = cad.makeFace(cad.makeWire([cad.makeCircleEdge(start, tangent, radius)]));
+  return cad.pipe(disc, cad.makeWire([edge]));
+}
+
+/**
+ * Cut a concave quarter-round groove along each edge. Where two or more coved
+ * edges share a vertex a ball of the same radius is removed too, so the grooves
+ * run into each other the way a ball-end cutter would leave them.
+ */
+export function coveEdges(cad: OcctKernel, solid: ShapeHandle, edges: ShapeHandle[], radius: number) {
+  if (!(radius > 1e-6)) throw new Error("A cove needs a radius above zero.");
+  const tools: ShapeHandle[] = [];
+  const vertexUse = new Map<string, { point: { x: number; y: number; z: number }; count: number }>();
+  for (const edge of edges) {
+    tools.push(coveToolForEdge(cad, edge, radius));
+    for (const vertex of cad.getSubShapes(edge, "vertex")) {
+      const point = cad.vertexPosition(vertex);
+      const key = `${point.x.toFixed(4)},${point.y.toFixed(4)},${point.z.toFixed(4)}`;
+      const seen = vertexUse.get(key);
+      if (seen) seen.count += 1;
+      else vertexUse.set(key, { point, count: 1 });
+      try { cad.release(vertex); } catch { /* Only the position is kept. */ }
+    }
+  }
+  vertexUse.forEach(({ point, count }) => {
+    if (count >= 2) tools.push(cad.translate(cad.makeSphere(radius), point.x, point.y, point.z));
+  });
+  let current = solid;
+  try {
+    for (const tool of tools) {
+      const next = cad.cut(current, tool);
+      if (current !== solid) {
+        try { cad.release(current); } catch { /* Replaced by the next cut. */ }
+      }
+      current = next;
+    }
+    const simplified = singleSolid(cad, cad.simplify(current));
+    if (simplified !== current && current !== solid) {
+      try { cad.release(current); } catch { /* Merged faces replace the raw cut. */ }
+    }
+    return simplified;
+  } finally {
+    releaseHandles(cad, tools);
+  }
+}
+
+/** The kernel call for one fillet/chamfer request, shared by every preview path. */
+function edgeTreatment(cad: OcctKernel, kind: CadModifierKind, amount: number, chamferAngle: number, filletProfile: FilletProfile) {
+  return (target: ShapeHandle, edges: ShapeHandle[]) => {
+    if (edges.length === 0) return cad.copy(target);
+    if (kind === "fillet") {
+      return filletProfile === "cove" ? coveEdges(cad, target, edges, amount) : cad.fillet(target, edges, amount);
+    }
+    return Math.abs(chamferAngle - 45) < 0.001
+      ? cad.chamfer(target, edges, amount)
+      : cad.chamferDistAngle(target, edges, amount, chamferAngle);
+  };
+}
+
 function straightCornerTool(
   cad: OcctKernel,
   frame: { start: { x: number; y: number; z: number }; tangent: { x: number; y: number; z: number }; length: number; bin1: { x: number; y: number; z: number }; bin2: { x: number; y: number; z: number } },
@@ -1511,10 +1576,11 @@ function findMatchingEdge(cad: OcctKernel, shape: ShapeHandle, sourceEdge: Shape
   return edges.find((edge) => cad.hashCode(edge, HASH_UPPER_BOUND) === bestHash) ?? null;
 }
 
-function recipeMatches(request: { kind: CadModifierKind; amount: number; chamferAngle: number }) {
+function recipeMatches(request: { kind: CadModifierKind; amount: number; chamferAngle: number; filletProfile?: FilletProfile }) {
   return accumulatedKind === request.kind
     && Math.abs(accumulatedAmount - request.amount) < 1e-6
-    && Math.abs(accumulatedChamferAngle - request.chamferAngle) < 1e-6;
+    && Math.abs(accumulatedChamferAngle - request.chamferAngle) < 1e-6
+    && accumulatedFilletProfile === normalizeFilletProfile(request.filletProfile);
 }
 
 function flippedFrame<T extends { bin1: { x: number; y: number; z: number }; bin2: { x: number; y: number; z: number } }>(frame: T): T {
@@ -1586,6 +1652,12 @@ export function cutConcaveCorners(
   }
 }
 
+/**
+ * Edges the one-at-a-time fallback had to skip during the current preview.
+ * Reset per preview request; reported so the panel can say "3 of 8 edges".
+ */
+let previewSkippedEdgeCount = 0;
+
 function applyRemovingTreatment(
   cad: OcctKernel,
   solid: ShapeHandle,
@@ -1613,6 +1685,7 @@ function applyRemovingTreatment(
   if (edges.length > 1) {
     let current = solid;
     let progressed = false;
+    let skipped = 0;
     for (const edge of edges) {
       try {
         const treated = treat(current, [edge]);
@@ -1622,14 +1695,21 @@ function applyRemovingTreatment(
           }
           current = treated;
           progressed = true;
-        } else if (treated !== current) {
-          try { cad.release(treated); } catch { /* This edge did not remove material. */ }
+        } else {
+          skipped += 1;
+          if (treated !== current) {
+            try { cad.release(treated); } catch { /* This edge did not remove material. */ }
+          }
         }
       } catch {
         // Skip this edge and keep rounding the rest.
+        skipped += 1;
       }
     }
-    if (progressed) return singleSolid(cad, current);
+    if (progressed) {
+      previewSkippedEdgeCount += skipped;
+      return singleSolid(cad, current);
+    }
   }
   const { concave, convex } = classifyCornerEdges(cad, solid, edges);
   let component = convex.length > 0 || concave.length === 0
@@ -2503,12 +2583,18 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
     if (selected.length === 0) throw new Error("Select at least one highlighted edge");
     const componentResults: ShapeHandle[] = [];
     let result: ShapeHandle | null = null;
+    previewSkippedEdgeCount = 0;
+    const filletProfile = normalizeFilletProfile(request.filletProfile);
     try {
-      const stretched = stretchedConeTreatment(activeCad, request.edgeIds, request.kind, request.amount, request.chamferAngle);
+      const stretched = stretchedConeTreatment(activeCad, request.edgeIds, request.kind, request.amount, request.chamferAngle, filletProfile);
       if (stretched) componentResults.push(stretched);
       const addedIds = request.edgeIds.filter((id) => !accumulatedEdgeIds.includes(id));
       const selectionShrunk = accumulatedEdgeIds.some((id) => !request.edgeIds.includes(id));
-      const canAddOntoPrevious = !stretched
+      // A cove's corner ball depends on every selected edge that meets there.
+      // Adding only the newly clicked edge onto the last preview cuts that
+      // edge alone, so the groove stops short of the corner.
+      const canAddOntoPrevious = filletProfile !== "cove"
+        && !stretched
         && !selectionShrunk
         && addedIds.length > 0
         && accumulatedShape !== null
@@ -2526,15 +2612,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         if (matched.length === addedIds.length) {
           try {
           const solids = activeCad.isSolid(host) ? [host] : activeCad.getSubShapes(host, "solid");
-          const treat = (target: ShapeHandle, edges: ShapeHandle[]) => (
-            edges.length === 0
-              ? activeCad.copy(target)
-              : request.kind === "fillet"
-                ? activeCad.fillet(target, edges, request.amount)
-                : Math.abs(request.chamferAngle - 45) < 0.001
-                  ? activeCad.chamfer(target, edges, request.amount)
-                  : activeCad.chamferDistAngle(target, edges, request.amount, request.chamferAngle)
-          );
+          const treat = edgeTreatment(activeCad, request.kind, request.amount, request.chamferAngle, filletProfile);
           const applyToSolid = (solid: ShapeHandle, edges: ShapeHandle[]) => applyRemovingTreatment(
             activeCad,
             solid,
@@ -2579,15 +2657,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       for (let owner = 0; owner < baseSolids.length; owner += 1) {
         const solid = baseSolids[owner];
         const componentEdges = selected.filter((entry) => entry.owner === owner).map((entry) => entry.edge);
-        const treat = (target: ShapeHandle, edges: ShapeHandle[]) => (
-          edges.length === 0
-            ? activeCad.copy(target)
-          : request.kind === "fillet"
-              ? activeCad.fillet(target, edges, request.amount)
-            : Math.abs(request.chamferAngle - 45) < 0.001
-                ? activeCad.chamfer(target, edges, request.amount)
-                : activeCad.chamferDistAngle(target, edges, request.amount, request.chamferAngle)
-        );
+        const treat = edgeTreatment(activeCad, request.kind, request.amount, request.chamferAngle, filletProfile);
         componentResults.push(applyRemovingTreatment(
           activeCad,
           solid,
@@ -2614,7 +2684,17 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       // here walks every tessellation edge again, and the exact solid is written
       // only when the fillet is applied.
       post(
-        { type: "preview", requestId: request.requestId, positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, triangleCount: mesh.triangleCount, brep: "", displayEdges: [] },
+        {
+          type: "preview",
+          requestId: request.requestId,
+          positions: mesh.positions,
+          normals: mesh.normals,
+          indices: mesh.indices,
+          triangleCount: mesh.triangleCount,
+          brep: "",
+          displayEdges: [],
+          ...(previewSkippedEdgeCount > 0 ? { skippedEdgeCount: previewSkippedEdgeCount } : {}),
+        },
         [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer],
       );
       if (result) {
@@ -2627,6 +2707,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         accumulatedKind = request.kind;
         accumulatedAmount = request.amount;
         accumulatedChamferAngle = request.chamferAngle;
+        accumulatedFilletProfile = filletProfile;
       }
     } finally {
       componentResults.forEach((component) => {
@@ -2642,7 +2723,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       post({
         type: "error",
         requestId: request.requestId,
-        message: "The CAD engine files (OCCT) are missing or failed to load from /occt. Reinstall PeakCAD, or if you're developing locally, run `npm run copy:occt` and reload the page.",
+        message: "The CAD engine files (OCCT) are missing or failed to load from /occt. Reinstall Mintr, or if you're developing locally, run `npm run copy:occt` and reload the page.",
         resetSession: true,
       });
       return;
@@ -2663,8 +2744,8 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       });
       return;
     }
-    const message = request.type === "preview" && (rawMessage.includes("WebAssembly.Exception") || rawMessage.includes("fillet:") || rawMessage.includes("chamfer:"))
-      ? `The selected edges cannot be ${request.kind === "fillet" ? "filleted" : "chamfered"} together at this size. Reduce the size or select fewer connected edges.`
+    const message = request.type === "preview" && (rawMessage.includes("WebAssembly.Exception") || rawMessage.includes("fillet:") || rawMessage.includes("chamfer:") || rawMessage.includes("cut:") || rawMessage.includes("pipe:"))
+      ? `The selected edges cannot be ${request.kind === "fillet" ? (normalizeFilletProfile(request.filletProfile) === "cove" ? "concave filleted" : "filleted") : "chamfered"} together at this size. Reduce the size or select fewer connected edges.`
       : rawMessage || "The CAD kernel could not complete this edge treatment";
     if (request.type === "prepare" && cad) releaseSession(cad);
     post({ type: "error", requestId: request.requestId, message });

@@ -1,4 +1,5 @@
 import { gearPlanLoops, normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
+import { gridfinityRecipeForShape, isGridfinityKind, type GridfinityRecipe } from "@/lib/gridfinity";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
@@ -29,6 +30,8 @@ export type NativeKernelSolid = {
   profileLoops?: { outer: Array<[number, number]>; holes: Array<Array<[number, number]>> };
   brepStep?: string;
   cadBrep?: string;
+  /** Generator body (`kind: "recipe"`) the kernel builds from add / cut solids. */
+  recipe?: GridfinityRecipe;
 };
 
 export type NativeKernelJob =
@@ -41,6 +44,7 @@ export type NativeKernelJob =
   | { id: number; type: "sketchExtrude"; [key: string]: unknown }
   | { id: number; type: "sketchSweep"; [key: string]: unknown }
   | { id: number; type: "importStep"; fileName: string; step: string }
+  | { id: number; type: "buildRecipe"; recipe: GridfinityRecipe; name?: string; key?: string }
   | { id: number; requestId: number; type: string; [key: string]: unknown };
 
 export type NativeKernelReply = {
@@ -75,6 +79,7 @@ export type NativeKernelReply = {
   planarFaces?: unknown[];
   sourceType?: string;
   smooth?: boolean;
+  skippedEdgeIds?: number[];
   step?: string;
   bodies?: Array<{
     name: string;
@@ -211,6 +216,11 @@ export function toNativeKernelSolid(shape: WorkplaneShape): NativeKernelSolid | 
   }
   if (shape.cadBrep) {
     return { ...pose, kind: "brep", cadBrep: shape.cadBrep };
+  }
+  if (isGridfinityKind(shape.kind)) {
+    // Build still pending (no cadBrep yet): the kernel can rebuild the body from its recipe.
+    const recipe = gridfinityRecipeForShape(shape);
+    return recipe ? { ...pose, kind: "recipe", recipe } : null;
   }
   if (!NATIVE_EXACT_KINDS.has(shape.kind)) return null;
   if (shape.kind === "gear") {

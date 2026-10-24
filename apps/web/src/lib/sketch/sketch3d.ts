@@ -9,7 +9,14 @@ import { orderedSketchPaths } from "./profiles";
 import { snapSketchPoint } from "./snaps";
 
 const GROUP_NAME = "sketch-on-model";
+const LIVE_GROUP_NAME = "sketch-on-model-live";
 const LIFT_MM = 0.35;
+
+// Shared across every point dot; never disposed with the overlay groups.
+const POINT_GEOMETRY = new THREE.SphereGeometry(0.7, 12, 8);
+const POINT_MATERIAL = new THREE.MeshBasicMaterial({ color: "#f7fbfc", depthTest: true });
+const POINT_MATERIAL_ACTIVE = new THREE.MeshBasicMaterial({ color: "#ff8a00", depthTest: true });
+const SHARED_RESOURCES = new Set<THREE.BufferGeometry | THREE.Material>([POINT_GEOMETRY, POINT_MATERIAL, POINT_MATERIAL_ACTIVE]);
 /** Cosine of the angle between the view and the face. Below this, a click is too side-on to draw. */
 const MIN_DRAW_FACING = 0.5;
 /** Clicking the dot on screen counts even when the ray meets the plane a little beside the point. */
@@ -760,17 +767,21 @@ function dragPreviewLoop(tool: SketchTool, origin: UV, current: UV): UV[] {
 function disposeGroup(group: THREE.Object3D) {
   group.traverse((child) => {
     if (!(child instanceof THREE.Mesh) && !(child instanceof THREE.Line)) return;
-    child.geometry.dispose();
+    if (!SHARED_RESOURCES.has(child.geometry)) child.geometry.dispose();
     const materials = Array.isArray(child.material) ? child.material : [child.material];
-    materials.forEach((material) => material.dispose());
+    materials.forEach((material) => {
+      if (!SHARED_RESOURCES.has(material)) material.dispose();
+    });
   });
 }
 
 export function clearSketchOnModel(scene: THREE.Scene) {
-  const existing = scene.getObjectByName(GROUP_NAME);
-  if (!existing) return;
-  scene.remove(existing);
-  disposeGroup(existing);
+  for (const name of [GROUP_NAME, LIVE_GROUP_NAME]) {
+    const existing = scene.getObjectByName(name);
+    if (!existing) continue;
+    scene.remove(existing);
+    disposeGroup(existing);
+  }
 }
 
 function sketchBounds(profile: SketchProfile) {
@@ -950,14 +961,91 @@ export function frameSketchCamera(host: Sketch3DHost, session: SketchOnModelSess
   applySketchCameraPose(host, sketchFramingPose(session));
 }
 
+type StaticLayerKey = {
+  profile: SketchProfile;
+  plane: SketchOnModelSession["plane"];
+  snap: SketchOnModelSession["snap"];
+};
+
+/**
+ * Pointer moves re-sync the overlay many times a second. The grid, fills and
+ * segment lines only depend on the profile/plane/snap identities, so they live
+ * in their own group and are rebuilt only when one of those changes; hover and
+ * drag previews (plus point dots) are rebuilt in a light "live" group.
+ */
+function reuseStaticLayer(scene: THREE.Scene, key: StaticLayerKey): THREE.Group | null {
+  const existing = scene.getObjectByName(GROUP_NAME);
+  if (!(existing instanceof THREE.Group)) return null;
+  const previous = existing.userData.staticKey as StaticLayerKey | undefined;
+  if (!previous || previous.profile !== key.profile || previous.plane !== key.plane || previous.snap !== key.snap) {
+    scene.remove(existing);
+    disposeGroup(existing);
+    return null;
+  }
+  return existing;
+}
+
 export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSession, pointer: Sketch3DPointerState) {
-  clearSketchOnModel(host.scene);
-  const group = new THREE.Group();
-  group.name = GROUP_NAME;
   const plane = resolveSketchPlane(session.plane);
   const curved = plane.surface?.kind === "cylinder";
-  const bounds = sketchBounds(session.profile);
   const byId = new Map(session.profile.points.map((point) => [point.id, point]));
+  const staticKey: StaticLayerKey = { profile: session.profile, plane: session.plane, snap: session.snap };
+
+  let group = reuseStaticLayer(host.scene, staticKey);
+  if (!group) {
+    group = buildStaticLayer(session, plane, curved, byId);
+    group.userData.staticKey = staticKey;
+    host.scene.add(group);
+  }
+
+  const liveExisting = host.scene.getObjectByName(LIVE_GROUP_NAME);
+  if (liveExisting) {
+    host.scene.remove(liveExisting);
+    disposeGroup(liveExisting);
+  }
+  const live = new THREE.Group();
+  live.name = LIVE_GROUP_NAME;
+
+  const moved = pointer.gesture?.kind === "move" ? pointer.gesture : null;
+  for (const point of session.profile.points) {
+    if (curveStandInOwner(point.id)) continue;
+    const at = moved?.pointId === point.id ? moved.current : point;
+    const world = uvWorld(plane, at.x, at.z);
+    const active = point.id === session.activePointId || point.id === moved?.pointId;
+    const sphere = new THREE.Mesh(POINT_GEOMETRY, active ? POINT_MATERIAL_ACTIVE : POINT_MATERIAL);
+    sphere.position.copy(world);
+    sphere.renderOrder = 22;
+    live.add(sphere);
+  }
+
+  const preview: number[] = [];
+  const drag = pointer.gesture?.kind === "drag" ? pointer.gesture : null;
+  if (drag) {
+    const loop = dragPreviewLoop(drag.tool, drag.origin, drag.current);
+    if (loop.length >= 3 && (loop[0].x !== loop[loop.length - 1].x || loop[0].z !== loop[loop.length - 1].z)) {
+      loop.push(loop[0]);
+    }
+    if (loop.length >= 4) addFill(live, plane, loop, "#169fce", 0.12);
+    pushWorld(preview, plane, loop.length >= 2 ? loop : [drag.origin, drag.current], curved || drag.tool === "circle" || drag.tool === "ellipse");
+  } else if (pointer.hover && (session.tool === "line" || session.tool === "arc")) {
+    const anchor = session.activePointId ? byId.get(session.activePointId) : null;
+    const from = anchor ?? pointer.arc[pointer.arc.length - 1];
+    if (from) pushWorld(preview, plane, [from, pointer.hover], curved);
+  }
+  addLine(live, preview, "#169fce");
+
+  host.scene.add(live);
+}
+
+function buildStaticLayer(
+  session: SketchOnModelSession,
+  plane: SketchPlane,
+  curved: boolean,
+  byId: Map<string, SketchProfile["points"][number]>,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = GROUP_NAME;
+  const bounds = sketchBounds(session.profile);
 
   if (!curved) {
     const grid = gridStepOf(session.snap) || 10;
@@ -1015,38 +1103,5 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
     addLine(group, positions, segment.construction ? "#8a6232" : "#173f60", Boolean(segment.construction));
   }
 
-  const moved = pointer.gesture?.kind === "move" ? pointer.gesture : null;
-  for (const point of session.profile.points) {
-    if (curveStandInOwner(point.id)) continue;
-    const at = moved?.pointId === point.id ? moved.current : point;
-    const world = uvWorld(plane, at.x, at.z);
-    const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.7, 12, 8),
-      new THREE.MeshBasicMaterial({
-        color: point.id === session.activePointId || point.id === moved?.pointId ? "#ff8a00" : "#f7fbfc",
-        depthTest: true,
-      }),
-    );
-    sphere.position.copy(world);
-    sphere.renderOrder = 22;
-    group.add(sphere);
-  }
-
-  const preview: number[] = [];
-  const drag = pointer.gesture?.kind === "drag" ? pointer.gesture : null;
-  if (drag) {
-    const loop = dragPreviewLoop(drag.tool, drag.origin, drag.current);
-    if (loop.length >= 3 && (loop[0].x !== loop[loop.length - 1].x || loop[0].z !== loop[loop.length - 1].z)) {
-      loop.push(loop[0]);
-    }
-    if (loop.length >= 4) addFill(group, plane, loop, "#169fce", 0.12);
-    pushWorld(preview, plane, loop.length >= 2 ? loop : [drag.origin, drag.current], curved || drag.tool === "circle" || drag.tool === "ellipse");
-  } else if (pointer.hover && (session.tool === "line" || session.tool === "arc")) {
-    const anchor = session.activePointId ? byId.get(session.activePointId) : null;
-    const from = anchor ?? pointer.arc[pointer.arc.length - 1];
-    if (from) pushWorld(preview, plane, [from, pointer.hover], curved);
-  }
-  addLine(group, preview, "#169fce");
-
-  host.scene.add(group);
+  return group;
 }

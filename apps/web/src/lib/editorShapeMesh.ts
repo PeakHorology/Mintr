@@ -9,6 +9,7 @@ import {
   resolveShapeSteps,
 } from "@/lib/displayTessellation";
 import { createGearGeometry } from "@/lib/gearMesh";
+import { shapeUsesImportedMesh } from "@/lib/gridfinity";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
@@ -639,6 +640,11 @@ export function geometryMeshForShape(shape: WorkplaneShape): MeshData | null {
       geometry = new THREE.TorusKnotGeometry(size * 0.22, size * 0.055, 120, 12);
       geometry.translate(0, height / 2, 0);
       break;
+    case "gridfinityBin":
+    case "gridfinityBaseplate":
+      // Kernel mesh not built yet: the footprint box matches the viewport stand-in.
+      geometry = new THREE.BoxGeometry(width, height, depth);
+      break;
     case "sketch":
     default:
       geometry = new THREE.BoxGeometry(size, Math.max(3, height * 0.35), size * 0.72);
@@ -649,7 +655,7 @@ export function geometryMeshForShape(shape: WorkplaneShape): MeshData | null {
 }
 
 export function meshForShape(shape: WorkplaneShape): MeshData {
-  if ((shape.kind === "mesh" || shape.kind === "thread") && shape.importedMesh) {
+  if (shapeUsesImportedMesh(shape)) {
     return importedMeshForShape(shape);
   }
 

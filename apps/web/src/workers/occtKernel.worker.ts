@@ -3,6 +3,7 @@
 import { evaluateOcctBooleanOnWorldShapesLocal, exportShapesToStepLocal } from "@/lib/stepExport";
 import { withExactSketchExtrusionSolidLocal } from "@/lib/sketchExtrusionSolid";
 import { shapeFromSketchSweepLocal } from "@/lib/sketchSweep";
+import { buildGridfinityShapeLocal } from "@/lib/gridfinityShape";
 import type { OcctKernelRequest } from "@/lib/occtKernelClient";
 
 type WorkerRequest = OcctKernelRequest & { requestId: number };
@@ -32,6 +33,11 @@ async function handle(request: WorkerRequest) {
   }
   if (request.type === "sketchSweep") {
     const value = await shapeFromSketchSweepLocal(request.profile, request.doc, request.spec, request.existing);
+    post({ requestId, type: "result", value });
+    return;
+  }
+  if (request.type === "gridfinity") {
+    const value = await buildGridfinityShapeLocal(request.shape);
     post({ requestId, type: "result", value });
     return;
   }

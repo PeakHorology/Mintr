@@ -1531,7 +1531,7 @@ function addTitleBlock(builder: DrawingBuilder, pageW: number, pageH: number, in
   builder.line("TITLE", x + 38, y + 11, x + 38, y + 22, 0.4, "ink");
   builder.line("TITLE", x + 78, y + 11, x + 78, y + 22, 0.4, "ink");
 
-  builder.text("TITLE", x + 2.5, y + 7.5, "PeakCAD", FONT.titleBrand, "ink", { bold: true });
+  builder.text("TITLE", x + 2.5, y + 7.5, "Mintr", FONT.titleBrand, "ink", { bold: true });
   builder.text("TITLE", x + 32, y + 7.5, (input.projectName || "Untitled design").slice(0, 36), FONT.titleName, "ink");
   builder.text("TITLE", x + 2.5, y + 18.5, `Units: ${unit}`, FONT.titleMeta, "ink");
   builder.text("TITLE", x + 40, y + 18.5, `Parts: ${input.parts.length}`, FONT.titleMeta, "ink");
@@ -1739,7 +1739,7 @@ export function writeBlueprintSvg(drawing: BlueprintDrawing): string {
   const parts: string[] = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<svg xmlns="http://www.w3.org/2000/svg" width="${drawing.pageW}mm" height="${drawing.pageH}mm" viewBox="0 0 ${drawing.pageW} ${drawing.pageH}">`,
-    `<title>PeakCAD technical drawing</title>`,
+    `<title>Mintr technical drawing</title>`,
   ];
 
   for (const primitive of drawing.primitives) {

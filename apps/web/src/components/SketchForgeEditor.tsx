@@ -133,6 +133,7 @@ import {
   LINEAR_PATTERN_DEFAULT_COUNT_X,
   LINEAR_PATTERN_DEFAULT_COUNT_Y,
   LINEAR_PATTERN_DEFAULT_COUNT_Z,
+  boundLinearPatternCounts,
   clampLinearPatternCount,
   clampLinearPatternSpacing,
   linearPatternInstances,
@@ -229,6 +230,7 @@ import {
   shapeFromSketchProfile,
   settleBezierSegment,
   sketchClipboardFromSelection,
+  sketchProfilesEqual,
   splitSketchSegmentAt,
   withSketchPointMode,
   withSmoothSketchHandles,
@@ -254,6 +256,7 @@ import {
   shapeFromCadMesh,
 } from "@/lib/editorEdgeTreatments";
 import { cloneAsGroupChild, groupedShape } from "@/lib/editorGroup";
+import { toStl } from "@/lib/stlExport";
 import {
   type Cuboid,
   type MeshData,
@@ -309,6 +312,8 @@ import {
   projectEdgesOntoSketch,
   rectangularPattern,
   circularPatternSketch,
+  clampSketchPatternCount,
+  SKETCH_PATTERN_MAX_TOTAL,
   patternSelectionCenter,
   removeConstraint,
   resizeSegmentLength,
@@ -346,6 +351,9 @@ import { launchInstalledSlicer } from "@/lib/slicerHandoff";
 import { useSlicerChoice } from "@/components/workplane/useSlicerChoice";
 import { projectExportFileName } from "@/lib/exportNames";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets } from "@/lib/shapeCatalog";
+import { gridfinityBuildPending, gridfinityFootprint, gridfinityShapeKey, gridfinitySplitForBed, isGridfinityKind } from "@/lib/gridfinity";
+import { applyGridfinityKernelMesh, buildGridfinityShape, createGridfinityShape } from "@/lib/gridfinityShape";
+import { normalizePrinterBed } from "@/lib/printerBed";
 import { BlueprintExportModal } from "@/components/workplane/BlueprintExportModal";
 import { EditorTopBar, SketchFocusTabs } from "@/components/workplane/EditorTopBar";
 import type { BlueprintExportFormat } from "@/lib/blueprintExport";
@@ -369,7 +377,8 @@ import {
   type SketchForgeMcpShapeSummary,
   type SketchForgeMcpViewFace,
 } from "@/lib/sketchforgeMcpProtocol";
-import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse, CadPlanarFace } from "@/lib/cadModifierTypes";
+import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse, CadPlanarFace, FilletProfile } from "@/lib/cadModifierTypes";
+import { normalizeFilletProfile } from "@/lib/cadModifierTypes";
 import { takePreloadedCadModifierWorker } from "@/lib/cadModifierPreload";
 import {
   mapNativeCadModifierReply,
@@ -395,6 +404,8 @@ export type ProjectSaveHandler = (snapshot: ProjectSaveSnapshot) => Promise<bool
 export type EditorLeaveGuard = {
   confirmLeave: () => Promise<boolean>;
   save: (mode: "save" | "save-as") => Promise<boolean>;
+  /** Push any debounced scene snapshot to the project store right now. */
+  flush?: () => void;
   command?: (action: "import" | "export") => void;
 };
 export type TopPanel = "import" | "export" | "tips" | null;
@@ -494,6 +505,8 @@ export type EdgeModifierSession = {
   amount: number;
   sharpAngle: number;
   chamferAngle: number;
+  /** Fillet only: convex round or concave cove. */
+  filletProfile: FilletProfile;
   quality: CadModifierQuality;
   tangentChain: boolean;
   preserveEdgeSize: boolean;
@@ -606,6 +619,8 @@ declare global {
 /** Face-hole cutters overshoot along the cut normal only (not XY grow). */
 const MAX_SKETCH_HISTORY_ENTRIES = hardwareProfile().sketchHistoryEntries;
 const MIN_EDGE_MODIFIER_AMOUNT = 0.001;
+/** Tallest sketch extrusion we will ask the kernel for; a stray "100000" is a typo, not a part. */
+const SKETCH_EXTRUDE_MAX_MM = 10000;
 
 
 
@@ -714,6 +729,8 @@ function pushPullSourceParts(shape: WorkplaneShape): WorkplaneShape[] {
 
 function shapeKeepsLiveParameters(shape: WorkplaneShape) {
   if (shape.kind === "mesh") return false;
+  // Gridfinity parts are rebuilt from their spec; a turn stays a pose, not a baked mesh.
+  if (isGridfinityKind(shape.kind)) return true;
   if (shape.cadBrep || shape.edgeTreatments?.length) return false;
   if ((shape.importedMesh?.positions.length ?? 0) >= 9) return false;
   return true;
@@ -926,56 +943,6 @@ async function importedShapeFromImage(file: File): Promise<WorkplaneShape> {
   };
 }
 
-function normalFor(a: Vec3, b: Vec3, c: Vec3): Vec3 {
-  const ux = b[0] - a[0];
-  const uy = b[1] - a[1];
-  const uz = b[2] - a[2];
-  const vx = c[0] - a[0];
-  const vy = c[1] - a[1];
-  const vz = c[2] - a[2];
-  const nx = uy * vz - uz * vy;
-  const ny = uz * vx - ux * vz;
-  const nz = ux * vy - uy * vx;
-  const length = Math.hypot(nx, ny, nz) || 1;
-  return [nx / length, ny / length, nz / length];
-}
-
-/** Binary STL (little-endian). Much cheaper than ASCII string join for large meshes. */
-function toStl(meshes: MeshData[]) {
-  let triangleCount = 0;
-  for (const mesh of meshes) triangleCount += mesh.faces.length;
-  const bytes = new Uint8Array(84 + triangleCount * 50);
-  const view = new DataView(bytes.buffer);
-  const header = "PeakCAD binary STL";
-  for (let i = 0; i < 80; i += 1) {
-    bytes[i] = i < header.length ? header.charCodeAt(i) : 0;
-  }
-  view.setUint32(80, triangleCount, true);
-  let offset = 84;
-  for (const mesh of meshes) {
-    for (const [ai, bi, ci] of mesh.faces) {
-      const a = mesh.vertices[ai];
-      const b = mesh.vertices[bi];
-      const c = mesh.vertices[ci];
-      const n = normalFor(a, b, c);
-      view.setFloat32(offset, n[0], true); offset += 4;
-      view.setFloat32(offset, n[1], true); offset += 4;
-      view.setFloat32(offset, n[2], true); offset += 4;
-      view.setFloat32(offset, a[0], true); offset += 4;
-      view.setFloat32(offset, a[1], true); offset += 4;
-      view.setFloat32(offset, a[2], true); offset += 4;
-      view.setFloat32(offset, b[0], true); offset += 4;
-      view.setFloat32(offset, b[1], true); offset += 4;
-      view.setFloat32(offset, b[2], true); offset += 4;
-      view.setFloat32(offset, c[0], true); offset += 4;
-      view.setFloat32(offset, c[1], true); offset += 4;
-      view.setFloat32(offset, c[2], true); offset += 4;
-      view.setUint16(offset, 0, true); offset += 2;
-    }
-  }
-  return bytes;
-}
-
 function toObj(meshes: MeshData[]) {
   const lines = ["# PeakCAD OBJ export"];
   let offset = 1;
@@ -1088,7 +1055,7 @@ function compactShapeSummary(shape: WorkplaneShape, index: number) {
     `${index}:${shape.kind}${shape.hole ? "H" : "S"}${shape.importedMesh ? "I" : ""}${shape.imagePlate ? "P" : ""}`,
     `g${shape.groupedShapes?.length ?? 0}`,
     `tri${shape.importedMesh?.triangleCount ?? 0}`,
-    `edge${shape.edgeTreatments?.map((feature) => `${feature.kind}:${feature.amount}:${feature.edgeCount}:${feature.chamferAngle ?? ""}`).join("|") ?? ""}`,
+    `edge${shape.edgeTreatments?.map((feature) => `${feature.kind}:${feature.amount}:${feature.edgeCount}:${feature.chamferAngle ?? ""}:${feature.filletProfile ?? ""}`).join("|") ?? ""}`,
     `viewEdges${shape.cadDisplayEdges?.length ?? "auto"}v${shape.cadDisplayEdgesVersion ?? 0}`,
     `edgeResize${shape.edgeResizeMode ?? "scale"}`,
     `brep${shape.cadBrep?.length ?? 0}`,
@@ -1225,9 +1192,10 @@ export function SketchForgeEditor({
   onRegisterLeaveGuard,
   hasMatchingSavedFile = false,
   projectId,
-  projectName = "PeakCAD design",
+  projectName = "Mintr design",
   projectRevision = 0,
   onViewportReady,
+  hostNotice = null,
 }: {
   initialShapes?: WorkplaneShape[];
   initialHistory?: EditorHistoryEntry[];
@@ -1252,6 +1220,8 @@ export function SketchForgeEditor({
   projectName?: string;
   projectRevision?: number;
   onViewportReady?: () => void;
+  /** A message from the host (e.g. a background autosave failure) to show as a toast. `seq` changes per message. */
+  hostNotice?: { seq: number; message: string } | null;
 } = {}) {
   const initialSceneRef = useRef<WorkplaneShape[] | null>(null);
   if (initialSceneRef.current === null) {
@@ -1355,6 +1325,12 @@ export function SketchForgeEditor({
     // Bump even when the text is unchanged so a dismissed toast reappears.
     setNoticeSeq((value) => value + 1);
   }, []);
+  const hostNoticeSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!hostNotice || hostNoticeSeqRef.current === hostNotice.seq) return;
+    hostNoticeSeqRef.current = hostNotice.seq;
+    if (hostNotice.message) setNotice(hostNotice.message);
+  }, [hostNotice, setNotice]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sketchImageInputRef = useRef<HTMLInputElement | null>(null);
   const booleanAutomationRunRef = useRef<string | null>(null);
@@ -1494,6 +1470,7 @@ export function SketchForgeEditor({
     amount: number;
     quality: CadModifierQuality;
     chamferAngle: number;
+    filletProfile: FilletProfile;
   }) => number | null>(() => null);
   const cadPreviewQueueRef = useRef(createCadPreviewQueue((payload: {
     type: "preview";
@@ -1502,6 +1479,7 @@ export function SketchForgeEditor({
     amount: number;
     quality: CadModifierQuality;
     chamferAngle: number;
+    filletProfile: FilletProfile;
   }) => cadPreviewSendRef.current(payload)));
   const cadModifierBaseShapeRef = useRef<WorkplaneShape | null>(null);
   const reapplyEdgeTreatmentsRef = useRef<(shape: WorkplaneShape) => Promise<void>>(async () => {});
@@ -1517,6 +1495,9 @@ export function SketchForgeEditor({
   const cadModifierDispatchRef = useRef<(message: CadModifierWorkerResponse) => void>(() => {});
   /** Monotonic remesh generation — stale async remesh results are ignored. */
   const remeshGenerationRef = useRef(0);
+  const sketchExtrudeBusyRef = useRef(false);
+  /** One modifier Apply (fillet/chamfer/push-pull/split) in flight at a time. */
+  const cadApplyBusyRef = useRef(false);
   /** Debounced CSG remesh while dragging feature property sliders. */
   const featureRemeshTimerRef = useRef<number | null>(null);
   const pendingFeatureRemeshRef = useRef<{ bodyId: string; message: string } | null>(null);
@@ -1546,7 +1527,9 @@ export function SketchForgeEditor({
       cadModifierWorkerRestartRef.current();
       const message = pushPullSessionRef.current
         ? "Push Pull timed out loading faces. Close it and try again."
-        : cadModifierTimeoutMessage(phase);
+        : shellSessionRef.current
+          ? "Hollow timed out in the CAD kernel. Try a thicker wall or fewer openings, or close Hollow and try again."
+          : cadModifierTimeoutMessage(phase);
       setEdgeModifier((current) => current ? {
         ...current,
         busy: false,
@@ -1555,6 +1538,14 @@ export function SketchForgeEditor({
         error: message,
       } : current);
       setPushPullSession((current) => current ? {
+        ...current,
+        busy: false,
+        prepared: false,
+        preview: null,
+        error: message,
+      } : current);
+      // Hollow used to keep its spinner forever after a kernel timeout.
+      setShellSession((current) => current ? {
         ...current,
         busy: false,
         prepared: false,
@@ -1742,7 +1733,15 @@ export function SketchForgeEditor({
           busy: settled.status === "sent",
           error: preview ? null : "The CAD kernel returned an empty edge treatment",
         } : current);
-        if (preview && !message.smooth) setNotice("Edge treatment preview ready");
+        if (preview && !message.smooth) {
+          const skipped = message.skippedEdgeCount ?? 0;
+          const requested = edgeModifierRef.current?.selectedEdgeIds.length ?? 0;
+          setNotice(
+            skipped > 0 && requested > 0
+              ? `${requested - skipped} of ${requested} edges previewed — ${skipped} could not be ${edgeModifierRef.current?.kind === "chamfer" ? "chamfered" : "rounded"} at this size`
+              : "Edge treatment preview ready",
+          );
+        }
         if (!message.smooth && settled.status === "idle" && preview && base) {
           const amount = edgeModifierRef.current?.amount ?? 1;
           const tolerances = curvedDisplayTessellation(amount, curveSidesForShape(base));
@@ -2564,6 +2563,114 @@ export function SketchForgeEditor({
     syncProjectShapes(baked);
   }, [syncProjectShapes]);
 
+  // Gridfinity bodies come from the kernel asynchronously. Build whatever is pending
+  // (latest spec only), then swap the body in without adding an undo step — the
+  // spec edit already made its history entry.
+  const gridfinityBuildCacheRef = useRef(new Map<string, { positions: number[]; normals?: number[]; indices: number[]; cadBrep: string }>());
+  const gridfinityFailedKeysRef = useRef(new Set<string>());
+  const gridfinityBuildingRef = useRef<string | null>(null);
+  const [gridfinityBuildTick, setGridfinityBuildTick] = useState(0);
+  const applyGridfinityBuilds = useCallback((built: Map<string, WorkplaneShape>) => {
+    if (historyWriteSuspendedRef.current > 0 || built.size === 0) return;
+    const current = shapesRef.current;
+    let changed = false;
+    const next = current.map((shape) => {
+      const result = built.get(shape.id);
+      if (!result || !isGridfinityKind(shape.kind) || gridfinityShapeKey(shape) !== result.gridfinityBuilt) return shape;
+      changed = true;
+      // Keep the live pose; only the body and its exact source change. Fillets and
+      // chamfers were cut into the previous body, so a spec change starts clean.
+      return canonicalizeShape({
+        ...shape,
+        edgeTreatments: undefined,
+        edgeTreatmentHistory: undefined,
+        importedMesh: result.importedMesh,
+        cadBrep: result.cadBrep,
+        cadBrepFrame: result.cadBrepFrame
+          ? { ...result.cadBrepFrame, x: shape.x, z: shape.z, elevation: shape.elevation ?? 0 }
+          : undefined,
+        cadPrimitiveFrame: undefined,
+        cadDisplayEdges: undefined,
+        cadDisplayEdgesVersion: undefined,
+        gridfinityBuilt: result.gridfinityBuilt,
+      });
+    });
+    if (!changed) return;
+    if (explicitSaveFingerprintRef.current === projectShapesFingerprint(current)) {
+      explicitSaveFingerprintRef.current = projectShapesFingerprint(next);
+    }
+    shapesRef.current = next;
+    setShapes(next);
+    const entries = historyRef.current;
+    const index = historyIndexRef.current;
+    if (entries[index]) {
+      const nextEntries = entries.slice();
+      nextEntries[index] = editorHistoryEntry(next, selectedIdsRef.current);
+      historyRef.current = nextEntries;
+      setHistory(nextEntries);
+    }
+    syncProjectShapes(next);
+  }, [syncProjectShapes]);
+
+  useEffect(() => {
+    if (projectInteractionActive) return;
+    const pending = shapes.filter((shape) => gridfinityBuildPending(shape));
+    if (pending.length === 0) return;
+    // Undo/redo or a repeated spec: reuse the body built earlier for that key.
+    const cached = new Map<string, WorkplaneShape>();
+    const toBuild: WorkplaneShape[] = [];
+    pending.forEach((shape) => {
+      const key = gridfinityShapeKey(shape);
+      if (!key || gridfinityFailedKeysRef.current.has(key)) return;
+      const hit = gridfinityBuildCacheRef.current.get(key);
+      const applied = hit ? applyGridfinityKernelMesh(shape, hit.positions, hit.normals, hit.indices, hit.cadBrep, key) : null;
+      if (applied) cached.set(shape.id, applied);
+      else toBuild.push(shape);
+    });
+    if (cached.size > 0) {
+      applyGridfinityBuilds(cached);
+      return;
+    }
+    const target = toBuild[0];
+    if (!target) return;
+    const key = gridfinityShapeKey(target);
+    if (!key || gridfinityBuildingRef.current === key) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      gridfinityBuildingRef.current = key;
+      void buildGridfinityShape(target)
+        .then((built) => {
+          if (built?.importedMesh && built.cadBrep && built.gridfinityBuilt === key) {
+            const cache = gridfinityBuildCacheRef.current;
+            cache.set(key, {
+              positions: built.importedMesh.positions,
+              normals: built.importedMesh.normals,
+              indices: built.importedMesh.indices ?? [],
+              cadBrep: built.cadBrep,
+            });
+            while (cache.size > 24) cache.delete(cache.keys().next().value as string);
+            if (!cancelled) applyGridfinityBuilds(new Map([[target.id, built]]));
+          } else {
+            gridfinityFailedKeysRef.current.add(key);
+            if (!cancelled) setNotice(`${target.name} could not be built; try a thicker wall or fewer features`);
+          }
+        })
+        .catch(() => {
+          gridfinityFailedKeysRef.current.add(key);
+          if (!cancelled) setNotice(`${target.name} could not be built; try a thicker wall or fewer features`);
+        })
+        .finally(() => {
+          if (gridfinityBuildingRef.current === key) gridfinityBuildingRef.current = null;
+          // Other pending parts (or a spec changed mid-build) get their turn.
+          setGridfinityBuildTick((tick) => tick + 1);
+        });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [applyGridfinityBuilds, gridfinityBuildTick, projectInteractionActive, shapes]);
+
   const importedBrepBakeInFlightRef = useRef(false);
   const importedBrepBakePromiseRef = useRef<Promise<void> | null>(null);
   const bakeImportedBrepForAutosave = useCallback(async () => {
@@ -2706,13 +2813,14 @@ export function SketchForgeEditor({
     onRegisterLeaveGuard({
       confirmLeave: confirmLeaveProject,
       save: saveProjectExplicitly,
+      flush: flushProjectShapesSync,
       command: (action) => {
         if (action === "import") setTopPanel("import");
         if (action === "export") setTopPanel("export");
       },
     });
     return () => onRegisterLeaveGuard(null);
-  }, [confirmLeaveProject, onRegisterLeaveGuard, saveProjectExplicitly]);
+  }, [confirmLeaveProject, flushProjectShapesSync, onRegisterLeaveGuard, saveProjectExplicitly]);
 
   useEffect(() => {
     // Browsers only show their generic prompt here; in-app exits ask to save the design.
@@ -2872,7 +2980,7 @@ export function SketchForgeEditor({
       if (JSON.stringify(solvedProfile.points) !== JSON.stringify(snapshot.points)) {
         setSketchProfile({ ...snapshot, points: solvedProfile.points, segments: solvedProfile.segments });
       }
-      if (latest && JSON.stringify(latest) === JSON.stringify(snapshot)) {
+      if (latest && sketchProfilesEqual(latest, snapshot)) {
         if (message) setNotice(message);
         return;
       }
@@ -3280,11 +3388,20 @@ export function SketchForgeEditor({
     setSketchProfile(restored);
     // Merge rather than rebuild: sketch history stores profiles, which carry no construction or
     // projected geometry and no analytic curves, so rebuilding would drop them on every undo.
-    setSketchDoc((doc) => mergeProfileIntoDoc(doc, restored));
+    // Re-solve so the DOF / conflict readout describes the restored sketch, not the one just undone.
+    const solved = solveSketchDoc(mergeProfileIntoDoc(sketchDoc, restored));
+    setSketchDoc(solved.doc);
+    setSketchSolveStatus(solved.status);
+    setSketchDof(solved.dof);
+    setSketchConflicts(solved.conflicts);
+    const solvedProfile = sketchDocToProfile(solved.doc);
+    if (JSON.stringify(solvedProfile.points) !== JSON.stringify(restored.points)) {
+      setSketchProfile({ ...restored, points: solvedProfile.points, segments: solvedProfile.segments });
+    }
     setSketchActivePointId(null);
     setSketchSelection(null);
     setNotice("Sketch undo");
-  }, [sketchDoc.faceReferenceLoops, sketchDoc.plane]);
+  }, [sketchDoc]);
 
   const sketchRedo = useCallback(() => {
     const currentHistory = sketchHistoryRef.current;
@@ -3304,11 +3421,19 @@ export function SketchForgeEditor({
       restored.faceReferenceLoops = sketchDoc.faceReferenceLoops.map((loop) => loop.map((point) => ({ ...point })));
     }
     setSketchProfile(restored);
-    setSketchDoc((doc) => mergeProfileIntoDoc(doc, restored));
+    const solved = solveSketchDoc(mergeProfileIntoDoc(sketchDoc, restored));
+    setSketchDoc(solved.doc);
+    setSketchSolveStatus(solved.status);
+    setSketchDof(solved.dof);
+    setSketchConflicts(solved.conflicts);
+    const solvedProfile = sketchDocToProfile(solved.doc);
+    if (JSON.stringify(solvedProfile.points) !== JSON.stringify(restored.points)) {
+      setSketchProfile({ ...restored, points: solvedProfile.points, segments: solvedProfile.segments });
+    }
     setSketchActivePointId(null);
     setSketchSelection(null);
     setNotice("Sketch redo");
-  }, [sketchDoc.faceReferenceLoops, sketchDoc.plane]);
+  }, [sketchDoc]);
 
   const setActiveSketchTool = useCallback((tool: SketchTool) => {
     if (!workspaceSettingsRef.current.peakcadPro && isPeakcadProSketchTool(tool)) {
@@ -3731,8 +3856,8 @@ export function SketchForgeEditor({
     if (!valueDialog || valueDialog.kind !== "sketch-pattern") return;
     const { entityIds } = valueDialog;
     setValueDialog(null);
-    const countX = Math.max(1, Number.parseInt(values.countX ?? "3", 10) || 3);
-    const countZ = Math.max(1, Number.parseInt(values.countZ ?? "1", 10) || 1);
+    const countX = clampSketchPatternCount(Number.parseInt(values.countX ?? "3", 10), 3);
+    const countZ = clampSketchPatternCount(Number.parseInt(values.countZ ?? "1", 10), 1);
     const spacingX = Number.parseFloat(values.spacingX ?? "10") || 10;
     const spacingZ = Number.parseFloat(values.spacingZ ?? "10") || 10;
     const nextDoc = rectangularPattern(sketchDoc, entityIds, countX, countZ, spacingX, spacingZ);
@@ -3747,7 +3872,7 @@ export function SketchForgeEditor({
     if (!valueDialog || valueDialog.kind !== "sketch-circular-pattern") return;
     const { entityIds } = valueDialog;
     setValueDialog(null);
-    const count = Math.max(2, Number.parseInt(values.count ?? "6", 10) || 6);
+    const count = clampSketchPatternCount(Number.parseInt(values.count ?? "6", 10), 6, 2, SKETCH_PATTERN_MAX_TOTAL);
     const center = patternSelectionCenter(sketchDoc, entityIds);
     if (!center) {
       setNotice("Select a shape to copy");
@@ -4019,9 +4144,10 @@ export function SketchForgeEditor({
       let docOverride: SketchDoc | null = null;
       const snap = lastSketchSnap;
       if (workspaceSettingsRef.current.peakcadPro && snap?.inferredConstraints?.length) {
-        const migrated = sketchProfileToDoc(prepared, sketchDoc.id, sketchDoc.plane);
-        migrated.constraints = sketchDoc.constraints;
-        migrated.dimensions = sketchDoc.dimensions;
+        // Fold the new point into the live doc, as commitSketchProfile does.
+        // Rebuilding from the profile here turned every circle and arc into a
+        // polyline and left constraints pointing at entities that no longer existed.
+        const migrated = mergeProfileIntoDoc(sketchDoc, prepared);
         const inferred: Array<{ kind: "coincident" | "horizontal" | "vertical" | "midpoint"; entityIds: string[]; pointIds?: string[] }> = [];
         for (const inf of snap.inferredConstraints) {
           if (inf.kind === "coincident" && inf.pointIds?.[0]) {
@@ -4407,7 +4533,7 @@ export function SketchForgeEditor({
     setNotice("Extrude cancelled");
   }, []);
 
-  const finishSketchExtrude = useCallback(async (heightMm?: number, asHole = extrudeAsHole) => {
+  const finishSketchExtrudeInner = useCallback(async (heightMm: number | undefined, asHole: boolean) => {
     setRevolvePrompt(null);
     setExtrudeHeightPrompt(null);
     const existing = editingSketchShapeId
@@ -4432,7 +4558,7 @@ export function SketchForgeEditor({
         ?? 10;
     // Face holes that match the solid size must go fully through — otherwise coplanar
     // side walls leave the cutter sitting on the surface.
-    let height = Math.max(0.5, heightMm ?? fallbackHeight);
+    let height = Math.min(SKETCH_EXTRUDE_MAX_MM, Math.max(0.5, heightMm ?? fallbackHeight));
     if (asHole && faceSketch && throughDepth) {
       // Face cuts are through-all: thickness measured from the sketch face, plus
       // overshoot past both skins so the hole isn't short/offset.
@@ -4592,7 +4718,22 @@ export function SketchForgeEditor({
     );
     exitSketchMode();
     setExtrudeAsHole(false);
-  }, [commitShapes, editingSketchShapeId, exitSketchMode, extrudeAsHole, sketchDoc, sketchProfile]);
+  }, [commitShapes, editingSketchShapeId, exitSketchMode, sketchDoc, sketchProfile]);
+
+  const finishSketchExtrude = useCallback(async (heightMm?: number, asHole = extrudeAsHole) => {
+    // A second click on Create solid (or Enter twice) while the kernel is still
+    // building the first would commit two bodies on top of each other, and a
+    // kernel exception used to leave "Building sketch…" on screen forever.
+    if (sketchExtrudeBusyRef.current) return;
+    sketchExtrudeBusyRef.current = true;
+    try {
+      await finishSketchExtrudeInner(heightMm, asHole);
+    } catch (error) {
+      setNotice(error instanceof Error && error.message ? error.message : "Could not build the sketch solid");
+    } finally {
+      sketchExtrudeBusyRef.current = false;
+    }
+  }, [extrudeAsHole, finishSketchExtrudeInner, setNotice]);
 
   const completeSketchRevolve = useCallback((axis: SketchRevolveAxis) => {
     const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
@@ -4603,10 +4744,15 @@ export function SketchForgeEditor({
       setNotice("Revolve needs a closed profile that stays on one side of the axis. Pick another axis line.");
       return;
     }
+    // Keep the live doc (construction lines, projected geometry, analytic
+    // curves, constraints) the way extrude does; rebuilding it from the profile
+    // lost all of that the next time the revolve was edited.
+    revolved.sketchDoc = mergeProfileIntoDoc(cloneSketchDoc(sketchDoc), sketchProfile);
+    revolved.sketchId = sketchDoc.id;
     const nextShapes = existing ? shapes.map((shape) => (shape.id === existing.id ? revolved : shape)) : [...shapes, revolved];
     commitShapes(nextShapes, revolved.id, existing ? "Sketch revolved" : "Sketch revolved around axis");
     exitSketchMode();
-  }, [commitShapes, editingSketchShapeId, exitSketchMode, shapes, sketchProfile]);
+  }, [commitShapes, editingSketchShapeId, exitSketchMode, shapes, sketchDoc, sketchProfile]);
 
   const startSketchRevolve = useCallback(() => {
     setSweepPrompt(null);
@@ -4753,6 +4899,13 @@ export function SketchForgeEditor({
       setSweepPreview(result.shape);
       setSketchFocusMode("3d");
       setNotice("Sweep this outline along this path");
+    }).catch((error: unknown) => {
+      // A worker crash mid-sweep rejected here and left "Building sweep…" up for good.
+      if (cancelled) return;
+      const message = cadFailureCopy(error instanceof Error && error.message ? error.message : "The sweep could not be built", "sweep");
+      setSweepPreview(null);
+      setSweepBuildError(message);
+      setNotice(message);
     });
     return () => {
       cancelled = true;
@@ -5311,7 +5464,7 @@ export function SketchForgeEditor({
     const storedClipboard = await readShapeClipboard();
     const sourceClipboard = storedClipboard.length > 0 ? storedClipboard : clipboard;
     if (sourceClipboard.length === 0) {
-      setNotice("PeakCAD clipboard is empty");
+      setNotice("Mintr clipboard is empty");
       return;
     }
     if (projectInfoRef.current.projectId !== sourceProjectId) {
@@ -5746,12 +5899,19 @@ export function SketchForgeEditor({
   const patchLinearPattern = useCallback((patch: Partial<LinearPatternSession>) => {
     setLinearPattern((current) => {
       if (!current) return current;
+      const changedAxis = patch.countX !== undefined ? "countX" : patch.countZ !== undefined ? "countZ" : patch.countY !== undefined ? "countY" : null;
+      const bounded = boundLinearPatternCounts(
+        {
+          countX: patch.countX ?? current.countX,
+          countZ: patch.countZ ?? current.countZ,
+          countY: patch.countY ?? current.countY,
+        },
+        changedAxis,
+      );
       const next: LinearPatternSession = {
         ...current,
         ...patch,
-        countX: patch.countX !== undefined ? clampLinearPatternCount(patch.countX, LINEAR_PATTERN_DEFAULT_COUNT_X) : current.countX,
-        countZ: patch.countZ !== undefined ? clampLinearPatternCount(patch.countZ, LINEAR_PATTERN_DEFAULT_COUNT_Z) : current.countZ,
-        countY: patch.countY !== undefined ? clampLinearPatternCount(patch.countY, LINEAR_PATTERN_DEFAULT_COUNT_Y) : current.countY,
+        ...bounded,
         spacingX: patch.spacingX !== undefined ? clampLinearPatternSpacing(patch.spacingX) : current.spacingX,
         spacingZ: patch.spacingZ !== undefined ? clampLinearPatternSpacing(patch.spacingZ) : current.spacingZ,
         spacingY: patch.spacingY !== undefined ? clampLinearPatternSpacing(patch.spacingY) : current.spacingY,
@@ -6037,7 +6197,16 @@ export function SketchForgeEditor({
           }
           return;
         }
-        if (request.type === "prepare") cadModifierNativeLiveRef.current = true;
+        if (request.type === "prepare") {
+          // A prepare reply that lands after the session was invalidated (and a
+          // dispose already sent) must not mark the native session live again:
+          // later fillet/pushPull calls would address a kernel scene that is gone.
+          if (requestId !== cadModifierPrepareRef.current) {
+            void requestNativeCadModifier({ type: "dispose" }, requestId, 4000);
+            return;
+          }
+          cadModifierNativeLiveRef.current = true;
+        }
         if (request.type === "dispose") cadModifierNativeLiveRef.current = false;
         cadModifierDispatchRef.current(mapNativeCadModifierReply(
           reply,
@@ -6159,6 +6328,7 @@ export function SketchForgeEditor({
         amount: editRecipe?.amount ?? defaultAmount,
         sharpAngle: editRecipe?.sharpAngle ?? 12,
         chamferAngle: editRecipe?.chamferAngle ?? 45,
+        filletProfile: normalizeFilletProfile(editRecipe?.filletProfile),
         quality: modifierPreviewQualityForDisplay(workspaceSettingsRef.current.displayQuality),
         tangentChain: true,
         preserveEdgeSize: selectedShape.edgeResizeMode === "preserve",
@@ -6386,6 +6556,7 @@ export function SketchForgeEditor({
     const sharpAngle = Math.max(1, Math.min(CAD_MODIFIER_MAX_SHARP_ANGLE, mcpNumber(params.sharpAngle, 25)));
     const amount = Math.max(MIN_EDGE_MODIFIER_AMOUNT, mcpNumber(params.amount, 1));
     const chamferAngle = Math.max(5, Math.min(85, mcpNumber(params.chamferAngle, 45)));
+    const filletProfile = kind === "fillet" ? normalizeFilletProfile(params.filletProfile) : "round";
     const quality: CadModifierQuality = params.quality === "draft" || params.quality === "fine" ? params.quality : "standard";
     const preserveEdgeSize = typeof params.preserveEdgeSize === "boolean" ? params.preserveEdgeSize : shape.edgeResizeMode === "preserve";
     const { response, sourceParts } = await prepareCadModifierForMcp(shape, sharpAngle);
@@ -6406,6 +6577,7 @@ export function SketchForgeEditor({
       amount,
       quality,
       chamferAngle,
+      filletProfile,
     }, [], 30000);
     if (previewResponse.type !== "preview") {
       throw new Error("The CAD worker did not return an edge preview");
@@ -6444,6 +6616,7 @@ export function SketchForgeEditor({
       sharpAngle,
       quality,
       ...(kind === "chamfer" ? { chamferAngle } : {}),
+      ...(kind === "fillet" && filletProfile === "cove" ? { filletProfile } : {}),
     } satisfies NonNullable<WorkplaneShape["edgeTreatments"]>[number];
     const session: EdgeModifierSession = {
       kind,
@@ -6452,6 +6625,7 @@ export function SketchForgeEditor({
       amount,
       sharpAngle,
       chamferAngle,
+      filletProfile,
       quality,
       tangentChain: false,
       preserveEdgeSize,
@@ -6482,7 +6656,7 @@ export function SketchForgeEditor({
     commitShapes(
       shapesRef.current.map((candidate) => candidate.id === shape.id ? modifiedShape : candidate),
       modifiedShape.id,
-      `${kind === "fillet" ? "Filleted" : "Chamfered"} ${selectedEdgeIds.length} edge${selectedEdgeIds.length === 1 ? "" : "s"} by MCP`,
+      `${kind === "fillet" ? (filletProfile === "cove" ? "Concave filleted" : "Filleted") : "Chamfered"} ${selectedEdgeIds.length} edge${selectedEdgeIds.length === 1 ? "" : "s"} by MCP`,
     );
     flashCadApply(modifiedShape.id, edgeWipePointsFromSession(session));
     return {
@@ -6534,6 +6708,7 @@ export function SketchForgeEditor({
           sharpAngle,
           quality: recipe.quality ?? "standard",
           chamferAngle: recipe.chamferAngle ?? 45,
+          filletProfile: recipe.filletProfile ?? "round",
           edgeIds,
           preserveEdgeSize: shape.edgeResizeMode === "preserve",
         });
@@ -6589,7 +6764,13 @@ export function SketchForgeEditor({
       setNotice("Wait for a valid edge preview before applying");
       return;
     }
+    // Apply can take seconds (smooth remesh + exact solid). A second Apply or
+    // Enter in that window would record the same fillet twice.
+    if (cadApplyBusyRef.current) return;
+    cadApplyBusyRef.current = true;
+    setEdgeModifier((current) => current ? { ...current, busy: true } : current);
     void (async () => {
+      try {
       let previewSource = (edgePreviewSmoothRef.current ? edgePreviewShapeRef.current : null) ?? session.preview;
       if (!previewSource) return;
       if (!edgePreviewSmoothRef.current) {
@@ -6623,9 +6804,10 @@ export function SketchForgeEditor({
         }
       }
       const recordBefore = cadModifierEditBeforeRef.current ?? base;
+      const coved = session.kind === "fillet" && session.filletProfile === "cove";
       const label = cadModifierEditBeforeRef.current
-        ? (session.kind === "fillet" ? "Updated fillet" : "Updated chamfer")
-        : (session.kind === "fillet" ? "Filleted" : "Chamfered");
+        ? (session.kind === "fillet" ? (coved ? "Updated concave fillet on" : "Updated fillet") : "Updated chamfer")
+        : (session.kind === "fillet" ? (coved ? "Concave filleted" : "Filleted") : "Chamfered");
       const selectableCount = session.edges.filter((edge) => selectableCadModifierEdge(edge, session.sharpAngle)).length;
       const selectedEdgeIds = [...session.selectedEdgeIds];
       const feature = {
@@ -6638,6 +6820,7 @@ export function SketchForgeEditor({
         sharpAngle: session.sharpAngle,
         quality: session.quality,
         ...(session.kind === "chamfer" ? { chamferAngle: session.chamferAngle } : {}),
+        ...(coved ? { filletProfile: "cove" as const } : {}),
       } satisfies NonNullable<WorkplaneShape["edgeTreatments"]>[number];
       const createdAt = Date.now();
       const previewShape = canonicalizeShape({
@@ -6670,6 +6853,13 @@ export function SketchForgeEditor({
       );
       flashCadApply(base.id, edgeWipePointsFromSession(session));
       invalidateCadModifierSession();
+      } catch (error) {
+        setEdgeModifier((current) => current
+          ? { ...current, busy: false, error: error instanceof Error && error.message ? error.message : "Could not apply the edge change" }
+          : current);
+      } finally {
+        cadApplyBusyRef.current = false;
+      }
     })();
   }, [commitShapes, edgeModifier, flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync, shapes]);
 
@@ -6700,7 +6890,15 @@ export function SketchForgeEditor({
   };
 
   useEffect(() => {
-    if (!edgeModifier?.prepared || edgeModifier.selectedEdgeIds.length === 0) return;
+    if (!edgeModifier?.prepared) return;
+    if (edgeModifier.selectedEdgeIds.length === 0) {
+      // A size, angle, or profile change with nothing selected has no preview
+      // to wait for; leaving `busy` set would lock every control in the panel.
+      if (edgeModifier.busy) {
+        setEdgeModifier((current) => current?.prepared && current.busy && current.selectedEdgeIds.length === 0 ? { ...current, busy: false } : current);
+      }
+      return;
+    }
     const payload = {
       type: "preview" as const,
       kind: edgeModifier.kind,
@@ -6708,6 +6906,7 @@ export function SketchForgeEditor({
       amount: edgeModifier.amount,
       quality: edgeModifier.quality,
       chamferAngle: edgeModifier.chamferAngle,
+      filletProfile: edgeModifier.filletProfile,
     };
     const timer = window.setTimeout(() => {
       const dispatch = cadPreviewQueueRef.current.request(payload);
@@ -6717,7 +6916,9 @@ export function SketchForgeEditor({
       }
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [edgeModifier?.amount, edgeModifier?.chamferAngle, edgeModifier?.kind, edgeModifier?.prepared, edgeModifier?.quality, edgeModifier?.selectedEdgeIds, postCadModifierRequest]);
+  // `busy` is read from the same render that changed a setting; it is not a
+  // dependency, or every finished preview would schedule another one.
+  }, [edgeModifier?.amount, edgeModifier?.chamferAngle, edgeModifier?.filletProfile, edgeModifier?.kind, edgeModifier?.prepared, edgeModifier?.quality, edgeModifier?.selectedEdgeIds, postCadModifierRequest]);
 
   useEffect(() => {
     if (!pushPullSession?.prepared || pushPullSession.selectedFaceId === null) return;
@@ -6752,6 +6953,15 @@ export function SketchForgeEditor({
       setNotice("Wait for a hollow preview before applying");
       return;
     }
+    // The preview was computed from `base`. If the body was edited or removed
+    // while Hollow was open (inspector, undo, another tool), applying would
+    // silently overwrite the newer body with a shell of the old one.
+    const live = shapesRef.current.find((shape) => shape.id === base.id);
+    if (!live || !workplaneShapesEqual(live, base)) {
+      invalidateCadModifierSession();
+      setNotice(live ? "The object changed while Hollow was open. Start Hollow again." : "That object is no longer in the scene.");
+      return;
+    }
     commitShapes(
       shapes.map((shape) => shape.id === base.id ? preview : shape),
       base.id,
@@ -6775,6 +6985,9 @@ export function SketchForgeEditor({
       setNotice("Wait for a Push Pull preview before applying");
       return;
     }
+    if (cadApplyBusyRef.current) return;
+    cadApplyBusyRef.current = true;
+    setPushPullSession((current) => current ? { ...current, busy: true } : current);
     const finish = (exact: WorkplaneShape) => {
       commitShapes(
         shapesRef.current.map((shape) => shape.id === base.id ? exact : shape),
@@ -6785,20 +6998,28 @@ export function SketchForgeEditor({
       invalidateCadModifierSession();
     };
     void (async () => {
-      let next = preview;
-      if (!next.cadBrep) {
-        try {
-          const exact = await postCadModifierRequestAsync({ type: "finalize" }, [], 30000);
-          if (exact.type === "previewBrep" && exact.brep) {
-            next = { ...next, cadBrep: exact.brep };
+      try {
+        let next = preview;
+        if (!next.cadBrep) {
+          try {
+            const exact = await postCadModifierRequestAsync({ type: "finalize" }, [], 30000);
+            if (exact.type === "previewBrep" && exact.brep) {
+              next = { ...next, cadBrep: exact.brep };
+            }
+          } catch {
+            // The visible mesh is still applied if the exact solid is not ready.
           }
-        } catch {
-          // The visible mesh is still applied if the exact solid is not ready.
         }
+        finish(canonicalizeShape(next));
+      } catch (error) {
+        setPushPullSession((current) => current
+          ? { ...current, busy: false, settling: false, error: error instanceof Error && error.message ? error.message : "Could not apply Push Pull" }
+          : current);
+      } finally {
+        cadApplyBusyRef.current = false;
       }
-      finish(canonicalizeShape(next));
     })();
-  }, [flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync]);
+  }, [commitShapes, flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync]);
 
   const playPushPullSettle = useCallback((distance: number) => {
     const session = pushPullSessionRef.current;
@@ -6852,6 +7073,8 @@ export function SketchForgeEditor({
       setSplitSession(null);
       return;
     }
+    if (cadApplyBusyRef.current) return;
+    cadApplyBusyRef.current = true;
     setNotice("Splitting…");
     void (async () => {
       try {
@@ -6873,6 +7096,8 @@ export function SketchForgeEditor({
         setSplitSession(null);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not split that object");
+      } finally {
+        cadApplyBusyRef.current = false;
       }
     })();
   }, [commitShapes, splitSession]);
@@ -7038,11 +7263,13 @@ export function SketchForgeEditor({
     }
     const selected = new Set(selectedIds);
     const shouldHide = selectedShapes.some((shape) => !shape.hidden);
-    commitShapes(
-      shapes.map((shape) => (selected.has(shape.id) && !shape.locked ? { ...shape, hidden: shouldHide } : shape)),
-      selectedIds,
-      shouldHide ? "Selection hidden" : "Selection visible",
-    );
+    const next = shapes.map((shape) => (selected.has(shape.id) && !shape.locked ? { ...shape, hidden: shouldHide } : shape));
+    // Hidden shapes leave the selection: a Delete or drag right after Hide
+    // must not act on bodies the person can no longer see.
+    const nextSelected = shouldHide
+      ? selectedIds.filter((id) => next.find((shape) => shape.id === id)?.hidden !== true)
+      : selectedIds;
+    commitShapes(next, nextSelected, shouldHide ? "Selection hidden" : "Selection visible");
   }, [commitShapes, hasSelection, selectedIds, selectedShapes, shapes]);
 
   const showHidden = useCallback(() => {
@@ -7137,15 +7364,25 @@ export function SketchForgeEditor({
       setNotice("Select a shape first");
       return;
     }
-    const selected = new Set(selectedIds);
-    setClipboard(selectedShapes);
-    await writeShapeClipboard(selectedShapes);
+    // Cut honours locks the same way Delete does: locked shapes are copied to
+    // the clipboard but stay on the workplane.
+    const movable = selectedShapes.filter((shape) => !shape.locked);
+    const lockedCount = selectedShapes.length - movable.length;
+    if (movable.length === 0) {
+      setNotice(lockedCount ? "Unlock the shape before cutting it" : "Select a shape first");
+      return;
+    }
+    const removed = new Set(movable.map((shape) => shape.id));
+    setClipboard(movable);
+    await writeShapeClipboard(movable);
     commitShapes(
-      shapes.filter((shape) => !selected.has(shape.id)),
+      shapes.filter((shape) => !removed.has(shape.id)),
       [],
-      `Cut ${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`,
+      lockedCount
+        ? `Cut ${movable.length} shape${movable.length === 1 ? "" : "s"} (${lockedCount} locked kept)`
+        : `Cut ${movable.length} shape${movable.length === 1 ? "" : "s"}`,
     );
-  }, [commitShapes, hasSelection, selectedIds, selectedShapes, shapes]);
+  }, [commitShapes, hasSelection, selectedShapes, shapes]);
 
   const raiseSelected = useCallback(
     (delta: number) => {
@@ -7517,6 +7754,65 @@ export function SketchForgeEditor({
       setNotice("Shaft kept as solid; thread cutter is a Hole — adjust Clearance, then Group with your part");
     }
   }, [commitShapes, selectedShape, selectedShapes.length, shapes]);
+
+  /** Replace a baseplate that overhangs the printer bed with tabbed pieces laid out around its centre. */
+  const splitSelectedGridfinityPlate = useCallback(() => {
+    if (selectedShapes.length !== 1 || !selectedShape || selectedShape.kind !== "gridfinityBaseplate" || !selectedShape.gridfinityBaseplate) {
+      setNotice("Select one Gridfinity baseplate to split");
+      return;
+    }
+    if (selectedShape.locked) {
+      setNotice("Unlock the baseplate before splitting it");
+      return;
+    }
+    const bed = normalizePrinterBed(workspaceSettingsRef.current);
+    const pieces = gridfinitySplitForBed(selectedShape.gridfinityBaseplate, bed, { connectors: true });
+    if (!pieces) {
+      setNotice(`${selectedShape.name} already fits the ${bed.label} bed`);
+      return;
+    }
+    const yaw = THREE.MathUtils.degToRad(selectedShape.rotation ?? 0);
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const parts = pieces.map((piece) => {
+      const built = createGridfinityShape("gridfinityBaseplate", undefined, {
+        ...selectedShape,
+        id: createLocalId("gridfinity-baseplate"),
+        name: `${selectedShape.name} ${String.fromCharCode(65 + piece.col)}${piece.row + 1}`,
+        gridfinityBaseplate: piece.spec,
+        importedMesh: undefined,
+        cadBrep: undefined,
+        cadBrepFrame: undefined,
+        gridfinityBuilt: undefined,
+        edgeTreatments: undefined,
+        edgeTreatmentHistory: undefined,
+      });
+      // Piece centres are given about the plate's grid centre; the shape's x/z is its
+      // outline centre, which padding and tabs shift, so go through the footprint offset.
+      const offset = gridfinityFootprint(built);
+      const localX = piece.gridX + (offset?.offsetX ?? 0);
+      const localZ = piece.gridZ + (offset?.offsetZ ?? 0);
+      const original = gridfinityFootprint(selectedShape);
+      const originX = selectedShape.x - (original?.offsetX ?? 0);
+      const originZ = selectedShape.z - (original?.offsetZ ?? 0);
+      return canonicalizeShape({
+        ...built,
+        x: originX + localX * cos + localZ * sin,
+        z: originZ - localX * sin + localZ * cos,
+      });
+    });
+    commitShapes(
+      [...shapesRef.current.filter((shape) => shape.id !== selectedShape.id), ...parts],
+      parts.map((shape) => shape.id),
+      `Split ${selectedShape.name} into ${parts.length} plates for the ${bed.label} bed`,
+    );
+    flashCadApply(parts.map((shape) => shape.id), undefined, "separate");
+  }, [commitShapes, flashCadApply, selectedShape, selectedShapes.length]);
+
+  const canSplitSelectedGridfinityPlate = useMemo(() => {
+    if (selectedShapes.length !== 1 || !selectedShape || selectedShape.kind !== "gridfinityBaseplate" || !selectedShape.gridfinityBaseplate) return false;
+    return gridfinitySplitForBed(selectedShape.gridfinityBaseplate, normalizePrinterBed(workspaceSettings), { connectors: true }) !== null;
+  }, [selectedShape, selectedShapes.length, workspaceSettings]);
 
   const reduceSelectedMesh = useCallback(async (keepFraction: number) => {
     if (!selectedShape?.importedMesh) {
@@ -8274,7 +8570,7 @@ export function SketchForgeEditor({
         const face = mcpString(params.face, "current") as SketchForgeMcpViewFace;
         const image = await (window.sketchforgeCaptureView?.(face) ?? window.sketchforgeCaptureCanvas?.() ?? "");
         if (!image || image.length < 100) {
-          throw new Error("The PeakCAD viewport did not return an image");
+          throw new Error("The Mintr viewport did not return an image");
         }
         return { face, dataUrl: image, bytesApprox: Math.floor(image.length * 0.75) };
       }
@@ -8587,7 +8883,7 @@ export function SketchForgeEditor({
                 });
                 modelConsentSettleRef.current = null;
                 setModelPrompt(null);
-                if (choice === "deny") throw new Error("PeakCAD declined this change");
+                if (choice === "deny") throw new Error("Mintr declined this change");
                 if (choice === "project") sessionStorage.setItem(grantKey, "project");
               }
             }
@@ -8859,10 +9155,16 @@ export function SketchForgeEditor({
       setNotice(error instanceof Error ? error.message : `Could not export ${label}`);
     };
     if (format === "stl") {
-      const meshes = exportable.map(meshForShape);
-      void downloadBlobFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
-        .then((result) => finishNotice("STL", result))
-        .catch((error: unknown) => failNotice("STL", error));
+      // Mesh building runs synchronously; a degenerate imported mesh or an
+      // allocation failure on a very dense model throws here, not in the promise.
+      try {
+        const meshes = exportable.map(meshForShape);
+        void downloadBlobFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
+          .then((result) => finishNotice("STL", result))
+          .catch((error: unknown) => failNotice("STL", error));
+      } catch (error: unknown) {
+        failNotice("STL", error);
+      }
       return;
     }
     if (format === "3mf") {
@@ -8879,10 +9181,14 @@ export function SketchForgeEditor({
       }
       return;
     }
-    const meshes = exportable.map(meshForShape);
-    void downloadTextFile(projectExportFileName(projectName, "obj"), toObj(meshes), "text/plain")
-      .then((result) => finishNotice("OBJ", result))
-      .catch((error: unknown) => failNotice("OBJ", error));
+    try {
+      const meshes = exportable.map(meshForShape);
+      void downloadTextFile(projectExportFileName(projectName, "obj"), toObj(meshes), "text/plain")
+        .then((result) => finishNotice("OBJ", result))
+        .catch((error: unknown) => failNotice("OBJ", error));
+    } catch (error: unknown) {
+      failNotice("OBJ", error);
+    }
   }, [celebrateExport, hasSelection, projectName, selectedShapes, shapes]);
 
   const openInSlicer = useCallback(() => {
@@ -8951,6 +9257,13 @@ export function SketchForgeEditor({
       const { exportShapesToStep } = await import("@/lib/stepExport");
       const { blob, exportedCount, exactCount, facetedCount, skipped, degraded } = await exportShapesToStep(sourceShapes);
       persistBakedImportedBrepSteps();
+      if (exportedCount === 0 || blob.size === 0) {
+        // Nothing made it into the file. Writing a 0-byte .step and celebrating would
+        // hide the failure until the user opens it somewhere else.
+        const reasons = skipped.map((entry) => `${entry.name}: ${entry.reason}`).join("; ");
+        setNotice(`STEP export failed — no solid could be built${reasons ? ` (${reasons})` : ""}. Export STL or 3MF instead.`);
+        return;
+      }
       const text = await blob.text();
       const result = await downloadTextFile(projectExportFileName(projectName, "step"), text, "application/step");
       const qualityNote = `Exported ${exactCount} exact · ${facetedCount} faceted solid${exportedCount === 1 ? "" : "s"}`;
@@ -10471,6 +10784,8 @@ export function SketchForgeEditor({
           )?.sketchDoc?.dimensions?.length ? editSelectedSketchDimension : undefined}
           canSeparateParts={canSeparateSelectedParts}
           onSeparateParts={separateSelectedParts}
+          canSplitForPrintBed={canSplitSelectedGridfinityPlate}
+          onSplitForPrintBed={splitSelectedGridfinityPlate}
           onReduceTriangles={reduceSelectedMesh}
           activeFeatureId={activeFeatureId}
           onSelectFeature={(featureId) => {
@@ -10642,6 +10957,7 @@ export function SketchForgeEditor({
                 amount={edgeModifier.amount}
                 maxAmount={edgeModifierMaxAmount}
                 chamferAngle={edgeModifier.chamferAngle}
+                filletProfile={edgeModifier.filletProfile}
                 quality={edgeModifier.quality}
                 sharpAngle={edgeModifier.sharpAngle}
                 workspace={workspaceSettings}
@@ -10659,6 +10975,7 @@ export function SketchForgeEditor({
                 error={edgeModifier.error}
                 onAmountChange={(value) => setEdgeModifier((current) => current?.prepared ? { ...current, amount: Math.max(MIN_EDGE_MODIFIER_AMOUNT, Math.min(edgeModifierMaxAmount, value)), preview: null, busy: true, error: null } : current)}
                 onChamferAngleChange={(value) => setEdgeModifier((current) => current?.prepared ? { ...current, chamferAngle: Math.max(5, Math.min(85, value)), preview: null, busy: true, error: null } : current)}
+                onFilletProfileChange={(filletProfile) => setEdgeModifier((current) => current?.prepared && current.filletProfile !== filletProfile ? { ...current, filletProfile, preview: null, busy: true, error: null } : current)}
                 onQualityChange={(quality) => setEdgeModifier((current) => current?.prepared ? { ...current, quality, preview: null, busy: true, error: null } : current)}
                 onSharpAngleChange={(sharpAngle) => setEdgeModifier((current) => {
                   if (!current?.prepared) return current;
@@ -10871,11 +11188,12 @@ export function SketchForgeEditor({
                   <input
                     type="number"
                     min={0.5}
+                    max={SKETCH_EXTRUDE_MAX_MM}
                     step={0.5}
                     value={extrudeHeightPrompt}
                     onChange={(event) => {
                       const next = Number.parseFloat(event.target.value);
-                      if (Number.isFinite(next)) setExtrudeHeightPrompt(Math.max(0.5, next));
+                      if (Number.isFinite(next)) setExtrudeHeightPrompt(Math.min(SKETCH_EXTRUDE_MAX_MM, Math.max(0.5, next)));
                     }}
                   />
                   <span>mm</span>
@@ -10883,7 +11201,7 @@ export function SketchForgeEditor({
                 <button
                   type="button"
                   aria-label="Increase height"
-                  onClick={() => setExtrudeHeightPrompt((value) => Number(((value ?? 10) + 1).toFixed(2)))}
+                  onClick={() => setExtrudeHeightPrompt((value) => Math.min(SKETCH_EXTRUDE_MAX_MM, Number(((value ?? 10) + 1).toFixed(2))))}
                 >
                   +
                 </button>

@@ -39,9 +39,14 @@ export function InlineValueDialog({
     Object.fromEntries(fields.map((field) => [field.key, field.value])),
   );
 
+  // Callers build `fields` inline, so its identity changes on every parent
+  // render; resetting on identity wiped half-typed values whenever a notice or
+  // preview updated behind the dialog. Reset only when the initial values change.
+  const initialSignature = fields.map((field) => `${field.key}\u0000${field.value}`).join("\u0001");
   useEffect(() => {
     setDrafts(Object.fromEntries(fields.map((field) => [field.key, field.value])));
-  }, [fields]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSignature]);
 
   useEffect(() => {
     firstInputRef.current?.focus();

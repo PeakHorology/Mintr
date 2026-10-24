@@ -26,6 +26,31 @@ const SQUARE_SEGMENTS: [string, string, string][] = [
 ];
 
 describe("orderedSketchPaths", () => {
+  it("does not call a collinear out-and-back loop closed", () => {
+    // Three points on one line joined into a triangle enclose nothing; the kernel
+    // was handed a zero-area face and returned an empty solid.
+    const paths = orderedSketchPaths(
+      profile(
+        [{ id: "a", x: 0, z: 0 }, { id: "b", x: 10, z: 0 }, { id: "c", x: 5, z: 0 }],
+        [["s1", "a", "b"], ["s2", "b", "c"], ["s3", "c", "a"]],
+      ),
+    );
+    expect(paths).toHaveLength(1);
+    expect(paths[0].closed).toBe(false);
+  });
+
+  it("keeps a curved two-point loop closed even though its corners are collinear", () => {
+    const paths = orderedSketchPaths({
+      points: [{ id: "a", x: 0, z: 0 }, { id: "b", x: 10, z: 0 }, { id: "c", x: 5, z: 0 }],
+      segments: [
+        { id: "s1", startId: "a", endId: "b", kind: "smooth" },
+        { id: "s2", startId: "b", endId: "c", kind: "line" },
+        { id: "s3", startId: "c", endId: "a", kind: "line" },
+      ],
+    });
+    expect(paths[0].closed).toBe(true);
+  });
+
   it("closes a clean square", () => {
     const paths = orderedSketchPaths(profile(SQUARE_POINTS, SQUARE_SEGMENTS));
     expect(paths).toHaveLength(1);

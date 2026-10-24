@@ -100,10 +100,41 @@ export function linearPatternSuggestedSpacing(
   return clampLinearPatternSpacing(span + gap);
 }
 
+/**
+ * Most instances one linear pattern may produce per source. Each copy carries
+ * its own mesh, so 24 × 24 × 24 (13,824 bodies) would freeze the preview; a
+ * full 24 × 24 grid of pegs still fits.
+ */
+export const LINEAR_PATTERN_MAX_INSTANCES = 600;
+
+/**
+ * Clamp per-axis counts and then the product. When the product is over budget
+ * the most recently changed axis is reduced first so the panel reflects what
+ * the user just typed being limited, not an unrelated axis shrinking.
+ */
+export function boundLinearPatternCounts(
+  counts: LinearPatternCounts,
+  changed: "countX" | "countZ" | "countY" | null = null,
+): Required<LinearPatternCounts> {
+  let countX = clampLinearPatternCount(counts.countX, LINEAR_PATTERN_DEFAULT_COUNT_X);
+  let countZ = clampLinearPatternCount(counts.countZ ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Z);
+  let countY = clampLinearPatternCount(counts.countY ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Y);
+  const order: Array<"countX" | "countZ" | "countY"> = changed
+    ? [changed, ...(["countY", "countZ", "countX"] as const).filter((axis) => axis !== changed)]
+    : ["countY", "countZ", "countX"];
+  for (const axis of order) {
+    if (countX * countZ * countY <= LINEAR_PATTERN_MAX_INSTANCES) break;
+    const others = axis === "countX" ? countZ * countY : axis === "countZ" ? countX * countY : countX * countZ;
+    const allowed = Math.max(LINEAR_PATTERN_MIN_COUNT, Math.floor(LINEAR_PATTERN_MAX_INSTANCES / Math.max(1, others)));
+    if (axis === "countX") countX = Math.min(countX, allowed);
+    else if (axis === "countZ") countZ = Math.min(countZ, allowed);
+    else countY = Math.min(countY, allowed);
+  }
+  return { countX, countZ, countY };
+}
+
 export function linearPatternInstanceCount(counts: LinearPatternCounts) {
-  const countX = clampLinearPatternCount(counts.countX, LINEAR_PATTERN_DEFAULT_COUNT_X);
-  const countZ = clampLinearPatternCount(counts.countZ ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Z);
-  const countY = clampLinearPatternCount(counts.countY ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Y);
+  const { countX, countZ, countY } = boundLinearPatternCounts(counts);
   return countX * countZ * countY;
 }
 
@@ -140,9 +171,7 @@ export function linearPatternInstances(
   spacing: LinearPatternSpacing,
   options: LinearPatternOptions = {},
 ): WorkplaneShape[] {
-  const countX = clampLinearPatternCount(counts.countX, LINEAR_PATTERN_DEFAULT_COUNT_X);
-  const countZ = clampLinearPatternCount(counts.countZ ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Z);
-  const countY = clampLinearPatternCount(counts.countY ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Y);
+  const { countX, countZ, countY } = boundLinearPatternCounts(counts);
   const spacingX = clampLinearPatternSpacing(spacing.spacingX);
   const spacingZ = clampLinearPatternSpacing(spacing.spacingZ);
   const spacingY = clampLinearPatternSpacing(spacing.spacingY ?? linearPatternSuggestedSpacing(sources, "y"));

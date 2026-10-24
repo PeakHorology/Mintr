@@ -94,7 +94,21 @@ function writeTextFile(filePath, text) {
     throw new Error("This project file is too large to save.");
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, text, "utf8");
+  // Write beside the target and rename over it. A crash, power loss, full disk
+  // or a sync client holding the file mid-write must never leave a truncated
+  // .mintr where the user's only on-disk copy used to be.
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, text, "utf8");
+    fs.renameSync(temporary, filePath);
+  } catch (error) {
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {
+      // The target file is untouched; the leftover temp file is harmless.
+    }
+    throw error;
+  }
   return allowPath(filePath);
 }
 
@@ -198,4 +212,5 @@ module.exports = {
   isAllowlisted,
   readTextFile,
   registerProjectFileIpc,
+  writeTextFile,
 };

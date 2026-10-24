@@ -1,5 +1,7 @@
 import { catalogSidesForKind, catalogStepsForKind, getActiveDisplayQuality } from "@/lib/displayTessellation";
 import { defaultGearSpec, gearFootprint } from "@/lib/gearProfile";
+import { isGridfinityKind } from "@/lib/gridfinity";
+import { GRIDFINITY_BASEPLATE_COLOR, GRIDFINITY_BIN_COLOR, createGridfinityShape } from "@/lib/gridfinityShape";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 import { createLocalId } from "@/lib/localIds";
 import { DEFAULT_TEXT_FONT } from "@/lib/textFonts";
@@ -22,6 +24,8 @@ export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b" },
   { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813" },
   { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#2aa77e" },
+  { id: "gridfinity-bin", name: "Gridfinity Bin", src: "assets/peakcad/shape-icons/gridfinity-bin.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-bin.png", kind: "gridfinityBin", color: GRIDFINITY_BIN_COLOR },
+  { id: "gridfinity-baseplate", name: "Gridfinity Baseplate", src: "assets/peakcad/shape-icons/gridfinity-baseplate.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-baseplate.png", kind: "gridfinityBaseplate", color: GRIDFINITY_BASEPLATE_COLOR },
 ];
 
 export function sceneShape(shape: Partial<WorkplaneShape> & Pick<WorkplaneShape, "name" | "kind" | "color">): WorkplaneShape {
@@ -58,6 +62,9 @@ export function makeShapeFromAsset(
   point?: { x: number; z: number; elevation?: number },
   displayQuality: DisplayQuality = getActiveDisplayQuality(),
 ): WorkplaneShape {
+  if (isGridfinityKind(asset.kind)) {
+    return createGridfinityShape(asset.kind, point, { id: createLocalId(asset.id), color: asset.color });
+  }
   const gear = asset.kind === "gear" ? defaultGearSpec() : null;
   const gearSize = gear ? gearFootprint(gear) : null;
   const roundProfile = asset.kind === "sphere" || asset.kind === "torus" || asset.kind === "ring" || asset.kind === "halfSphere" || asset.kind === "icosahedron";

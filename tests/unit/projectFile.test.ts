@@ -39,10 +39,12 @@ const {
   allowPath,
   isAllowlisted,
   readTextFile,
+  writeTextFile,
 } = require("../../electron/projectFile.cjs") as {
   allowPath: (filePath: string) => string;
   isAllowlisted: (filePath: string) => boolean;
   readTextFile: (filePath: string) => { path: string; text: string };
+  writeTextFile: (filePath: string, text: string) => string;
 };
 
 const defaultDir = path.join("C:", "Users", "docs", "PeakCAD");
@@ -185,6 +187,47 @@ describe("transitionProjectFilesToMintrDir", () => {
       expect(fs.existsSync(outside)).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("writeTextFile", () => {
+  it("replaces the file atomically and leaves no temp file behind", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-write-"));
+    const target = path.join(dir, "Plate.mintr");
+    try {
+      fs.writeFileSync(target, "old", "utf8");
+      writeTextFile(target, "{\"format\":\"mintr\"}");
+      expect(fs.readFileSync(target, "utf8")).toBe("{\"format\":\"mintr\"}");
+      expect(fs.readdirSync(dir)).toEqual(["Plate.mintr"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the previous file intact when the write cannot complete", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-write-fail-"));
+    const target = path.join(dir, "Plate.mintr");
+    try {
+      fs.writeFileSync(target, "previous save", "utf8");
+      // A directory squatting on the temp name makes writeFileSync fail
+      // before anything touches the real project file.
+      fs.mkdirSync(`${target}.${process.pid}.tmp`);
+      expect(() => writeTextFile(target, "new contents")).toThrow();
+      expect(fs.readFileSync(target, "utf8")).toBe("previous save");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects non-string contents before touching the disk", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-write-type-"));
+    const target = path.join(dir, "Plate.mintr");
+    try {
+      expect(() => writeTextFile(target, 42 as unknown as string)).toThrow(/text/);
+      expect(fs.existsSync(target)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

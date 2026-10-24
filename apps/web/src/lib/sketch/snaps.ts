@@ -29,6 +29,46 @@ function segmentIntersection(a1: SketchVec2, a2: SketchVec2, b1: SketchVec2, b2:
   return { x: a1.x + dax * t, z: a1.z + daz * t };
 }
 
+type ProfileIntersection = SketchVec2 & { entityId: string };
+
+/**
+ * Segment–segment intersections, cached per profile snapshot. Snapping ran the
+ * full O(n²) pair scan on every pointer move; a 300-segment imported outline
+ * made the cursor stutter. Profiles are replaced, not mutated, so the point and
+ * segment array identities are a sound cache key.
+ */
+const intersectionCache = new WeakMap<SketchProfile["segments"], { points: SketchProfile["points"]; hits: ProfileIntersection[] }>();
+
+function profileIntersections(profile: SketchProfile, pointById: Map<string, SketchVec2>): ProfileIntersection[] {
+  const cached = intersectionCache.get(profile.segments);
+  if (cached && cached.points === profile.points) return cached.hits;
+  const hits: ProfileIntersection[] = [];
+  const segments = profile.segments;
+  // Bounding boxes first so the pair test only runs on segments that can touch.
+  const boxes = segments.map((segment) => {
+    const a = pointById.get(segment.startId);
+    const b = pointById.get(segment.endId);
+    if (!a || !b) return null;
+    return { a, b, minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x), minZ: Math.min(a.z, b.z), maxZ: Math.max(a.z, b.z) };
+  });
+  for (let i = 0; i < segments.length; i += 1) {
+    const s1 = segments[i];
+    const box1 = boxes[i];
+    if (!box1) continue;
+    for (let j = i + 1; j < segments.length; j += 1) {
+      const s2 = segments[j];
+      const box2 = boxes[j];
+      if (!box2) continue;
+      if (box1.maxX < box2.minX || box2.maxX < box1.minX || box1.maxZ < box2.minZ || box2.maxZ < box1.minZ) continue;
+      if (s1.startId === s2.startId || s1.startId === s2.endId || s1.endId === s2.startId || s1.endId === s2.endId) continue;
+      const hit = segmentIntersection(box1.a, box1.b, box2.a, box2.b);
+      if (hit) hits.push({ x: hit.x, z: hit.z, entityId: s1.id });
+    }
+  }
+  intersectionCache.set(profile.segments, { points: profile.points, hits });
+  return hits;
+}
+
 export type SnapQuery = {
   cursor: SketchVec2;
   /** Previous point for horiz/vert inference (e.g. line start). */
@@ -91,27 +131,15 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
   }
 
   // Intersections
-  for (let i = 0; i < profile.segments.length; i += 1) {
-    const s1 = profile.segments[i];
-    const a1 = pointById.get(s1.startId);
-    const a2 = pointById.get(s1.endId);
-    if (!a1 || !a2) continue;
-    for (let j = i + 1; j < profile.segments.length; j += 1) {
-      const s2 = profile.segments[j];
-      if (s1.startId === s2.startId || s1.startId === s2.endId || s1.endId === s2.startId || s1.endId === s2.endId) continue;
-      const b1 = pointById.get(s2.startId);
-      const b2 = pointById.get(s2.endId);
-      if (!b1 || !b2) continue;
-      const hit = segmentIntersection(a1, a2, b1, b2);
-      if (hit && dist(cursor, hit) <= tol) {
-        candidates.push({
-          x: hit.x,
-          z: hit.z,
-          kind: "intersection",
-          entityId: s1.id,
-          inferredConstraints: [],
-        });
-      }
+  for (const hit of profileIntersections(profile, pointById)) {
+    if (dist(cursor, hit) <= tol) {
+      candidates.push({
+        x: hit.x,
+        z: hit.z,
+        kind: "intersection",
+        entityId: hit.entityId,
+        inferredConstraints: [],
+      });
     }
   }
 

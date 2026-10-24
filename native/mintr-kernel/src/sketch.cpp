@@ -126,8 +126,12 @@ bool pointInXzLoop(const nlohmann::json& loop, double x, double z) {
     }
   }
   bool inside = false;
-  for (size_t i = 0, j = pts.size(); j-- > 0; i++) {
-    if (i >= pts.size()) break;
+  // Even-odd ray cast over consecutive edges (i, j = i-1). The previous loop
+  // paired vertex i with vertex n-1-i — chords, not edges — so every chord was
+  // visited twice, parity cancelled, and wire loops never counted as "inside".
+  const size_t count = pts.size();
+  if (count < 3) return false;
+  for (size_t i = 0, j = count - 1; i < count; j = i++) {
     const double xi = pts[i].first;
     const double zi = pts[i].second;
     const double xj = pts[j].first;
@@ -139,6 +143,9 @@ bool pointInXzLoop(const nlohmann::json& loop, double x, double z) {
 }
 
 nlohmann::json okShape(const TopoDS_Shape& shape) {
+  if (!kernelShapeIsValid(shape)) {
+    return kernelFail("native sketch solid failed validation", true);
+  }
   nlohmann::json positions, normals, indices;
   if (!kernelTessellateIndexed(shape, positions, normals, indices, 0.12)) {
     return kernelFail("native tessellation failed", true);

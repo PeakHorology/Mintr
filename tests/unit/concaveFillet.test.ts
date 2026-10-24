@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { OcctKernel, ShapeHandle } from "occt-wasm";
-import { cutConcaveCorners, edgeIsConcave } from "@/workers/cadModifier.worker";
+import { coveEdges, cutConcaveCorners, edgeIsConcave } from "@/workers/cadModifier.worker";
 
 const occtDir = join(process.cwd(), "node_modules", "occt-wasm", "dist");
 const { OcctKernel } = await import(pathToFileURL(join(occtDir, "index.js")).href);
@@ -86,5 +86,138 @@ describe("concave fillet", () => {
     const solid = blindRoundHole();
     const edges = concaveEdges(solid);
     expect(() => cutConcaveCorners(kernel, kernel.copy(solid), solid, edges, "fillet", 5, 45)).toThrow(/smaller fillet/);
+  });
+});
+
+describe("cove (concave) fillet", () => {
+  const edgeMid = (edge: ShapeHandle) => {
+    const params = kernel.curveParameters(edge);
+    return kernel.curvePointAtParam(edge, (params.first + params.last) / 2);
+  };
+
+  it("scoops a quarter-round groove out of one straight box edge", () => {
+    const solid = kernel.makeBoxFromCorners({ x: 0, y: 0, z: 0 }, { x: 20, y: 20, z: 20 });
+    // The top-front edge: y = 20, z = 20, running along x.
+    const edge = kernel.getSubShapes(solid, "edge").find((candidate) => {
+      const mid = edgeMid(candidate);
+      return Math.abs(mid.y - 20) < 1e-6 && Math.abs(mid.z - 20) < 1e-6;
+    });
+    expect(edge).toBeDefined();
+    const result = coveEdges(kernel, solid, [edge!], 2);
+    expect(kernel.isValid(result)).toBe(true);
+    expect(kernel.isSolid(result)).toBe(true);
+    // A quarter cylinder of radius 2 along a 20 mm edge is removed; a convex
+    // fillet would have removed (r² − πr²/4)·L ≈ 17.2 instead.
+    expect(8000 - volume(result)).toBeCloseTo((Math.PI * 4 / 4) * 20, 1);
+    // The groove is concave: the old edge line is now empty and a point just
+    // inside the groove wall is still material.
+    expect(kernel.containsPoint(result, { x: 10, y: 19.5, z: 19.5 }, 1e-6)).toBe(false);
+    expect(kernel.containsPoint(result, { x: 10, y: 17.5, z: 17.5 }, 1e-6)).toBe(true);
+    // The groove runs out through both end faces. A cutter that stops on the
+    // vertex leaves the corner, and a skin across the end of the groove.
+    expect(kernel.containsPoint(result, { x: 0, y: 20, z: 20 }, 1e-4)).toBe(false);
+    expect(kernel.containsPoint(result, { x: 0.2, y: 19.2, z: 19.2 }, 1e-4)).toBe(false);
+    expect(kernel.containsPoint(result, { x: 19.8, y: 19.2, z: 19.2 }, 1e-4)).toBe(false);
+    const endMesh = kernel.tessellate(result, { linearDeflection: 0.12, angularDeflection: 0.2 });
+    let endCorner = -1;
+    for (let index = 0; index < endMesh.positions.length; index += 3) {
+      const x = endMesh.positions[index];
+      const y = endMesh.positions[index + 1];
+      const z = endMesh.positions[index + 2];
+      if (x < 1 && y > 18 && z > 18) endCorner = Math.max(endCorner, Math.min(y, z));
+    }
+    expect(endCorner).toBeLessThan(19);
+    // The box outline is untouched away from the groove.
+    const box = kernel.getBoundingBox(result, false);
+    expect(box.xmax - box.xmin).toBeCloseTo(20, 3);
+    expect(box.ymax - box.ymin).toBeCloseTo(20, 3);
+  });
+
+  it("coves every edge of a box and blends the corners with a ball", () => {
+    const solid = kernel.makeBox(20, 20, 20);
+    const edges = kernel.getSubShapes(solid, "edge");
+    expect(edges).toHaveLength(12);
+    const result = coveEdges(kernel, solid, edges, 1.5);
+    expect(kernel.isValid(result)).toBe(true);
+    expect(kernel.isSolid(result)).toBe(true);
+    const removed = 8000 - volume(result);
+    const perEdge = (Math.PI * 1.5 * 1.5 / 4) * 20;
+    expect(removed).toBeGreaterThan(perEdge * 12 * 0.8);
+    expect(removed).toBeLessThan(perEdge * 12 + 8 * (4 / 3) * Math.PI * 1.5 ** 3);
+    // The corner itself is inside the ball, so no spike is left where three grooves meet.
+    expect(kernel.containsPoint(result, { x: 0.6, y: 0.6, z: 0.6 }, 1e-6)).toBe(false);
+  });
+
+  it("shortens the next edge when a cove is cut on the previous result", () => {
+    const solid = kernel.makeBoxFromCorners({ x: 0, y: 0, z: 0 }, { x: 20, y: 20, z: 20 });
+    const top = kernel.getSubShapes(solid, "edge").filter((candidate) => Math.abs(edgeMid(candidate).z - 20) < 1e-6);
+    const alongX = top.find((candidate) => Math.abs(edgeMid(candidate).y - 20) < 1e-6);
+    expect(alongX).toBeDefined();
+    const first = coveEdges(kernel, solid, [alongX!], 3);
+    const shortened = kernel.getSubShapes(first, "edge").find((candidate) => {
+      const params = kernel.curveParameters(candidate);
+      const a = kernel.curvePointAtParam(candidate, params.first);
+      const b = kernel.curvePointAtParam(candidate, params.last);
+      const mid = edgeMid(candidate);
+      const length = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+      return Math.abs(mid.x - 20) < 0.2 && Math.abs(mid.z - 20) < 0.2 && length < 19;
+    });
+    expect(shortened).toBeDefined();
+    const params = kernel.curveParameters(shortened!);
+    const a = kernel.curvePointAtParam(shortened!, params.first);
+    const b = kernel.curvePointAtParam(shortened!, params.last);
+    // Radius 3 eats the shared corner, so this edge no longer runs the full 20 mm.
+    // A cutter built on it would stop short of the corner.
+    expect(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)).toBeCloseTo(17, 1);
+  });
+
+  it("cuts the top loop of a box through the side faces, with no corner peak", () => {
+    const solid = kernel.makeBoxFromCorners({ x: 0, y: 0, z: 0 }, { x: 20, y: 20, z: 20 });
+    const edges = kernel.getSubShapes(solid, "edge").filter((candidate) => Math.abs(edgeMid(candidate).z - 20) < 1e-6);
+    expect(edges).toHaveLength(4);
+    const result = coveEdges(kernel, solid, edges, 3);
+    const outside = (point: { x: number; y: number; z: number }) => kernel.containsPoint(result, point, 1e-4) === false;
+    // Mid-edge of every top edge is gone, and the side face just under it is gone too.
+    expect(outside({ x: 10, y: 20, z: 20 })).toBe(true);
+    expect(outside({ x: 10, y: 19.2, z: 20 })).toBe(true);
+    expect(outside({ x: 10, y: 20, z: 19.2 })).toBe(true);
+    expect(outside({ x: 20, y: 10, z: 20 })).toBe(true);
+    expect(outside({ x: 19.2, y: 10, z: 20 })).toBe(true);
+    // Corners are cut back, not left as spikes above the groove.
+    expect(outside({ x: 20, y: 20, z: 20 })).toBe(true);
+    expect(outside({ x: 19.2, y: 19.2, z: 20 })).toBe(true);
+    expect(outside({ x: 0.4, y: 0.4, z: 20 })).toBe(true);
+    // The middle of the top face is still there.
+    expect(kernel.containsPoint(result, { x: 10, y: 10, z: 20 }, 1e-4)).toBe(true);
+    const mesh = kernel.tessellate(result, { linearDeflection: 0.16, angularDeflection: 0.32 });
+    let cornerZ = -1;
+    let lipZ = -1;
+    for (let index = 0; index < mesh.positions.length; index += 3) {
+      const x = mesh.positions[index];
+      const y = mesh.positions[index + 1];
+      const z = mesh.positions[index + 2];
+      if (x > 18 && y > 18) cornerZ = Math.max(cornerZ, z);
+      if (Math.abs(x - 10) < 1 && y > 18.5) lipZ = Math.max(lipZ, z);
+    }
+    expect(cornerZ).toBeLessThan(18);
+    expect(lipZ).toBeLessThan(18);
+  });
+
+  it("coves the rim of a cylinder with a torus-shaped groove", () => {
+    const solid = kernel.makeCylinder(10, 15);
+    const rim = kernel.getSubShapes(solid, "edge").find((edge) => {
+      if (kernel.curveType(edge) !== "circle") return false;
+      return Math.abs(edgeMid(edge).z - 15) < 1e-6;
+    });
+    expect(rim).toBeDefined();
+    const before = volume(solid);
+    const result = coveEdges(kernel, solid, [rim!], 1.5);
+    expect(kernel.isValid(result)).toBe(true);
+    const removed = before - volume(result);
+    const fullTorus = 2 * Math.PI * Math.PI * 10 * 1.5 * 1.5;
+    // About a quarter of the torus sits inside the cylinder (a little less, the
+    // inner side of the ring is shorter than the centre line).
+    expect(removed).toBeGreaterThan(fullTorus * 0.2);
+    expect(removed).toBeLessThan(fullTorus * 0.3);
   });
 });

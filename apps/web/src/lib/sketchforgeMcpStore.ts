@@ -159,7 +159,7 @@ export function dispatchSketchForgeMcpCommand({
     return Promise.resolve({
       commandId: "",
       ok: false,
-      error: typeof editorNumber === "number" ? `No open PeakCAD project ${editorNumber}` : "No open PeakCAD project",
+      error: typeof editorNumber === "number" ? `No open Mintr project ${editorNumber}` : "No open Mintr project",
       completedAt: Date.now(),
     } satisfies SketchForgeMcpCommandResult);
   }
@@ -167,7 +167,7 @@ export function dispatchSketchForgeMcpCommand({
     return Promise.resolve({
       commandId: "",
       ok: false,
-      error: "Models are turned off in PeakCAD Settings",
+      error: "Models are turned off in Mintr Settings",
       completedAt: Date.now(),
     } satisfies SketchForgeMcpCommandResult);
   }

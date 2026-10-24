@@ -1,6 +1,8 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
 import { buildGearIndexedMesh } from "@/lib/gearMesh";
 import { normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
+import { gridfinityRecipeForShape } from "@/lib/gridfinity";
+import { buildRecipeSolid } from "@/lib/recipeBrep";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { Brep, BrepSolid } from "@/lib/brepKernel";
@@ -29,6 +31,8 @@ export const NATIVE_EXACT_KINDS: ReadonlySet<WorkplaneShape["kind"]> = new Set([
   "ring",
   "polygon",
   "gear",
+  "gridfinityBin",
+  "gridfinityBaseplate",
 ]);
 
 /** Kinds that are intentionally tessellated / font / helix detail. */
@@ -140,6 +144,12 @@ export function buildNativeShapeSolid(brep: Brep, shape: WorkplaneShape): ShapeB
         return buildPolygon(brep, shape, width, height, depth);
       case "gear":
         return buildGear(brep, shape, height);
+      case "gridfinityBin":
+      case "gridfinityBaseplate": {
+        const recipe = gridfinityRecipeForShape(shape);
+        if (!recipe) return { skip: "no Gridfinity spec" };
+        return { solid: centerOnY(brep, buildRecipeSolid(brep, recipe), recipe.height) };
+      }
       default:
         return { skip: "no exact B-Rep mapping" };
     }

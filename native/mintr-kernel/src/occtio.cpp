@@ -4,6 +4,7 @@
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
@@ -266,4 +267,20 @@ double kernelArea(const TopoDS_Shape& shape) {
 
 nlohmann::json kernelFail(const std::string& message, bool fallback) {
   return { { "ok", false }, { "fallback", fallback }, { "message", message } };
+}
+
+bool kernelShapeIsValid(const TopoDS_Shape& shape, int maxFaces) {
+  if (shape.IsNull()) return false;
+  // BRepCheck is thorough but not cheap; a dense imported body with thousands
+  // of faces is skipped rather than stalling every preview on it.
+  int faces = 0;
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    if (++faces > maxFaces) return true;
+  }
+  try {
+    BRepCheck_Analyzer analyzer(shape, true);
+    return analyzer.IsValid();
+  } catch (...) {
+    return false;
+  }
 }

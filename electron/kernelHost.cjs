@@ -37,6 +37,8 @@ function stopKernel() {
   child = null;
   starting = null;
   stdoutBuf = Buffer.alloc(0);
+  stdoutChunks = [];
+  stdoutPending = 0;
   settleAll({ ok: false, fallback: true, message: "CAD kernel stopped" });
   if (!active) return;
   try {
@@ -44,6 +46,39 @@ function stopKernel() {
   } catch {
     // already gone
   }
+}
+
+// Incoming chunks are queued and joined once per complete frame. Concatenating
+// on every 64 KB chunk re-copied the whole partial reply each time, which made a
+// 60 MB tessellation reply cost gigabytes of memcpy before it could be parsed.
+let stdoutChunks = [];
+let stdoutPending = 0;
+
+function flattenStdout() {
+  if (stdoutChunks.length === 0) return;
+  stdoutBuf = stdoutBuf.length === 0 && stdoutChunks.length === 1 ? stdoutChunks[0] : Buffer.concat([stdoutBuf, ...stdoutChunks]);
+  stdoutChunks = [];
+  stdoutPending = 0;
+}
+
+function pushStdout(chunk) {
+  stdoutChunks.push(chunk);
+  stdoutPending += chunk.length;
+  const available = stdoutBuf.length + stdoutPending;
+  if (available < 4) return;
+  let header = stdoutBuf;
+  if (header.length < 4) {
+    flattenStdout();
+    header = stdoutBuf;
+  }
+  const size = header.readUInt32LE(0);
+  if (size === 0 || size > 256 * 1024 * 1024) {
+    stopKernel();
+    return;
+  }
+  if (stdoutBuf.length + stdoutPending < 4 + size) return;
+  flattenStdout();
+  consumeStdout();
 }
 
 function consumeStdout() {
@@ -55,7 +90,9 @@ function consumeStdout() {
     }
     if (stdoutBuf.length < 4 + size) return;
     const payload = stdoutBuf.subarray(4, 4 + size).toString("utf8");
-    stdoutBuf = Buffer.from(stdoutBuf.subarray(4 + size));
+    // Copy the remainder so the (possibly huge) frame buffer can be collected.
+    const rest = stdoutBuf.subarray(4 + size);
+    stdoutBuf = rest.length === 0 ? Buffer.alloc(0) : Buffer.from(rest);
     let reply;
     try {
       reply = JSON.parse(payload);
@@ -69,14 +106,16 @@ function consumeStdout() {
 
 function attachChild(proc) {
   child = proc;
-  proc.stdout.on("data", (chunk) => {
-    stdoutBuf = Buffer.concat([stdoutBuf, chunk]);
-    consumeStdout();
-  });
+  proc.stdout.on("data", pushStdout);
   proc.on("exit", () => {
     if (child === proc) stopKernel();
   });
   proc.on("error", () => {
+    if (child === proc) stopKernel();
+  });
+  // Writing to a kernel that just exited raises EPIPE asynchronously on stdin;
+  // without a listener that is an uncaught exception in the main process.
+  proc.stdin.on("error", () => {
     if (child === proc) stopKernel();
   });
 }
@@ -114,22 +153,30 @@ function writeFrame(proc, payload) {
 }
 
 async function requestNativeKernel(job, timeoutMs) {
-  const proc = await ensureKernel();
-  if (!proc) return { ok: false, fallback: true, message: "MintrKernel.exe is not built yet" };
+  if (!resolveKernelExe()) return { ok: false, fallback: true, message: "MintrKernel.exe is not built yet" };
   const id = job.id;
-  const run = () => new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      settle(id, { ok: false, fallback: true, message: "CAD kernel timed out" });
-      stopKernel();
-    }, timeoutMs);
-    pending.set(id, { resolve, timer });
-    try {
-      writeFrame(proc, JSON.stringify(job));
-    } catch {
-      settle(id, { ok: false, fallback: true, message: "CAD kernel write failed" });
-      stopKernel();
-    }
-  });
+  // Resolve the process inside the queued step, not before queueing: an earlier
+  // request that timed out has already killed the kernel by the time this one
+  // runs, and writing to that dead stdin would wait out a second full timeout.
+  const run = async () => {
+    const proc = await ensureKernel();
+    if (!proc || proc.killed) return { ok: false, fallback: true, message: "CAD kernel is not running" };
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        settle(id, { ok: false, fallback: true, message: "CAD kernel timed out" });
+        // Only kill the process this request was talking to. A respawned kernel
+        // serving later requests must not die for an older request's timeout.
+        if (child === proc) stopKernel();
+      }, timeoutMs);
+      pending.set(id, { resolve, timer });
+      try {
+        writeFrame(proc, JSON.stringify(job));
+      } catch {
+        settle(id, { ok: false, fallback: true, message: "CAD kernel write failed" });
+        if (child === proc) stopKernel();
+      }
+    });
+  };
   const wait = nextWrite.then(run, run);
   nextWrite = wait.then(() => undefined, () => undefined);
   return wait;
@@ -144,3 +191,8 @@ function registerKernelIpc(ipcMain) {
 }
 
 module.exports = { registerKernelIpc, stopKernel, resolveKernelExe };
+
+// Framing internals for the unit test only; absent in the packaged app.
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  module.exports.__test = { attachChild, pending };
+}

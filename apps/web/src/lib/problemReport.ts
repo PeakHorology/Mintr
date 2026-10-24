@@ -38,7 +38,7 @@ function mailDraft(subject: string, body: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = subject.toLowerCase().includes("problem") ? "PeakCAD-problem.eml" : "PeakCAD-feedback.eml";
+  link.download = subject.toLowerCase().includes("problem") ? "Mintr-problem.eml" : "Mintr-feedback.eml";
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -50,14 +50,14 @@ export async function openFeedback(version: string) {
     return;
   }
   const body = [
-    `PeakCAD ${version || "browser"}`,
+    `Mintr ${version || "browser"}`,
     "",
     "We'd love to hear what you think.",
     "",
     "",
     "Your design is not included. Attach a project file only if you want it looked at.",
   ].join("\n");
-  mailDraft("PeakCAD feedback", body);
+  mailDraft("Mintr feedback", body);
 }
 
 export async function openProblemReport(version: string) {
@@ -67,7 +67,7 @@ export async function openProblemReport(version: string) {
     return;
   }
   const body = [
-    `PeakCAD ${version || "browser"}`,
+    `Mintr ${version || "browser"}`,
     "",
     "What were you doing when this happened?",
     "",
@@ -76,5 +76,5 @@ export async function openProblemReport(version: string) {
     "",
     `Browser: ${typeof navigator === "undefined" ? "" : navigator.userAgent}`,
   ].join("\n");
-  mailDraft("PeakCAD problem report", body);
+  mailDraft("Mintr problem report", body);
 }

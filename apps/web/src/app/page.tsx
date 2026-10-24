@@ -3,7 +3,7 @@
 import { ArrowLeft, CircleArrowUp, Download, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from "react";
 import { rememberProblem } from "@/lib/problemReport";
-import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
+import { noteIsFeatured, RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
 import { prepareCadRuntime } from "@/lib/cadRuntimeWarmup";
 import { IntroCoach } from "@/components/workplane/IntroCoach";
@@ -14,6 +14,7 @@ import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { createLocalId } from "@/lib/localIds";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
+import { StartupThemeTabs } from "@/components/workplane/StartupThemeTabs";
 import { applyUiTheme, loadUiTheme, readAppliedUiTheme, UI_THEME_CHANGED_EVENT, type UiTheme } from "@/lib/uiTheme";
 import {
   DEFAULT_SNAP_GRID,
@@ -57,6 +58,7 @@ import {
   subscribePeakcadMenu,
   subscribePeakcadOpenPath,
   subscribePeakcadSaveBeforeClose,
+  subscribePeakcadFlushBeforeClose,
   subscribeProjectFilesTransitioned,
   readPendingProjectMoves,
   writeNewDesktopPeakcad,
@@ -297,10 +299,44 @@ async function saveProjectThumbnail(
   });
 }
 
+// Every dashboard card reads its thumbnail on mount and again on each theme
+// toggle. Opening a fresh IndexedDB connection per card made a 60-project
+// library open visibly slower, so reads share one long-lived connection. The
+// connection yields to upgrades/deletes via `versionchange` and is reopened on
+// the next read.
+let thumbnailReadDb: Promise<IDBDatabase> | null = null;
+
+function thumbnailReadConnection() {
+  if (!thumbnailReadDb) {
+    const forget = () => {
+      if (thumbnailReadDb === opened) thumbnailReadDb = null;
+    };
+    const opened: Promise<IDBDatabase> = openProjectShapesDb().then((database) => {
+      database.onversionchange = () => {
+        database.close();
+        forget();
+      };
+      database.onclose = forget;
+      return database;
+    });
+    opened.catch(forget);
+    thumbnailReadDb = opened;
+  }
+  return thumbnailReadDb;
+}
+
 async function loadProjectThumbnail(projectId: string, theme: UiTheme = "light") {
-  const database = await openProjectShapesDb();
+  const database = await thumbnailReadConnection();
   return new Promise<string | null>((resolve, reject) => {
-    const transaction = database.transaction(PROJECT_THUMBNAILS_STORE_NAME, "readonly");
+    let transaction: IDBTransaction;
+    try {
+      transaction = database.transaction(PROJECT_THUMBNAILS_STORE_NAME, "readonly");
+    } catch (error) {
+      // Connection was closed underneath us; drop it so the next read reopens.
+      thumbnailReadDb = null;
+      reject(error instanceof Error ? error : new Error("Could not load project thumbnail"));
+      return;
+    }
     const request = transaction.objectStore(PROJECT_THUMBNAILS_STORE_NAME).get(projectId);
     request.onerror = () => reject(request.error ?? new Error("Could not load project thumbnail"));
     request.onsuccess = () => {
@@ -311,9 +347,7 @@ async function loadProjectThumbnail(projectId: string, theme: UiTheme = "light")
       }
       resolve(typeof record?.dataUrl === "string" ? record.dataUrl : null);
     };
-    transaction.oncomplete = () => database.close();
     transaction.onerror = () => {
-      database.close();
       reject(transaction.error ?? new Error("Could not load project thumbnail"));
     };
   });
@@ -750,6 +784,24 @@ function withSavedPeakcadFile(project: DashboardProject, filePath?: string | nul
   };
 }
 
+function samePeakcadPath(a: string | null | undefined, b: string | null | undefined) {
+  if (!a || !b) return false;
+  const norm = (p: string) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * After Save As onto a path another project already points at, that other
+ * project would silently overwrite this one on its next autosave. Detach it.
+ */
+function claimPeakcadPath(projects: DashboardProject[], projectId: string, filePath: string) {
+  return projects.map((item) => {
+    if (item.id === projectId) return withSavedPeakcadFile(item, filePath);
+    if (samePeakcadPath(item.filePath, filePath)) return { ...item, filePath: null };
+    return item;
+  });
+}
+
 function mergeProjectsForStorage(projects: DashboardProject[]) {
   const storedProjects = readProjects();
   const storedById = new Map(storedProjects.map((project) => [project.id, project]));
@@ -805,7 +857,12 @@ function buildDocumentForProject(project: DashboardProject, entry: ProjectShapeC
  * serialization only if the store has no record.
  */
 async function serializeProjectForDisk(project: DashboardProject, entry: ProjectShapeCacheEntry) {
-  await saveProjectShapes(project.id, entry, { fullHistory: true }).catch(() => undefined);
+  // The store worker serializes what it has *stored*. If this save fails
+  // (quota, private window, a wedged IndexedDB) the worker still holds the
+  // previous revision and would hand back stale shapes under a fresh "Saved"
+  // notice. Serialize the in-memory entry ourselves in that case.
+  const stored = await saveProjectShapes(project.id, entry, { fullHistory: true }).then(() => true, () => false);
+  if (!stored) return serializePeakcadDocument(buildDocumentForProject(project, entry));
   const text = await serializeStoredProject(project.id, peakcadProjectMeta(project, entry.shapes.length)).catch(() => null);
   return text ?? serializePeakcadDocument(buildDocumentForProject(project, entry));
 }
@@ -848,6 +905,10 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [downloadFolder, setDownloadFolder] = useState("");
   const [dashboardNotice, setDashboardNotice] = useState("");
+  const [editorHostNotice, setEditorHostNotice] = useState<{ seq: number; message: string } | null>(null);
+  const notifyEditor = useCallback((message: string) => {
+    setEditorHostNotice((current) => ({ seq: (current?.seq ?? 0) + 1, message }));
+  }, []);
   const [introCoachOpen, setIntroCoachOpen] = useState(false);
   const [projectShapesById, setProjectShapesById] = useState<Record<string, ProjectShapeCacheEntry>>({});
   const projectsJsonRef = useRef("");
@@ -899,6 +960,8 @@ export default function Home() {
       const remaining = 2000 - (performance.now() - started);
       if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
       if (cancel) return;
+      // "Later" on a version stays dismissed until a newer version appears.
+      if (offer && readDismissedUpdateVersion() === offer.version) offer = null;
       setUpdateOffer(offer);
       setUpdateChecking(false);
     })();
@@ -1007,7 +1070,7 @@ export default function Home() {
     const targets = projectsRef.current.filter((project) => project.folderId === folderId && project.filePath);
     if (targets.length === 0) return;
     void Promise.all(targets.map((project) => rewriteProjectDiskFile(project, nextPassword, previousPassword))).catch((error) => {
-      setDashboardNotice(error instanceof Error ? error.message : "Could not protect the saved PeakCAD files.");
+      setDashboardNotice(error instanceof Error ? error.message : "Could not protect the saved Mintr files.");
     });
   }, [rewriteProjectDiskFile]);
 
@@ -1036,7 +1099,7 @@ export default function Home() {
       let unlocked: string | null = null;
       const password = await askFilePassword(
         "Password required",
-        "This PeakCAD file is password protected.",
+        "This Mintr file is password protected.",
         async (candidate) => {
           try {
             unlocked = await decryptPeakcadText(text, candidate);
@@ -1355,18 +1418,17 @@ export default function Home() {
         });
       })
       .catch((error) => {
-        if (!canceled) {
-          setDashboardNotice(error instanceof Error ? error.message : "Could not load project shapes");
-          setProjectShapesById((current) => {
-            const existing = current[activeProjectId];
-            if (existing && existing.revision >= targetRevision) {
-              return current;
-            }
-            return {
-              ...current,
-              [activeProjectId]: projectShapeCacheEntry(targetRevision || Date.now(), []),
-            };
-          });
+        if (canceled) return;
+        const detail = error instanceof Error ? error.message : "Could not load project shapes";
+        setDashboardNotice(`${detail} — the project was left untouched. Try opening it again.`);
+        // Never seed an empty scene for a project whose shapes failed to load:
+        // the editor would open blank and the first edit (or autosave) would
+        // overwrite the stored project with nothing. Fall back to the dashboard.
+        setActiveProjectId(null);
+        setOpeningProjectId((current) => (current === activeProjectId ? null : current));
+        setView("dashboard");
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", "/");
         }
       });
     return () => {
@@ -1650,7 +1712,7 @@ export default function Home() {
       const nextPath = await savePeakcadTextAs(text, project.name);
       if (nextPath) {
         lastDiskRevisionRef.current[projectId] = cached.revision;
-        setProjects((current) => current.map((item) => (item.id === projectId ? withSavedPeakcadFile(item, nextPath) : item)));
+        setProjects((current) => claimPeakcadPath(current, projectId, nextPath));
         setDashboardNotice(`Saved ${peakcadBasename(nextPath)}`);
         return true;
       }
@@ -1876,17 +1938,25 @@ export default function Home() {
 
     const previousSave = projectShapeSaveQueuesRef.current[snapshot.projectId] ?? Promise.resolve();
     const queuedSave = previousSave.catch(() => undefined).then(async () => {
-      await saveProjectShapes(snapshot.projectId, entry);
+      // A full or broken IndexedDB must not stop the .mintr file on disk from
+      // being written — that file is the copy people can actually recover.
+      let storeError: unknown = null;
+      const stored = await saveProjectShapes(snapshot.projectId, entry).then(() => true, (error: unknown) => {
+        storeError = error;
+        return false;
+      });
       const project = projectsRef.current.find((item) => item.id === snapshot.projectId);
       if (project?.filePath && hasDesktopProjectFiles()) {
         const meta = peakcadProjectMeta({ ...project, updatedAt: revision, revision }, snapshot.shapes.length);
-        const plain = await serializeStoredProject(snapshot.projectId, meta).catch(() => null)
+        const plain = (stored ? await serializeStoredProject(snapshot.projectId, meta).catch(() => null) : null)
           ?? serializePeakcadDocument(buildDocumentForProject({ ...project, updatedAt: revision, revision }, entry));
         const text = await sealPeakcadText({ ...project, updatedAt: revision, revision }, plain, false);
-        if (!text) return;
-        await writePeakcadText(project.filePath, text);
-        lastDiskRevisionRef.current[snapshot.projectId] = revision;
+        if (text) {
+          await writePeakcadText(project.filePath, text);
+          lastDiskRevisionRef.current[snapshot.projectId] = revision;
+        }
       }
+      if (!stored) throw storeError instanceof Error ? storeError : new Error("Could not save project shapes");
     });
     projectShapeSaveQueuesRef.current[snapshot.projectId] = queuedSave;
 
@@ -1902,7 +1972,9 @@ export default function Home() {
       })
       .catch((error) => {
         if (projectShapeSaveQueuesRef.current[snapshot.projectId] === queuedSave) {
-          setDashboardNotice(error instanceof Error ? error.message : "Could not save project shapes");
+          const message = `Autosave failed: ${error instanceof Error ? error.message : "could not save project shapes"}`;
+          setDashboardNotice(message);
+          notifyEditor(message);
         }
       })
       .finally(() => {
@@ -1910,7 +1982,7 @@ export default function Home() {
           delete projectShapeSaveQueuesRef.current[snapshot.projectId];
         }
       });
-  }, [sealPeakcadText]);
+  }, [notifyEditor, sealPeakcadText]);
 
   const updateProjectWorkspace = useCallback((snapshot: { projectId: string; workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => {
     // Same reason as updateProjectShapes: a settings change made just before leaving the editor
@@ -2056,7 +2128,13 @@ export default function Home() {
         setDashboardNotice("Could not delete project thumbnail from local storage");
       });
     }
-    void deleteProjectShapes(projectId).catch(() => {
+    // A save queued just before Delete (the editor's unmount flush, or an
+    // explicit Save still writing) would otherwise land after the delete and
+    // resurrect the record with its mesh blobs — invisible on the dashboard,
+    // permanent in storage. Wait for the queue, then delete.
+    const queued = projectShapeSaveQueuesRef.current[projectId] ?? Promise.resolve();
+    delete projectShapeSaveQueuesRef.current[projectId];
+    void queued.catch(() => undefined).then(() => deleteProjectShapes(projectId)).catch(() => {
       setDashboardNotice("Could not delete project shapes from local storage");
     });
   };
@@ -2235,6 +2313,21 @@ export default function Home() {
     });
   }, [confirmLeaveEditor, openFromDisk, saveProjectToDisk]);
 
+  const awaitProjectSaveQueue = useCallback(async (projectId: string) => {
+    let queue = projectShapeSaveQueuesRef.current[projectId];
+    while (queue) {
+      try {
+        await queue;
+      } catch {
+        return false;
+      }
+      const next = projectShapeSaveQueuesRef.current[projectId];
+      if (next === queue) break;
+      queue = next;
+    }
+    return true;
+  }, []);
+
   useEffect(() => {
     return subscribePeakcadSaveBeforeClose(async () => {
       const projectId = activeProjectIdRef.current;
@@ -2242,20 +2335,21 @@ export default function Home() {
       if (!guard || !projectId) return true;
       if (!(await guard.save("save"))) return false;
       // Explicit save only queues the IndexedDB write; the window is destroyed as soon as this resolves.
-      let queue = projectShapeSaveQueuesRef.current[projectId];
-      while (queue) {
-        try {
-          await queue;
-        } catch {
-          return false;
-        }
-        const next = projectShapeSaveQueuesRef.current[projectId];
-        if (next === queue) break;
-        queue = next;
-      }
-      return true;
+      return awaitProjectSaveQueue(projectId);
     });
-  }, []);
+  }, [awaitProjectSaveQueue]);
+
+  useEffect(() => {
+    // The desktop window asks for this before it decides whether to close. The
+    // editor's 120 ms debounce and the store worker's in-flight transaction
+    // would otherwise be cut off by the renderer going away, losing the last edit.
+    return subscribePeakcadFlushBeforeClose(async () => {
+      const projectId = activeProjectIdRef.current;
+      editorLeaveGuardRef.current?.flush?.();
+      if (!projectId) return true;
+      return awaitProjectSaveQueue(projectId);
+    });
+  }, [awaitProjectSaveQueue]);
 
   useEffect(() => {
     if (view !== "dashboard") return;
@@ -2315,6 +2409,7 @@ export default function Home() {
         </h1>
         <p className="startup-tagline">Learn. Model. <span className="mintr-word">Mint.</span></p>
         <p className="startup-note">Your designs, your files.</p>
+        <StartupThemeTabs />
         <button
           className="startup-start dashboard-primary"
           type="button"
@@ -2349,8 +2444,9 @@ export default function Home() {
               <ul>
                 {updateOffer.notes.map((note, index) => {
                   const shape = toolbarShapeAssets[index % toolbarShapeAssets.length];
+                  const highlight = noteIsFeatured(note);
                   return (
-                    <li key={note}>
+                    <li key={note} className={highlight ? "is-highlight" : undefined}>
                       <ShapeModeMark kind={shape.kind} color={shape.color} />
                       <span>{note}</span>
                     </li>
@@ -2368,7 +2464,15 @@ export default function Home() {
                   setStartupUpdateBusy(true);
                   setStartupUpdateError("");
                   const action = updateOffer.canInstall ? api.install() : api.openDownload();
-                  void action.catch((error: unknown) => {
+                  void action.then((result) => {
+                    // The app is quitting when the install goes ahead; any other
+                    // outcome hands the button back.
+                    if (result && typeof result === "object" && "quitting" in result && result.quitting) return;
+                    setStartupUpdateBusy(false);
+                    if (result && typeof result === "object" && "deferred" in result && result.deferred) {
+                      setStartupUpdateError("Update downloaded. It installs the next time you close Mintr.");
+                    }
+                  }).catch((error: unknown) => {
                     setStartupUpdateError(error instanceof Error ? error.message : "Mintr couldn't download the update. Nothing was installed.");
                     setStartupUpdateBusy(false);
                   });
@@ -2428,7 +2532,7 @@ export default function Home() {
           onViewModeChange={setViewMode}
           updateOffer={updateOffer}
           onDismissUpdate={() => {
-            if (updateOffer) window.localStorage.setItem(UPDATE_DISMISS_KEY, updateOffer.version);
+            if (updateOffer) writeDismissedUpdateVersion(updateOffer.version);
             setUpdateOffer(null);
           }}
           unlockedFolderIds={unlockedFolderIds}
@@ -2472,6 +2576,7 @@ export default function Home() {
               }
             }}
             hasMatchingSavedFile={projectMatchesSavedFile(activeProject)}
+            hostNotice={editorHostNotice}
             onRegisterLeaveGuard={registerEditorLeaveGuard}
             onViewportReady={() => {
               setViewportReady(true);
@@ -2559,7 +2664,7 @@ export default function Home() {
                   const value = event.currentTarget.value;
                   setFilePasswordPrompt((current) => (current ? { ...current, value, error: "" } : current));
                 }}
-                aria-label="PeakCAD file password"
+                aria-label="Mintr file password"
               />
             </label>
             {filePasswordPrompt.error ? <p className="dashboard-dialog-error" role="alert">{filePasswordPrompt.error}</p> : null}
@@ -2586,6 +2691,22 @@ export default function Home() {
 }
 
 const UPDATE_DISMISS_KEY = "peakcad-update-dismissed";
+
+function readDismissedUpdateVersion() {
+  try {
+    return window.localStorage.getItem(UPDATE_DISMISS_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeDismissedUpdateVersion(version: string) {
+  try {
+    window.localStorage.setItem(UPDATE_DISMISS_KEY, version);
+  } catch {
+    // Storage full or blocked: the offer simply shows again next launch.
+  }
+}
 
 type DesktopUpdateOffer = {
   version: string;
@@ -3735,7 +3856,7 @@ function Dashboard({
                   <strong>Mintr {updateOffer.version} is ready</strong>
                   <ul>
                     {updateOffer.notes.map((note) => (
-                      <li key={note}>{note}</li>
+                      <li key={note} className={noteIsFeatured(note) ? "is-highlight" : undefined}>{note}</li>
                     ))}
                   </ul>
                   {updateError ? <p className="dashboard-update-error">{updateError}</p> : null}
@@ -3758,7 +3879,13 @@ function Dashboard({
                         setUpdateBusy(true);
                         setUpdateError("");
                         const action = updateOffer.canInstall ? api.install() : api.openDownload();
-                        void action.then(() => {
+                        void action.then((result) => {
+                          if (result && typeof result === "object" && "quitting" in result && result.quitting) return;
+                          setUpdateBusy(false);
+                          if (result && typeof result === "object" && "deferred" in result && result.deferred) {
+                            setUpdateError("Update downloaded. It installs the next time you close Mintr.");
+                            return;
+                          }
                           if (!updateOffer.canInstall) setUpdateOpen(false);
                         }).catch((error: unknown) => {
                           setUpdateError(error instanceof Error ? error.message : "Mintr couldn't download the update. Nothing was installed.");

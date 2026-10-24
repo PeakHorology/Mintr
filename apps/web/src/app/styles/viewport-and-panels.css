@@ -1790,6 +1790,14 @@
   margin-top: 6px;
 }
 
+.workspace-update li.is-highlight {
+  font-weight: 650;
+}
+
+.workspace-update li.is-highlight::marker {
+  color: #2aa77e;
+}
+
 .workspace-about-credit {
   margin: 4px 0 0;
   padding-top: 16px;

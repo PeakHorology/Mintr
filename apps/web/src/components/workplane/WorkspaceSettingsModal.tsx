@@ -24,7 +24,7 @@ import { TOOL_DESCRIPTIONS, TOOL_INDEX, TOOL_INDEX_CATEGORIES } from "@/lib/tool
 import { DISPLAY_QUALITY_OPTIONS } from "@/lib/displayTessellation";
 import { HelpFeedbackForm } from "@/components/workplane/HelpFeedbackForm";
 import { ModelBridgeSettings } from "@/components/workplane/ModelBridgeSettings";
-import { RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
+import { noteIsFeatured, RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
 import { hasDesktopProjectFiles, transitionDesktopPeakcadFiles, type ProjectFileTransition } from "@/lib/peakcadFile";
 import { SlicerSettingsFields } from "@/components/workplane/SlicerSettingsFields";
@@ -118,7 +118,7 @@ const SETTING_TIPS = {
   makeDefault: "Save these settings as the default for this project.",
   makeDefaultApp: "Save these settings as the default for new projects.",
   peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
-  uiTheme: "Switch PeakCAD’s chrome between light and dark. Applies to the dashboard and editor.",
+  uiTheme: "Switch Mintr’s chrome between light and dark. Applies to the dashboard and editor.",
   downloadFolder: "Local folder used for exported files and downloads on this computer.",
 } as const;
 
@@ -1142,7 +1142,7 @@ export function WorkspaceSettingsModal({
                         <h3>Since {RELEASE_NOTES[0]?.version ?? "the last release"}</h3>
                         <ul>
                           {UNRELEASED_NOTES.map((item) => (
-                            <li key={item}>{item}</li>
+                            <li key={item} className={noteIsFeatured(item) ? "is-highlight" : undefined}>{item}</li>
                           ))}
                         </ul>
                       </section>
@@ -1155,7 +1155,7 @@ export function WorkspaceSettingsModal({
                         </h3>
                         <ul>
                           {release.items.map((item) => (
-                            <li key={item}>{item}</li>
+                            <li key={item} className={noteIsFeatured(item) ? "is-highlight" : undefined}>{item}</li>
                           ))}
                         </ul>
                       </section>

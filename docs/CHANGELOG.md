@@ -2,7 +2,18 @@
 
 Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes.ts` when a version ships. Settings → Updates reads that file.
 
-## Unreleased
+## 1.1.3
+
+- Gridfinity bins and baseplates are in the Shapes palette. Size a bin in grid units, with height, walls, compartments, magnets, a finger scoop, and open sides that join into a tray, or size a baseplate to a drawer.
+- A baseplate wider than the printer bed splits into pieces that lock together.
+- Concave fillet scoops a groove along the edges you pick, and the groove runs through the corner.
+- Push Pull, Fillet, and Chamfer lines on a polygon sit on the corners you see.
+- X-ray glides a cut through the part so you can look inside.
+- The start page has a Light / Dark switch, and the room eases from one look to the other.
+- STL files open standing up in Cura, PreForm, Bambu Studio, and other slicers.
+- A fillet or chamfer settles into the new edges when you apply it.
+- Exporting STEP no longer saves an empty file for a split or a group.
+- Saving a project cannot leave a half-written file, and a long undo history takes much less space.
 
 ## 1.1.2
 

@@ -4,35 +4,88 @@ export type PickTriangle = {
   cx: number; cy: number; cz: number;
 };
 
+/**
+ * Flat triangle soup: 9 numbers per triangle (ax ay az bx by bz cx cy cz).
+ * One buffer instead of one object per triangle, so a dense import can be
+ * handed to a worker with a zero-copy transfer and indexed without allocating.
+ */
+export type TriangleSoup = Float64Array;
+
+export type TriangleSource = PickTriangle[] | TriangleSoup;
+
+export const SOUP_STRIDE = 9;
+
+export function triangleCount(source: TriangleSource) {
+  return source instanceof Float64Array ? Math.floor(source.length / SOUP_STRIDE) : source.length;
+}
+
+export function packPickTriangles(triangles: PickTriangle[]): TriangleSoup {
+  const soup = new Float64Array(triangles.length * SOUP_STRIDE);
+  for (let index = 0; index < triangles.length; index += 1) {
+    const tri = triangles[index];
+    const at = index * SOUP_STRIDE;
+    soup[at] = tri.ax; soup[at + 1] = tri.ay; soup[at + 2] = tri.az;
+    soup[at + 3] = tri.bx; soup[at + 4] = tri.by; soup[at + 5] = tri.bz;
+    soup[at + 6] = tri.cx; soup[at + 7] = tri.cy; soup[at + 8] = tri.cz;
+  }
+  return soup;
+}
+
+export function triangleSoupOf(source: TriangleSource): TriangleSoup {
+  return source instanceof Float64Array ? source : packPickTriangles(source);
+}
+
+/** Fill `out` with triangle `index` of the soup; reuse one scratch object across a loop. */
+export function readPickTriangle(soup: TriangleSoup, index: number, out: PickTriangle): PickTriangle {
+  const at = index * SOUP_STRIDE;
+  out.ax = soup[at]; out.ay = soup[at + 1]; out.az = soup[at + 2];
+  out.bx = soup[at + 3]; out.by = soup[at + 4]; out.bz = soup[at + 5];
+  out.cx = soup[at + 6]; out.cy = soup[at + 7]; out.cz = soup[at + 8];
+  return out;
+}
+
+export function scratchPickTriangle(): PickTriangle {
+  return { ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0, cx: 0, cy: 0, cz: 0 };
+}
+
 export type PickHit = {
   t: number;
   x: number; y: number; z: number;
   nx: number; ny: number; nz: number;
 };
 
-export type PickBvh = {
+type PickBvhNode = {
   minX: number; minY: number; minZ: number;
   maxX: number; maxY: number; maxZ: number;
-  triangles?: PickTriangle[];
-  left?: PickBvh;
-  right?: PickBvh;
+  /** Leaf: range [start, end) into `order`. */
+  start: number;
+  end: number;
+  left?: PickBvhNode;
+  right?: PickBvhNode;
+};
+
+export type PickBvh = {
+  data: TriangleSoup;
+  /** Triangle indices, permuted so each node owns a contiguous range. */
+  order: Uint32Array;
+  root: PickBvhNode;
 };
 
 const LEAF_SIZE = 8;
 
-function boundsOf(triangles: PickTriangle[]) {
+function boundsOf(data: TriangleSoup, order: Uint32Array, start: number, end: number) {
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
   let maxZ = -Infinity;
-  for (const tri of triangles) {
-    for (const [x, y, z] of [
-      [tri.ax, tri.ay, tri.az],
-      [tri.bx, tri.by, tri.bz],
-      [tri.cx, tri.cy, tri.cz],
-    ]) {
+  for (let slot = start; slot < end; slot += 1) {
+    const at = order[slot] * SOUP_STRIDE;
+    for (let corner = 0; corner < SOUP_STRIDE; corner += 3) {
+      const x = data[at + corner];
+      const y = data[at + corner + 1];
+      const z = data[at + corner + 2];
       if (x < minX) minX = x;
       if (y < minY) minY = y;
       if (z < minZ) minZ = z;
@@ -44,37 +97,53 @@ function boundsOf(triangles: PickTriangle[]) {
   return { minX, minY, minZ, maxX, maxY, maxZ };
 }
 
-function splitPickTriangles(triangles: PickTriangle[]): PickBvh {
-  const bounds = boundsOf(triangles);
-  if (triangles.length <= LEAF_SIZE) return { ...bounds, triangles };
+function splitRange(
+  data: TriangleSoup,
+  order: Uint32Array,
+  centroids: [Float64Array, Float64Array, Float64Array],
+  start: number,
+  end: number,
+): PickBvhNode {
+  const bounds = boundsOf(data, order, start, end);
+  if (end - start <= LEAF_SIZE) return { ...bounds, start, end };
   const spanX = bounds.maxX - bounds.minX;
   const spanY = bounds.maxY - bounds.minY;
   const spanZ = bounds.maxZ - bounds.minZ;
-  const axis: "x" | "y" | "z" = spanX >= spanY && spanX >= spanZ ? "x" : spanY >= spanZ ? "y" : "z";
-  const centroid = (tri: PickTriangle) => {
-    if (axis === "x") return (tri.ax + tri.bx + tri.cx) / 3;
-    if (axis === "y") return (tri.ay + tri.by + tri.cy) / 3;
-    return (tri.az + tri.bz + tri.cz) / 3;
-  };
-  const ordered = triangles.slice().sort((left, right) => centroid(left) - centroid(right));
-  const mid = Math.max(1, Math.floor(ordered.length / 2));
+  const axis = spanX >= spanY && spanX >= spanZ ? 0 : spanY >= spanZ ? 1 : 2;
+  const key = centroids[axis];
+  order.subarray(start, end).sort((left, right) => key[left] - key[right]);
+  const mid = start + Math.max(1, Math.floor((end - start) / 2));
   return {
     ...bounds,
-    left: splitPickTriangles(ordered.slice(0, mid)),
-    right: splitPickTriangles(ordered.slice(mid)),
+    start,
+    end,
+    left: splitRange(data, order, centroids, start, mid),
+    right: splitRange(data, order, centroids, mid, end),
   };
 }
 
-export function buildPickBvh(triangles: PickTriangle[]): PickBvh | null {
-  if (triangles.length === 0) return null;
-  return splitPickTriangles(triangles);
+export function buildPickBvh(source: TriangleSource): PickBvh | null {
+  const data = triangleSoupOf(source);
+  const count = triangleCount(data);
+  if (count === 0) return null;
+  const order = new Uint32Array(count);
+  const cx = new Float64Array(count);
+  const cy = new Float64Array(count);
+  const cz = new Float64Array(count);
+  for (let index = 0; index < count; index += 1) {
+    order[index] = index;
+    const at = index * SOUP_STRIDE;
+    cx[index] = (data[at] + data[at + 3] + data[at + 6]) / 3;
+    cy[index] = (data[at + 1] + data[at + 4] + data[at + 7]) / 3;
+    cz[index] = (data[at + 2] + data[at + 5] + data[at + 8]) / 3;
+  }
+  return { data, order, root: splitRange(data, order, [cx, cy, cz], 0, count) };
 }
 
 function rayHitsBox(
   originX: number, originY: number, originZ: number,
-  dirX: number, dirY: number, dirZ: number,
   invX: number, invY: number, invZ: number,
-  node: PickBvh,
+  node: PickBvhNode,
   maxT: number,
 ) {
   const tx1 = (node.minX - originX) * invX;
@@ -91,16 +160,20 @@ function rayHitsBox(
 function intersectTriangle(
   originX: number, originY: number, originZ: number,
   dirX: number, dirY: number, dirZ: number,
-  tri: PickTriangle,
+  data: TriangleSoup,
+  at: number,
   doubleSided: boolean,
   maxT: number,
 ): PickHit | null {
-  const edge1x = tri.bx - tri.ax;
-  const edge1y = tri.by - tri.ay;
-  const edge1z = tri.bz - tri.az;
-  const edge2x = tri.cx - tri.ax;
-  const edge2y = tri.cy - tri.ay;
-  const edge2z = tri.cz - tri.az;
+  const ax = data[at];
+  const ay = data[at + 1];
+  const az = data[at + 2];
+  const edge1x = data[at + 3] - ax;
+  const edge1y = data[at + 4] - ay;
+  const edge1z = data[at + 5] - az;
+  const edge2x = data[at + 6] - ax;
+  const edge2y = data[at + 7] - ay;
+  const edge2z = data[at + 8] - az;
   const px = dirY * edge2z - dirZ * edge2y;
   const py = dirZ * edge2x - dirX * edge2z;
   const pz = dirX * edge2y - dirY * edge2x;
@@ -108,9 +181,9 @@ function intersectTriangle(
   if (!doubleSided && det < 1e-8) return null;
   if (doubleSided && Math.abs(det) < 1e-8) return null;
   const invDet = 1 / det;
-  const sx = originX - tri.ax;
-  const sy = originY - tri.ay;
-  const sz = originZ - tri.az;
+  const sx = originX - ax;
+  const sy = originY - ay;
+  const sz = originZ - az;
   const u = (sx * px + sy * py + sz * pz) * invDet;
   if (u < 0 || u > 1) return null;
   const qx = sy * edge1z - sz * edge1y;
@@ -145,21 +218,27 @@ export function raycastPickBvh(
   const invX = 1 / (direction.x === 0 ? 1e-12 : direction.x);
   const invY = 1 / (direction.y === 0 ? 1e-12 : direction.y);
   const invZ = 1 / (direction.z === 0 ? 1e-12 : direction.z);
-  const best = { hit: null as PickHit | null, maxT };
-  const visit = (node: PickBvh) => {
-    if (!rayHitsBox(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, invX, invY, invZ, node, best.maxT)) return;
-    if (node.triangles) {
-      for (const tri of node.triangles) {
-        const hit = intersectTriangle(origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, tri, doubleSided, best.maxT);
+  const { data, order } = root;
+  let best: PickHit | null = null;
+  let limit = maxT;
+  const visit = (node: PickBvhNode) => {
+    if (!rayHitsBox(origin.x, origin.y, origin.z, invX, invY, invZ, node, limit)) return;
+    if (!node.left) {
+      for (let slot = node.start; slot < node.end; slot += 1) {
+        const hit = intersectTriangle(
+          origin.x, origin.y, origin.z,
+          direction.x, direction.y, direction.z,
+          data, order[slot] * SOUP_STRIDE, doubleSided, limit,
+        );
         if (!hit) continue;
-        best.hit = hit;
-        best.maxT = hit.t;
+        best = hit;
+        limit = hit.t;
       }
       return;
     }
-    if (node.left) visit(node.left);
+    visit(node.left);
     if (node.right) visit(node.right);
   };
-  visit(root);
-  return best.hit;
+  visit(root.root);
+  return best;
 }

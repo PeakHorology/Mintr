@@ -14,6 +14,12 @@ export type EditorHistoryMeshBlob = {
   indices?: number[];
   normals?: number[];
   brepStep?: string;
+  /**
+   * File form only: this blob is byte-identical to the one at
+   * `history[entryIndex].meshVault[path]`, written as `"entryIndex/path"`.
+   * `positions` is empty in that case; parsing resolves it.
+   */
+  sameAs?: string;
 };
 
 export type EditorHistoryMeshVault = Record<string, EditorHistoryMeshBlob>;
@@ -323,15 +329,41 @@ export function projectShapesFingerprint(shapes: WorkplaneShape[]) {
   return serializedSceneSignature(shapes).fingerprint;
 }
 
+function meshBlobBytes(blob: EditorHistoryMeshVault[string]) {
+  return blob.positions.length * 8
+    + (blob.indices?.length ?? 0) * 4
+    + (blob.normals?.length ?? 0) * 8
+    + (blob.brepStep?.length ?? 0);
+}
+
 function estimateHistoryEntryBytes(shapes: WorkplaneShape[], vault: EditorHistoryMeshVault) {
   let bytes = serializedSceneSignature(shapes).estimatedBytes;
-  for (const blob of Object.values(vault)) {
-    bytes += blob.positions.length * 8;
-    bytes += (blob.indices?.length ?? 0) * 4;
-    bytes += (blob.normals?.length ?? 0) * 8;
-    bytes += blob.brepStep?.length ?? 0;
-  }
+  for (const blob of Object.values(vault)) bytes += meshBlobBytes(blob);
   return bytes;
+}
+
+/**
+ * Bytes the history actually holds. Entries only shallow-copy shapes, so an
+ * imported mesh that never changed is one array shared by every entry; counting
+ * it per entry made a 1M-triangle STL look like 72 MB × N and trimmed undo to
+ * two steps after the first edit.
+ */
+export function estimateHistoryBytes(entries: readonly EditorHistoryEntry[]) {
+  const seen = new Set<ArrayLike<number>>();
+  let total = 0;
+  for (const entry of entries) {
+    let vaultBytes = 0;
+    for (const blob of Object.values(entry.meshVault ?? {})) {
+      if (seen.has(blob.positions)) continue;
+      seen.add(blob.positions);
+      vaultBytes += meshBlobBytes(blob);
+    }
+    // estimatedBytes already includes this entry's vault; swap it for the deduped share.
+    let ownVault = 0;
+    for (const blob of Object.values(entry.meshVault ?? {})) ownVault += meshBlobBytes(blob);
+    total += Math.max(0, entry.estimatedBytes - ownVault) + vaultBytes;
+  }
+  return total;
 }
 
 export function editorHistoryEntry(shapes: WorkplaneShape[], selectedIds: string[], label?: string): EditorHistoryEntry {
@@ -353,10 +385,10 @@ export function editorHistoryEntry(shapes: WorkplaneShape[], selectedIds: string
 
 export function boundedEditorHistory(entries: EditorHistoryEntry[]) {
   const bounded = entries.slice(-MAX_EDITOR_HISTORY_ENTRIES);
-  let totalBytes = bounded.reduce((total, entry) => total + entry.estimatedBytes, 0);
-  while (bounded.length > 2 && totalBytes > MAX_EDITOR_HISTORY_BYTES) {
-    const removed = bounded.shift();
-    totalBytes -= removed?.estimatedBytes ?? 0;
+  // Dropping the oldest entry may or may not free its meshes (a later entry can
+  // still reference the same arrays), so re-measure after each removal.
+  while (bounded.length > 2 && estimateHistoryBytes(bounded) > MAX_EDITOR_HISTORY_BYTES) {
+    bounded.shift();
   }
   return bounded;
 }

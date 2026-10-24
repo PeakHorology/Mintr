@@ -1,4 +1,13 @@
-import { buildPickBvh, raycastPickBvh, type PickBvh, type PickTriangle } from "@/lib/meshPickBvh";
+import {
+  buildPickBvh,
+  raycastPickBvh,
+  readPickTriangle,
+  scratchPickTriangle,
+  triangleCount,
+  triangleSoupOf,
+  type PickBvh,
+  type TriangleSource,
+} from "@/lib/meshPickBvh";
 
 export const DEFAULT_NOZZLE_MM = 0.4;
 export const MIN_NOZZLE_MM = 0.2;
@@ -63,7 +72,7 @@ export function gapAlongOutwardRay(
 }
 
 export function collectThinWallTriangles(
-  triangles: PickTriangle[],
+  triangles: TriangleSource,
   nozzleMm: number,
   positions: number[],
   normals: number[],
@@ -72,7 +81,7 @@ export function collectThinWallTriangles(
 }
 
 export function collectSmallHoleTriangles(
-  triangles: PickTriangle[],
+  triangles: TriangleSource,
   nozzleMm: number,
   positions: number[],
   normals: number[],
@@ -81,16 +90,20 @@ export function collectSmallHoleTriangles(
 }
 
 function collectNarrowTriangles(
-  triangles: PickTriangle[],
+  source: TriangleSource,
   nozzleMm: number,
   positions: number[],
   normals: number[],
   direction: "inward" | "outward",
 ) {
-  const tree = buildPickBvh(triangles);
+  const soup = triangleSoupOf(source);
+  const tree = buildPickBvh(soup);
   if (!tree) return;
   const limit = normalizeNozzleMm(nozzleMm);
-  for (const tri of triangles) {
+  const count = triangleCount(soup);
+  const tri = scratchPickTriangle();
+  for (let index = 0; index < count; index += 1) {
+    readPickTriangle(soup, index, tri);
     const nx = (tri.by - tri.ay) * (tri.cz - tri.az) - (tri.bz - tri.az) * (tri.cy - tri.ay);
     const ny = (tri.bz - tri.az) * (tri.cx - tri.ax) - (tri.bx - tri.ax) * (tri.cz - tri.az);
     const nz = (tri.bx - tri.ax) * (tri.cy - tri.ay) - (tri.by - tri.ay) * (tri.cx - tri.ax);

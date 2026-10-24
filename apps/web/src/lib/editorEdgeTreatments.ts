@@ -141,7 +141,8 @@ export function cadModifierComponentPreviews(sourceParts: WorkplaneShape[], comp
 
 export function edgeTreatmentLabel(feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number]) {
   const size = `${Number(feature.amount.toFixed(2))} mm`;
-  return `${feature.kind === "fillet" ? "fillet" : "chamfer"} (${size}, ${feature.edgeCount} edge${feature.edgeCount === 1 ? "" : "s"})`;
+  const name = feature.kind === "fillet" ? (feature.filletProfile === "cove" ? "concave fillet" : "fillet") : "chamfer";
+  return `${name} (${size}, ${feature.edgeCount} edge${feature.edgeCount === 1 ? "" : "s"})`;
 }
 
 export function shapeWithEdgeTreatmentRecord(

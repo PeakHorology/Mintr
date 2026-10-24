@@ -12,18 +12,28 @@ export type ShapeMeasure = {
 function meshMeasure(shape: WorkplaneShape): ShapeMeasure | null {
   const positions = shape.importedMesh?.positions;
   if (!positions || positions.length < 9) return null;
+  // Kernel meshes share vertices through `indices`; reading them as a triangle
+  // soup counted a sliver of the body. Fall back to soup order without indices.
+  const indices = shape.importedMesh?.indices;
+  const indexed = Boolean(indices && indices.length >= 3);
+  const triangleCount = indexed ? Math.floor(indices!.length / 3) : Math.floor(positions.length / 9);
+  const vertex = (triangle: number, corner: number) => (indexed ? indices![triangle * 3 + corner] * 3 : triangle * 9 + corner * 3);
   let volume = 0;
   let area = 0;
-  for (let i = 0; i + 8 < positions.length; i += 9) {
-    const ax = positions[i];
-    const ay = positions[i + 1];
-    const az = positions[i + 2];
-    const bx = positions[i + 3];
-    const by = positions[i + 4];
-    const bz = positions[i + 5];
-    const cx = positions[i + 6];
-    const cy = positions[i + 7];
-    const cz = positions[i + 8];
+  for (let t = 0; t < triangleCount; t += 1) {
+    const a = vertex(t, 0);
+    const b = vertex(t, 1);
+    const c = vertex(t, 2);
+    if (c + 2 >= positions.length || b + 2 >= positions.length || a + 2 >= positions.length) continue;
+    const ax = positions[a];
+    const ay = positions[a + 1];
+    const az = positions[a + 2];
+    const bx = positions[b];
+    const by = positions[b + 1];
+    const bz = positions[b + 2];
+    const cx = positions[c];
+    const cy = positions[c + 1];
+    const cz = positions[c + 2];
     const abx = bx - ax;
     const aby = by - ay;
     const abz = bz - az;

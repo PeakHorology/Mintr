@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld("peakcadModels", {
 
 let saveBeforeCloseHandler = null;
 let saveBeforeCloseToken = 0;
+let flushBeforeCloseHandler = null;
+let flushBeforeCloseToken = 0;
 
 // Main always gets exactly one reply per request, so a window-close Save never waits forever.
 ipcRenderer.on("peakcad:save-before-close", (_event, requestId) => {
@@ -15,6 +17,16 @@ ipcRenderer.on("peakcad:save-before-close", (_event, requestId) => {
   const reply = (ok) => ipcRenderer.send("peakcad:save-before-close-result", requestId, ok === true);
   Promise.resolve()
     .then(() => (handler ? handler() : false))
+    .then(reply, () => reply(false));
+});
+
+// Asked before the window decides whether to close: push the debounced scene
+// snapshot into the project store and wait for the write to land.
+ipcRenderer.on("peakcad:flush-before-close", (_event, requestId) => {
+  const handler = flushBeforeCloseHandler;
+  const reply = (ok) => ipcRenderer.send("peakcad:flush-before-close-result", requestId, ok === true);
+  Promise.resolve()
+    .then(() => (handler ? handler() : true))
     .then(reply, () => reply(false));
 });
 
@@ -46,6 +58,14 @@ contextBridge.exposeInMainWorld("peakcadFile", {
     saveBeforeCloseHandler = handler;
     return () => {
       if (saveBeforeCloseToken === token) saveBeforeCloseHandler = null;
+    };
+  },
+  onFlushBeforeClose: (handler) => {
+    flushBeforeCloseToken += 1;
+    const token = flushBeforeCloseToken;
+    flushBeforeCloseHandler = handler;
+    return () => {
+      if (flushBeforeCloseToken === token) flushBeforeCloseHandler = null;
     };
   },
 });

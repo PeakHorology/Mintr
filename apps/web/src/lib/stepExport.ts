@@ -603,7 +603,7 @@ export async function exportShapesToStep(shapes: WorkplaneShape[]): Promise<Step
         prepared.push(shape);
       }
     }
-    const { runOcctKernelInWorker } = await import("@/lib/occtKernelClient");
+    const { runOcctKernelInWorker, lastOcctKernelError } = await import("@/lib/occtKernelClient");
     const result = await runOcctKernelInWorker({ type: "exportStep", shapes: prepared });
     if (!result) {
       return {
@@ -611,7 +611,7 @@ export async function exportShapesToStep(shapes: WorkplaneShape[]): Promise<Step
         exportedCount: 0,
         exactCount: 0,
         facetedCount: 0,
-        skipped: [{ name: "STEP", kind: "mesh", reason: "CAD worker timed out or failed" }],
+        skipped: [{ name: "STEP", kind: "mesh", reason: lastOcctKernelError() ?? "CAD worker timed out or failed" }],
         degraded: [],
       };
     }
@@ -710,7 +710,9 @@ export async function exportShapesToStepLocal(shapes: WorkplaneShape[]): Promise
   }
 
   if (parts.length === 0) {
-    throw new Error("No solid geometry to export as STEP");
+    // Name the skip reasons: a bare "no geometry" hides why a visible body was dropped.
+    const reasons = skipped.map((entry) => `${entry.name}: ${entry.reason}`).join("; ");
+    throw new Error(reasons ? `No solid geometry to export as STEP (${reasons})` : "No solid geometry to export as STEP");
   }
 
   const result = brep.exportAssemblySTEP(parts, { unit: "MM" });

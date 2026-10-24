@@ -7,6 +7,7 @@ import {
   type SweepShapeResult,
 } from "@/lib/sketchSweep";
 import { applyNativeSketchExtrudeMesh, serializeSketchExtrudeJob } from "@/lib/sketchExtrusionSolid";
+import { applyGridfinityKernelMesh, serializeGridfinityBuildJob } from "@/lib/gridfinityShape";
 import type { SketchDoc } from "@/lib/sketch/types";
 import type { SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 
@@ -46,11 +47,18 @@ export type OcctKernelSketchSweepRequest = {
   existing?: WorkplaneShape | null;
 };
 
+/** Build a Gridfinity bin / baseplate body (mesh + exact B-Rep) from its spec. */
+export type OcctKernelGridfinityRequest = {
+  type: "gridfinity";
+  shape: WorkplaneShape;
+};
+
 export type OcctKernelRequest =
   | OcctKernelBooleanRequest
   | OcctKernelExportRequest
   | OcctKernelSketchExtrudeRequest
-  | OcctKernelSketchSweepRequest;
+  | OcctKernelSketchSweepRequest
+  | OcctKernelGridfinityRequest;
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -65,6 +73,16 @@ let worker: Worker | null = null;
 let nextRequestId = 1;
 const pending = new Map<number, Pending>();
 let chain: Promise<unknown> = Promise.resolve();
+let lastWorkerError: string | null = null;
+
+/**
+ * Message from the most recent failed worker request, or null. The worker
+ * protocol resolves failures to `null`; callers that need to tell a user *why*
+ * (STEP export) read this right after a null result.
+ */
+export function lastOcctKernelError(): string | null {
+  return lastWorkerError;
+}
 
 function settle(requestId: number, value: unknown) {
   const entry = pending.get(requestId);
@@ -88,9 +106,16 @@ function ensureWorker() {
   worker = new Worker(new URL("../workers/occtKernel.worker.ts", import.meta.url), { type: "module" });
   worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
     const message = event.data;
-    settle(message.requestId, message.type === "error" ? null : message.value);
+    if (message.type === "error") {
+      lastWorkerError = message.message || "CAD kernel failed";
+      settle(message.requestId, null);
+      return;
+    }
+    lastWorkerError = null;
+    settle(message.requestId, message.value);
   };
-  worker.onerror = () => {
+  worker.onerror = (event) => {
+    lastWorkerError = (event as ErrorEvent).message || "CAD worker crashed";
     settleAll(null);
     recycleWorker();
   };
@@ -115,6 +140,11 @@ function nativeJobFor(request: OcctKernelRequest, requestId: number): NativeKern
   }
   if (request.type === "sketchSweep") {
     const payload = serializeSketchSweepJob(request.profile, request.doc, request.spec);
+    if (!payload) return null;
+    return { id: requestId, ...payload };
+  }
+  if (request.type === "gridfinity") {
+    const payload = serializeGridfinityBuildJob(request.shape);
     if (!payload) return null;
     return { id: requestId, ...payload };
   }
@@ -171,6 +201,12 @@ function nativeReplyToResult(request: OcctKernelRequest, reply: NativeKernelRepl
     );
     return shape ? ({ ok: true, shape } satisfies SweepShapeResult) : null;
   }
+  if (request.type === "gridfinity") {
+    const cadBrep = reply.cadBrep ?? reply.brep ?? "";
+    const key = serializeGridfinityBuildJob(request.shape)?.key;
+    if (!reply.positions || !reply.indices || !cadBrep || !key) return null;
+    return applyGridfinityKernelMesh(request.shape, reply.positions, reply.normals, reply.indices, cadBrep, key);
+  }
   return null;
 }
 
@@ -194,6 +230,7 @@ function postKernelRequest(request: OcctKernelRequest): Promise<unknown> {
     const requestId = nextRequestId;
     nextRequestId += 1;
     const timeout = setTimeout(() => {
+      lastWorkerError = "CAD worker timed out";
       settle(requestId, null);
       recycleWorker();
     }, cadModifierRequestTimeoutMs());
@@ -214,10 +251,12 @@ export async function runOcctKernelInWorker(request: OcctKernelBooleanRequest): 
 export async function runOcctKernelInWorker(request: OcctKernelExportRequest): Promise<StepExportResult | null>;
 export async function runOcctKernelInWorker(request: OcctKernelSketchExtrudeRequest): Promise<WorkplaneShape | null>;
 export async function runOcctKernelInWorker(request: OcctKernelSketchSweepRequest): Promise<SweepShapeResult | null>;
+export async function runOcctKernelInWorker(request: OcctKernelGridfinityRequest): Promise<WorkplaneShape | null>;
 export async function runOcctKernelInWorker(request: OcctKernelRequest): Promise<unknown> {
   const requestId = nextRequestId;
   nextRequestId += 1;
   const native = await tryNativeKernel(request, requestId);
-  if (native.hit) return native.value;
+  // A generator body has no mesh to fall back on, so a native miss still tries WASM.
+  if (native.hit && (native.value !== null || request.type !== "gridfinity")) return native.value;
   return postKernelRequest(request);
 }

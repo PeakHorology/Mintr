@@ -42,8 +42,11 @@ describe("native kernel coverage encoding", () => {
         topRadius: 2,
         gearSpec: { form: "spur", teeth: 16, module: 1.5, pressureAngle: 20, backlash: 0.1, bore: 4 },
       }));
-      expect(encoded?.kind, kind).toBe(kind === "gear" ? "gear" : kind);
+      const gridfinity = kind === "gridfinityBin" || kind === "gridfinityBaseplate";
+      // Gridfinity parts travel as a recipe until the kernel hands back their B-Rep.
+      expect(encoded?.kind, kind).toBe(gridfinity ? "recipe" : kind);
       if (kind === "gear") expect(encoded?.profileLoops?.outer.length).toBeGreaterThan(8);
+      if (gridfinity) expect(encoded?.recipe?.ops.length).toBeGreaterThan(0);
     }
   });
 
@@ -287,7 +290,142 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
       chamferAngle: 45,
     });
     expect(fillet.ok, String(fillet.message)).toBe(true);
+    // Every edge of a 20 mm cube takes a 6 mm fillet; nothing should be skipped.
+    expect((fillet.skippedEdgeIds as number[] | undefined) ?? []).toEqual([]);
     await client.request({ id: 35, requestId: 35, type: "dispose" });
+  }, 60000);
+
+  it("coves a box edge: concave groove, same outline, less volume than a round fillet keeps", async () => {
+    const prepared = await client.request({
+      id: 110,
+      requestId: 110,
+      type: "prepare",
+      sharpAngle: 12,
+      parts: [{ hole: false, primitive: { kind: "box", width: 20, depth: 20, height: 20 } }],
+    });
+    expect(prepared.ok, String(prepared.message)).toBe(true);
+    const edgeIds = (prepared.selectableEdgeIds as number[] | undefined) ?? [];
+    expect(edgeIds.length).toBe(12);
+    const meshVolume = (reply: Record<string, unknown>) => {
+      const positions = reply.positions as number[];
+      const indices = reply.indices as number[];
+      let volume = 0;
+      for (let index = 0; index + 2 < indices.length; index += 3) {
+        const a = indices[index] * 3;
+        const b = indices[index + 1] * 3;
+        const c = indices[index + 2] * 3;
+        volume += (
+          positions[a] * (positions[b + 1] * positions[c + 2] - positions[b + 2] * positions[c + 1])
+          - positions[a + 1] * (positions[b] * positions[c + 2] - positions[b + 2] * positions[c])
+          + positions[a + 2] * (positions[b] * positions[c + 1] - positions[b + 1] * positions[c])
+        ) / 6;
+      }
+      return Math.abs(volume);
+    };
+    const cove = await client.request({
+      id: 111,
+      requestId: 111,
+      type: "preview",
+      kind: "fillet",
+      edgeIds: edgeIds.slice(0, 1),
+      amount: 2,
+      chamferAngle: 45,
+      filletProfile: "cove",
+    });
+    expect(cove.ok, String(cove.message)).toBe(true);
+    expect((cove.skippedEdgeIds as number[] | undefined) ?? []).toEqual([]);
+    // One quarter cylinder (r 2, 20 long) leaves the box: ~62.8 mm³ gone.
+    expect(8000 - meshVolume(cove)).toBeGreaterThan(55);
+    expect(8000 - meshVolume(cove)).toBeLessThan(70);
+    const extents = extentsFromPositions(cove.positions as number[]);
+    expect(extents?.width).toBeCloseTo(20, 2);
+    expect(extents?.height).toBeCloseTo(20, 2);
+    expect(extents?.depth).toBeCloseTo(20, 2);
+    const round = await client.request({
+      id: 112,
+      requestId: 112,
+      type: "preview",
+      kind: "fillet",
+      edgeIds: edgeIds.slice(0, 1),
+      amount: 2,
+      chamferAngle: 45,
+      filletProfile: "round",
+    });
+    expect(round.ok, String(round.message)).toBe(true);
+    // The round removes (r² − πr²/4)·L ≈ 17 mm³; the cove removes more.
+    expect(8000 - meshVolume(round)).toBeLessThan(8000 - meshVolume(cove));
+    const all = await client.request({
+      id: 113,
+      requestId: 113,
+      type: "preview",
+      kind: "fillet",
+      edgeIds,
+      amount: 1.5,
+      chamferAngle: 45,
+      filletProfile: "cove",
+    });
+    expect(all.ok, String(all.message)).toBe(true);
+    expect((all.skippedEdgeIds as number[] | undefined) ?? []).toEqual([]);
+    expect(8000 - meshVolume(all)).toBeGreaterThan(12 * (Math.PI * 1.5 * 1.5 / 4) * 20 * 0.8);
+    await client.request({ id: 114, requestId: 114, type: "dispose" });
+  }, 60000);
+
+  it("reports edges it had to skip instead of pretending they were filleted", async () => {
+    // A 20 mm cube cannot take a 12 mm fillet on every edge at once; the
+    // one-at-a-time fallback rounds what it can and must report the rest.
+    const prepared = await client.request({
+      id: 90,
+      requestId: 90,
+      type: "prepare",
+      sharpAngle: 12,
+      parts: [{ hole: false, primitive: { kind: "box", width: 20, depth: 20, height: 20 } }],
+    });
+    expect(prepared.ok, String(prepared.message)).toBe(true);
+    const edgeIds = (prepared.selectableEdgeIds as number[] | undefined) ?? [];
+    const fillet = await client.request({
+      id: 91,
+      requestId: 91,
+      type: "preview",
+      kind: "fillet",
+      edgeIds,
+      amount: 12,
+      chamferAngle: 45,
+    });
+    if (fillet.ok) {
+      const skipped = (fillet.skippedEdgeIds as number[] | undefined) ?? [];
+      expect(Array.isArray(skipped)).toBe(true);
+      expect(skipped.length).toBeGreaterThan(0);
+      expect(skipped.length).toBeLessThan(edgeIds.length);
+    } else {
+      // Refusing outright is also honest; silently returning a broken solid is not.
+      expect(String(fillet.message)).toMatch(/invalid|overlapping/i);
+    }
+    await client.request({ id: 92, requestId: 92, type: "dispose" });
+  }, 60000);
+
+  it("rebuilds an elliptical cone with its section stretch", async () => {
+    const prepared = await client.request({
+      id: 93,
+      requestId: 93,
+      type: "prepare",
+      sharpAngle: 12,
+      parts: [{ hole: false, primitive: { kind: "cone", baseRadius: 10, topRadius: 4, height: 20, sectionScale: 0.5 } }],
+    });
+    expect(prepared.ok, String(prepared.message)).toBe(true);
+    const planar = (prepared.planarFaces as Array<{ outline?: number[]; points?: number[] }> | undefined) ?? [];
+    expect(planar.length).toBeGreaterThan(0);
+    // The base rim sits at x = ±10 but only z = ±5 once the 0.5 stretch is applied.
+    const edges = (prepared.edges as Array<{ points: number[] }> | undefined) ?? [];
+    const all = edges.flatMap((edge) => edge.points);
+    let maxX = 0;
+    let maxZ = 0;
+    for (let index = 0; index + 2 < all.length; index += 3) {
+      maxX = Math.max(maxX, Math.abs(all[index]));
+      maxZ = Math.max(maxZ, Math.abs(all[index + 2]));
+    }
+    expect(maxX).toBeCloseTo(10, 0);
+    expect(maxZ).toBeCloseTo(5, 0);
+    await client.request({ id: 94, requestId: 94, type: "dispose" });
   }, 60000);
 
   it("extrudes a sketch rectangle", async () => {
@@ -314,6 +452,57 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
     const reply = await client.request({ id: 3, ...payload });
     expect(reply.ok, String(reply.message)).toBe(true);
     expect(String(reply.cadBrep ?? "")).toContain("CASCADE");
+  });
+
+  it("cuts a sketch hole bounded by a polygon instead of fusing it", async () => {
+    // Outer 12×8 rectangle with a 4×4 rectangular hole: extruded 10 mm the volume
+    // must be (96 − 16) × 10 = 800. The nesting test used to pair chord endpoints,
+    // so inner wire loops were never "inside" and got fused → a 960 mm³ block.
+    const shape = box("sketch-hole", {
+      kind: "mesh",
+      sketchFinish: "extrude",
+      sketchProfile: {
+        points: [
+          { id: "p1", x: -6, z: -4 },
+          { id: "p2", x: 6, z: -4 },
+          { id: "p3", x: 6, z: 4 },
+          { id: "p4", x: -6, z: 4 },
+          { id: "h1", x: -2, z: -2 },
+          { id: "h2", x: 2, z: -2 },
+          { id: "h3", x: 2, z: 2 },
+          { id: "h4", x: -2, z: 2 },
+        ],
+        segments: [
+          { id: "s1", startId: "p1", endId: "p2", kind: "line" },
+          { id: "s2", startId: "p2", endId: "p3", kind: "line" },
+          { id: "s3", startId: "p3", endId: "p4", kind: "line" },
+          { id: "s4", startId: "p4", endId: "p1", kind: "line" },
+          { id: "t1", startId: "h1", endId: "h2", kind: "line" },
+          { id: "t2", startId: "h2", endId: "h3", kind: "line" },
+          { id: "t3", startId: "h3", endId: "h4", kind: "line" },
+          { id: "t4", startId: "h4", endId: "h1", kind: "line" },
+        ],
+      },
+    });
+    const payload = serializeSketchExtrudeJob(shape, 10);
+    expect(payload).toBeTruthy();
+    expect(payload?.loops.length).toBe(2);
+    const reply = await client.request({ id: 36, ...payload });
+    expect(reply.ok, String(reply.message)).toBe(true);
+    const positions = reply.positions as number[];
+    const indices = reply.indices as number[];
+    let volume = 0;
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const a = indices[i] * 3;
+      const b = indices[i + 1] * 3;
+      const c = indices[i + 2] * 3;
+      volume += (
+        positions[a] * (positions[b + 1] * positions[c + 2] - positions[b + 2] * positions[c + 1])
+        - positions[a + 1] * (positions[b] * positions[c + 2] - positions[b + 2] * positions[c])
+        + positions[a + 2] * (positions[b] * positions[c + 1] - positions[b + 1] * positions[c])
+      ) / 6;
+    }
+    expect(Math.abs(volume)).toBeCloseTo(800, 0);
   });
 
   it("sweeps a circle along a line", async () => {

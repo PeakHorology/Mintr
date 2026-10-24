@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  SKETCH_PATTERN_MAX_TOTAL,
   addConstraints,
   addLinearDimension,
+  circularPatternSketch,
+  clampSketchPatternCount,
   closedProfilesFromLegacy,
   createEmptySketchDoc,
   projectEdgesOntoSketch,
@@ -135,5 +138,23 @@ describe("sketch document foundations", () => {
     ]);
     expect(projected.addedEntityIds.length).toBeGreaterThan(0);
     expect(projected.doc.entities.some((e) => e.projected)).toBe(true);
+  });
+
+  it("caps pattern counts so a typo cannot flood the sketch", () => {
+    let doc = createEmptySketchDoc(defaultSketchPlane(), "pattern-cap");
+    doc.entities = [
+      { kind: "point", id: "a", x: 0, z: 0 },
+      { kind: "point", id: "b", x: 10, z: 0 },
+      { kind: "line", id: "l1", startId: "a", endId: "b" },
+    ];
+    const lines = (d: typeof doc) => d.entities.filter((e) => e.kind === "line").length;
+    expect(lines(rectangularPattern(doc, ["l1", "a", "b"], 5000, 5000, 1, 1))).toBeLessThanOrEqual(SKETCH_PATTERN_MAX_TOTAL);
+    expect(lines(rectangularPattern(doc, ["l1", "a", "b"], Number.NaN, 3, 1, 1))).toBe(3);
+    expect(lines(circularPatternSketch(doc, ["l1", "a", "b"], { x: 0, z: 0 }, 1_000_000))).toBe(SKETCH_PATTERN_MAX_TOTAL);
+    expect(lines(circularPatternSketch(doc, ["l1", "a", "b"], { x: 0, z: 0 }, Number.NaN))).toBe(1);
+    expect(clampSketchPatternCount(Number.parseInt("abc", 10), 3)).toBe(3);
+    expect(clampSketchPatternCount(0, 3)).toBe(1);
+    doc = rectangularPattern(doc, ["l1", "a", "b"], 4, 1, 12, 0);
+    expect(lines(doc)).toBe(4);
   });
 });

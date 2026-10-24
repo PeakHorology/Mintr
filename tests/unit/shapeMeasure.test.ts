@@ -53,6 +53,29 @@ describe("shape measure", () => {
     expect(measure?.area).toBeCloseTo(600, 0);
   });
 
+  it("follows indices on a shared-vertex kernel mesh", async () => {
+    const soup = cubeMesh();
+    // Eight shared corners, same twelve triangles as the soup cube.
+    const corners = [
+      [0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0],
+      [0, 0, 10], [10, 0, 10], [10, 10, 10], [0, 10, 10],
+    ];
+    const key = (p: number[]) => p.join(",");
+    const lookup = new Map(corners.map((p, i) => [key(p), i]));
+    const indices: number[] = [];
+    const positions = soup.importedMesh!.positions;
+    for (let i = 0; i + 2 < positions.length; i += 3) {
+      indices.push(lookup.get(key([positions[i], positions[i + 1], positions[i + 2]]))!);
+    }
+    const indexed: WorkplaneShape = {
+      ...soup,
+      importedMesh: { ...soup.importedMesh!, positions: corners.flat(), indices },
+    };
+    const measure = await measureWorkplaneShape(indexed);
+    expect(measure?.volume).toBeCloseTo(1000, 0);
+    expect(measure?.area).toBeCloseTo(600, 0);
+  });
+
   it("measures a primitive box without a mesh or kernel", async () => {
     const measure = await measureWorkplaneShape({
       id: "box",

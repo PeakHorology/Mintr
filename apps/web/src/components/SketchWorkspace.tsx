@@ -908,6 +908,17 @@ export function SketchWorkspace({
     });
   }, [constraintEntities, erasePreview, pointById, pointerAction]);
   const paths = useMemo(() => orderedPaths(displayProfile), [displayProfile]);
+  // Closed-region analysis is the most expensive per-render step on a busy
+  // sketch; hover/cursor re-renders don't change the profile, so cache it and
+  // pre-resolve each region's SVG path.
+  const closedRegionFills = useMemo(
+    () =>
+      closedProfilesFromLegacy(displayProfile).flatMap((closedProfile) => {
+        const path = paths.find((entry) => entry.closed && entry.points.some((point) => point.id === closedProfile.pointIds[0]));
+        return path ? [{ closedProfile, d: pathData(path) }] : [];
+      }),
+    [displayProfile, paths],
+  );
   const activePoint = activePointId ? pointById.get(activePointId) ?? null : null;
   const typedPreview = (() => {
     if (tool !== "line" || !activePoint || !lineEntry) return null;
@@ -1328,6 +1339,33 @@ export function SketchWorkspace({
     setPointerAction(null);
   };
 
+  // Escape while dragging a point, shape, image or marquee abandons the drag;
+  // the geometry is only committed on pointer-up, which then finds no action.
+  const pointerActionActive = pointerAction !== null;
+  useEffect(() => {
+    if (!pointerActionActive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const action = pointerAction;
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        if (svgRef.current?.hasPointerCapture(action.pointerId)) svgRef.current.releasePointerCapture(action.pointerId);
+      } catch {
+        // The pointer was never captured.
+      }
+      pendingPointDragRef.current = null;
+      eraseStrokeRef.current = null;
+      setErasePreview(null);
+      setPointerAction(null);
+      if (action.kind !== "pan" && action.kind !== "marquee") onNotice?.("Cancelled");
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointerActionActive, pointerAction?.pointerId]);
+
   const handleWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
     event.preventDefault();
     setZoom((current) => clamp(current * (event.deltaY > 0 ? 0.88 : 1.14), 0.75, 6));
@@ -1669,15 +1707,13 @@ export function SketchWorkspace({
             />
           ) : null}
           <g className="sketch-profile-fills">
-            {closedProfilesFromLegacy(displayProfile).map((closedProfile) => {
-              const path = paths.find((entry) => entry.closed && entry.points.some((point) => point.id === closedProfile.pointIds[0]));
-              if (!path) return null;
+            {closedRegionFills.map(({ closedProfile, d }) => {
               const selected = selectedProfileIds.includes(closedProfile.id);
               return (
                 <path
                   key={closedProfile.id}
                   className={selected ? "selected-profile" : ""}
-                  d={pathData(path)}
+                  d={d}
                   pointerEvents="auto"
                   onPointerDown={(event) => {
                     if (event.button !== 0 || tool !== "select" || !onSelectProfile) return;
