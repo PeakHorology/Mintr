@@ -209,8 +209,11 @@ bool buildPrism(const nlohmann::json& json, TopoDS_Shape& out, std::string& erro
     return false;
   }
   const bool alongX = axis == "x";
+  const bool alongY = axis == "y";
   const auto point = [&](double u, double v) {
-    return alongX ? gp_Pnt(a0, v, u) : gp_Pnt(u, v, a0);
+    if (alongX) return gp_Pnt(a0, v, u);
+    if (alongY) return gp_Pnt(u, a0, v);
+    return gp_Pnt(u, v, a0);
   };
   const auto uv = [&](const nlohmann::json& value) {
     return point(value[0].get<double>(), value[1].get<double>());
@@ -240,7 +243,7 @@ bool buildPrism(const nlohmann::json& json, TopoDS_Shape& out, std::string& erro
     error = "prism face failed";
     return false;
   }
-  const gp_Vec dir = alongX ? gp_Vec(a1 - a0, 0, 0) : gp_Vec(0, 0, a1 - a0);
+  const gp_Vec dir = alongX ? gp_Vec(a1 - a0, 0, 0) : alongY ? gp_Vec(0, a1 - a0, 0) : gp_Vec(0, 0, a1 - a0);
   out = BRepPrimAPI_MakePrism(face, dir).Shape();
   return !out.IsNull();
 }

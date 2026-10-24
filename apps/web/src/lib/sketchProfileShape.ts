@@ -443,6 +443,16 @@ export function axisAlignedRectFromClosedPath(path: OrderedSketchPath): { width:
   };
 }
 
+function polygonArea(points: readonly { x: number; z: number }[]) {
+  let sum = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    sum += current.x * next.z - next.x * current.z;
+  }
+  return Math.abs(sum) * 0.5;
+}
+
 /** True when a closed path is a circle (4-bezier sketch circle or regular polygon on a circle). */
 export function circleFromClosedPath(path: OrderedSketchPath): { radius: number; centerX: number; centerZ: number } | null {
   if (!path.closed || path.points.length < 4) {
@@ -465,6 +475,11 @@ export function circleFromClosedPath(path: OrderedSketchPath): { radius: number;
     return { radius, centerX, centerZ };
   }
   if (!curved && path.steps.every((step) => step.segment.kind === "line") && path.points.length >= 12) {
+    // The corners of a square already sit on a circle. A fillet of about 1 mm only
+    // pulls those samples in by a fraction of a millimetre, so the radial spread
+    // stays inside the tolerance above and the pad was swapped for a cylinder.
+    // A 12-sided circle still fills about 95% of πr². A rounded rectangle does not.
+    if (polygonArea(path.points) < Math.PI * radius * radius * 0.92) return null;
     return { radius, centerX, centerZ };
   }
   return null;

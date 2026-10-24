@@ -3,6 +3,7 @@ import type { WorkplaneShape } from "@/types/sketchforge";
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { gearFootprint, gearSpecKey, moduleForSpan, normalizeGearSpec } from "@/lib/gearProfile";
 import {
+  GRIDFINITY_DOVETAIL_PROTRUSION,
   GRIDFINITY_TAB_LENGTH,
   defaultGridfinityBaseplateSpec,
   defaultGridfinityBinSpec,
@@ -475,7 +476,9 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
     const depth = shapeDepth(next);
     let resolved = spec;
     if (Math.abs(width - expected.width) > 0.02 || Math.abs(depth - expected.depth) > 0.02) {
-      const tab = (side: "left" | "right" | "front" | "back") => (spec.connectors?.[side] === "tab" ? GRIDFINITY_TAB_LENGTH : 0);
+      const tab = (side: "left" | "right" | "front" | "back") => spec.connectors?.[side] === "tab"
+        ? GRIDFINITY_TAB_LENGTH
+        : spec.connectors?.[side] === "dovetail" ? GRIDFINITY_DOVETAIL_PROTRUSION : 0;
       resolved = normalizeGridfinityBaseplateSpec({
         ...spec,
         unitsX: Math.abs(width - expected.width) > 0.02

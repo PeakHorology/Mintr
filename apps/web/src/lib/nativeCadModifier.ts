@@ -18,7 +18,7 @@ function jsonNumbers(value: ArrayLike<number> | undefined) {
 }
 
 export function nativeCadModifierPartsAreExact(parts: CadModifierMeshPart[]) {
-  return parts.length > 0 && parts.every((part) => Boolean(part.primitive || part.brep));
+  return parts.length > 0 && parts.every((part) => Boolean(part.primitive || part.brep || part.brepStep));
 }
 
 export function nativeCadModifierCanHandle(request: CadModifierWorkerPayload, nativeSessionLive: boolean) {
@@ -41,6 +41,7 @@ export function serializeNativeCadModifierJob(request: CadModifierWorkerPayload,
         hole: part.hole,
         primitive: part.primitive,
         brep: part.brep,
+        brepStep: part.brepStep,
         brepTransform: part.brepTransform,
         positions: jsonNumbers(part.positions),
         indices: jsonNumbers(part.indices),

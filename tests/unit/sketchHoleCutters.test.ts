@@ -83,6 +83,38 @@ describe("expandSketchHoleCuttersIfPossible", () => {
     expect(rebuilt.hole).toBe(true);
   });
 
+  it("keeps an exact face pocket as it is instead of re-baking it as a through hole", () => {
+    // A Face pocket is a blind rectangle on a face with its exact solid attached.
+    // Re-baking it with cutIntoFace pulled it back to the 0.5 mm overshoot.
+    const pocket = holeShape(
+      {
+        points: [
+          { id: "p1", x: -8, z: -8 },
+          { id: "p2", x: 8, z: -8 },
+          { id: "p3", x: 8, z: 8 },
+          { id: "p4", x: -8, z: 8 },
+        ],
+        segments: [
+          { id: "s1", startId: "p1", endId: "p2", kind: "line" },
+          { id: "s2", startId: "p2", endId: "p3", kind: "line" },
+          { id: "s3", startId: "p3", endId: "p4", kind: "line" },
+          { id: "s4", startId: "p4", endId: "p1", kind: "line" },
+        ],
+        sketchPlane: {
+          origin: { x: 0, y: 22, z: 0 },
+          normal: { x: 0, y: -1, z: 0 },
+          uAxis: { x: 1, y: 0, z: 0 },
+          hostShapeId: "box-1",
+        },
+        faceReferenceLoops: [[{ x: -10, z: -10 }, { x: 10, z: -10 }, { x: 10, z: 10 }, { x: -10, z: 10 }]],
+      },
+      { width: 16, depth: 16, height: 7.8, elevation: 14.2, cadBrep: "DBRep_DrawableShape", sketchFinish: "extrude" },
+    );
+    expect(expandSketchHoleCuttersIfPossible(pocket)).toEqual([pocket]);
+    const stepPocket = { ...pocket, cadBrep: undefined, importedMesh: { positions: [], indices: [], brepStep: "ISO-10303-21;" } } as WorkplaneShape;
+    expect(expandSketchHoleCuttersIfPossible(stepPocket)).toEqual([stepPocket]);
+  });
+
   it("leaves a nested circle as one cutter so a ring does not become two holes", () => {
     const outer = circle("o", 0, 0, 10);
     const inner = circle("i", 0, 0, 4);

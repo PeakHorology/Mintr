@@ -56,6 +56,24 @@ function gridFace(
 }
 
 describe("mesh solidify", () => {
+  it("restores a STEP solid and moves it with the stored transform", () => {
+    const source = kernel.makeBox(10, 8, 6);
+    const step = kernel.exportStep(source);
+    const solid = reconstructSolid(kernel, {
+      hole: false,
+      brepStep: step,
+      brepTransform: [1, 0, 0, 20, 0, 1, 0, 0, 0, 0, 1, 0],
+    });
+    expect(kernel.isSolid(solid)).toBe(true);
+    expect(Math.abs(kernel.getVolume(solid))).toBeCloseTo(10 * 8 * 6, -1);
+    const mesh = kernel.tessellate(solid, { linearDeflection: 0.4, angularDeflection: 0.5 });
+    let minX = Infinity;
+    for (let index = 0; index < mesh.positions.length; index += 3) {
+      minX = Math.min(minX, mesh.positions[index]);
+    }
+    expect(minX).toBeGreaterThan(19);
+  });
+
   it("keeps both closed pieces of a disconnected mesh", () => {
     const part = meshPartFromShapes([
       kernel.makeBox(20, 8, 12),

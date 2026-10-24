@@ -15,6 +15,16 @@ describe("shape catalog", () => {
     expect(kinds).not.toContain("icosahedron");
   });
 
+  it("keeps generated parts off the solids tab", () => {
+    const parts = toolbarShapeAssets.filter((asset) => asset.group === "part").map((asset) => asset.kind);
+    const solids = toolbarShapeAssets.filter((asset) => asset.group === "solid").map((asset) => asset.kind);
+
+    expect(parts).toEqual(["text", "thread", "gear", "gridfinityBin", "gridfinityBaseplate"]);
+    expect(solids).not.toEqual(expect.arrayContaining(parts));
+    expect(solids).toContain("box");
+    expect(solids).not.toContain("text");
+  });
+
   it("does not expose removed decorative shapes in the toolbar catalog", () => {
     const kinds = toolbarShapeAssets.map((asset) => asset.kind);
 

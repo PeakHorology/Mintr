@@ -15,6 +15,7 @@ import {
 import {
   booleanWorkingQuality,
   isHeavyBooleanSelection,
+  shouldSkipLiveOcctBoolean,
 } from "@/lib/displayTriangleCount";
 import {
   canonicalizeShape,
@@ -3097,11 +3098,11 @@ export async function occtBooleanMeshShape(
   selection: WorkplaneShape[],
   op: "subtract" | "union" | "intersect",
 ): Promise<WorkplaneShape | null> {
-  // Live Group never waits on occt-wasm. That 22 MB kernel takes seconds to boot and
-  // fuse a cylinder into a box. Exact CSG is MintrKernel on the desktop; the browser
-  // uses Manifold and keeps children for a later native bake.
-  if (!hasNativeOcctKernel()) return null;
+  // The on-screen mesh is a picture. Group fuses the exact solids, then tessellates
+  // once. A huge selection in the browser stays on the mesh path so the first fuse
+  // does not stall. MintrKernel still takes the exact job.
   if (!selectionSupportsOcctCsg(selection)) return null;
+  if (!hasNativeOcctKernel() && shouldSkipLiveOcctBoolean(selection)) return null;
   try {
     const { booleanResultLooksExploded, evaluateOcctBooleanOnWorldShapes } = await import("@/lib/stepExport");
     const result = await evaluateOcctBooleanOnWorldShapes(selection, op);
@@ -3289,6 +3290,10 @@ export function rebuildSketchHoleCutterIfPossible(shape: WorkplaneShape): Workpl
 /** Split a multi-circle/rect sketch hole into one exact cutter per independent loop. */
 export function expandSketchHoleCuttersIfPossible(shape: WorkplaneShape): WorkplaneShape[] {
   if (!shape.hole || !shape.sketchProfile) return [shape];
+  // An exact solid is the cutter. Re-baking it as a through-all face hole
+  // would pull a blind pocket back to its overshoot (a Face pocket cut 0.5 mm
+  // deep instead of its depth) and scale the stored B-Rep into the new pose.
+  if (shape.cadBrep || shape.importedMesh?.brepStep) return [shape];
   const closedPaths = orderedSketchPaths(shape.sketchProfile).filter((path) => path.closed);
   if (closedPaths.length <= 1) return [rebuildSketchHoleCutterIfPossible(shape)];
   const independent = closedPaths.filter((path) => !sketchPathIsInsideAnother(path, closedPaths));
@@ -3346,10 +3351,10 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
   const boxBooleanSelection = hasSolid && hasHole
     ? await ensureExactSketchOperands(expandBooleanHoleCutters(expandGroupsForBoxBoolean(solidified)))
     : [];
-  // Group fuses. Exact B-rep from MintrKernel when the sidecar is up. Browser and
-  // kernel-less Electron skip live OCCT so a cylinder-into-box Group cannot sit on
-  // occt-wasm for several seconds.
-  const skipLiveOcct = !hasNativeOcctKernel();
+  // Group fuses exact solids when the selection is small enough. If that fuse
+  // does not come back, the pieces stay put. The mesh path is for a large
+  // selection, or for a body that was already a mesh.
+  const skipLiveOcct = !hasNativeOcctKernel() && shouldSkipLiveOcctBoolean(booleanSelection);
   const cadOnly = skipLiveOcct ? null : cadOperandsForExactGroup(booleanSelection);
   const occtSelection = cadOnly ?? booleanSelection;
   const occtEligible = hasSolid && selectionSupportsOcctCsg(occtSelection);
@@ -3357,6 +3362,19 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
   const occtGroup = occtEligible && !skipLiveOcct
     ? await occtBooleanMeshShape(occtSelection, occtHasHole ? "subtract" : "union")
     : null;
+  // Every operand was an exact solid and the fuse did not come back. A mesh
+  // Group would look successful and is the triangulated one. Leave the pieces.
+  if (!skipLiveOcct && (occtEligible || cadOnly) && !occtGroup) {
+    return {
+      group: null,
+      booleanSelection,
+      hasSolid,
+      hasHole,
+      hasImportedMesh,
+      consumed: false,
+      failureNotice: "Could not join these as exact solids. The pieces were left as they are.",
+    };
+  }
   const leftOutShapes = cadOnly && occtGroup
     ? solidified.filter((shape) => !cadOnly.some((cad) => originalOperandId(cad) === shape.id))
     : [];

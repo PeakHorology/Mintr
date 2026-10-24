@@ -51,7 +51,7 @@ export type GridfinityBinSpec = {
   solid: boolean;
 };
 
-export type GridfinityConnector = "tab" | "slot";
+export type GridfinityConnector = "tab" | "slot" | "dovetail" | "groove";
 
 /** Gridfinity baseplate (the rails bins click into). */
 export type GridfinityBaseplateSpec = {

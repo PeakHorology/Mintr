@@ -83,6 +83,29 @@ describe("editor history snapshots", () => {
     expect(historyShapeMissingTessellation(body)).toBe(false);
   });
 
+  it("keeps a dirty body that still has its exact solid", () => {
+    const body = box({
+      kind: "mesh",
+      cadBrep: "stored-solid",
+      csg: { op: "union", version: 1, dirty: true },
+      groupedShapes: [box({ id: "a" }), box({ id: "b" })],
+      importedMesh: {
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        baseWidth: 20,
+        baseDepth: 20,
+        baseHeight: 20,
+        triangleCount: 1,
+        sourceFormat: "step",
+        brepStep: "ISO-10303-21;",
+      },
+    });
+    expect(historyShapeNeedsRemesh(body)).toBe(false);
+    expect(historyShapeNeedsRemesh({
+      ...body,
+      importedMesh: { ...body.importedMesh!, positions: [] },
+    })).toBe(true);
+  });
+
   it("vaults a CSG tessellation even when the body has no baked STEP", () => {
     const vault: Record<string, unknown> = {};
     compactHistoryShape(

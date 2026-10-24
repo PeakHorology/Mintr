@@ -43,6 +43,11 @@ export const GRIDFINITY_PLATE_MIN_FLOOR = 3;
 export const GRIDFINITY_TAB_LENGTH = 4;
 export const GRIDFINITY_TAB_WIDTH = 10;
 export const GRIDFINITY_TAB_CLEARANCE = 0.2;
+/** Integral dovetail on an open frame: narrow at the wall, wider at the tip. */
+export const GRIDFINITY_DOVETAIL_PROTRUSION = 1.5;
+const DOVETAIL_BASE_HALF = 1;
+const DOVETAIL_TIP_HALF = 1.3;
+const DOVETAIL_CLEARANCE = 0.15;
 
 export const GRIDFINITY_MAX_UNITS = 16;
 export const GRIDFINITY_MAX_HEIGHT_UNITS = 20;
@@ -81,9 +86,9 @@ export type RecipeSolid =
   | { kind: "box"; x0: number; x1: number; y0: number; y1: number; z0: number; z1: number }
   /**
    * Closed profile extruded along an axis. Profile coordinates are (u, v): for
-   * axis "x" u = z and v = y; for axis "z" u = x and v = y.
+   * axis "x" u = z and v = y; for axis "z" u = x and v = y; for axis "y" u = x and v = z.
    */
-  | { kind: "prism"; axis: "x" | "z"; a0: number; a1: number; start: [number, number]; steps: RecipeProfileStep[] };
+  | { kind: "prism"; axis: "x" | "y" | "z"; a0: number; a1: number; start: [number, number]; steps: RecipeProfileStep[] };
 
 export type RecipeOp = { op: "add" | "cut"; solid: RecipeSolid };
 
@@ -189,7 +194,7 @@ function normalizeConnectors(input: unknown): GridfinityBaseplateSpec["connector
   let any = false;
   for (const side of GRIDFINITY_SIDES) {
     const value = (input as Record<string, unknown>)[side];
-    if (value === "tab" || value === "slot") {
+    if (value === "tab" || value === "slot" || value === "dovetail" || value === "groove") {
       next[side] = value;
       any = true;
     }
@@ -207,7 +212,10 @@ export function normalizeGridfinityBaseplateSpec(
   const screws = Boolean(input?.screws);
   let floor = round(clamp(finite(input?.floorThickness, 0), 0, 12), 0.1);
   if (floor > 0 && floor < 1) floor = 1;
-  if ((magnets || screws || connectors) && floor < GRIDFINITY_PLATE_MIN_FLOOR) floor = GRIDFINITY_PLATE_MIN_FLOOR;
+  const alignmentTabs = connectors
+    ? GRIDFINITY_SIDES.some((side) => connectors[side] === "tab" || connectors[side] === "slot")
+    : false;
+  if ((magnets || screws || alignmentTabs) && floor < GRIDFINITY_PLATE_MIN_FLOOR) floor = GRIDFINITY_PLATE_MIN_FLOOR;
   const drawer = (value: unknown) => {
     const size = finite(value, 0);
     return size <= 0 ? 0 : round(clamp(size, GRIDFINITY_PITCH + GRIDFINITY_BIN_CLEARANCE, 2000), 0.1);
@@ -325,7 +333,9 @@ export function gridfinityBinFootprint(input: GridfinityBinSpec): GridfinityFoot
 
 export function gridfinityBaseplateFootprint(input: GridfinityBaseplateSpec): GridfinityFootprint {
   const spec = normalizeGridfinityBaseplateSpec(input);
-  const tab = (side: GridfinitySide) => (spec.connectors?.[side] === "tab" ? GRIDFINITY_TAB_LENGTH : 0);
+  const tab = (side: GridfinitySide) => spec.connectors?.[side] === "tab"
+    ? GRIDFINITY_TAB_LENGTH
+    : spec.connectors?.[side] === "dovetail" ? GRIDFINITY_DOVETAIL_PROTRUSION : 0;
   const x0 = -spec.unitsX * GRIDFINITY_PITCH / 2 - spec.padLeft - tab("left");
   const x1 = spec.unitsX * GRIDFINITY_PITCH / 2 + spec.padRight + tab("right");
   const z0 = -spec.unitsZ * GRIDFINITY_PITCH / 2 - spec.padBack - tab("back");
@@ -684,14 +694,14 @@ export function gridfinityBaseplateRecipe(input: GridfinityBaseplateSpec): Gridf
   };
   const halfPitch = GRIDFINITY_PITCH / 2;
 
-  // Alignment tabs are fused before the pockets so a cut never has to split them.
+  // Joints are fused before the pockets so a cut never has to split them.
   const connectors = spec.connectors;
   if (connectors) {
     const tabY0 = 0.6;
     const tabY1 = Math.max(tabY0 + 1, floor - 0.6);
     const halfTab = GRIDFINITY_TAB_WIDTH / 2;
     const c = GRIDFINITY_TAB_CLEARANCE;
-    const place = (side: GridfinitySide, kind: GridfinityConnector) => {
+    const placeTab = (side: GridfinitySide, kind: "tab" | "slot") => {
       const slot = kind === "slot";
       const y0 = slot ? tabY0 - c : tabY0;
       const y1 = slot ? tabY1 + c : tabY1;
@@ -712,9 +722,72 @@ export function gridfinityBaseplateRecipe(input: GridfinityBaseplateSpec): Gridf
         ops.push({ op: slot ? "cut" : "add", solid: box });
       }
     };
+    // Full-height trapezoid, narrow at the wall and wider at the tip, so two
+    // open frames slide together. One at each wall between cells; a single cell
+    // gets one in the middle of that edge.
+    const relief = new Set<string>();
+    const placeDovetail = (side: GridfinitySide, groove: boolean) => {
+      const horizontal = side === "left" || side === "right";
+      const outward: 1 | -1 = side === "right" || side === "front" ? 1 : -1;
+      const wall = side === "left" ? outline.x0 : side === "right" ? outline.x1 : side === "back" ? outline.z0 : outline.z1;
+      const units = horizontal ? spec.unitsZ : spec.unitsX;
+      const centers = horizontal ? centersZ : centersX;
+      const start = -units * GRIDFINITY_PITCH / 2;
+      const stations = units <= 1 ? [0] : Array.from({ length: units - 1 }, (_, index) => start + (index + 1) * GRIDFINITY_PITCH);
+      const base = groove ? DOVETAIL_BASE_HALF + DOVETAIL_CLEARANCE : DOVETAIL_BASE_HALF;
+      const tip = groove ? DOVETAIL_TIP_HALF + DOVETAIL_CLEARANCE : DOVETAIL_TIP_HALF;
+      const reach = groove ? GRIDFINITY_DOVETAIL_PROTRUSION + DOVETAIL_CLEARANCE : GRIDFINITY_DOVETAIL_PROTRUSION;
+      const mouth = wall + outward * (groove ? OVERLAP : -OVERLAP);
+      const tipAt = wall + outward * (groove ? -reach : reach);
+      for (const bp of stations) {
+        const corners: [number, number][] = horizontal
+          ? [[mouth, bp + base], [tipAt, bp + tip], [tipAt, bp - tip], [mouth, bp - base]]
+          : [[bp + base, mouth], [bp + tip, tipAt], [bp - tip, tipAt], [bp - base, mouth]];
+        let area = 0;
+        for (let i = 0; i < corners.length; i += 1) {
+          const [x1, z1] = corners[i];
+          const [x2, z2] = corners[(i + 1) % corners.length];
+          area += x1 * z2 - x2 * z1;
+        }
+        const points = area < 0 ? [...corners].reverse() : corners;
+        const [first, ...rest] = points;
+        ops.push({
+          op: groove ? "cut" : "add",
+          solid: {
+            kind: "prism",
+            axis: "y",
+            a0: groove ? -OVERLAP : 0,
+            a1: groove ? height + OVERLAP : height,
+            start: first,
+            steps: rest.map((to) => ({ kind: "line", to })),
+          },
+        });
+        if (groove) continue;
+        for (const center of centers) {
+          if (Math.abs(center - bp) > halfPitch + 1e-6) continue;
+          const across = wall + outward * halfPitch;
+          const cx = horizontal ? across : center;
+          const cz = horizontal ? center : across;
+          relief.add(`${cx.toFixed(3)},${cz.toFixed(3)}`);
+        }
+      }
+    };
     for (const side of GRIDFINITY_SIDES) {
       const kind = connectors[side];
-      if (kind) place(side, kind);
+      if (kind === "tab" || kind === "slot") placeTab(side, kind);
+      else if (kind === "dovetail" || kind === "groove") placeDovetail(side, kind === "groove");
+    }
+    for (const key of relief) {
+      const [cx, cz] = key.split(",").map(Number);
+      const sections: RecipeSection[] = [
+        pocket(height + OVERLAP, halfPitch, cx, cz),
+        pocket(height, halfPitch, cx, cz),
+        pocket(height - 2.15, halfPitch - 2.15, cx, cz),
+        pocket(height - 3.95, halfPitch - 2.15, cx, cz),
+        pocket(floor, halfPitch - 2.85, cx, cz),
+      ];
+      if (floor <= 0) sections.push(pocket(-OVERLAP, halfPitch - 2.85, cx, cz));
+      ops.push({ op: "cut", solid: { kind: "stack", sections: sections.sort((a, b) => a.y - b.y) } });
     }
   }
 
@@ -786,6 +859,16 @@ function translateRecipe(recipe: GridfinityRecipe, dx: number, dz: number): Grid
       case "box":
         return { ...solid, x0: solid.x0 + dx, x1: solid.x1 + dx, z0: solid.z0 + dz, z1: solid.z1 + dz };
       case "prism": {
+        if (solid.axis === "y") {
+          const shift = (point: [number, number]): [number, number] => [point[0] + dx, point[1] + dz];
+          return {
+            ...solid,
+            start: shift(solid.start),
+            steps: solid.steps.map((step) => step.kind === "arc"
+              ? { kind: "arc", to: shift(step.to), mid: shift(step.mid) }
+              : { kind: "line", to: shift(step.to) }),
+          };
+        }
         const du = solid.axis === "x" ? dz : dx;
         const da = solid.axis === "x" ? dx : dz;
         return {
@@ -852,8 +935,8 @@ function splitUnits(total: number, maxPerPiece: number): number[] {
 
 /**
  * Break a baseplate into pieces that each fit the printer bed. Padding stays on the
- * outer edges; cut edges get alignment tabs on one side and slots on the other when
- * `connectors` is set. Returns null when the plate already fits.
+ * outer edges. An open frame gets dovetails on the cut edges. A plate with a solid
+ * bottom keeps tabs and slots. Returns null when the plate already fits.
  */
 export function gridfinitySplitForBed(
   input: GridfinityBaseplateSpec,
@@ -866,10 +949,11 @@ export function gridfinitySplitForBed(
   const usableZ = bed.depth - 2 * margin;
   const whole = gridfinityBaseplateFootprint(spec);
   if (whole.width <= usableX + 1e-6 && whole.depth <= usableZ + 1e-6) return null;
-  const tab = options.connectors ? GRIDFINITY_TAB_LENGTH : 0;
+  const openFrame = spec.floorThickness <= 0;
+  const reach = options.connectors ? (openFrame ? GRIDFINITY_DOVETAIL_PROTRUSION : GRIDFINITY_TAB_LENGTH) : 0;
 
   const plan = (units: number, padA: number, padB: number, usable: number) => {
-    let maxUnits = Math.max(1, Math.floor((usable - tab) / GRIDFINITY_PITCH));
+    let maxUnits = Math.max(1, Math.floor((usable - reach) / GRIDFINITY_PITCH));
     for (let guard = 0; guard < 64; guard += 1) {
       const parts = splitUnits(units, maxUnits);
       const fits = parts.every((count, index) => {
@@ -878,7 +962,7 @@ export function gridfinitySplitForBed(
         const span = count * GRIDFINITY_PITCH
           + (first ? padA : 0)
           + (last ? padB : 0)
-          + (parts.length > 1 && !last ? tab : 0);
+          + (parts.length > 1 && !last ? reach : 0);
         return span <= usable + 1e-6;
       });
       if (fits) return parts;
@@ -908,10 +992,17 @@ export function gridfinitySplitForBed(
       const lastZ = row === partsZ.length - 1;
       const connectors: Partial<Record<GridfinitySide, GridfinityConnector>> = {};
       if (options.connectors) {
-        if (!firstX) connectors.left = "slot";
-        if (!lastX) connectors.right = "tab";
-        if (!firstZ) connectors.back = "slot";
-        if (!lastZ) connectors.front = "tab";
+        if (openFrame) {
+          if (!firstX) connectors.left = "groove";
+          if (!lastX) connectors.right = "dovetail";
+          if (!firstZ) connectors.back = "groove";
+          if (!lastZ) connectors.front = "dovetail";
+        } else {
+          if (!firstX) connectors.left = "slot";
+          if (!lastX) connectors.right = "tab";
+          if (!firstZ) connectors.back = "slot";
+          if (!lastZ) connectors.front = "tab";
+        }
       }
       const piece = normalizeGridfinityBaseplateSpec({
         ...spec,
@@ -933,10 +1024,10 @@ export function gridfinitySplitForBed(
         row,
       });
       startZ += unitsZ * GRIDFINITY_PITCH;
-      shiftZ += gap + tab;
+      shiftZ += gap + reach;
     }
     startX += unitsX * GRIDFINITY_PITCH;
-    shiftX += gap + tab;
+    shiftX += gap + reach;
   }
   return pieces;
 }

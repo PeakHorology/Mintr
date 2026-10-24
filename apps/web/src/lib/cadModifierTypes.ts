@@ -108,6 +108,8 @@ export type CadModifierMeshPart = {
   positions?: Float32Array;
   indices?: Uint32Array;
   brep?: string;
+  /** Exact solid from a previous Group or fillet, in the shape's local frame. */
+  brepStep?: string;
   brepTransform?: number[];
   primitive?: CadModifierPrimitivePart;
   hole: boolean;

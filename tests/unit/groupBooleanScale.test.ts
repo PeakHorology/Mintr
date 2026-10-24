@@ -1,4 +1,21 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/brepKernel", async () => {
+  const brep = await import("brepjs");
+  const { OcctKernel } = await import("occt-wasm");
+  const wasm = join(dirname(fileURLToPath(import.meta.resolve("occt-wasm"))), "occt-wasm.wasm");
+  let ready: Promise<typeof brep> | null = null;
+  return {
+    loadBrepWithOcct: () =>
+      (ready ??= (async () => {
+        const kernel = await OcctKernel.init({ wasm });
+        brep.registerKernel("occt-wasm", brep.OcctWasmAdapter.fromKernel(kernel));
+        return brep;
+      })()),
+  };
+});
 import {
   allowSyncBooleanKernelOnUiThread,
   occtBooleanMeshShape,
@@ -65,11 +82,12 @@ describe("Group scale for multi-body parts", () => {
     expect(performance.now() - start).toBeLessThan(50);
   });
 
-  it("does not load occt-wasm to fuse a cylinder into a box", async () => {
-    const start = performance.now();
-    expect(await occtBooleanMeshShape([box("block"), cylinder("round", 8)], "union")).toBeNull();
-    expect(performance.now() - start).toBeLessThan(50);
-  });
+  it("fuses a cylinder into a box as an exact solid", async () => {
+    const fused = await occtBooleanMeshShape([box("block"), cylinder("round", 8)], "union");
+    expect(fused?.importedMesh?.brepStep?.startsWith("ISO-10303-21")).toBe(true);
+    expect(fused?.kind).toBe("mesh");
+    expect((fused?.importedMesh?.positions.length ?? 0) / 3).toBeGreaterThan(8);
+  }, 120_000);
 
   it("asks MintrKernel to overshoot a flush hole so Group cuts through", async () => {
     const request = vi.fn(async () => ({

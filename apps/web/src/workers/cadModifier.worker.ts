@@ -892,6 +892,22 @@ export function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart): Sh
     }
     throw new Error("The stored CAD feature could not be restored as a valid solid");
   }
+  if (part.brepStep) {
+    let exact = cad.importStep(part.brepStep);
+    if (part.brepTransform?.length === 12) exact = applyCadTransform(cad, exact, part.brepTransform);
+    const restoredSolids = cad.getSubShapes(exact, "solid");
+    if (cadShapeIsValid(cad, exact) && (cad.isSolid(exact) || restoredSolids.length > 0)) {
+      return restoredSolids.length === 1 ? restoredSolids[0] : exact;
+    }
+    exact = cad.fixShape(exact);
+    exact = cad.fixFaceOrientations(exact);
+    if (cad.isSolid(exact)) exact = cad.healSolid(exact, 1e-5);
+    const healedSolids = cad.getSubShapes(exact, "solid");
+    if (cadShapeIsValid(cad, exact) && (cad.isSolid(exact) || healedSolids.length > 0)) {
+      return healedSolids.length === 1 ? healedSolids[0] : exact;
+    }
+    throw new Error("The stored CAD solid could not be restored");
+  }
   const shells = splitClosedMeshShells(part);
   if (shells.length > 1) {
     const solids = shells.map((shell) => reconstructSolid(cad, shell));
@@ -1848,17 +1864,17 @@ function cadDisplayEdgesFromCollected(edges: CollectedCadEdge[]): CadModifierDis
     .map((edge) => ({ points: edge.points }));
 }
 
-function tessellationOptions(quality: CadModifierQuality, amount: number) {
-  if (quality === "draft") return { linearDeflection: Math.max(0.12, amount / 3), angularDeflection: 0.42 };
-  if (quality === "ultra") return { linearDeflection: Math.max(0.012, amount / 20), angularDeflection: 0.06 };
-  if (quality === "fine") return { linearDeflection: Math.max(0.025, amount / 12), angularDeflection: 0.1 };
-  return { linearDeflection: Math.max(0.055, amount / 7), angularDeflection: 0.2 };
+function tessellationOptions(quality: CadModifierQuality, _amount?: number) {
+  if (quality === "draft") return { linearDeflection: 0.12, angularDeflection: 0.42 };
+  if (quality === "ultra") return { linearDeflection: 0.02, angularDeflection: 0.06 };
+  if (quality === "fine") return { linearDeflection: 0.04, angularDeflection: 0.1 };
+  return { linearDeflection: 0.055, angularDeflection: 0.2 };
 }
 
-function previewTessellationOptions(amount: number) {
+function previewTessellationOptions(_amount?: number) {
   // Fast picture while the slider is moving. The resting preview and Apply
   // replace it with a mesh that matches the original curve.
-  return { linearDeflection: Math.max(0.16, amount / 4), angularDeflection: 0.32 };
+  return { linearDeflection: 0.16, angularDeflection: 0.32 };
 }
 
 const MAX_SMOOTH_TRIANGLES = 180_000;

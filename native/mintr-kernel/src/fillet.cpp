@@ -228,7 +228,9 @@ bool reconstructPart(const nlohmann::json& part, TopoDS_Shape& out) {
     return true;
   }
   if (part.contains("brepStep") && part["brepStep"].is_string()) {
-    return readStep(part["brepStep"].get<std::string>(), out);
+    if (!readStep(part["brepStep"].get<std::string>(), out)) return false;
+    if (part.contains("brepTransform")) applyRowMajor(out, part["brepTransform"]);
+    return true;
   }
   return false;
 }

@@ -31,6 +31,25 @@ function importedPart(id: string, x: number): WorkplaneShape {
   };
 }
 
+function box(id: string, x = 0): WorkplaneShape {
+  return {
+    id,
+    name: id,
+    kind: "box",
+    color: "#d41721",
+    x,
+    z: 0,
+    elevation: 0,
+    size: 20,
+    width: 20,
+    depth: 20,
+    height: 20,
+    rotation: 0,
+    locked: false,
+    hidden: false,
+  };
+}
+
 describe("grouping imported solids", () => {
   it("fuses the parts into one solid instead of leaving them side by side", async () => {
     const result = await buildGroupedShapeFromSelection([
@@ -41,6 +60,20 @@ describe("grouping imported solids", () => {
     expect(result.group?.name).toBe("Group");
     expect(result.group?.importedMesh?.positions.length).toBeGreaterThan(0);
     expect(viewportGroupChildren(result.group!)).toEqual([]);
+  });
+
+  it("leaves exact solids ungrouped when the exact fuse does not come back", async () => {
+    const result = await buildGroupedShapeFromSelection([box("a"), box("b", 8)]);
+    expect(result.group).toBeNull();
+    expect(result.consumed).toBe(false);
+    expect(result.failureNotice).toBe("Could not join these as exact solids. The pieces were left as they are.");
+  });
+
+  it("still groups a large exact selection on the mesh path", async () => {
+    const many = Array.from({ length: 9 }, (_, index) => box(`b${index}`, index * 22));
+    const result = await buildGroupedShapeFromSelection(many);
+    expect(result.group?.importedMesh?.positions.length).toBeGreaterThan(8);
+    expect(result.group?.importedMesh?.brepStep).toBeUndefined();
   });
 
   it("fuses overlapping cylinders into fewer triangles than the two shells", async () => {

@@ -7,25 +7,28 @@ import { createLocalId } from "@/lib/localIds";
 import { DEFAULT_TEXT_FONT } from "@/lib/textFonts";
 import type { DisplayQuality, ShapeAsset, WorkplaneShape } from "@/types/sketchforge";
 
-export type ToolbarShapeAsset = ShapeAsset & { menuIcon: string };
+/** Solids are plain modeling bodies. Parts are generated pieces such as text, gears, and Gridfinity. */
+export type ShapeCatalogGroup = "solid" | "part";
+
+export type ToolbarShapeAsset = ShapeAsset & { menuIcon: string; group: ShapeCatalogGroup };
 
 export const toolbarShapeAssets: ToolbarShapeAsset[] = [
-  { id: "box", name: "Box", src: "assets/peakcad/shape-icons/box.png", menuIcon: "assets/peakcad/shape-icons/box.png", kind: "box", color: "#d41721" },
-  { id: "cylinder", name: "Cylinder", src: "assets/peakcad/shape-icons/cylinder.png", menuIcon: "assets/peakcad/shape-icons/cylinder.png", kind: "cylinder", color: "#d97813" },
-  { id: "roof", name: "Triangle", src: "assets/peakcad/shape-icons/roof.png", menuIcon: "assets/peakcad/shape-icons/roof.png", kind: "roof", color: "#a83c32" },
-  { id: "polygon", name: "Polygon", src: "assets/peakcad/shape-icons/polygon.png", menuIcon: "assets/peakcad/shape-icons/polygon.png", kind: "polygon", color: "#3b82f6" },
-  { id: "sphere", name: "Sphere", src: "assets/peakcad/shape-icons/sphere.png", menuIcon: "assets/peakcad/shape-icons/sphere.png", kind: "sphere", color: "#0098c7" },
-  { id: "cone", name: "Cone", src: "assets/peakcad/shape-icons/cone.png", menuIcon: "assets/peakcad/shape-icons/cone.png", kind: "cone", color: "#6e2786" },
-  { id: "pyramid", name: "Pyramid", src: "assets/peakcad/shape-icons/pyramid.png", menuIcon: "assets/peakcad/shape-icons/pyramid.png", kind: "pyramid", color: "#f2cf10" },
-  { id: "round-roof", name: "Round Roof", src: "assets/peakcad/shape-icons/round-roof.png", menuIcon: "assets/peakcad/shape-icons/round-roof.png", kind: "roundRoof", color: "#67c4ce" },
-  { id: "half-sphere", name: "Half Sphere", src: "assets/peakcad/shape-icons/half-sphere.png", menuIcon: "assets/peakcad/shape-icons/half-sphere.png", kind: "halfSphere", color: "#c9009a" },
-  { id: "torus", name: "Torus", src: "assets/peakcad/shape-icons/torus.png", menuIcon: "assets/peakcad/shape-icons/torus.png", kind: "torus", color: "#0098c7" },
-  { id: "tube", name: "Ring", src: "assets/peakcad/shape-icons/tube.png", menuIcon: "assets/peakcad/shape-icons/tube.png", kind: "tube", color: "#ce7013" },
-  { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b" },
-  { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813" },
-  { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#2aa77e" },
-  { id: "gridfinity-bin", name: "Gridfinity Bin", src: "assets/peakcad/shape-icons/gridfinity-bin.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-bin.png", kind: "gridfinityBin", color: GRIDFINITY_BIN_COLOR },
-  { id: "gridfinity-baseplate", name: "Gridfinity Baseplate", src: "assets/peakcad/shape-icons/gridfinity-baseplate.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-baseplate.png", kind: "gridfinityBaseplate", color: GRIDFINITY_BASEPLATE_COLOR },
+  { id: "box", name: "Box", src: "assets/peakcad/shape-icons/box.png", menuIcon: "assets/peakcad/shape-icons/box.png", kind: "box", color: "#d41721", group: "solid" },
+  { id: "cylinder", name: "Cylinder", src: "assets/peakcad/shape-icons/cylinder.png", menuIcon: "assets/peakcad/shape-icons/cylinder.png", kind: "cylinder", color: "#d97813", group: "solid" },
+  { id: "roof", name: "Triangle", src: "assets/peakcad/shape-icons/roof.png", menuIcon: "assets/peakcad/shape-icons/roof.png", kind: "roof", color: "#a83c32", group: "solid" },
+  { id: "polygon", name: "Polygon", src: "assets/peakcad/shape-icons/polygon.png", menuIcon: "assets/peakcad/shape-icons/polygon.png", kind: "polygon", color: "#3b82f6", group: "solid" },
+  { id: "sphere", name: "Sphere", src: "assets/peakcad/shape-icons/sphere.png", menuIcon: "assets/peakcad/shape-icons/sphere.png", kind: "sphere", color: "#0098c7", group: "solid" },
+  { id: "cone", name: "Cone", src: "assets/peakcad/shape-icons/cone.png", menuIcon: "assets/peakcad/shape-icons/cone.png", kind: "cone", color: "#6e2786", group: "solid" },
+  { id: "pyramid", name: "Pyramid", src: "assets/peakcad/shape-icons/pyramid.png", menuIcon: "assets/peakcad/shape-icons/pyramid.png", kind: "pyramid", color: "#f2cf10", group: "solid" },
+  { id: "round-roof", name: "Round Roof", src: "assets/peakcad/shape-icons/round-roof.png", menuIcon: "assets/peakcad/shape-icons/round-roof.png", kind: "roundRoof", color: "#67c4ce", group: "solid" },
+  { id: "half-sphere", name: "Half Sphere", src: "assets/peakcad/shape-icons/half-sphere.png", menuIcon: "assets/peakcad/shape-icons/half-sphere.png", kind: "halfSphere", color: "#c9009a", group: "solid" },
+  { id: "torus", name: "Torus", src: "assets/peakcad/shape-icons/torus.png", menuIcon: "assets/peakcad/shape-icons/torus.png", kind: "torus", color: "#0098c7", group: "solid" },
+  { id: "tube", name: "Ring", src: "assets/peakcad/shape-icons/tube.png", menuIcon: "assets/peakcad/shape-icons/tube.png", kind: "tube", color: "#ce7013", group: "solid" },
+  { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b", group: "part" },
+  { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813", group: "part" },
+  { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#2aa77e", group: "part" },
+  { id: "gridfinity-bin", name: "Gridfinity Bin", src: "assets/peakcad/shape-icons/gridfinity-bin.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-bin.png", kind: "gridfinityBin", color: GRIDFINITY_BIN_COLOR, group: "part" },
+  { id: "gridfinity-baseplate", name: "Gridfinity Baseplate", src: "assets/peakcad/shape-icons/gridfinity-baseplate.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-baseplate.png", kind: "gridfinityBaseplate", color: GRIDFINITY_BASEPLATE_COLOR, group: "part" },
 ];
 
 export function sceneShape(shape: Partial<WorkplaneShape> & Pick<WorkplaneShape, "name" | "kind" | "color">): WorkplaneShape {

@@ -326,12 +326,17 @@ function gridfinityBaseplateProperties(shape: WorkplaneShape, onUpdate: ShapeIns
   const connector = (side: GridfinitySide): SelectPropertyConfig => ({
     type: "select",
     label: `${GRIDFINITY_SIDE_LABELS[side]} edge`,
-    value: spec.connectors?.[side] === "tab" ? "Tab" : spec.connectors?.[side] === "slot" ? "Slot" : "Plain",
-    options: ["Plain", "Tab", "Slot"],
+    value: spec.connectors?.[side] === "dovetail" ? "Dovetail"
+      : spec.connectors?.[side] === "groove" ? "Groove"
+        : spec.connectors?.[side] === "tab" ? "Tab"
+          : spec.connectors?.[side] === "slot" ? "Slot" : "Plain",
+    options: ["Plain", "Tab", "Slot", "Dovetail", "Groove"],
     onChange: (value) => {
       const connectors = { ...(spec.connectors ?? {}) };
       if (value === "Tab") connectors[side] = "tab";
       else if (value === "Slot") connectors[side] = "slot";
+      else if (value === "Dovetail") connectors[side] = "dovetail";
+      else if (value === "Groove") connectors[side] = "groove";
       else delete connectors[side];
       apply({ connectors: Object.keys(connectors).length ? connectors : undefined });
     },
@@ -860,6 +865,8 @@ export function ShapeInspector({
   sceneShapes,
   onEditPattern,
   onDissolvePattern,
+  onEditEdgeTreatment,
+  onRemoveEdgeTreatment,
 }: {
   shape: WorkplaneShape;
   workspace: WorkplaneWorkspaceSettings;
@@ -887,6 +894,10 @@ export function ShapeInspector({
   sceneShapes?: readonly WorkplaneShape[];
   onEditPattern?: () => void;
   onDissolvePattern?: () => void;
+  /** Open the fillet or chamfer tool on this feature of the selected shape. */
+  onEditEdgeTreatment?: (index: number) => void;
+  /** Restore the shape to before this feature. Newer features on top of it go with it. */
+  onRemoveEdgeTreatment?: (index: number) => void;
 }) {
   const feature =
     activeFeatureId
@@ -1233,14 +1244,44 @@ export function ShapeInspector({
               <div className="csg-feature-row">
                 <span className="csg-feature-name">{isConstructionShape(shape) ? "Construction plane" : inspectTarget.kind}</span>
               </div>
-              {(shape.edgeTreatments ?? []).map((feature, index) => (
-                <div key={`edge-${index}`} className="csg-feature-row">
-                  <span className="csg-feature-name">
-                    {feature.kind === "fillet" ? (feature.filletProfile === "cove" ? "Concave fillet" : "Fillet") : "Chamfer"} {feature.amount} mm
-                    {feature.edgeCount ? ` · ${feature.edgeCount} edges` : ""}
-                  </span>
-                </div>
-              ))}
+              {(shape.edgeTreatments ?? []).map((feature, index) => {
+                const entry = shape.edgeTreatmentHistory?.[index];
+                const canChange = Boolean(entry && entry.feature.kind === feature.kind);
+                const newer = Math.max(0, (shape.edgeTreatments?.length ?? 0) - index - 1);
+                const newerNote = newer > 0
+                  ? `Also removes ${newer} newer edge feature${newer === 1 ? "" : "s"}`
+                  : undefined;
+                const blocked = locked || modelTreeLocked || !canChange;
+                const name = feature.kind === "fillet"
+                  ? (feature.filletProfile === "cove" ? "Concave fillet" : "Fillet")
+                  : "Chamfer";
+                return (
+                  <div key={`edge-${index}`} className="csg-feature-row">
+                    <span className="csg-feature-name">
+                      {name} {feature.amount} mm
+                      {feature.edgeCount ? ` · ${feature.edgeCount} edges` : ""}
+                    </span>
+                    <div className="csg-feature-actions">
+                      <button
+                        type="button"
+                        disabled={blocked || !onEditEdgeTreatment}
+                        title={canChange ? (newerNote ?? `Edit this ${name.toLowerCase()}`) : "This edge feature has no stored edit history"}
+                        onClick={() => onEditEdgeTreatment?.(index)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blocked || !onRemoveEdgeTreatment}
+                        title={canChange ? (newerNote ?? `Remove this ${name.toLowerCase()}`) : "This edge feature has no stored edit history"}
+                        onClick={() => onRemoveEdgeTreatment?.(index)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
               {holeSpec ? (
                 <div className="csg-feature-row">
                   <span className="csg-feature-name">

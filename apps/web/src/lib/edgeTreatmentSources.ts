@@ -40,7 +40,7 @@ function flattenEdgeTreatmentPart(
   // Threaded groups keep a helix B-Rep; open them anyway so fillet can skip the cutter.
   const openGroup = Boolean(
     prepared.groupedShapes?.length
-    && (!prepared.cadBrep || (ignoreThreads && containsHelicalThreadSolid(prepared))),
+    && ((!prepared.cadBrep && !prepared.importedMesh?.brepStep) || (ignoreThreads && containsHelicalThreadSolid(prepared))),
   );
   if (openGroup) {
     const children = restoreGroupedChildren(prepared).flatMap((child) => (

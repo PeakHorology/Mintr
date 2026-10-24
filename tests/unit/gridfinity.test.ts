@@ -3,6 +3,7 @@ import {
   GRIDFINITY_FOOT_HEIGHT,
   GRIDFINITY_LIP_HEIGHT,
   GRIDFINITY_PLATE_HEIGHT,
+  GRIDFINITY_DOVETAIL_PROTRUSION,
   GRIDFINITY_TAB_LENGTH,
   defaultGridfinityBaseplateSpec,
   defaultGridfinityBinSpec,
@@ -169,14 +170,59 @@ describe("gridfinity spec", () => {
     expect(left.spec.padLeft).toBe(3);
     expect(left.spec.padRight).toBe(0);
     expect(right.spec.padRight).toBe(3);
-    expect(left.spec.connectors).toEqual({ right: "tab" });
-    expect(right.spec.connectors).toEqual({ left: "slot" });
+    expect(left.spec.floorThickness).toBe(0);
+    expect(left.spec.connectors).toEqual({ right: "dovetail" });
+    expect(right.spec.connectors).toEqual({ left: "groove" });
     for (const piece of pieces) {
       const foot = gridfinityBaseplateFootprint(piece.spec);
       expect(foot.width).toBeLessThanOrEqual(210);
       expect(foot.depth).toBeLessThanOrEqual(210);
     }
     expect(right.gridX).toBeGreaterThan(left.gridX);
+  });
+
+  it("splits an open plate on a 200 mm bed into dovetailed frames with no floor", () => {
+    const spec = normalizeGridfinityBaseplateSpec({ unitsX: 8, unitsZ: 8, floorThickness: 0 });
+    const pieces = gridfinitySplitForBed(spec, { width: 200, depth: 200 }, { connectors: true })!;
+    expect(pieces).toHaveLength(4);
+    for (const piece of pieces) {
+      expect(piece.spec.floorThickness).toBe(0);
+      expect(piece.spec.unitsX).toBe(4);
+      expect(piece.spec.unitsZ).toBe(4);
+      expect(piece.spec.connectors?.right === "tab" || piece.spec.connectors?.left === "slot").toBe(false);
+    }
+    const corner = pieces.find((piece) => piece.col === 1 && piece.row === 1)!;
+    expect(corner.spec.connectors).toEqual({ left: "groove", back: "groove" });
+    expect(gridfinityBaseplateFootprint(corner.spec).height).toBeCloseTo(GRIDFINITY_PLATE_HEIGHT);
+  });
+
+  it("keeps tabs and slots when a solid baseplate is split", () => {
+    const spec = normalizeGridfinityBaseplateSpec({ unitsX: 7, unitsZ: 2, floorThickness: 4 });
+    const pieces = gridfinitySplitForBed(spec, { width: 220, depth: 400 }, { connectors: true })!;
+    expect(pieces.length).toBeGreaterThan(1);
+    expect(pieces[0].spec.floorThickness).toBe(4);
+    expect(pieces[0].spec.connectors?.right).toBe("tab");
+    expect(pieces.at(-1)?.spec.connectors?.left).toBe("slot");
+  });
+
+  it("cuts dovetails into an open frame and leaves the bottom open", () => {
+    const spec = normalizeGridfinityBaseplateSpec({
+      unitsX: 2,
+      unitsZ: 2,
+      connectors: { right: "dovetail", left: "groove" },
+    });
+    expect(spec.floorThickness).toBe(0);
+    const recipe = gridfinityBaseplateRecipe(spec);
+    const added = recipe.ops.filter((op) => op.op === "add" && op.solid.kind === "prism");
+    const grooves = recipe.ops.filter((op) => op.op === "cut" && op.solid.kind === "prism");
+    expect(added).toHaveLength(1);
+    expect(grooves).toHaveLength(1);
+    expect(added[0].solid).toMatchObject({ axis: "y" });
+    const pockets = recipe.ops.filter((op) => op.op === "cut" && op.solid.kind === "stack");
+    expect(pockets).toHaveLength(6);
+    const foot = gridfinityBaseplateFootprint(spec);
+    expect(foot.width).toBeCloseTo(84 + GRIDFINITY_DOVETAIL_PROTRUSION);
+    expect(foot.height).toBeCloseTo(GRIDFINITY_PLATE_HEIGHT);
   });
 
   it("snaps a dragged size back to whole units", () => {
@@ -296,6 +342,18 @@ describe.skipIf(!hasNativeKernelExe)("gridfinity bodies from MintrKernel.exe", (
     const v = await volume(932, floored);
     expect(v).toBeGreaterThan(0);
     expect(v).toBeLessThan(floored.width! * floored.depth! * floored.height);
+    const dovetailed = createGridfinityShape("gridfinityBaseplate", undefined, {
+      gridfinityBaseplate: {
+        ...defaultGridfinityBaseplateSpec(),
+        unitsX: 2,
+        unitsZ: 2,
+        connectors: { right: "dovetail", left: "groove" },
+      },
+    });
+    await build(933, dovetailed);
+    const open = await volume(934, dovetailed);
+    expect(open).toBeGreaterThan(0);
+    expect(dovetailed.height).toBeCloseTo(GRIDFINITY_PLATE_HEIGHT);
   }, 180000);
 
   it("participates in a native boolean as a recipe operand", async () => {

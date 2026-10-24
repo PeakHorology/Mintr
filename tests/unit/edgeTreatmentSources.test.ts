@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cadModifierPrimitiveForAnalyticBox } from "@/lib/cadBakeMetadata";
+import { cadModifierPrimitiveForAnalyticBox, exactModifierBrep } from "@/lib/cadBakeMetadata";
 import { bakedEdgeTreatmentPreview, recutIgnoredThreadsAfterEdgeTreatment } from "@/lib/editorEdgeTreatments";
 import { edgeTreatmentSourceParts } from "@/lib/edgeTreatmentSources";
 import { isHelicalThreadSolid, threadlessEdgeTreatmentStandIn } from "@/lib/threadShape";
@@ -123,6 +123,29 @@ describe("edgeTreatmentSourceParts", () => {
       edgeTreatments: [{ kind: "fillet", amount: 0.5, edgeCount: 1 }],
     });
     expect(edgeTreatmentSourceParts(finished, { keepResultMesh: true }).map((part) => part.id)).toEqual(["filleted"]);
+  });
+
+  it("keeps a fused group as one exact solid instead of opening the children", () => {
+    const fused = box({
+      id: "fused",
+      kind: "mesh",
+      width: 40,
+      depth: 20,
+      height: 20,
+      size: 40,
+      importedMesh: {
+        positions: [0, 0, 0, 1, 0, 0, 1, 1, 0],
+        baseWidth: 40,
+        baseDepth: 20,
+        baseHeight: 20,
+        triangleCount: 1,
+        sourceFormat: "step",
+        brepStep: "ISO-10303-21;",
+      },
+      groupedShapes: [box({ id: "left" }), box({ id: "right", x: 20 })],
+    });
+    expect(edgeTreatmentSourceParts(fused).map((part) => part.id)).toEqual(["fused"]);
+    expect(exactModifierBrep(fused)).toEqual({ brepStep: "ISO-10303-21;" });
   });
 });
 

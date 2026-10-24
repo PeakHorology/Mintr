@@ -131,6 +131,7 @@ export function ShapeSidebar({
   onCollapse?: () => void;
 }) {
   const [objectListOpen, setObjectListOpen] = useState(false);
+  const [shapeGroup, setShapeGroup] = useState<"solid" | "part">("solid");
   const touchShapeStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const suppressNextShapeClickRef = useRef(false);
 
@@ -192,6 +193,28 @@ export function ShapeSidebar({
           Objects
         </button>
       </div>
+      {objectListOpen ? null : (
+        <div className="shape-rail-modes shape-rail-groups" role="tablist" aria-label="Solids or parts">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={shapeGroup === "solid"}
+            className={shapeGroup === "solid" ? "active" : ""}
+            onClick={() => setShapeGroup("solid")}
+          >
+            Solids
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={shapeGroup === "part"}
+            className={shapeGroup === "part" ? "active" : ""}
+            onClick={() => setShapeGroup("part")}
+          >
+            Parts
+          </button>
+        </div>
+      )}
 
       {objectListOpen ? (
         <aside className="shape-sidebar" aria-label="Objects">
@@ -247,9 +270,9 @@ export function ShapeSidebar({
           </div>
         </aside>
       ) : (
-        <aside className="shape-sidebar" aria-label="Basic shapes">
+        <aside className="shape-sidebar" aria-label={shapeGroup === "solid" ? "Solids" : "Parts"}>
           <div className="shape-sidebar-list">
-            {toolbarShapeAssets.map((shape) => (
+            {toolbarShapeAssets.filter((shape) => shape.group === shapeGroup).map((shape) => (
               <ShapeToolButton
                 key={shape.id}
                 shape={shape}

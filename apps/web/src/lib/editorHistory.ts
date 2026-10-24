@@ -299,8 +299,12 @@ export function expandHistoryShapes(
 export function historyShapeNeedsRemesh(shape: WorkplaneShape): boolean {
   const op = shape.csg?.op;
   if (!shape.csg || !shape.groupedShapes?.length || !op || op === "assemble") return false;
+  const pictureMissing = !shape.importedMesh || shape.importedMesh.positions.length < 9;
+  // A stored solid is this undo step. Rebuilding it from the children drops the
+  // fillet, and the next edit then sews the picture.
+  if (shape.cadBrep || shape.importedMesh?.brepStep) return pictureMissing;
   if (shape.csg.dirty) return true;
-  return !shape.importedMesh || shape.importedMesh.positions.length < 9;
+  return pictureMissing;
 }
 
 /** Project-load heal only — a dirty flag with a usable mesh must not remesh (that snaps moved groups back). */

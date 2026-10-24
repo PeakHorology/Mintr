@@ -37,6 +37,7 @@ import { classifySketchExtrude } from "@/lib/sketchExtrudeSwatch";
 import { EdgeModifierPanel } from "./workplane/EdgeModifierPanel";
 import { PushPullPanel } from "./workplane/PushPullPanel";
 import { ShellPanel } from "./workplane/ShellPanel";
+import { FacePanel } from "./workplane/FacePanel";
 import { SplitPanel } from "./workplane/SplitPanel";
 import { CircularPatternPanel } from "./workplane/CircularPatternPanel";
 import { LinearPatternPanel } from "./workplane/LinearPatternPanel";
@@ -90,7 +91,7 @@ import {
   withCsgMeta,
 } from "@/lib/csgTree";
 import type { CsgOp } from "@/types/sketchforge";
-import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCone, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForAnalyticPolygon, cadModifierPrimitiveForBakedShape, cadModifierPrimitiveForExactKind } from "@/lib/cadBakeMetadata";
+import { bakeCadMetadataForShapeTransform, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCone, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForAnalyticPolygon, cadModifierPrimitiveForBakedShape, cadModifierPrimitiveForExactKind, exactModifierBrep } from "@/lib/cadBakeMetadata";
 import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
 import {
   CAD_MODIFIER_MAX_SHARP_ANGLE,
@@ -219,6 +220,8 @@ import {
 import { fingerprintsForEdgeIds, matchRecipeEdgeIds } from "@/lib/edgeTreatmentRematch";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
 import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
+import { buildFaceBody, faceDraftsToBuild, joinedFaceDrafts, rememberFaceDraft, type FaceDraft } from "@/lib/faceBody";
+import { faceCornerRadiusLimit, faceInsetLimit } from "@/lib/faceOutline";
 
 import {
   axisAlignedRectFromClosedPath,
@@ -275,6 +278,7 @@ import {
   alignmentLabel,
   alignmentStatuses,
   buildGroupedShapeFromSelection,
+  manifoldBooleanMeshShape,
   buildIntersectionShapeFromSelection,
   cleanShapePatch,
   effectiveAlignmentAnchorId,
@@ -633,6 +637,37 @@ function meshDataToCadTransfer(mesh: MeshData) {
   return { positions, indices };
 }
 
+type ModifierPartInput = {
+  shape: WorkplaneShape;
+  mesh?: MeshData;
+  brep?: string;
+  brepStep?: string;
+  brepTransform?: number[];
+  primitive?: CadModifierPrimitivePart;
+};
+
+/** Prefer the exact solid. The display mesh is only the fallback when no solid was stored. */
+function modifierPartInput(shape: WorkplaneShape): ModifierPartInput {
+  const primitive = cadModifierPrimitiveForShape(shape);
+  if (primitive) return { shape, primitive };
+  const exact = exactModifierBrep(shape);
+  if (exact) return { shape, ...exact };
+  return { shape, mesh: meshForShape(shape) };
+}
+
+function cadModifierPartFromInput(part: ModifierPartInput): CadModifierMeshPart {
+  const hole = Boolean(part.shape.hole);
+  if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole };
+  if (part.brepStep) return { brepStep: part.brepStep, brepTransform: part.brepTransform, hole };
+  if (part.primitive) return { primitive: part.primitive, hole };
+  return { ...meshDataToCadTransfer(part.mesh as MeshData), hole };
+}
+
+function modifierInputsLackSurface(parts: ModifierPartInput[]) {
+  const triangleCount = parts.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
+  return triangleCount === 0 && parts.every((part) => !part.brep && !part.brepStep && !part.primitive);
+}
+
 
 
 async function restoreEdgeTreatmentInShape(shape: WorkplaneShape, path: number[], entryId: string): Promise<{ shape: WorkplaneShape; label: string } | null> {
@@ -967,7 +1002,11 @@ async function remeshDirtyHistoryShapes(shapes: WorkplaneShape[]): Promise<{ sha
   for (let index = 0; index < next.length; index += 1) {
     const shape = next[index];
     if (!historyShapeNeedsRemesh(shape)) continue;
-    const hadEdgeFeatures = Boolean(shape.edgeTreatments?.length || shape.cadBrep);
+    if (shape.cadBrep || shape.importedMesh?.brepStep) {
+      failedNames.push(shape.name || shape.id);
+      continue;
+    }
+    const hadEdgeFeatures = Boolean(shape.edgeTreatments?.length);
     const remeshed = await remeshCsgGroup(shape);
     if (remeshed) {
       let restored = remeshed;
@@ -997,6 +1036,17 @@ async function remeshDirtyHistoryShapes(shapes: WorkplaneShape[]): Promise<{ sha
     }
   }
   return { shapes: next, failedNames };
+}
+
+function faceApplyNotice(separate: boolean, drafts: readonly FaceDraft[]) {
+  const many = drafts.length > 1;
+  const inward = drafts.every((draft) => draft.direction === "in");
+  if (separate) {
+    if (many) return "Faces created beside the body";
+    return inward ? "Pocket created beside the body" : "Face created beside the body";
+  }
+  if (many) return inward ? "Pockets grouped into the body" : "Faces grouped into the body";
+  return inward ? "Pocket grouped into the body" : "Face grouped into the body";
 }
 
 /** Keep host body id when a cut/union result replaces an existing CSG host. */
@@ -1421,6 +1471,27 @@ export function SketchForgeEditor({
   useEffect(() => {
     shellSessionRef.current = shellSession;
   }, [shellSession]);
+  const [faceSession, setFaceSession] = useState<{
+    shapeId: string;
+    faces: CadPlanarFace[];
+    hoverFaceId: number | null;
+    selectedFaceId: number | null;
+    kept: FaceDraft[];
+    direction: "out" | "in";
+    inset: number;
+    cornerRadius: number;
+    depth: number;
+    separate: boolean;
+    joinThrough: boolean;
+    busy: boolean;
+    prepared: boolean;
+    error: string | null;
+  } | null>(null);
+  const faceSessionRef = useRef(faceSession);
+  useEffect(() => {
+    faceSessionRef.current = faceSession;
+  }, [faceSession]);
+  const [faceCutPreview, setFaceCutPreview] = useState<WorkplaneShape | null>(null);
   const [pushPullSession, setPushPullSession] = useState<{
     faces: CadPlanarFace[];
     selectedFaceId: number | null;
@@ -1525,7 +1596,9 @@ export function SketchForgeEditor({
       cadModifierRequestRef.current += 1;
       cadModifierPrepareRef.current = cadModifierRequestRef.current;
       cadModifierWorkerRestartRef.current();
-      const message = pushPullSessionRef.current
+      const message = faceSessionRef.current
+        ? "Face timed out loading faces. Close it and try again."
+        : pushPullSessionRef.current
         ? "Push Pull timed out loading faces. Close it and try again."
         : shellSessionRef.current
           ? "Hollow timed out in the CAD kernel. Try a thicker wall or fewer openings, or close Hollow and try again."
@@ -1550,6 +1623,12 @@ export function SketchForgeEditor({
         busy: false,
         prepared: false,
         preview: null,
+        error: message,
+      } : current);
+      setFaceSession((current) => current ? {
+        ...current,
+        busy: false,
+        prepared: false,
         error: message,
       } : current);
       setNotice(message);
@@ -1630,6 +1709,18 @@ export function SketchForgeEditor({
       }
       if (message.type === "ready") {
         if (message.requestId !== cadModifierPrepareRef.current) return;
+        if (faceSessionRef.current) {
+          const faces = message.planarFaces ?? [];
+          setFaceSession((current) => current ? {
+            ...current,
+            faces,
+            prepared: true,
+            busy: false,
+            error: faces.length > 0 ? null : "Face needs a flat face.",
+          } : current);
+          setNotice(faces.length > 0 ? "Click a flat face" : "Face needs a flat face.");
+          return;
+        }
         if (pushPullSessionRef.current) {
           const faces = message.planarFaces ?? [];
           setPushPullSession((current) => current ? {
@@ -1798,7 +1889,18 @@ export function SketchForgeEditor({
           setEdgeModifier(null);
           setShellSession(null);
           setPushPullSession(null);
+          setFaceSession(null);
+          setFaceCutPreview(null);
           setNotice(cadFailureCopy(message.message, pushPullSessionRef.current ? "pushPull" : "fillet"));
+          return;
+        }
+        if (faceSessionRef.current) {
+          const text = message.message?.trim();
+          setFaceSession((current) => current ? {
+            ...current,
+            busy: false,
+            error: text && text.length < 180 ? text : "Face could not read that solid.",
+          } : current);
           return;
         }
         if (pushPullSessionRef.current) {
@@ -1855,6 +1957,8 @@ export function SketchForgeEditor({
     setEdgeModifier(null);
     setShellSession(null);
     setPushPullSession(null);
+    setFaceSession(null);
+    setFaceCutPreview(null);
     return true;
   }, [clearCadModifierWatchdog]);
 
@@ -2094,6 +2198,14 @@ export function SketchForgeEditor({
   );
   const alignHandleStatuses = useMemo(() => (alignMode ? alignmentStatuses(selectedShapes, effectiveAlignAnchorId) : []), [alignMode, effectiveAlignAnchorId, selectedShapes]);
   const activeToolChip = useMemo<{ label: string; hint: string } | null>(() => {
+    if (faceSession) {
+      return {
+        label: "Face",
+        hint: faceSession.selectedFaceId === null
+          ? (faceSession.kept.length > 0 ? "Click the next flat face. It uses these same settings." : "Click a flat face")
+          : (faceSession.kept.length > 0 ? "Edits apply to every face you added" : "Adjust, then Create. Esc cancels"),
+      };
+    }
     if (pushPullSession) {
       return { label: "Push Pull", hint: "Drag, type, then Apply" };
     }
@@ -2119,7 +2231,7 @@ export function SketchForgeEditor({
       return { label: "Mirror", hint: "Esc to cancel" };
     }
     return null;
-  }, [alignMode, circularPattern, edgeModifier, hasSelection, linearPattern, mirrorMode, placementRuler, pushPullSession]);
+  }, [alignMode, circularPattern, edgeModifier, faceSession, hasSelection, linearPattern, mirrorMode, placementRuler, pushPullSession]);
   const sketchToolChip = useMemo<{ label: string; hint: string } | null>(() => {
     if (!sketchActive) return null;
     const coach = sketchCoach(
@@ -2181,6 +2293,99 @@ export function SketchForgeEditor({
     },
     [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
   );
+  const faceOperationIds = useMemo(() => {
+    if (!faceSession?.prepared) return [] as number[];
+    const ids = faceSession.kept.map((entry) => entry.faceId);
+    if (faceSession.selectedFaceId !== null && !ids.includes(faceSession.selectedFaceId)) ids.push(faceSession.selectedFaceId);
+    return ids;
+  }, [faceSession?.kept, faceSession?.prepared, faceSession?.selectedFaceId]);
+  const faceCornerLimit = useMemo(() => {
+    const session = faceSession;
+    if (!session?.prepared || faceOperationIds.length === 0) return null;
+    const limits = faceOperationIds.flatMap((faceId) => {
+      const face = session.faces.find((entry) => entry.id === faceId);
+      return face ? [faceCornerRadiusLimit(face.points, face.origin, face.normal, session.inset)] : [];
+    });
+    return limits.length > 0 ? Math.min(...limits) : null;
+  }, [faceOperationIds, faceSession]);
+  useEffect(() => {
+    if (faceCornerLimit === null) return;
+    setFaceSession((current) => {
+      if (!current || current.cornerRadius <= faceCornerLimit + 0.001) return current;
+      return { ...current, cornerRadius: faceCornerLimit };
+    });
+  }, [faceCornerLimit]);
+  const faceDrafts = useMemo(() => {
+    if (!faceSession?.prepared) return [];
+    const current = faceSession.selectedFaceId === null
+      ? null
+      : {
+        faceId: faceSession.selectedFaceId,
+        direction: faceSession.direction,
+        inset: faceSession.inset,
+        cornerRadius: faceCornerLimit === null
+          ? faceSession.cornerRadius
+          : Math.min(faceSession.cornerRadius, faceCornerLimit),
+        depth: faceSession.depth,
+      };
+    return faceDraftsToBuild(faceSession.kept, current);
+  }, [
+    faceCornerLimit,
+    faceSession?.cornerRadius,
+    faceSession?.depth,
+    faceSession?.direction,
+    faceSession?.kept,
+    faceSession?.prepared,
+    faceSession?.selectedFaceId,
+    faceSession?.inset,
+  ]);
+  const faceBuilds = useMemo(() => {
+    const session = faceSession;
+    if (!session?.prepared || faceDrafts.length === 0) return [];
+    const host = shapes.find((shape) => shape.id === session.shapeId);
+    if (!host) return [];
+    const drafts = joinedFaceDrafts(host, session.faces, faceDrafts, session.joinThrough);
+    return drafts.flatMap((draft) => {
+      const face = session.faces.find((entry) => entry.id === draft.faceId);
+      if (!face) return [];
+      return [{ draft, face, built: buildFaceBody({ host, face, ...draft }) }];
+    });
+    // Hover only changes faceSession. Depending on the whole session restarted this
+    // boolean on every pointer move, so Join through never replaced the shallow pockets.
+  }, [faceDrafts, faceSession?.faces, faceSession?.joinThrough, faceSession?.prepared, faceSession?.shapeId, shapes]);
+  const selectedFaceId = faceSession?.selectedFaceId ?? null;
+  const faceBuild = selectedFaceId === null
+    ? null
+    : faceBuilds.find((entry) => entry.draft.faceId === selectedFaceId)?.built ?? null;
+  const faceKeptIds = useMemo(
+    () => faceSession?.kept.map((entry) => entry.faceId) ?? [],
+    [faceSession?.kept],
+  );
+  const faceViewportShapes = useMemo(() => {
+    const session = faceSession;
+    if (!session?.prepared || faceBuilds.length === 0) return viewportShapes;
+    const inward = faceBuilds.some((entry) => entry.draft.direction === "in" && entry.built.shape);
+    let next = viewportShapes;
+    if (inward && faceCutPreview) {
+      next = viewportShapes.map((shape) => shape.id === session.shapeId
+        ? { ...faceCutPreview, id: shape.id, name: shape.name, color: shape.color }
+        : shape);
+    }
+    const pads = faceBuilds.flatMap((entry) => {
+      if (entry.draft.direction !== "out" || !entry.built.shape) return [];
+      const normal = entry.face.normal;
+      const length = Math.hypot(normal.x, normal.y, normal.z) || 1;
+      const lift = 0.05 / length;
+      return [{
+        ...entry.built.shape,
+        id: `face-preview-${entry.draft.faceId}`,
+        x: entry.built.shape.x + normal.x * lift,
+        z: entry.built.shape.z + normal.z * lift,
+        elevation: (entry.built.shape.elevation ?? 0) + normal.y * lift,
+      }];
+    });
+    return pads.length > 0 ? next.concat(pads) : next;
+  }, [faceBuilds, faceCutPreview, faceSession, viewportShapes]);
   const debugState = useMemo(
     () =>
       JSON.stringify({
@@ -5543,11 +5748,12 @@ export function SketchForgeEditor({
         setNotice("Linear pattern cancelled");
         return;
       }
+      const faceWasActive = Boolean(faceSessionRef.current);
       const pushPullWasActive = Boolean(pushPullSessionRef.current);
       const modifierCancelled = invalidateCadModifierSession();
       const currentIndex = historyIndexRef.current;
       if (currentIndex <= 0) {
-        setNotice(modifierCancelled ? (pushPullWasActive ? "Push Pull cancelled" : "Edge modifier cancelled") : "Nothing to undo");
+        setNotice(modifierCancelled ? (faceWasActive ? "Face cancelled" : pushPullWasActive ? "Push Pull cancelled" : "Edge modifier cancelled") : "Nothing to undo");
         return;
       }
       setHistoryBrowse(null);
@@ -6277,13 +6483,19 @@ export function SketchForgeEditor({
     setNotice("Edge modifier cancelled");
   }, [invalidateCadModifierSession]);
 
-  const startEdgeModifier = useCallback(async (kind: CadModifierKind) => {
+  const startEdgeModifier = useCallback(async (kind: CadModifierKind, historyIndex?: number) => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
       setNotice(`Select one unlocked solid to ${kind}`);
       return;
     }
     invalidateCadModifierSession();
-    const editEntry = lastEditableEdgeTreatment(selectedShape, kind);
+    const history = selectedShape.edgeTreatmentHistory ?? [];
+    const indexed = historyIndex === undefined ? null : history[historyIndex];
+    if (historyIndex !== undefined && (!indexed || indexed.feature.kind !== kind)) {
+      setNotice("This edge feature has no stored edit history");
+      return;
+    }
+    const editEntry = indexed ?? lastEditableEdgeTreatment(selectedShape, kind);
     const workingShape = editEntry ? restoreShapeBeforeEdgeTreatment(selectedShape, editEntry) : selectedShape;
     cadModifierEditBeforeRef.current = editEntry ? workingShape : null;
     const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(workingShape);
@@ -6292,21 +6504,9 @@ export function SketchForgeEditor({
       keepResultMesh: hasAppliedEdgeTreatment,
       ignoreThreads: true,
     });
-    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((shape) => {
-      const frame = shape.cadBrepFrame;
-      const preserveNeedsRetessellation = preservesEdgeTreatmentSize(shape) && Boolean(frame) && (
-        Math.abs(shapeWidth(shape) - (frame?.width ?? shapeWidth(shape))) > 1e-6 ||
-        Math.abs(shapeDepth(shape) - (frame?.depth ?? shapeDepth(shape))) > 1e-6 ||
-        Math.abs(shape.height - (frame?.height ?? shape.height)) > 1e-6
-      );
-      const primitive = cadModifierPrimitiveForShape(shape);
-      if (primitive) return { shape, primitive };
-      return shape.cadBrep && frame && !preserveNeedsRetessellation
-        ? { shape, brep: shape.cadBrep, brepTransform: cadBrepTransformForShape(shape) }
-        : { shape, mesh: meshForShape(shape) };
-    });
+    const partInputs = sourceParts.map(modifierPartInput);
     const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
-    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
+    if (modifierInputsLackSurface(partInputs)) {
       setNotice("The selected object has no printable surface");
       return;
     }
@@ -6339,8 +6539,11 @@ export function SketchForgeEditor({
         componentPreviews: [],
         editRecipe,
       });
+      const newerCount = historyIndex === undefined ? 0 : Math.max(0, history.length - historyIndex - 1);
       setNotice(editRecipe
-        ? `Editing existing ${kind}`
+        ? (newerCount > 0
+          ? `Editing this ${kind} also removes ${newerCount} newer edge feature${newerCount === 1 ? "" : "s"}`
+          : `Editing existing ${kind}`)
         : containsHelicalThreadSolid(workingShape)
           ? `Preparing ${kind} without thread geometry`
           : `Preparing ${kind} edges in the CAD worker`);
@@ -6348,11 +6551,7 @@ export function SketchForgeEditor({
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, 0);
     });
-    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
-      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
-      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
-      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
-    });
+    const parts: CadModifierMeshPart[] = partInputs.map(cadModifierPartFromInput);
     const prepareRequestId = postCadModifierRequest({
       type: "prepare",
       parts,
@@ -6376,16 +6575,9 @@ export function SketchForgeEditor({
     }
     invalidateCadModifierSession();
     const sourceParts = edgeTreatmentSourceParts(selectedShape);
-    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((shape) => {
-      const frame = shape.cadBrepFrame;
-      const primitive = cadModifierPrimitiveForShape(shape);
-      if (primitive) return { shape, primitive };
-      return shape.cadBrep && frame
-        ? { shape, brep: shape.cadBrep, brepTransform: cadBrepTransformForShape(shape) }
-        : { shape, mesh: meshForShape(shape) };
-    });
+    const partInputs = sourceParts.map(modifierPartInput);
     const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
-    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
+    if (modifierInputsLackSurface(partInputs)) {
       setNotice("The selected object has no printable surface");
       return;
     }
@@ -6414,11 +6606,7 @@ export function SketchForgeEditor({
     shellSessionRef.current = session;
     setShellSession(session);
     setNotice("Preparing hollow in the CAD worker");
-    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
-      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
-      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
-      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
-    });
+    const parts: CadModifierMeshPart[] = partInputs.map(cadModifierPartFromInput);
     const prepareRequestId = postCadModifierRequest({
       type: "prepare",
       parts,
@@ -6433,28 +6621,226 @@ export function SketchForgeEditor({
     armCadModifierWatchdog(prepareRequestId, "prepare");
   }, [armCadModifierWatchdog, clearEditorToolSessions, invalidateCadModifierSession, postCadModifierRequest, selectedShape, selectedShapes.length]);
 
+  const startFace = useCallback(() => {
+    if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
+      setNotice("Select one unlocked solid to use Face");
+      return;
+    }
+    invalidateCadModifierSession();
+    const sourceParts = edgeTreatmentSourceParts(selectedShape);
+    const partInputs = sourceParts.map(modifierPartInput);
+    const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
+    if (modifierInputsLackSurface(partInputs)) {
+      setNotice("The selected object has no printable surface");
+      return;
+    }
+    if (triangleCount > 180_000) {
+      setNotice("This mesh is too dense for Face. Simplify it below 180,000 triangles first.");
+      return;
+    }
+    cadModifierBaseShapeRef.current = selectedShape;
+    cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
+    cadModifierSourcePartsRef.current = sourceParts;
+    clearEditorToolSessions("fillet");
+    const session = {
+      shapeId: selectedShape.id,
+      faces: [] as CadPlanarFace[],
+      hoverFaceId: null as number | null,
+      selectedFaceId: null as number | null,
+      kept: [] as FaceDraft[],
+      direction: "out" as const,
+      inset: 0,
+      cornerRadius: 0,
+      depth: 2,
+      separate: false,
+      joinThrough: false,
+      busy: true,
+      prepared: false,
+      error: null as string | null,
+    };
+    faceSessionRef.current = session;
+    setFaceSession(session);
+    setFaceCutPreview(null);
+    setNotice("Reading faces");
+    const parts: CadModifierMeshPart[] = partInputs.map(cadModifierPartFromInput);
+    const prepareRequestId = postCadModifierRequest({
+      type: "prepare",
+      parts,
+      sharpAngle: 12,
+    }, parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer, part.indices.buffer] : []));
+    if (prepareRequestId === null) {
+      const message = cadModifierWorkerFailureMessage();
+      setFaceSession((current) => current ? { ...current, busy: false, prepared: false, error: message } : current);
+      return;
+    }
+    cadModifierPrepareRef.current = prepareRequestId;
+    armCadModifierWatchdog(prepareRequestId, "prepare");
+  }, [armCadModifierWatchdog, clearEditorToolSessions, invalidateCadModifierSession, postCadModifierRequest, selectedShape, selectedShapes.length]);
+
+  const cancelFace = useCallback(() => {
+    invalidateCadModifierSession();
+    setNotice("Face cancelled");
+  }, [invalidateCadModifierSession]);
+
+  const applyFace = useCallback(() => {
+    const session = faceSessionRef.current;
+    const host = session ? shapesRef.current.find((shape) => shape.id === session.shapeId) : null;
+    if (!session || !host) {
+      setNotice("Click a flat face first");
+      return;
+    }
+    if (cadApplyBusyRef.current) return;
+    const selected = session.selectedFaceId === null
+      ? null
+      : session.faces.find((entry) => entry.id === session.selectedFaceId);
+    const current = selected && session.selectedFaceId !== null
+      ? {
+        faceId: session.selectedFaceId,
+        direction: session.direction,
+        inset: session.inset,
+        cornerRadius: Math.min(
+          session.cornerRadius,
+          faceCornerRadiusLimit(selected.points, selected.origin, selected.normal, session.inset),
+        ),
+        depth: session.depth,
+      }
+      : null;
+    const drafts = joinedFaceDrafts(
+      host,
+      session.faces,
+      faceDraftsToBuild(session.kept, current),
+      session.joinThrough,
+    );
+    if (drafts.length === 0) {
+      setNotice("Click a flat face first");
+      return;
+    }
+    const built = drafts.map((draft) => {
+      const face = session.faces.find((entry) => entry.id === draft.faceId);
+      return { draft, built: face ? buildFaceBody({ host, face, ...draft }) : null };
+    });
+    const failed = built.find((entry) => !entry.built?.shape);
+    if (failed) {
+      setFaceSession((currentSession) => currentSession ? {
+        ...currentSession,
+        error: failed.built?.error ?? "Click a flat face first",
+      } : currentSession);
+      return;
+    }
+    cadApplyBusyRef.current = true;
+    setFaceSession((currentSession) => currentSession ? { ...currentSession, busy: true, error: null } : currentSession);
+    const notice = faceApplyNotice(session.separate, drafts);
+    void (async () => {
+      try {
+        const prisms = [];
+        for (const entry of built) {
+          const shape = entry.built!.shape!;
+          const exact = await withExactSketchExtrusionSolid(shape, entry.built!.depth, { cutIntoFace: false });
+          let prism = exact.cadBrep || exact.importedMesh?.brepStep ? exact : shape;
+          if (entry.draft.direction === "in" && !prism.cadBrep && !prism.importedMesh?.brepStep) {
+            prism = { ...prism, sketchProfile: undefined, sketchPlane: undefined, sketchDoc: undefined, sketchFinish: undefined };
+          }
+          prisms.push({
+            ...prism,
+            name: entry.draft.direction === "in" ? "Pocket" : "Face",
+            color: host.color,
+            solidColor: host.solidColor || host.color,
+            hole: entry.draft.direction === "in",
+          });
+        }
+        if (session.separate) {
+          commitShapes([...shapesRef.current, ...prisms], prisms[prisms.length - 1].id, notice);
+        } else {
+          const pads = prisms.filter((prism) => !prism.hole).map((prism) => withHoleMode(prism, false, host.color));
+          const pockets = prisms.filter((prism) => prism.hole);
+          let grouped = pads.length > 0
+            ? await buildGroupedShapeFromSelection([withHoleMode(host, false), ...pads])
+            : null;
+          if (pads.length > 0 && !grouped?.group) {
+            setFaceSession((currentSession) => currentSession ? { ...currentSession, busy: false } : currentSession);
+            setNotice(grouped?.failureNotice || "Could not add that face. The body was left as it is.");
+            return;
+          }
+          if (pockets.length > 0) {
+            const base = grouped?.group ?? withHoleMode(host, false);
+            grouped = await buildGroupedShapeFromSelection([withHoleMode(base, false), ...pockets]);
+            if (!grouped.group) {
+              setFaceSession((currentSession) => currentSession ? { ...currentSession, busy: false } : currentSession);
+              setNotice(grouped.failureNotice || "Could not add that face. The body was left as it is.");
+              return;
+            }
+          }
+          const linked = asPreservedCsgBody(host, grouped!.group!);
+          commitShapes(
+            shapesRef.current.filter((shape) => shape.id !== host.id).concat(linked),
+            linked.id,
+            notice,
+          );
+        }
+        invalidateCadModifierSession();
+        setNotice(notice);
+      } catch (error) {
+        setFaceSession((currentSession) => currentSession ? {
+          ...currentSession,
+          busy: false,
+          error: error instanceof Error && error.message ? error.message : "Could not create that face",
+        } : currentSession);
+      } finally {
+        cadApplyBusyRef.current = false;
+      }
+    })();
+  }, [commitShapes, invalidateCadModifierSession]);
+
+  const keepFaceForAnother = useCallback(() => {
+    const session = faceSessionRef.current;
+    const host = session ? shapesRef.current.find((shape) => shape.id === session.shapeId) : null;
+    const face = session?.faces.find((entry) => entry.id === session.selectedFaceId);
+    if (!session || !host || !face || session.selectedFaceId === null) return;
+    const cornerRadius = Math.min(
+      session.cornerRadius,
+      faceCornerRadiusLimit(face.points, face.origin, face.normal, session.inset),
+    );
+    const draft: FaceDraft = {
+      faceId: face.id,
+      direction: session.direction,
+      inset: session.inset,
+      cornerRadius,
+      depth: session.depth,
+    };
+    const built = buildFaceBody({ host, face, ...draft });
+    if (!built.shape) {
+      setFaceSession((current) => current ? { ...current, error: built.error } : current);
+      return;
+    }
+    setFaceSession((current) => {
+      if (!current || current.selectedFaceId !== face.id) return current;
+      // Every kept face carries the settings shown in the panel, so the body
+      // built between picks is the one the preview showed.
+      return {
+        ...current,
+        kept: faceDraftsToBuild(current.kept, draft),
+        selectedFaceId: null,
+        error: null,
+      };
+    });
+    setNotice("Click the next flat face. It uses these same settings.");
+  }, []);
+
   const startPushPull = useCallback(() => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
       setNotice("Select one unlocked solid to Push Pull");
       return;
     }
     const sourceParts = pushPullSourceParts(selectedShape);
-    const hasCad = sourceParts.some((part) => Boolean(cadModifierPrimitiveForShape(part) || part.cadBrep));
+    const hasCad = sourceParts.some((part) => Boolean(cadModifierPrimitiveForShape(part) || part.cadBrep || part.importedMesh?.brepStep));
     if (!hasCad) {
       setNotice("Push Pull needs an exact CAD body. Group CAD parts first.");
       return;
     }
     invalidateCadModifierSession();
-    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((shape) => {
-      const frame = shape.cadBrepFrame;
-      const primitive = cadModifierPrimitiveForShape(shape);
-      if (primitive) return { shape, primitive };
-      return shape.cadBrep && frame
-        ? { shape, brep: shape.cadBrep, brepTransform: cadBrepTransformForShape(shape) }
-        : { shape, mesh: meshForShape(shape) };
-    });
+    const partInputs = sourceParts.map(modifierPartInput);
     const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
-    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
+    if (modifierInputsLackSurface(partInputs)) {
       setNotice("The selected object has no printable surface");
       return;
     }
@@ -6478,11 +6864,7 @@ export function SketchForgeEditor({
     pushPullSessionRef.current = session;
     setPushPullSession(session);
     setNotice("Drag a flat face");
-    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
-      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
-      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
-      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
-    });
+    const parts: CadModifierMeshPart[] = partInputs.map(cadModifierPartFromInput);
     const prepareRequestId = postCadModifierRequest({
       type: "prepare",
       parts,
@@ -6507,31 +6889,15 @@ export function SketchForgeEditor({
       keepResultMesh: hasAppliedEdgeTreatment,
       ignoreThreads: true,
     });
-    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((partShape) => {
-      const frame = partShape.cadBrepFrame;
-      const preserveNeedsRetessellation = preservesEdgeTreatmentSize(partShape) && Boolean(frame) && (
-        Math.abs(shapeWidth(partShape) - (frame?.width ?? shapeWidth(partShape))) > 1e-6 ||
-        Math.abs(shapeDepth(partShape) - (frame?.depth ?? shapeDepth(partShape))) > 1e-6 ||
-        Math.abs(partShape.height - (frame?.height ?? partShape.height)) > 1e-6
-      );
-      const primitive = cadModifierPrimitiveForShape(partShape);
-      if (primitive) return { shape: partShape, primitive };
-      return partShape.cadBrep && frame && !preserveNeedsRetessellation
-        ? { shape: partShape, brep: partShape.cadBrep, brepTransform: cadBrepTransformForShape(partShape) }
-        : { shape: partShape, mesh: meshForShape(partShape) };
-    });
+    const partInputs = sourceParts.map(modifierPartInput);
     const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
-    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
+    if (modifierInputsLackSurface(partInputs)) {
       throw new Error("The selected object has no printable surface");
     }
     if (triangleCount > 180_000) {
       throw new Error("This mesh is too dense for interactive edge treatment. Simplify it below 180,000 triangles first.");
     }
-    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
-      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
-      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
-      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
-    });
+    const parts: CadModifierMeshPart[] = partInputs.map(cadModifierPartFromInput);
     const transfer = parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer as Transferable, part.indices.buffer as Transferable] : []);
     const response = await postCadModifierRequestAsync({
       type: "prepare",
@@ -6756,6 +7122,15 @@ export function SketchForgeEditor({
     invalidateCadModifierSession();
     setNotice("Push Pull cancelled because the object changed");
   }, [invalidateCadModifierSession, pushPullSession, shapes]);
+
+  useEffect(() => {
+    const base = cadModifierBaseShapeRef.current;
+    if (!faceSession || !base) return;
+    const current = shapes.find((shape) => shape.id === base.id);
+    if (current && projectShapesFingerprint([current]) === cadModifierBaseFingerprintRef.current) return;
+    invalidateCadModifierSession();
+    setNotice("Face cancelled because the object changed");
+  }, [faceSession, invalidateCadModifierSession, shapes]);
 
   const applyEdgeModifier = useCallback(() => {
     const base = cadModifierBaseShapeRef.current;
@@ -7064,6 +7439,46 @@ export function SketchForgeEditor({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [invalidateCadModifierSession, playPushPullSettle, pushPullSession]);
+
+  useEffect(() => {
+    if (!faceSession) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelFace();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cancelFace, faceSession]);
+
+  useEffect(() => {
+    const inward = faceBuilds.filter((entry) => entry.draft.direction === "in" && entry.built.shape);
+    if (!faceSession?.shapeId || inward.length === 0) {
+      setFaceCutPreview(null);
+      return;
+    }
+    const hostId = faceSession.shapeId;
+    const cutters = inward.map((entry) => entry.built.shape!);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const host = shapesRef.current.find((shape) => shape.id === hostId);
+      if (!host) return;
+      void manifoldBooleanMeshShape([
+        withHoleMode(host, false),
+        ...cutters.map((cutter) => ({ ...cutter, hole: true })),
+      ])
+        .then((cut) => {
+          if (!cancelled) setFaceCutPreview(cut);
+        })
+        .catch(() => {
+          if (!cancelled) setFaceCutPreview(null);
+        });
+    }, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [faceBuilds, faceSession?.shapeId]);
 
   const applySplit = useCallback(() => {
     if (!splitSession) return;
@@ -8619,6 +9034,7 @@ export function SketchForgeEditor({
       if (command.action === "split") {
         const target = findShape(params.id);
         if (!target) throw new Error("Object not found");
+        if (target.kind === "gridfinityBin") throw new Error("Gridfinity bins stay in one piece");
         if (target.locked) throw new Error("Unlock the object before splitting it");
         const axis = params.axis === "y" || params.axis === "z" ? params.axis : "x";
         const parts = splitShapeWithPlane(target, { axis, offset: mcpNumber(params.offset, 0) });
@@ -10094,7 +10510,7 @@ export function SketchForgeEditor({
   ]);
 
   const geometryToolbarProps = {
-    canUndo: historyIndex > 0 || Boolean(edgeModifier) || Boolean(pushPullSession) || Boolean(circularPattern) || Boolean(linearPattern),
+    canUndo: historyIndex > 0 || Boolean(edgeModifier) || Boolean(pushPullSession) || Boolean(faceSession) || Boolean(circularPattern) || Boolean(linearPattern),
     canRedo: historyIndex < history.length - 1,
     hasClipboard: clipboard.length > 0 || systemClipboardSupported,
     hasSelection,
@@ -10106,6 +10522,7 @@ export function SketchForgeEditor({
     layFlatActive: layFlat,
     canAlign: selectedShapes.length > 1,
     canEdgeModify: selectedShapes.length === 1 && Boolean(selectedShape && !selectedShape.locked && !selectedShape.hole),
+    canSplit: selectedShapes.length === 1 && Boolean(selectedShape && !selectedShape.locked && !selectedShape.hole && selectedShape.kind !== "gridfinityBin"),
     edgeModifierKind: edgeModifier?.kind ?? null,
     circularPatternActive: Boolean(circularPattern),
     canCircularPattern,
@@ -10135,8 +10552,8 @@ export function SketchForgeEditor({
     onFillet: () => edgeModifier?.kind === "fillet" ? cancelEdgeModifier() : startEdgeModifier("fillet"),
     onPushPull: () => pushPullSession ? invalidateCadModifierSession() : startPushPull(),
     pushPullActive: Boolean(pushPullSession),
-    onHollow: () => shellSession ? invalidateCadModifierSession() : startShell(),
-    hollowActive: Boolean(shellSession),
+    onFace: () => faceSession ? cancelFace() : startFace(),
+    faceActive: Boolean(faceSession),
     onSplit: () => {
       if (splitSession) {
         setSplitSession(null);
@@ -10144,6 +10561,10 @@ export function SketchForgeEditor({
         return;
       }
       if (!selectedShape || selectedShape.locked) return;
+      if (selectedShape.kind === "gridfinityBin") {
+        setNotice("Gridfinity bins stay in one piece");
+        return;
+      }
       if (edgeModifier) cancelEdgeModifier();
       if (shellSession || pushPullSession) invalidateCadModifierSession();
       setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0, joint: "none", clearance: 0.2 });
@@ -10741,7 +11162,7 @@ export function SketchForgeEditor({
             onEraseEntities: eraseSketchEntities,
             onNotice: setNotice,
           } : null}
-          shapes={viewportShapes}
+          shapes={faceViewportShapes}
           selectedIds={historyBrowse !== null && historyBrowse !== historyIndex ? (history[historyBrowse]?.selectedIds ?? []) : selectedIds}
           alignMode={alignMode}
           alignAnchorId={effectiveAlignAnchorId}
@@ -10811,6 +11232,19 @@ export function SketchForgeEditor({
             if (!featureId) return;
             commitShapes(dissolvePatternFeature(shapesRef.current, featureId), selectedIds, "Pattern dissolved — copies are independent");
           } : undefined}
+          onEditEdgeTreatment={selectedShape?.edgeTreatments?.length ? (index) => {
+            const feature = selectedShape.edgeTreatments?.[index];
+            if (!feature) return;
+            void startEdgeModifier(feature.kind, index);
+          } : undefined}
+          onRemoveEdgeTreatment={selectedShape?.edgeTreatments?.length ? (index) => {
+            const entry = selectedShape.edgeTreatmentHistory?.[index];
+            if (!entry) {
+              setNotice("This edge feature has no stored edit history");
+              return;
+            }
+            void removeEdgeTreatment(`root:${entry.id}`);
+          } : undefined}
           onUpdateShape={updateShape}
           onWorkspaceSettingsChange={updateProjectWorkspaceSettings}
           modifierActive={Boolean(edgeModifier)}
@@ -10819,10 +11253,12 @@ export function SketchForgeEditor({
           modifierEdges={modifierSelectableEdges}
           selectedModifierEdgeIds={edgeModifier ? edgeModifier.selectedEdgeIds : []}
           onModifierEdgeToggle={toggleModifierEdge}
-          pushPullActive={Boolean(pushPullSession)}
-          pushPullFaces={pushPullSession?.faces ?? []}
-          pushPullHoverFaceId={pushPullSession?.hoverFaceId ?? null}
-          pushPullSelectedFaceId={pushPullSession?.selectedFaceId ?? null}
+          pushPullActive={Boolean(pushPullSession || faceSession)}
+          facePickOnly={Boolean(faceSession)}
+          pushPullFaces={(faceSession ?? pushPullSession)?.faces ?? []}
+          pushPullHoverFaceId={(faceSession ?? pushPullSession)?.hoverFaceId ?? null}
+          pushPullSelectedFaceId={(faceSession ?? pushPullSession)?.selectedFaceId ?? null}
+          pushPullMarkedFaceIds={faceKeptIds}
           pushPullDistance={pushPullSession?.distance ?? 0}
           pushPullShowGhost={Boolean(
             pushPullSession
@@ -10834,7 +11270,40 @@ export function SketchForgeEditor({
           pushPullChipText={pushPullSession && Math.abs(pushPullSession.distance) > 1e-3
             ? `${formatMeasurementNumber(millimetersToDisplay(pushPullSession.distance, workspaceSettings), workspaceSettings.accuracy)} ${lengthDisplayUnit(workspaceSettings).label}`
             : null}
-          onPushPullHover={(faceId) => setPushPullSession((current) => current ? { ...current, hoverFaceId: faceId } : current)}
+          onPushPullHover={(faceId) => {
+            if (faceSessionRef.current) {
+              setFaceSession((current) => current ? { ...current, hoverFaceId: faceId } : current);
+              return;
+            }
+            setPushPullSession((current) => current ? { ...current, hoverFaceId: faceId } : current);
+          }}
+          onPushPullFacePick={(faceId) => setFaceSession((current) => {
+            if (!current) return current;
+            const saved = current.kept.find((entry) => entry.faceId === faceId);
+            if (!saved) return { ...current, selectedFaceId: faceId, error: null };
+            let kept = current.kept.filter((entry) => entry.faceId !== faceId);
+            const leaving = current.selectedFaceId !== null && current.selectedFaceId !== faceId
+              ? current.faces.find((entry) => entry.id === current.selectedFaceId)
+              : undefined;
+            const host = shapesRef.current.find((shape) => shape.id === current.shapeId);
+            if (host && leaving) {
+              const draft: FaceDraft = {
+                faceId: leaving.id,
+                direction: current.direction,
+                inset: current.inset,
+                cornerRadius: current.cornerRadius,
+                depth: current.depth,
+              };
+              if (buildFaceBody({ host, face: leaving, ...draft }).shape) {
+                kept = rememberFaceDraft(kept, draft);
+              }
+            }
+            return { ...current, kept, selectedFaceId: faceId, error: null };
+          })}
+          onPushPullFaceMiss={() => {
+            if (!faceSessionRef.current?.prepared) return;
+            setNotice("A curved face does not work. Click a flat face.");
+          }}
           onPushPullDragStart={(faceId, distance) => setPushPullSession((current) => current?.prepared ? {
             ...current,
             selectedFaceId: faceId,
@@ -10915,6 +11384,50 @@ export function SketchForgeEditor({
                     invalidateCadModifierSession();
                     setNotice("Push Pull cancelled");
                   }}
+                />
+              </ToolbarFlow>
+            ) : faceSession ? (
+              <ToolbarFlow tool="Face" label="Face">
+                <FacePanel
+                  targetName={shapes.find((shape) => shape.id === faceSession.shapeId)?.name ?? "Face"}
+                  direction={faceSession.direction}
+                  inset={faceSession.inset}
+                  maxInset={(() => {
+                    const limits = faceOperationIds.flatMap((faceId) => {
+                      const face = faceSession.faces.find((entry) => entry.id === faceId);
+                      return face ? [faceInsetLimit(face.points, face.origin, face.normal)] : [];
+                    });
+                    return limits.length > 0 ? Math.min(...limits) : 20;
+                  })()}
+                  cornerRadius={faceSession.cornerRadius}
+                  maxCornerRadius={faceCornerLimit ?? 20}
+                  depth={faceSession.depth}
+                  maxDepth={(() => {
+                    const host = shapes.find((shape) => shape.id === faceSession.shapeId);
+                    return host ? Math.max(shapeWidth(host), shapeDepth(host), host.height) * 2 : 40;
+                  })()}
+                  separate={faceSession.separate}
+                  joinThrough={faceSession.joinThrough}
+                  depthHeld={(() => {
+                    const inward = faceBuilds.filter((entry) => entry.draft.direction === "in");
+                    return inward.length > 0 && inward.every((entry) => entry.draft.passThrough);
+                  })()}
+                  faceChosen={faceSession.selectedFaceId !== null}
+                  keptCount={faceSession.kept.length}
+                  prepared={faceSession.prepared}
+                  busy={faceSession.busy}
+                  error={faceBuild?.error ?? faceSession.error}
+                  notice={faceBuild?.notice ?? null}
+                  workspace={workspaceSettings}
+                  onDirectionChange={(direction) => setFaceSession((current) => current ? { ...current, direction, error: null } : current)}
+                  onInsetChange={(inset) => setFaceSession((current) => current ? { ...current, inset, error: null } : current)}
+                  onCornerRadiusChange={(cornerRadius) => setFaceSession((current) => current ? { ...current, cornerRadius, error: null } : current)}
+                  onDepthChange={(depth) => setFaceSession((current) => current ? { ...current, depth, error: null } : current)}
+                  onSeparateChange={(separate) => setFaceSession((current) => current ? { ...current, separate } : current)}
+                  onJoinThroughChange={(joinThrough) => setFaceSession((current) => current ? { ...current, joinThrough, error: null } : current)}
+                  onAnotherFace={keepFaceForAnother}
+                  onCreate={applyFace}
+                  onCancel={cancelFace}
                 />
               </ToolbarFlow>
             ) : shellSession && selectedShape ? (

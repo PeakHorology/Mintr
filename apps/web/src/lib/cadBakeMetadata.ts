@@ -4,7 +4,8 @@ import type { CadModifierPrimitivePart } from "@/lib/cadModifierTypes";
 import { gearPlanLoops, normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
-import { coneBaseRadius, coneMaxRadius, coneTopRadius, mirrorSign, resizedImportedCoordinates, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import { shapeYawDegrees } from "@/lib/shapeBounds";
+import { coneBaseRadius, coneMaxRadius, coneTopRadius, mirrorSign, preservesEdgeTreatmentSize, resizedImportedCoordinates, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 
 export type BakedCadMetadataFrame = {
   centerX: number;
@@ -349,6 +350,74 @@ export function cadModifierPrimitiveForBakedShape(shape: WorkplaneShape): CadMod
     height: primitive.height,
     transform: bakedTransform,
   };
+}
+
+/**
+ * A resized fillet can keep its chamfer width by stretching only the middle of the
+ * display mesh. That stretch is not a scale of the exact solid, so the mesh is the
+ * source until the size matches the stored body again.
+ */
+function preserveResizeBlocksExactSolid(shape: WorkplaneShape) {
+  if (!preservesEdgeTreatmentSize(shape)) return false;
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  const frame = shape.cadBrepFrame;
+  if (frame) {
+    return Math.abs(width - frame.width) > 1e-6
+      || Math.abs(depth - frame.depth) > 1e-6
+      || Math.abs(height - frame.height) > 1e-6;
+  }
+  const mesh = shape.importedMesh;
+  if (!mesh) return false;
+  return Math.abs(width - mesh.baseWidth) > 1e-6
+    || Math.abs(depth - mesh.baseDepth) > 1e-6
+    || Math.abs(height - mesh.baseHeight) > 1e-6;
+}
+
+/** Local imported solid (STEP or display mesh) into the shape's current world pose. */
+export function importedSolidWorldTransform(shape: WorkplaneShape) {
+  const mesh = shape.importedMesh;
+  if (!mesh) return undefined;
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  const scaleX = width / Math.max(0.001, mesh.baseWidth || width);
+  const scaleY = height / Math.max(0.001, mesh.baseHeight || height);
+  const scaleZ = depth / Math.max(0.001, mesh.baseDepth || depth);
+  const centerY = height / 2;
+  const matrix = new THREE.Matrix4()
+    .makeTranslation(shape.x, (shape.elevation ?? 0) + centerY, shape.z)
+    .multiply(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(
+      THREE.MathUtils.degToRad(shape.rotationX ?? 0),
+      THREE.MathUtils.degToRad(shapeYawDegrees(shape)),
+      THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
+      "XYZ",
+    )))
+    .multiply(new THREE.Matrix4().makeScale(mirrorSign(shape.mirrorX), mirrorSign(shape.mirrorY), mirrorSign(shape.mirrorZ)))
+    .multiply(new THREE.Matrix4().makeTranslation(0, -centerY, 0))
+    .multiply(new THREE.Matrix4().makeScale(scaleX, scaleY, scaleZ));
+  const transform = cadTransformFromMatrix(matrix);
+  return isIdentityCadTransform(transform) ? undefined : transform;
+}
+
+/**
+ * Exact solid for the next fillet, chamfer, or Group. The on-screen triangles are
+ * only a picture of this body. Sewing those triangles back in is what makes each
+ * later edit denser than the last.
+ */
+export function exactModifierBrep(shape: WorkplaneShape): { brep: string; brepTransform?: number[] } | { brepStep: string; brepTransform?: number[] } | null {
+  if (preserveResizeBlocksExactSolid(shape)) return null;
+  const frame = shape.cadBrepFrame;
+  if (shape.cadBrep && frame) {
+    return { brep: shape.cadBrep, brepTransform: cadBrepTransformForShape(shape) };
+  }
+  const brepStep = shape.importedMesh?.brepStep;
+  if (brepStep) {
+    const brepTransform = importedSolidWorldTransform(shape);
+    return brepTransform ? { brepStep, brepTransform } : { brepStep };
+  }
+  return null;
 }
 
 export function cadBrepTransformForShape(shape: WorkplaneShape) {

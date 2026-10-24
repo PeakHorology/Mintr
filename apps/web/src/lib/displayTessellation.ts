@@ -200,13 +200,13 @@ function curveSidesOf(shape: CurveSideSource, quality: DisplayQuality) {
 
 /**
  * Tessellation that keeps a filleted or chamfered curve as round as the solid
- * it was applied to. Linear sag stays loose so flat faces do not fill with triangles.
+ * it was applied to. The sag does not follow the radius, so a later smaller
+ * edit does not redraw the whole solid with more triangles.
  */
-export function curvedDisplayTessellation(amount: number, sides: number) {
+export function curvedDisplayTessellation(_amount: number, sides: number) {
   const safeSides = Math.max(8, Math.min(512, Math.round(sides)));
-  const safeAmount = Number.isFinite(amount) && amount > 0 ? amount : 1;
   return {
-    linearDeflection: Math.max(0.02, Math.min(0.2, safeAmount / 6)),
+    linearDeflection: 0.055,
     angularDeflection: (Math.PI * 2) / safeSides,
   };
 }

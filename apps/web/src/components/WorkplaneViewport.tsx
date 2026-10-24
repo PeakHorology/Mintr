@@ -335,6 +335,8 @@ export type WorkplaneViewportProps = {
   onUpdateFeature?: (featureId: string, patch: ShapeUpdatePatch, options?: ShapeInspectorUpdateOptions) => void;
   onEditPattern?: () => void;
   onDissolvePattern?: () => void;
+  onEditEdgeTreatment?: (index: number) => void;
+  onRemoveEdgeTreatment?: (index: number) => void;
   onUpdateShape: (id: string, patch: ShapeUpdatePatch) => void;
   onWorkspaceSettingsChange?: (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
   settingsOpen?: boolean;
@@ -350,6 +352,8 @@ export type WorkplaneViewportProps = {
   pushPullFaces?: CadPlanarFace[];
   pushPullHoverFaceId?: number | null;
   pushPullSelectedFaceId?: number | null;
+  /** Face tool: faces already set stay highlighted while the next face is chosen. */
+  pushPullMarkedFaceIds?: readonly number[];
   pushPullDistance?: number;
   pushPullShowGhost?: boolean;
   pushPullGhostOpacity?: number;
@@ -359,6 +363,10 @@ export type WorkplaneViewportProps = {
   onPushPullDrag?: (distance: number) => void;
   onPushPullDragEnd?: (distance: number) => void;
   onPushPullDistanceCommit?: (distance: number) => void;
+  /** Face tool: a click selects the flat face instead of dragging it. */
+  facePickOnly?: boolean;
+  onPushPullFacePick?: (faceId: number) => void;
+  onPushPullFaceMiss?: () => void;
   viewNudgeAxesRef?: MutableRefObject<ViewNudgeAxes>;
   /** Lets the editor dismiss the degree box (and bake) before toolbar actions. */
   rotationEditApiRef?: MutableRefObject<{ dismiss: () => void } | null>;
@@ -2585,6 +2593,8 @@ export function WorkplaneViewport({
   onUpdateFeature,
   onEditPattern,
   onDissolvePattern,
+  onEditEdgeTreatment,
+  onRemoveEdgeTreatment,
   onUpdateShape,
   onWorkspaceSettingsChange,
   settingsOpen = false,
@@ -2599,6 +2609,7 @@ export function WorkplaneViewport({
   pushPullFaces = [],
   pushPullHoverFaceId = null,
   pushPullSelectedFaceId = null,
+  pushPullMarkedFaceIds = [],
   pushPullDistance = 0,
   pushPullShowGhost = false,
   pushPullGhostOpacity = 1,
@@ -2608,6 +2619,9 @@ export function WorkplaneViewport({
   onPushPullDrag,
   onPushPullDragEnd,
   onPushPullDistanceCommit,
+  facePickOnly = false,
+  onPushPullFacePick,
+  onPushPullFaceMiss,
   viewNudgeAxesRef,
   rotationEditApiRef,
   onDropToWorkplane,
@@ -2814,6 +2828,9 @@ export function WorkplaneViewport({
   const onPushPullDragStartRef = useRef(onPushPullDragStart);
   const onPushPullDragRef = useRef(onPushPullDrag);
   const onPushPullDragEndRef = useRef(onPushPullDragEnd);
+  const facePickOnlyRef = useRef(facePickOnly);
+  const onPushPullFacePickRef = useRef(onPushPullFacePick);
+  const onPushPullFaceMissRef = useRef(onPushPullFaceMiss);
   const [pushPullChipScreen, setPushPullChipScreen] = useState<{ x: number; y: number } | null>(null);
   const [pushPullChipEditing, setPushPullChipEditing] = useState(false);
   const [pushPullChipDraft, setPushPullChipDraft] = useState("");
@@ -2894,8 +2911,11 @@ export function WorkplaneViewport({
     onPushPullDragStartRef.current = onPushPullDragStart;
     onPushPullDragRef.current = onPushPullDrag;
     onPushPullDragEndRef.current = onPushPullDragEnd;
+    facePickOnlyRef.current = facePickOnly;
+    onPushPullFacePickRef.current = onPushPullFacePick;
+    onPushPullFaceMissRef.current = onPushPullFaceMiss;
     if (pushPullActive) cancelActiveInteraction();
-    rebuildPushPullFaces(threeRef.current, pushPullFaces, pushPullHoverFaceId, pushPullSelectedFaceId);
+    rebuildPushPullFaces(threeRef.current, pushPullFaces, pushPullHoverFaceId, pushPullSelectedFaceId, pushPullMarkedFaceIds);
     rebuildPushPullGhost(threeRef.current, pushPullFaces, pushPullSelectedFaceId, pushPullDistance, pushPullShowGhost, pushPullGhostOpacity);
     const state = threeRef.current;
     const face = pushPullFaces.find((entry) => entry.id === pushPullSelectedFaceId);
@@ -2907,7 +2927,7 @@ export function WorkplaneViewport({
       setPushPullChipScreen(null);
     }
     if (state) state.needsRender = true;
-  }, [cancelActiveInteraction, pushPullActive, pushPullDistance, pushPullFaces, pushPullGhostOpacity, pushPullHoverFaceId, pushPullSelectedFaceId, pushPullShowGhost, onPushPullDrag, onPushPullDragEnd, onPushPullDragStart, onPushPullHover]);
+  }, [cancelActiveInteraction, facePickOnly, onPushPullFaceMiss, onPushPullFacePick, pushPullActive, pushPullDistance, pushPullFaces, pushPullGhostOpacity, pushPullHoverFaceId, pushPullMarkedFaceIds, pushPullSelectedFaceId, pushPullShowGhost, onPushPullDrag, onPushPullDragEnd, onPushPullDragStart, onPushPullHover]);
 
   const placementRulerModeRef = useRef(placementRulerMode);
   const [objectSnapGuide, setObjectSnapGuide] = useState<ObjectSnapResult | null>(null);
@@ -5098,6 +5118,11 @@ export function WorkplaneViewport({
         const live = threeRef.current ?? state;
         const ray = pointerWorldRay(live, event.clientX, event.clientY);
         const faceId = pickPlanarFaceId(pushPullFacesRef.current, ray.origin, ray.dir);
+        if (facePickOnlyRef.current) {
+          if (faceId === null) onPushPullFaceMissRef.current?.();
+          else onPushPullFacePickRef.current?.(faceId);
+          return;
+        }
         if (faceId === null) return;
         const face = pushPullFacesRef.current.find((entry) => entry.id === faceId);
         if (!face) return;
@@ -6657,6 +6682,8 @@ export function WorkplaneViewport({
             onUpdateFeature={onUpdateFeature}
             onEditPattern={onEditPattern}
             onDissolvePattern={onDissolvePattern}
+            onEditEdgeTreatment={onEditEdgeTreatment}
+            onRemoveEdgeTreatment={onRemoveEdgeTreatment}
             onInteractionActiveChange={onInteractionActiveChange}
           />
         </div>
@@ -9180,6 +9207,7 @@ function rebuildPushPullFaces(
   faces: CadPlanarFace[],
   hoverId: number | null,
   selectedId: number | null,
+  markedIds: readonly number[] = [],
 ) {
   if (!state) return;
   const existing = state.modifierLayer.userData.pushPullFaceLines as THREE.LineSegments | undefined;
@@ -9202,8 +9230,9 @@ function rebuildPushPullFaces(
   drawable.forEach((face, faceIndex) => {
     const chunk = chunks[faceIndex];
     positions.set(chunk, offset);
-    const color = face.id === selectedId ? PUSH_PULL_FACE_BRONZE : face.id === hoverId ? PUSH_PULL_FACE_HOVER : PUSH_PULL_FACE_BRONZE;
-    const opacityScale = face.id === selectedId || face.id === hoverId ? 1 : 0.42;
+    const marked = face.id === selectedId || markedIds.includes(face.id);
+    const color = marked ? PUSH_PULL_FACE_BRONZE : face.id === hoverId ? PUSH_PULL_FACE_HOVER : PUSH_PULL_FACE_BRONZE;
+    const opacityScale = marked || face.id === hoverId ? 1 : 0.42;
     for (let index = 0; index < chunk.length; index += 3) {
       colors[offset + index] = color.r * opacityScale;
       colors[offset + index + 1] = color.g * opacityScale;

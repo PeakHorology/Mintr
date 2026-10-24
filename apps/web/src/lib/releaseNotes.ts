@@ -10,6 +10,9 @@ export type ReleaseNotes = {
 
 /** Feature lines drawn stronger in Settings → Updates and the update card. */
 export const FEATURED_RELEASE_NOTES: readonly string[] = [
+  "Face takes Hollow's place on the toolbar. Click a flat face to add material or cut a pocket.",
+  "Leave column keeps the wall and the bar between two pockets. Join through opens those pockets into each other. Opposite faces cut straight through.",
+  "The part you create matches what you saw on screen.",
   "Gridfinity bins and baseplates are in the Shapes palette. Size a bin in grid units, with height, walls, compartments, magnets, a finger scoop, and open sides that join into a tray, or size a baseplate to a drawer.",
   "A baseplate wider than the printer bed splits into pieces that lock together.",
   "Concave fillet scoops a groove along the edges you pick, and the groove runs through the corner.",
@@ -26,9 +29,27 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.4",
+    items: [
+      "Face takes Hollow's place on the toolbar. Click a flat face to add material or cut a pocket.",
+      "Set the inset, the corner radius, and the depth. Add another face and those settings apply to every face.",
+      "Leave column keeps the wall and the bar between two pockets. Join through opens those pockets into each other. Opposite faces cut straight through.",
+      "The part you create matches what you saw on screen.",
+      "Shapes are split into Solids and Parts.",
+      "Splitting an open Gridfinity baseplate joins the pieces with dovetails. A plate with a solid bottom still uses tabs and slots.",
+      "A fillet or chamfer in the model tree can be edited or removed, and undo keeps it.",
+      "A rectangle with a small corner radius stays a rectangle.",
+    ],
+  },
+  {
     version: "1.1.3",
     items: [
-      ...FEATURED_RELEASE_NOTES,
+      "Gridfinity bins and baseplates are in the Shapes palette. Size a bin in grid units, with height, walls, compartments, magnets, a finger scoop, and open sides that join into a tray, or size a baseplate to a drawer.",
+      "A baseplate wider than the printer bed splits into pieces that lock together.",
+      "Concave fillet scoops a groove along the edges you pick, and the groove runs through the corner.",
+      "Push Pull, Fillet, and Chamfer lines on a polygon sit on the corners you see.",
+      "X-ray glides a cut through the part so you can look inside.",
+      "The start page has a Light / Dark switch, and the room eases from one look to the other.",
       "STL files open standing up in Cura, PreForm, Bambu Studio, and other slicers.",
       "A fillet or chamfer settles into the new edges when you apply it.",
       "Exporting STEP no longer saves an empty file for a split or a group.",

@@ -85,10 +85,13 @@ function buildPrism(brep: Brep, solid: Extract<RecipeSolid, { kind: "prism" }>):
   // for why the normal is chosen so that zDir × xDir = +Y.
   const plane: Plane = solid.axis === "x"
     ? { origin: [solid.a0, 0, 0], xDir: [0, 0, 1], yDir: [0, 1, 0], zDir: [-1, 0, 0] }
-    : { origin: [0, 0, solid.a0], xDir: [1, 0, 0], yDir: [0, 1, 0], zDir: [0, 0, 1] };
+    : solid.axis === "y"
+      ? { origin: [0, solid.a0, 0], xDir: [1, 0, 0], yDir: [0, 0, 1], zDir: [0, -1, 0] }
+      : { origin: [0, 0, solid.a0], xDir: [1, 0, 0], yDir: [0, 1, 0], zDir: [0, 0, 1] };
   const sketch = brep.drawingToSketchOnPlane(drawing, plane as never);
+  const direction: [number, number, number] = solid.axis === "x" ? [1, 0, 0] : solid.axis === "y" ? [0, 1, 0] : [0, 0, 1];
   return brep.sketchExtrude(sketch as never, length, {
-    extrusionDirection: solid.axis === "x" ? [1, 0, 0] : [0, 0, 1],
+    extrusionDirection: direction,
   }) as unknown as BrepSolid;
 }
 

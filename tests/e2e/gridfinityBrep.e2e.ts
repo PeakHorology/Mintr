@@ -71,6 +71,20 @@ describe("gridfinity bodies from the brepjs fallback", () => {
     expect(built!.height).toBeCloseTo(7.65);
   }, 120000);
 
+  it("builds an open baseplate with a dovetail and no floor", async () => {
+    const { buildGridfinityShapeLocal, createGridfinityShape, withGridfinityBaseplateSpec } = await import("@/lib/gridfinityShape");
+    const shape = withGridfinityBaseplateSpec(createGridfinityShape("gridfinityBaseplate"), {
+      unitsX: 2,
+      unitsZ: 2,
+      floorThickness: 0,
+      connectors: { right: "dovetail", left: "groove" },
+    });
+    const built = await buildGridfinityShapeLocal(shape);
+    expect(built).not.toBeNull();
+    expect(built!.height).toBeCloseTo(4.65);
+    expect(built!.importedMesh?.baseWidth).toBeCloseTo(84 + 1.5);
+  }, 120000);
+
   it("rebuilds the exact solid for STEP through buildNativeShapeSolid", async () => {
     const { buildNativeShapeSolid } = await import("@/lib/shapeBrep");
     const { createGridfinityShape } = await import("@/lib/gridfinityShape");

@@ -2,6 +2,17 @@
 
 Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes.ts` when a version ships. Settings → Updates reads that file.
 
+## 1.1.4
+
+- Face takes Hollow's place on the toolbar. Click a flat face to add material or cut a pocket.
+- Set the inset, the corner radius, and the depth. Add another face and those settings apply to every face.
+- Leave column keeps the wall and the bar between two pockets. Join through opens those pockets into each other. Opposite faces cut straight through.
+- The part you create matches what you saw on screen.
+- Shapes are split into Solids and Parts.
+- Splitting an open Gridfinity baseplate joins the pieces with dovetails. A plate with a solid bottom still uses tabs and slots.
+- A fillet or chamfer in the model tree can be edited or removed, and undo keeps it.
+- A rectangle with a small corner radius stays a rectangle.
+
 ## 1.1.3
 
 - Gridfinity bins and baseplates are in the Shapes palette. Size a bin in grid units, with height, walls, compartments, magnets, a finger scoop, and open sides that join into a tray, or size a baseplate to a drawer.

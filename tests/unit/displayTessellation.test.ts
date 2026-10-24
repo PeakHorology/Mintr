@@ -63,8 +63,8 @@ describe("display tessellation", () => {
     expect(curveSidesForShape({ kind: "torus", steps: 64 })).toBe(256);
     const smooth = curvedDisplayTessellation(1, 192);
     expect(smooth.angularDeflection).toBeCloseTo((Math.PI * 2) / 192, 8);
-    expect(smooth.linearDeflection).toBeGreaterThanOrEqual(0.02);
-    expect(smooth.linearDeflection).toBeLessThanOrEqual(0.2);
+    expect(smooth.linearDeflection).toBe(0.055);
+    expect(curvedDisplayTessellation(0.2, 192).linearDeflection).toBe(smooth.linearDeflection);
   });
 
   it("keeps deliberate facet counts that collide with another kind's default", () => {
