@@ -178,8 +178,10 @@ describe("editor history snapshots", () => {
   });
 
   it("counts a shared imported mesh once when bounding undo depth", () => {
-    // 40 MB of mesh shared by reference across 30 moves of the same body.
-    const positions = new Array(10 * 1024 * 1024).fill(0.5);
+    // Half the undo budget, shared by reference across 30 moves of the same body.
+    // Counted once it fits; counted per step it would be trimmed. The byte size
+    // follows this machine's budget, which is 64 MB on a small CI runner.
+    const positions = new Array(Math.floor(MAX_EDITOR_HISTORY_BYTES / 16)).fill(0.5);
     const shape = box({
       id: "import-1",
       kind: "mesh",
