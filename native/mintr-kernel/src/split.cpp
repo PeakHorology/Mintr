@@ -263,17 +263,26 @@ TopoDS_Shape orientCutFaceDown(const TopoDS_Shape& shape, const gp_Dir& outward)
   return BRepBuilderAPI_Transform(turned, shift, true).Shape();
 }
 
-nlohmann::json packPart(const TopoDS_Shape& world, const std::string& name, double xOverride = 1e100, double zOverride = 1e100) {
+nlohmann::json packPart(
+  const TopoDS_Shape& world,
+  const std::string& name,
+  double angular = 0.32,
+  double xOverride = 1e100,
+  double zOverride = 1e100
+) {
   double xmin, ymin, zmin, xmax, ymax, zmax;
   if (!bboxOf(world, xmin, ymin, zmin, xmax, ymax, zmax)) return {};
   gp_Trsf move;
   move.SetTranslation(gp_Vec(-(xmin + xmax) / 2.0, -ymin, -(zmin + zmax) / 2.0));
   const TopoDS_Shape local = BRepBuilderAPI_Transform(world, move, true).Shape();
-  std::vector<double> positions;
-  if (!kernelTessellate(local, positions)) return {};
+  nlohmann::json positions = nlohmann::json::array();
+  nlohmann::json normals = nlohmann::json::array();
+  nlohmann::json indices = nlohmann::json::array();
+  if (!kernelTessellateIndexed(local, positions, normals, indices, 0.12, angular)) return {};
   nlohmann::json part = {
     { "name", name },
     { "positions", positions },
+    { "normals", normals },
     { "brepStep", kernelExportStep(local, false) },
     { "x", std::isfinite(xOverride) && xOverride < 1e99 ? xOverride : (xmin + xmax) / 2.0 },
     { "z", std::isfinite(zOverride) && zOverride < 1e99 ? zOverride : (zmin + zmax) / 2.0 },
@@ -327,9 +336,10 @@ nlohmann::json handleSplit(const nlohmann::json& job) {
 
   const std::string joint = job.value("joint", "none");
   const std::string axis = job.value("axis", "x");
+  const double angular = job.value("angularDeflection", 0.32);
   if (joint == "none" || joint.empty()) {
-    const auto left = packPart(negative, sideName(axis, false));
-    const auto right = packPart(positive, sideName(axis, true));
+    const auto left = packPart(negative, sideName(axis, false), angular);
+    const auto right = packPart(positive, sideName(axis, true), angular);
     if (left.empty() || right.empty()) return kernelFail("Move the line through the object. The cut has to cross it.", false);
     return { { "ok", true }, { "parts", nlohmann::json::array({ left, right }) } };
   }
@@ -377,8 +387,8 @@ nlohmann::json handleSplit(const nlohmann::json& job) {
   const TopoDS_Shape maleFlat = orientCutFaceDown(add.Shape(), gp_Dir(normal.Reversed()));
   const TopoDS_Shape femaleFlat = orientCutFaceDown(sub.Shape(), normal);
   const auto labels = jointLabels(joint);
-  auto male = packPart(maleFlat, labels.first);
-  auto female = packPart(femaleFlat, labels.second);
+  auto male = packPart(maleFlat, labels.first, angular);
+  auto female = packPart(femaleFlat, labels.second, angular);
   if (male.empty() || female.empty()) {
     return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
   }

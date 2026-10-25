@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  booleanAngularDeflection,
   curveSidesForShape,
   curvedDisplayTessellation,
   DEFAULT_DISPLAY_QUALITY,
@@ -67,6 +68,20 @@ describe("display tessellation", () => {
     expect(curvedDisplayTessellation(0.2, 192).linearDeflection).toBe(smooth.linearDeflection);
   });
 
+  it("meshes a cut at the round operand's sides and leaves a box coarse", () => {
+    setActiveDisplayQuality("standard");
+    expect(booleanAngularDeflection([{ kind: "box" }, { kind: "cylinder" }])).toBeCloseTo((Math.PI * 2) / 128, 8);
+    setActiveDisplayQuality("draft");
+    expect(booleanAngularDeflection([{ kind: "box" }, { kind: "cylinder" }])).toBeCloseTo((Math.PI * 2) / 64, 8);
+    setActiveDisplayQuality("smooth");
+    expect(booleanAngularDeflection([
+      { kind: "box" },
+      { kind: "mesh", groupedShapes: [{ kind: "cylinder", sides: 12 }] },
+    ])).toBeCloseTo((Math.PI * 2) / 12, 8);
+    expect(booleanAngularDeflection([{ kind: "box" }, { kind: "box" }])).toBe(0.32);
+    setActiveDisplayQuality("standard");
+  });
+
   it("keeps deliberate facet counts that collide with another kind's default", () => {
     // 144 and 256 are defaults for other kinds, never for a cylinder.
     expect(resolveShapeSides("cylinder", 144, "smooth")).toBe(144);
@@ -77,6 +92,17 @@ describe("display tessellation", () => {
     }
     // A box set to 20 must not be pulled down to the smooth default of 16.
     expect(resolveShapeSteps("box", 20, "smooth")).toBe(20);
+  });
+
+  it("follows display quality for a half sphere or torus even when steps were stored", () => {
+    expect(resolveShapeSteps("halfSphere", 12, "draft")).toBe(20);
+    expect(resolveShapeSteps("halfSphere", 99, "smooth")).toBe(56);
+    expect(resolveShapeSteps("torus", 12, "standard")).toBe(48);
+    expect(resolveShapeSteps("torus", 80, "draft")).toBe(16);
+    expect(resolveShapeSteps("sphere", 12, "smooth")).toBe(12);
+    expect(resolveShapeSides("roundRoof", 12, "standard")).toBe(96);
+    expect(resolveShapeSides("roundRoof", 200, "draft")).toBe(48);
+    expect(resolveShapeSides("cylinder", 12, "smooth")).toBe(12);
   });
 
   it("still follows quality for values a lower quality assigned automatically", () => {

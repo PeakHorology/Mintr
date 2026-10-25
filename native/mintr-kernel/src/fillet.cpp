@@ -36,6 +36,9 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Pnt2d.hxx>
+
+#include <memory>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
@@ -245,20 +248,120 @@ TopoDS_Shape unify(const TopoDS_Shape& shape) {
   }
 }
 
-bool tessellatePreview(const TopoDS_Shape& shape, double linear, nlohmann::json& positions, nlohmann::json& normals, nlohmann::json& indices) {
-  BRepMesh_IncrementalMesh mesh(shape, linear, false, 0.32, true);
-  (void)mesh;
+int triangulationTriangles(const TopoDS_Shape& shape) {
+  int count = 0;
+  for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
+    TopLoc_Location loc;
+    const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(TopoDS::Face(exp.Current()), loc);
+    if (!tri.IsNull()) count += tri->NbTriangles();
+  }
+  return count;
+}
+
+// One surface normal per mesh node. The adaptor already applies the face
+// location. A reversed face, including most concave walls, stores its
+// geometric normal on the inside, so that normal is flipped to match the
+// triangles drawn below. A node that cannot be evaluated is left unset and
+// the facet normal is used for that corner.
+void surfaceNormalsForFace(
+  const TopoDS_Face& face,
+  const Handle(Poly_Triangulation)& tri,
+  std::vector<gp_Vec>& nodeNormals,
+  std::vector<char>& nodeReady
+) {
+  nodeNormals.clear();
+  nodeReady.clear();
+  if (tri.IsNull() || !tri->HasUVNodes()) return;
+  const int nodeCount = tri->NbNodes();
+  if (nodeCount < 1) return;
+  try {
+    BRepAdaptor_Surface adaptor(face, Standard_True);
+    BRepLProp_SLProps props(adaptor, 1, 1e-6);
+    nodeNormals.resize(static_cast<size_t>(nodeCount));
+    nodeReady.assign(static_cast<size_t>(nodeCount), 0);
+    const bool reverse = face.Orientation() == TopAbs_REVERSED;
+    for (int node = 1; node <= nodeCount; ++node) {
+      const gp_Pnt2d uv = tri->UVNode(node);
+      props.SetParameters(uv.X(), uv.Y());
+      if (!props.IsNormalDefined()) continue;
+      gp_Dir normal = props.Normal();
+      if (reverse) normal.Reverse();
+      nodeNormals[static_cast<size_t>(node - 1)] = gp_Vec(normal.XYZ());
+      nodeReady[static_cast<size_t>(node - 1)] = 1;
+    }
+  } catch (...) {
+    nodeNormals.clear();
+    nodeReady.clear();
+  }
+}
+
+// True when `facet` points into the material. A concave groove is often meshed
+// that way: the triangles face the solid, so a light from outside misses them.
+// One probe per face is enough, and the smooth corners of that face flip together.
+bool facetPointsIntoSolid(BRepClass3d_SolidClassifier& classifier, const gp_Pnt& a, const gp_Pnt& b, const gp_Pnt& c, const gp_Vec& facet) {
+  try {
+    const gp_Pnt centroid(
+      (a.X() + b.X() + c.X()) / 3.0,
+      (a.Y() + b.Y() + c.Y()) / 3.0,
+      (a.Z() + b.Z() + c.Z()) / 3.0);
+    const gp_Vec step = facet.Multiplied(0.02);
+    classifier.Perform(centroid.Translated(step), 1e-4);
+    const bool aheadInside = classifier.State() == TopAbs_IN;
+    classifier.Perform(centroid.Translated(step.Reversed()), 1e-4);
+    const bool behindInside = classifier.State() == TopAbs_IN;
+    return aheadInside && !behindInside;
+  } catch (...) {
+    return false;
+  }
+}
+
+// `angular` <= 0 is the fast slider picture: 0.32 rad, about 20 flats around a
+// circle. The resting preview and Apply pass the host's own step (2π / sides).
+// Chord error stays independent of fillet radius. Shrinking it for a smaller
+// fillet is what re-meshed the whole body finer on every edit. The angle step
+// is separate: a cylinder only stays round if this matches the sides already
+// on screen. Over 180k triangles, back off, same budget as the browser worker.
+//
+// Each corner keeps the normal of the real surface at that node. Triangle
+// count does not change. Vertices stay unwelded across faces, so a 90° edge
+// stays sharp. If the face is wound into the material, every corner flips
+// together, so a convex round, a cove, and an inside-corner fillet are all
+// lit from outside the solid.
+bool tessellatePreview(const TopoDS_Shape& shape, double linear, nlohmann::json& positions, nlohmann::json& normals, nlohmann::json& indices, double angular = 0.0) {
+  double linearStep = std::max(0.01, linear);
+  double angularStep = angular > 0.0 ? std::max(0.02, angular) : 0.32;
+  TopoDS_Shape meshed = shape;
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    BRepTools::Clean(meshed);
+    BRepMesh_IncrementalMesh mesh(meshed, linearStep, false, angularStep, true);
+    (void)mesh;
+    if (triangulationTriangles(meshed) <= 180000 || attempt == 3) break;
+    angularStep = std::min(0.16, angularStep * 1.75);
+    linearStep = std::min(0.25, linearStep * 1.75);
+  }
   positions = nlohmann::json::array();
   normals = nlohmann::json::array();
   indices = nlohmann::json::array();
   int next = 0;
-  for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
+  std::vector<gp_Vec> nodeNormals;
+  std::vector<char> nodeReady;
+  std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
+  try {
+    classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
+  } catch (...) {
+    classifier.reset();
+  }
+  for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next()) {
     const TopoDS_Face face = TopoDS::Face(exp.Current());
     TopLoc_Location loc;
     Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
     if (tri.IsNull()) continue;
     const gp_Trsf trsf = loc.Transformation();
     const bool reverse = face.Orientation() == TopAbs_REVERSED;
+    const int nodeCount = tri->NbNodes();
+    surfaceNormalsForFace(face, tri, nodeNormals, nodeReady);
+    bool flipFace = false;
+    bool flipDecided = false;
     for (int i = 1; i <= tri->NbTriangles(); ++i) {
       int n1, n2, n3;
       tri->Triangle(i).Get(n1, n2, n3);
@@ -268,16 +371,30 @@ bool tessellatePreview(const TopoDS_Shape& shape, double linear, nlohmann::json&
       const gp_Pnt c = tri->Node(n3).Transformed(trsf);
       gp_Vec ab(a, b);
       gp_Vec ac(a, c);
-      gp_Vec normal = ab.Crossed(ac);
-      if (normal.Magnitude() < 1e-12) continue;
-      normal.Normalize();
-      positions.push_back(a.X()); positions.push_back(a.Y()); positions.push_back(a.Z());
-      positions.push_back(b.X()); positions.push_back(b.Y()); positions.push_back(b.Z());
-      positions.push_back(c.X()); positions.push_back(c.Y()); positions.push_back(c.Z());
-      for (int k = 0; k < 3; ++k) {
-        normals.push_back(normal.X());
-        normals.push_back(normal.Y());
-        normals.push_back(normal.Z());
+      gp_Vec facet = ab.Crossed(ac);
+      if (facet.Magnitude() < 1e-12) continue;
+      facet.Normalize();
+      if (!flipDecided) {
+        flipFace = classifier && facetPointsIntoSolid(*classifier, a, b, c, facet);
+        flipDecided = true;
+      }
+      const int nodes[3] = { n1, n2, n3 };
+      const gp_Pnt points[3] = { a, b, c };
+      for (int corner = 0; corner < 3; ++corner) {
+        const gp_Pnt& point = points[corner];
+        positions.push_back(point.X());
+        positions.push_back(point.Y());
+        positions.push_back(point.Z());
+        const int node = nodes[corner];
+        gp_Vec use = facet;
+        if (node >= 1 && node <= nodeCount && static_cast<int>(nodeReady.size()) >= node && nodeReady[static_cast<size_t>(node - 1)]) {
+          use = nodeNormals[static_cast<size_t>(node - 1)];
+          if (use.Dot(facet) < 0.0) use.Reverse();
+        }
+        if (flipFace) use.Reverse();
+        normals.push_back(use.X());
+        normals.push_back(use.Y());
+        normals.push_back(use.Z());
       }
       indices.push_back(next++);
       indices.push_back(next++);
@@ -1684,7 +1801,13 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
   if (type == "refine") {
     if (gSession.accumulated.IsNull()) return modifierFail("Preview an edge before smoothing it", false, requestId);
     nlohmann::json positions, normals, indices;
-    if (!tessellatePreview(gSession.accumulated, job.value("linearDeflection", 0.05), positions, normals, indices)) {
+    if (!tessellatePreview(
+      gSession.accumulated,
+      job.value("linearDeflection", 0.055),
+      positions,
+      normals,
+      indices,
+      job.value("angularDeflection", 6.283185307179586 / 128.0))) {
       return modifierFail("The smoothed edge treatment had no surface", false, requestId);
     }
     return {

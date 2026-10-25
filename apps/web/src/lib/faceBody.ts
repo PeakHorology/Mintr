@@ -280,7 +280,7 @@ export function buildFaceBody(input: {
   };
   const built = shapeFromSketchProfile(profileFromLoop(profileLoop, plane, reference), depth, null, { cutIntoFace: false });
   if (!built) return { shape: null, error: NARROW, notice, depth };
-  built.name = inward ? "Pocket" : "Face";
+  built.name = inward ? "Pocket" : "Pad";
   built.color = input.host.color;
   built.solidColor = input.host.solidColor || input.host.color;
   built.hole = inward;

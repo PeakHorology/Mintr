@@ -99,6 +99,7 @@ import {
 } from "@/lib/displayTessellation";
 import { CUT_PREVIEW_TRIANGLE_SKIP, displayTriangleCount, isHeavyDisplayScene } from "@/lib/displayTriangleCount";
 import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
+import { shadeDisplayNormals } from "@/lib/meshShade";
 import { appendOverhangBoundaryLines, bedFitForShapes, normalizePrinterBed, type PrinterBed } from "@/lib/printerBed";
 import { runPrintOverlayInWorker } from "@/lib/printOverlayClient";
 import type { PrintOverlayMarks } from "@/lib/printOverlayCollect";
@@ -11298,10 +11299,15 @@ function getImportedMeshCache(mesh: NonNullable<WorkplaneShape["importedMesh"]>,
   if (mesh.indices && mesh.indices.length >= 3) {
     geometry.setIndex(mesh.indices);
   }
-  if (mesh.normals && mesh.normals.length === mesh.positions.length) {
-    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(mesh.normals, 3));
+  const shaded = mesh.normals && mesh.normals.length === mesh.positions.length
+    ? shadeDisplayNormals(mesh.positions, mesh.normals, mesh.indices)
+    : null;
+  if (shaded) {
+    geometry.setAttribute("normal", new THREE.BufferAttribute(shaded, 3));
+    geometry.userData.keepNormals = true;
   } else if (!geometry.index && Math.floor(mesh.positions.length / 9) > 80_000) {
     setFlatTriangleNormals(geometry);
+    geometry.userData.keepNormals = true;
   } else {
     geometry.computeVertexNormals();
   }
@@ -11320,13 +11326,23 @@ function getImportedMeshGeometry(mesh: NonNullable<WorkplaneShape["importedMesh"
 function getPreservedImportedMeshGeometry(shape: WorkplaneShape) {
   const cached = preservedImportedGeometryCache.get(shape);
   if (cached) return cached;
+  const positions = resizedImportedMeshPositions(shape);
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(resizedImportedMeshPositions(shape), 3));
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   const indices = shape.importedMesh?.indices;
   if (indices && indices.length >= 3) {
     geometry.setIndex(indices);
   }
-  geometry.computeVertexNormals();
+  // The fillet zone is held still while the body stretches, so the stored
+  // normals no longer match. Rebuild them from the resized surface. A concave
+  // groove and a convex round both stay smooth.
+  const shaded = shadeDisplayNormals(positions, undefined, indices);
+  if (shaded) {
+    geometry.setAttribute("normal", new THREE.BufferAttribute(shaded, 3));
+    geometry.userData.keepNormals = true;
+  } else {
+    geometry.computeVertexNormals();
+  }
   putGeometryOnBase(geometry);
   geometry.userData.cached = true;
   preservedImportedGeometryCache.set(shape, geometry);

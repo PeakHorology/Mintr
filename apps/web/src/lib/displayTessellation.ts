@@ -128,7 +128,8 @@ export function resolveShapeSides(
   if (target == null) {
     return stored;
   }
-  if (stored == null || followsDisplayQuality(stored, kind, SIDE_DEFAULTS, LEGACY_BAKED_SIDES)) {
+  // The round roof has no sides slider. Display quality is the only control.
+  if (kind === "roundRoof" || stored == null || followsDisplayQuality(stored, kind, SIDE_DEFAULTS, LEGACY_BAKED_SIDES)) {
     return clampSides(target);
   }
   return clampSides(stored);
@@ -143,7 +144,8 @@ export function resolveShapeSteps(
   if (target == null) {
     return stored;
   }
-  if (stored == null || followsDisplayQuality(stored, kind, STEP_DEFAULTS, LEGACY_BAKED_STEPS)) {
+  // Half sphere and torus have no step slider. Display quality is the only control.
+  if (kind === "halfSphere" || kind === "torus" || stored == null || followsDisplayQuality(stored, kind, STEP_DEFAULTS, LEGACY_BAKED_STEPS)) {
     return clampSteps(target);
   }
   return clampSteps(stored);
@@ -183,6 +185,32 @@ export function curveSidesForShape(shape: CurveSideSource | null, quality: Displ
   return Math.max(own, nested) || fallback;
 }
 
+const COARSE_BOOLEAN_ANGULAR = 0.32;
+
+function curvedSidesInTree(shape: CurveSideSource | null | undefined, quality: DisplayQuality): number {
+  if (!shape) return 0;
+  let sides = curveSidesOf(shape, quality);
+  for (const child of shape.groupedShapes ?? []) {
+    sides = Math.max(sides, curvedSidesInTree(child, quality));
+  }
+  return sides;
+}
+
+/**
+ * Angular step for a Group cut, join, or intersect.
+ * Only a real curve contributes its side count. A box stays at the coarse step.
+ */
+export function booleanAngularDeflection(
+  shapes: Array<CurveSideSource | null | undefined>,
+  quality: DisplayQuality = getActiveDisplayQuality(),
+) {
+  let sides = 0;
+  for (const shape of shapes) sides = Math.max(sides, curvedSidesInTree(shape, quality));
+  if (sides <= 0) return COARSE_BOOLEAN_ANGULAR;
+  const clamped = Math.max(8, Math.min(512, Math.round(sides)));
+  return (Math.PI * 2) / clamped;
+}
+
 function curveSidesOf(shape: CurveSideSource, quality: DisplayQuality) {
   if (shape.kind === "sphere" || shape.kind === "halfSphere") {
     const steps = resolveShapeSteps(shape.kind, shape.steps, quality) ?? defaultStepsForKind(shape.kind, quality) ?? 32;
@@ -199,9 +227,16 @@ function curveSidesOf(shape: CurveSideSource, quality: DisplayQuality) {
 }
 
 /**
- * Tessellation that keeps a filleted or chamfered curve as round as the solid
- * it was applied to. The sag does not follow the radius, so a later smaller
- * edit does not redraw the whole solid with more triangles.
+ * Picture of a fillet or chamfer.
+ *
+ * Chord error stays fixed. It used to shrink with the radius, so a later
+ * smaller fillet asked for a finer mesh of the whole body. The exact solid
+ * is what the next fillet cuts; this mesh is only the picture. Do not tie
+ * the chord error to the radius again.
+ *
+ * The angle step follows `sides`, the facets already on that round body.
+ * A fixed angle (the kernel used 0.32 rad, about 20 flats) is what makes a
+ * filleted cylinder look coarse. That step is not the triangle-count guard.
  */
 export function curvedDisplayTessellation(_amount: number, sides: number) {
   const safeSides = Math.max(8, Math.min(512, Math.round(sides)));

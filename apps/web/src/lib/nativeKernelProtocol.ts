@@ -36,9 +36,9 @@ export type NativeKernelSolid = {
 
 export type NativeKernelJob =
   | { id: number; type: "ping" }
-  | { id: number; type: "boolean"; op: "subtract" | "union" | "intersect"; solids: NativeKernelSolid[] }
+  | { id: number; type: "boolean"; op: "subtract" | "union" | "intersect"; solids: NativeKernelSolid[]; angularDeflection?: number }
   | { id: number; type: "exportStep"; solids: NativeKernelSolid[] }
-  | { id: number; type: "split"; solids: NativeKernelSolid[]; origin: [number, number, number]; normal: [number, number, number]; joint: string; clearance: number; axis: string }
+  | { id: number; type: "split"; solids: NativeKernelSolid[]; origin: [number, number, number]; normal: [number, number, number]; joint: string; clearance: number; axis: string; angularDeflection?: number }
   | { id: number; type: "printOverlay"; solids: NativeKernelSolid[]; overhang: boolean; angle: number; thinWalls: boolean; smallHoles: boolean; trappedResin: boolean; nozzleMm: number }
   | { id: number; type: "measure"; solids: NativeKernelSolid[] }
   | { id: number; type: "sketchExtrude"; [key: string]: unknown }
@@ -98,6 +98,7 @@ export type NativeKernelReply = {
   parts?: Array<{
     name: string;
     positions?: number[];
+    normals?: number[];
     brepStep?: string;
     x?: number;
     z?: number;

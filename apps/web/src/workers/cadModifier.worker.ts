@@ -27,6 +27,7 @@ import {
   treatmentDetailFaceAreaLimit,
 } from "@/lib/cadModifierEdges";
 import { inferThreadSideFromFace, resolveThreadParams, type ResolvedThreadParams } from "@/lib/metricThreads";
+import { orientSolidNormals } from "@/lib/meshShade";
 import { polygonFootprint } from "@/lib/polygonFootprint";
 import { edgePolylinesFromWireframe, orderWireLoop } from "@/lib/wireLoop";
 
@@ -540,18 +541,31 @@ function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimit
     if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error("The selected round roof has invalid dimensions");
     }
-    const radius = width / 2;
-    const disk = applyCadTransform(cad, cad.makeCylinder(radius, depth), [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -depth / 2]);
-    const cutter = cad.makeBoxFromCorners(
-      { x: -radius * 2 - 1, y: -(radius * 2 + 1) - 1, z: -depth / 2 - 2 },
-      { x: radius * 2 + 1, y: 0, z: depth / 2 + 2 },
+    // Half-oval at the final size. Stretching a finished half-cylinder makes
+    // the arch a general surface, and fillet/chamfer then refuse the corners.
+    const rx = width / 2;
+    const ry = height;
+    const major = Math.max(rx, ry);
+    const minor = Math.min(rx, ry);
+    const tall = ry > rx + 1e-9;
+    const z = -depth / 2;
+    const u0 = tall ? -Math.PI / 2 : 0;
+    const u1 = tall ? Math.PI / 2 : Math.PI;
+    const point = (u: number) => ({ x: major * Math.cos(u), y: minor * Math.sin(u), z });
+    let solid = cad.extrude(
+      cad.makeFace(cad.makeWire([
+        cad.makeEllipseArc({ x: 0, y: 0, z }, { x: 0, y: 0, z: 1 }, major, minor, u0, u1),
+        cad.makeLineEdge(point(u1), point(u0)),
+      ])),
+      0,
+      0,
+      depth,
     );
-    const scaled = applyCadTransform(
-      cad,
-      cad.cut(disk, cutter),
-      [1, 0, 0, 0, 0, height / Math.max(1e-6, radius), 0, 0, 0, 0, 1, 0],
-    );
-    return finishPrimitiveSolid(cad, scaled, primitive.transform, "round roof");
+    if (tall) {
+      solid = cad.rotate(solid, { point: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: 1 } }, Math.PI / 2);
+    }
+    // Flat face stays at y = 0. Placement already drops the solid by half its height.
+    return finishPrimitiveSolid(cad, solid, primitive.transform, "round roof");
   }
   if (primitive.kind === "tube" || primitive.kind === "ring") {
     const { width, depth, height } = primitive;
@@ -1674,7 +1688,40 @@ export function cutConcaveCorners(
  */
 let previewSkippedEdgeCount = 0;
 
-function applyRemovingTreatment(
+/**
+ * occt-wasm's chamfer refuses a surface of linear extrusion, which is what a
+ * resized round roof is. Cut the same corner wedge instead, one edge at a time,
+ * and keep every edge that actually removes material.
+ */
+function chamferByCornerCut(
+  cad: OcctKernel,
+  solid: ShapeHandle,
+  edges: ShapeHandle[],
+  amount: number,
+  chamferAngle: number,
+) {
+  let current = solid;
+  let progressed = false;
+  for (const edge of edges) {
+    try {
+      const cut = cutConcaveCorners(cad, current, solid, [edge], "chamfer", amount, chamferAngle);
+      if (shapeVolume(cad, cut) + 1e-3 < shapeVolume(cad, current)) {
+        if (current !== solid) {
+          try { cad.release(current); } catch { /* Replaced by the edge that was cut. */ }
+        }
+        current = cut;
+        progressed = true;
+      } else if (cut !== current) {
+        try { cad.release(cut); } catch { /* This edge did not remove material. */ }
+      }
+    } catch {
+      // Leave this edge square and keep cutting the rest.
+    }
+  }
+  return progressed ? current : null;
+}
+
+export function applyRemovingTreatment(
   cad: OcctKernel,
   solid: ShapeHandle,
   edges: ShapeHandle[],
@@ -1726,6 +1773,10 @@ function applyRemovingTreatment(
       previewSkippedEdgeCount += skipped;
       return singleSolid(cad, current);
     }
+  }
+  if (kind === "chamfer") {
+    const cut = chamferByCornerCut(cad, solid, edges, amount, chamferAngle);
+    if (cut && shapeVolume(cad, cut) + 1e-3 < before) return singleSolid(cad, cut);
   }
   const { concave, convex } = classifyCornerEdges(cad, solid, edges);
   let component = convex.length > 0 || concave.length === 0
@@ -1899,6 +1950,28 @@ function copyCadMesh(mesh: { positions: Float32Array; normals: Float32Array; ind
     normals: new Float32Array(mesh.normals),
     indices: new Uint32Array(mesh.indices),
     triangleCount: mesh.triangleCount,
+  };
+}
+
+function displayCadMesh(
+  cad: OcctKernel,
+  shape: ShapeHandle,
+  mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; triangleCount: number },
+) {
+  const copied = copyCadMesh(mesh);
+  const oriented = orientSolidNormals(copied.positions, copied.normals, copied.indices, (x, y, z) => {
+    try {
+      return cad.containsPoint(shape, { x, y, z }, 1e-4);
+    } catch {
+      return false;
+    }
+  });
+  if (!oriented) return copied;
+  return {
+    positions: new Float32Array(oriented.positions),
+    normals: new Float32Array(oriented.normals),
+    indices: new Uint32Array(oriented.indices),
+    triangleCount: Math.floor(oriented.indices.length / 3),
   };
 }
 
@@ -2451,7 +2524,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         result = applyThreadCut(activeCad, baseShape, face, request);
         if (!cadShapeIsValid(activeCad, result)) throw new Error("The thread parameters create invalid geometry on this face");
         const options = tessellationOptions(request.quality, request.depth);
-        const mesh = copyCadMesh(activeCad.tessellate(result, options));
+        const mesh = displayCadMesh(activeCad, result, activeCad.tessellate(result, options));
         const displayEdges = collectEdges(activeCad, result, 0).displayEdges;
         const brep = activeCad.toBREP(result);
         let step: string | undefined;
@@ -2487,7 +2560,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       try {
         result = applyPushPull(activeCad, baseShape, handle, face, request.distance);
         const options = tessellationOptions(request.quality, Math.abs(request.distance) || 1);
-        const mesh = copyCadMesh(activeCad.tessellate(result, options));
+        const mesh = displayCadMesh(activeCad, result, activeCad.tessellate(result, options));
         if (!mesh.triangleCount) throw new Error(pushPullFailCopy(request.distance, "empty"));
         const displayEdges = collectEdges(activeCad, result, 0).displayEdges;
         let brep = "";
@@ -2549,7 +2622,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         const options = previewTessellationOptions(request.thickness);
         const probed = activeCad.tessellate(result, options);
         if (!probed.triangleCount) throw new Error("The walls cannot be this thick for this body. Choose a thinner wall.");
-        const mesh = copyCadMesh(probed);
+        const mesh = displayCadMesh(activeCad, result, probed);
         let brep = "";
         try {
           brep = activeCad.toBREP(result);
@@ -2584,7 +2657,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
     }
     if (request.type === "refine") {
       if (!accumulatedShape) throw new Error("Preview an edge before smoothing it");
-      const mesh = copyCadMesh(tessellateForCurve(activeCad, accumulatedShape, request.linearDeflection, request.angularDeflection));
+      const mesh = displayCadMesh(activeCad, accumulatedShape, tessellateForCurve(activeCad, accumulatedShape, request.linearDeflection, request.angularDeflection));
       if (!mesh.triangleCount) throw new Error("The smoothed edge treatment had no surface");
       post(
         { type: "preview", requestId: request.requestId, positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, triangleCount: mesh.triangleCount, brep: "", displayEdges: [], smooth: true },
@@ -2692,7 +2765,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       try {
         const probed = activeCad.tessellate(result, options);
         if (!probed.triangleCount) throw new Error("empty tessellation");
-        mesh = copyCadMesh(probed);
+        mesh = displayCadMesh(activeCad, result, probed);
       } catch {
         throw new Error("The chosen size creates invalid or overlapping edge geometry");
       }

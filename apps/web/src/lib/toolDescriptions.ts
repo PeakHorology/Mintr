@@ -23,7 +23,7 @@ export const TOOL_DESCRIPTIONS = {
   chamfer: "Cut a flat bevel along selected edges. On a chamfered body, opens the last chamfer to edit.",
   fillet: "Round selected edges with a smooth radius. On a filleted body, opens the last fillet to edit.",
   pushPull: "Drag a flat face to grow or shrink the solid. Click Apply to keep it.",
-  face: "Add material on one flat face, or cut a pocket into it. Inset and corner radius shape the outline. The new part is a sketch, grouped with the body unless you keep it separate.",
+  face: "Click a flat face. Out grows a pad from that face. In cuts a pocket into the body. Inset pulls the outline in from the edges, corner radius rounds it, and depth sets how far the pad or pocket goes.",
   split: "Cut the selected object in two. A dovetail, plug, snap, or thread can join the pieces, then both sit on the bed.",
   hide: "Hide or show the selected shapes.",
   more: "Open extra tips and selection actions.",
@@ -144,7 +144,7 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   { key: "chamfer", label: "Chamfer", category: "Modify" },
   { key: "fillet", label: "Fillet", category: "Modify" },
   { key: "pushPull", label: "Push Pull", category: "Modify" },
-  { key: "face", label: "Face", category: "Modify" },
+  { key: "face", label: "Pad/Pocket", category: "Modify" },
   // File & project
   { key: "import", label: "Import", category: "File & project" },
   { key: "export", label: "Export", category: "File & project" },

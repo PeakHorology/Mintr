@@ -6,6 +6,7 @@ import { nearestMetricThreadForDiameter, resolveThreadParams } from "@/lib/metri
 import { MIN_SHAPE_DIMENSION, cleanModelDimension } from "@/lib/modelDimension";
 import { requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
 import { shapeFromSplitWorld, splitPlaneFrame, splitWorldHalves, type SplitAxis, type SplitCut } from "@/lib/splitShape";
+import { booleanAngularDeflection } from "@/lib/displayTessellation";
 import { canonicalizeShape, cleanNearZero } from "@/lib/workplaneShapes";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
@@ -31,6 +32,7 @@ export function clampCutClearance(value: number) {
 type KernelSplitPart = {
   name: string;
   positions?: number[];
+  normals?: number[];
   brepStep?: string;
   x?: number;
   z?: number;
@@ -64,6 +66,7 @@ function shapeFromKernelPart(source: WorkplaneShape, part: KernelSplitPart): Wor
     rotationZ: 0,
     importedMesh: {
       positions,
+      ...(part.normals && part.normals.length === positions.length ? { normals: part.normals } : {}),
       baseWidth: Math.max(part.width ?? width, 0.001),
       baseDepth: Math.max(part.depth ?? depth, 0.001),
       baseHeight: Math.max(part.height ?? height, 0.001),
@@ -89,6 +92,7 @@ export async function cutShapeToFitNative(shape: WorkplaneShape, cut: CutToFit):
     joint: cut.joint,
     clearance: clampCutClearance(cut.clearance),
     axis: cut.axis,
+    angularDeflection: booleanAngularDeflection([shape]),
   });
   if (!reply) return null;
   if (reply.ok === false && reply.fallback === false) {

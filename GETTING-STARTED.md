@@ -1,6 +1,6 @@
 # Mintr — Getting Started
 
-Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.1.4). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
+Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.1.5). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
 
 ## Use Mintr (the app)
 
@@ -12,8 +12,8 @@ npm run package:desktop
 
 This creates files in the `dist-release/` folder:
 
-- `PeakCAD-Setup-1.1.4.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
-- `PeakCAD-1.1.4-portable.exe` — portable build (no install needed; not an upgrader)
+- `PeakCAD-Setup-1.1.5.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
+- `PeakCAD-1.1.5-portable.exe` — portable build (no install needed; not an upgrader)
 
 Close any running Mintr window before packaging. Run the Setup or portable exe. The wizard, shortcuts, and Windows apps entry are named Mintr3d. The program file is Mintr.exe. Existing projects and settings stay where they are.
 

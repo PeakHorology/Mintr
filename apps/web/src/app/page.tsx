@@ -2728,6 +2728,12 @@ function FolderGlyph({ locked }: { locked?: boolean; opened?: boolean }) {
         className="folder-glyph-body"
         d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
       />
+      {locked ? (
+        <g className="folder-glyph-lock">
+          <rect x="8.4" y="13.15" width="7.2" height="5.05" rx="1.1" />
+          <path d="M10.05 13.15v-1.45a1.95 1.95 0 0 1 3.9 0v1.45" />
+        </g>
+      ) : null}
     </svg>
   );
 }
@@ -3698,7 +3704,7 @@ function Dashboard({
             </span>
           </span>
           <span className="project-card-caption">
-            <span className="project-card-title">
+            <span className="project-card-title" title={folder.name}>
               {folder.name}
             </span>
             <span className="project-card-meta">

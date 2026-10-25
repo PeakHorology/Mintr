@@ -19,6 +19,8 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
 #include <Geom_Ellipse.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <gp_Ax1.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
@@ -225,22 +227,36 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
   }
 
   if (kind == "roundRoof") {
-    const double radius = width / 2;
-    const TopoDS_Shape disk = BRepPrimAPI_MakeCylinder(
-      gp_Ax2(gp_Pnt(0, 0, -depth / 2), gp_Dir(0, 0, 1)),
-      radius,
-      depth
-    ).Shape();
-    const TopoDS_Shape cutter = BRepPrimAPI_MakeBox(
-      gp_Pnt(-radius * 2 - 1, -(radius * 2 + 1) - 1, -depth / 2 - 2),
-      radius * 4 + 2,
-      radius * 2 + 2,
-      depth + 4
-    ).Shape();
-    if (!cutShape(disk, cutter, out)) return false;
-    out = kernelScale(out, 1.0, height / std::max(1e-6, radius), 1.0);
-    out = centerOnY(out, height);
-    return true;
+    // Half-oval at the final width and height. A later non-uniform scale turns
+    // the arch into a general surface and fillet/chamfer refuse the corners.
+    // The ellipse seam stays off the flat face: a wide arch uses the upper
+    // half directly, a tall arch rotates that half up so the join sits on the crown.
+    const double rx = width / 2.0;
+    const double ry = height;
+    const double major = std::max(rx, ry);
+    const double minor = std::max(1e-6, std::min(rx, ry));
+    const bool tall = ry > rx + 1e-9;
+    const gp_Pnt origin(0, 0, -depth / 2.0);
+    const gp_Ax2 ax(origin, gp_Dir(0, 0, 1), gp_Dir(1, 0, 0));
+    Handle(Geom_Ellipse) ellipse = new Geom_Ellipse(ax, major, minor);
+    const double u0 = tall ? -kKernelPi / 2.0 : 0.0;
+    const double u1 = tall ? kKernelPi / 2.0 : kKernelPi;
+    const TopoDS_Edge arc = BRepBuilderAPI_MakeEdge(new Geom_TrimmedCurve(ellipse, u0, u1)).Edge();
+    const TopoDS_Edge chord = BRepBuilderAPI_MakeEdge(ellipse->Value(u1), ellipse->Value(u0)).Edge();
+    BRepBuilderAPI_MakeWire wire;
+    wire.Add(arc);
+    wire.Add(chord);
+    if (!wire.IsDone()) return false;
+    BRepBuilderAPI_MakeFace face(wire.Wire(), true);
+    if (!face.IsDone()) return false;
+    TopoDS_Shape solid = prism(face.Face(), gp_Vec(0, 0, depth));
+    if (tall) {
+      gp_Trsf rot;
+      rot.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), kKernelPi / 2.0);
+      solid = BRepBuilderAPI_Transform(solid, rot, true).Shape();
+    }
+    out = centerOnY(solid, height);
+    return !out.IsNull();
   }
 
   if (kind == "halfSphere") {

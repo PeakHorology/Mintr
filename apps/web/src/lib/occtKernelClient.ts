@@ -1,4 +1,5 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
+import { booleanAngularDeflection } from "@/lib/displayTessellation";
 import { toNativeKernelSolids, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
 import type { OcctBooleanMeshResult, StepExportResult } from "@/lib/stepExport";
 import {
@@ -126,7 +127,13 @@ function nativeJobFor(request: OcctKernelRequest, requestId: number): NativeKern
   if (request.type === "boolean") {
     const solids = toNativeKernelSolids(request.shapes);
     if (!solids) return null;
-    return { id: requestId, type: "boolean", op: request.op, solids };
+    return {
+      id: requestId,
+      type: "boolean",
+      op: request.op,
+      solids,
+      angularDeflection: booleanAngularDeflection(request.shapes),
+    };
   }
   if (request.type === "exportStep") {
     const solids = toNativeKernelSolids(request.shapes);
@@ -155,8 +162,10 @@ function nativeReplyToResult(request: OcctKernelRequest, reply: NativeKernelRepl
   if (!reply || reply.fallback || reply.ok === false) return null;
   if (request.type === "boolean") {
     if (!reply.positions || reply.positions.length < 9 || !reply.brepStep) return null;
+    const normals = reply.normals && reply.normals.length === reply.positions.length ? reply.normals : undefined;
     return {
       positions: reply.positions,
+      normals,
       brepStep: reply.brepStep,
       quality: reply.quality ?? "exact",
       displayEdges: reply.displayEdges,

@@ -2274,6 +2274,23 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
   stroke: color-mix(in srgb, #c4a990 58%, #1a1613);
 }
 
+.folder-glyph-lock {
+  fill: #4a3d34;
+  stroke: #4a3d34;
+  stroke-width: 1.35;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.folder-glyph-lock path {
+  fill: none;
+}
+
+[data-theme="dark"] .folder-glyph-lock {
+  fill: #efebe8;
+  stroke: #efebe8;
+}
+
 .project-grid-folders:not(.project-list) .folder-card-open {
   justify-items: center;
   gap: 8px;
@@ -2281,12 +2298,22 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
 }
 
 .project-grid-folders:not(.project-list) .project-card-caption {
-  justify-items: center;
-  padding: 0;
+  justify-self: stretch;
+  justify-items: stretch;
+  width: 100%;
+  min-width: 0;
+  padding: 0 4px;
 }
 
-.project-grid-folders:not(.project-list) .project-card-title {
-  justify-content: center;
+.project-grid-folders:not(.project-list) .folder-card .project-card-title,
+.project-grid-folders:not(.project-list) .folder-card .project-card-meta {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-card-caption {
@@ -2399,6 +2426,16 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
 .project-list .folder-card-cover {
   box-shadow: none;
   background: transparent;
+}
+
+.project-list .folder-card .project-card-title,
+.project-list .folder-card .project-card-meta {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-menu-trigger {

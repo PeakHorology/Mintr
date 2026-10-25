@@ -74,15 +74,15 @@ export function FacePanel({
           : "In cuts a pocket no deeper than the body behind the face.")
       : keptCount > 0
         ? "Click the next flat face. It uses these same settings."
-        : "Click a flat face. A curved face does not work.";
+        : "Click a flat face. Out grows a pad. In cuts a pocket. A curved face does not work.";
   return (
-    <aside className="edge-modifier-panel" aria-label="Face">
+    <aside className="edge-modifier-panel" aria-label="Pad/Pocket">
       <div className="edge-modifier-header">
         <div>
-          <strong>Face</strong>
+          <strong>Pad/Pocket</strong>
           <span>{hint}</span>
         </div>
-        <button type="button" aria-label="Cancel face" onClick={onCancel}><X size={20} /></button>
+        <button type="button" aria-label="Cancel Pad/Pocket" onClick={onCancel}><X size={20} /></button>
       </div>
       <div className="edge-modifier-target">
         <strong>{targetName}</strong>

@@ -630,7 +630,6 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
 
   if (shape.kind === "halfSphere") {
     return [
-      { label: "Steps", value: resolveShapeSteps(shape.kind, shape.steps) ?? 56, min: 6, max: MAX_SHAPE_STEPS, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
       { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
       { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight },
@@ -733,7 +732,6 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
 
   if (shape.kind === "roundRoof") {
     return [
-      { label: "Sides", value: resolveShapeSides(shape.kind, shape.sides) ?? 128, min: 4, max: MAX_SHAPE_SIDES, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
       { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
       { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight },
@@ -755,7 +753,6 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
           onUpdate({ radius: next, height: next * 2 }, { resizeAxis: "height" });
         },
       },
-      { label: "Steps", value: resolveShapeSteps(shape.kind, shape.steps) ?? 64, min: 6, max: MAX_SHAPE_STEPS, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
       { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
       { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
       {

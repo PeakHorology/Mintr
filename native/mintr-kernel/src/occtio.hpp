@@ -23,13 +23,22 @@ bool kernelReadBrep(const std::string& text, TopoDS_Shape& out);
 std::string kernelExportStep(const TopoDS_Shape& shape, bool zUp);
 std::string kernelExportBrep(const TopoDS_Shape& shape);
 bool kernelTessellate(const TopoDS_Shape& shape, std::vector<double>& positions, double deflection = 0.12);
+/**
+ * Picture of an exact solid. Vertices stay unwelded and each corner keeps the
+ * surface normal, so a curve lights smoothly and a sharp edge stays sharp.
+ * `angular` <= 0 uses 0.32 rad (about 20 flats). Callers that know a side
+ * count pass 2π/sides. Chord error stays the caller's `linear`.
+ */
 bool kernelTessellateIndexed(
   const TopoDS_Shape& shape,
   nlohmann::json& positions,
   nlohmann::json& normals,
   nlohmann::json& indices,
-  double linear
+  double linear,
+  double angular = 0.32
 );
+/** World-space polylines of real edges. Near-tangent seams are left out. */
+nlohmann::json kernelDisplayEdges(const TopoDS_Shape& shape);
 double kernelVolume(const TopoDS_Shape& shape);
 double kernelArea(const TopoDS_Shape& shape);
 nlohmann::json kernelFail(const std::string& message, bool fallback = true);

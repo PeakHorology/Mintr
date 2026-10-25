@@ -100,14 +100,27 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
       if (!kernelShapeIsValid(result)) {
         return kernelFail("native boolean produced an invalid solid", true);
       }
-      std::vector<double> positions;
-      if (!kernelTessellate(result, positions)) return kernelFail("native tessellation failed", true);
+      nlohmann::json positions = nlohmann::json::array();
+      nlohmann::json normals = nlohmann::json::array();
+      nlohmann::json indices = nlohmann::json::array();
+      const double angular = job.value("angularDeflection", 0.32);
+      if (!kernelTessellateIndexed(result, positions, normals, indices, 0.12, angular)) {
+        return kernelFail("native tessellation failed", true);
+      }
+      nlohmann::json displayEdges = nlohmann::json::array();
+      try {
+        displayEdges = kernelDisplayEdges(result);
+      } catch (...) {
+        displayEdges = nlohmann::json::array();
+      }
       return {
         { "ok", true },
         { "positions", positions },
+        { "normals", normals },
+        { "indices", indices },
         { "brepStep", kernelExportStep(kernelRecenterToLocalMeshFrame(result), false) },
         { "quality", "exact" },
-        { "displayEdges", nlohmann::json::array() },
+        { "displayEdges", displayEdges },
       };
     }
     if (type == "exportStep") {

@@ -9,6 +9,8 @@ const TOOL_SECTION: Record<string, string> = {
   Fillet: "Modify",
   Chamfer: "Modify",
   Hollow: "Modify",
+  "Pad/Pocket": "Modify",
+  "Push Pull": "Modify",
   Split: "Modify",
   Align: "Arrange",
   Snap: "Arrange",

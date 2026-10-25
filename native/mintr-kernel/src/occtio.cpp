@@ -1,22 +1,32 @@
 #include "occtio.hpp"
 
 #include <Bnd_Box.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepLProp_SLProps.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
+#include <Extrema_ExtPS.hxx>
+#include <GCPnts_QuasiUniformDeflection.hxx>
 #include <GProp_GProps.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
@@ -26,10 +36,13 @@
 #include <gp_GTrsf.hxx>
 #include <gp_Mat.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_Vec.hxx>
 #include <gp_XYZ.hxx>
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
 #include <sstream>
 
 gp_Trsf kernelPoseTrsf(const nlohmann::json& solid, double height) {
@@ -199,26 +212,150 @@ bool kernelTessellate(const TopoDS_Shape& shape, std::vector<double>& positions,
   return positions.size() >= 9;
 }
 
+namespace {
+
+int triangulationTriangles(const TopoDS_Shape& shape) {
+  int count = 0;
+  for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
+    TopLoc_Location loc;
+    const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(TopoDS::Face(exp.Current()), loc);
+    if (!tri.IsNull()) count += tri->NbTriangles();
+  }
+  return count;
+}
+
+// One surface normal per mesh node. The adaptor already applies the face
+// location, so the normal is not transformed again. A reversed face stores
+// the geometric normal on the inside; flip it to match the drawn triangles.
+void surfaceNormalsForFace(
+  const TopoDS_Face& face,
+  const Handle(Poly_Triangulation)& tri,
+  std::vector<gp_Vec>& nodeNormals,
+  std::vector<char>& nodeReady
+) {
+  nodeNormals.clear();
+  nodeReady.clear();
+  if (tri.IsNull() || !tri->HasUVNodes()) return;
+  const int nodeCount = tri->NbNodes();
+  if (nodeCount < 1) return;
+  try {
+    BRepAdaptor_Surface adaptor(face, true);
+    BRepLProp_SLProps props(adaptor, 1, 1e-6);
+    nodeNormals.resize(static_cast<size_t>(nodeCount));
+    nodeReady.assign(static_cast<size_t>(nodeCount), 0);
+    const bool reverse = face.Orientation() == TopAbs_REVERSED;
+    for (int node = 1; node <= nodeCount; ++node) {
+      const gp_Pnt2d uv = tri->UVNode(node);
+      props.SetParameters(uv.X(), uv.Y());
+      if (!props.IsNormalDefined()) continue;
+      gp_Dir normal = props.Normal();
+      if (reverse) normal.Reverse();
+      nodeNormals[static_cast<size_t>(node - 1)] = gp_Vec(normal.XYZ());
+      nodeReady[static_cast<size_t>(node - 1)] = 1;
+    }
+  } catch (...) {
+    nodeNormals.clear();
+    nodeReady.clear();
+  }
+}
+
+// True when `facet` points into the material. Hole walls and coves are often
+// meshed that way, so a light from outside the solid misses them.
+bool facetPointsIntoSolid(
+  BRepClass3d_SolidClassifier& classifier,
+  const gp_Pnt& a,
+  const gp_Pnt& b,
+  const gp_Pnt& c,
+  const gp_Vec& facet
+) {
+  try {
+    const gp_Pnt centroid(
+      (a.X() + b.X() + c.X()) / 3.0,
+      (a.Y() + b.Y() + c.Y()) / 3.0,
+      (a.Z() + b.Z() + c.Z()) / 3.0);
+    const gp_Vec step = facet.Multiplied(0.02);
+    classifier.Perform(centroid.Translated(step), 1e-4);
+    const bool aheadInside = classifier.State() == TopAbs_IN;
+    classifier.Perform(centroid.Translated(step.Reversed()), 1e-4);
+    const bool behindInside = classifier.State() == TopAbs_IN;
+    return aheadInside && !behindInside;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool faceNormalAt(const TopoDS_Face& face, const gp_Pnt& point, gp_Dir& normal) {
+  try {
+    BRepAdaptor_Surface adaptor(face, true);
+    Extrema_ExtPS extrema(point, adaptor, 1e-4, 1e-4);
+    if (!extrema.IsDone() || extrema.NbExt() < 1) return false;
+    int best = 1;
+    double bestDist = extrema.SquareDistance(1);
+    for (int i = 2; i <= extrema.NbExt(); ++i) {
+      const double dist = extrema.SquareDistance(i);
+      if (dist < bestDist) {
+        best = i;
+        bestDist = dist;
+      }
+    }
+    double u = 0;
+    double v = 0;
+    extrema.Point(best).Parameter(u, v);
+    BRepLProp_SLProps props(adaptor, u, v, 1, 1e-6);
+    if (!props.IsNormalDefined()) return false;
+    normal = props.Normal();
+    if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+} // namespace
+
 bool kernelTessellateIndexed(
   const TopoDS_Shape& shape,
   nlohmann::json& positions,
   nlohmann::json& normals,
   nlohmann::json& indices,
-  double linear
+  double linear,
+  double angular
 ) {
-  BRepMesh_IncrementalMesh mesh(shape, linear, false, 0.32, true);
-  (void)mesh;
+  double linearStep = std::max(0.01, linear);
+  double angularStep = angular > 0.0 ? std::max(0.02, angular) : 0.32;
+  TopoDS_Shape meshed = BRepBuilderAPI_Copy(shape).Shape();
+  if (meshed.IsNull()) meshed = shape;
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    BRepTools::Clean(meshed);
+    BRepMesh_IncrementalMesh mesh(meshed, linearStep, false, angularStep, true);
+    (void)mesh;
+    if (triangulationTriangles(meshed) <= 180000 || attempt == 3) break;
+    angularStep = std::min(0.5, angularStep * 1.75);
+    linearStep = std::min(0.25, linearStep * 1.75);
+  }
   positions = nlohmann::json::array();
   normals = nlohmann::json::array();
   indices = nlohmann::json::array();
   int next = 0;
-  for (TopExp_Explorer exp(shape, TopAbs_FACE); exp.More(); exp.Next()) {
+  std::vector<gp_Vec> nodeNormals;
+  std::vector<char> nodeReady;
+  std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
+  try {
+    classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
+  } catch (...) {
+    classifier.reset();
+  }
+  for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next()) {
     const TopoDS_Face face = TopoDS::Face(exp.Current());
     TopLoc_Location loc;
     Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
     if (tri.IsNull()) continue;
     const gp_Trsf trsf = loc.Transformation();
     const bool reverse = face.Orientation() == TopAbs_REVERSED;
+    const int nodeCount = tri->NbNodes();
+    surfaceNormalsForFace(face, tri, nodeNormals, nodeReady);
+    bool flipFace = false;
+    bool flipDecided = false;
     for (int i = 1; i <= tri->NbTriangles(); ++i) {
       int n1, n2, n3;
       tri->Triangle(i).Get(n1, n2, n3);
@@ -228,22 +365,30 @@ bool kernelTessellateIndexed(
       const gp_Pnt c = tri->Node(n3).Transformed(trsf);
       gp_Vec ab(a, b);
       gp_Vec ac(a, c);
-      gp_Vec normal = ab.Crossed(ac);
-      if (normal.Magnitude() < 1e-12) continue;
-      normal.Normalize();
-      positions.push_back(a.X());
-      positions.push_back(a.Y());
-      positions.push_back(a.Z());
-      positions.push_back(b.X());
-      positions.push_back(b.Y());
-      positions.push_back(b.Z());
-      positions.push_back(c.X());
-      positions.push_back(c.Y());
-      positions.push_back(c.Z());
-      for (int k = 0; k < 3; ++k) {
-        normals.push_back(normal.X());
-        normals.push_back(normal.Y());
-        normals.push_back(normal.Z());
+      gp_Vec facet = ab.Crossed(ac);
+      if (facet.Magnitude() < 1e-12) continue;
+      facet.Normalize();
+      if (!flipDecided) {
+        flipFace = classifier && facetPointsIntoSolid(*classifier, a, b, c, facet);
+        flipDecided = true;
+      }
+      const int nodes[3] = { n1, n2, n3 };
+      const gp_Pnt points[3] = { a, b, c };
+      for (int corner = 0; corner < 3; ++corner) {
+        const gp_Pnt& point = points[corner];
+        positions.push_back(point.X());
+        positions.push_back(point.Y());
+        positions.push_back(point.Z());
+        const int node = nodes[corner];
+        gp_Vec use = facet;
+        if (node >= 1 && node <= nodeCount && static_cast<int>(nodeReady.size()) >= node && nodeReady[static_cast<size_t>(node - 1)]) {
+          use = nodeNormals[static_cast<size_t>(node - 1)];
+          if (use.Dot(facet) < 0.0) use.Reverse();
+        }
+        if (flipFace) use.Reverse();
+        normals.push_back(use.X());
+        normals.push_back(use.Y());
+        normals.push_back(use.Z());
       }
       indices.push_back(next++);
       indices.push_back(next++);
@@ -251,6 +396,50 @@ bool kernelTessellateIndexed(
     }
   }
   return positions.size() >= 9;
+}
+
+nlohmann::json kernelDisplayEdges(const TopoDS_Shape& shape) {
+  nlohmann::json display = nlohmann::json::array();
+  try {
+    TopTools_IndexedDataMapOfShapeListOfShape map;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, map);
+    for (int i = 1; i <= map.Extent(); ++i) {
+      const TopoDS_Edge edge = TopoDS::Edge(map.FindKey(i));
+      if (BRep_Tool::Degenerated(edge)) continue;
+      const TopTools_ListOfShape& faces = map.FindFromIndex(i);
+      if (faces.Extent() != 2) continue;
+      BRepAdaptor_Curve curve(edge);
+      GCPnts_QuasiUniformDeflection discret(curve, 0.05);
+      if (!discret.IsDone() || discret.NbPoints() < 2) continue;
+      const gp_Pnt mid = discret.Value((discret.NbPoints() + 1) / 2);
+      gp_Dir na;
+      gp_Dir nb;
+      const bool haveNormals = faceNormalAt(TopoDS::Face(faces.First()), mid, na)
+        && faceNormalAt(TopoDS::Face(faces.Last()), mid, nb);
+      if (haveNormals) {
+        const double dot = std::max(-1.0, std::min(1.0, na.XYZ().Dot(nb.XYZ())));
+        const double turn = std::acos(dot);
+        const double dihedral = std::min(turn, kKernelPi - turn);
+        // A seam or a fillet meeting its wall is nearly tangent. A rim is not.
+        if (dihedral < 12.0 * kKernelDeg) continue;
+      }
+      const gp_Pnt first = discret.Value(1);
+      double reach = 0;
+      nlohmann::json points = nlohmann::json::array();
+      for (int p = 1; p <= discret.NbPoints(); ++p) {
+        const gp_Pnt pt = discret.Value(p);
+        reach = std::max(reach, first.Distance(pt));
+        points.push_back(pt.X());
+        points.push_back(pt.Y());
+        points.push_back(pt.Z());
+      }
+      if (reach < 0.15 || points.size() < 6) continue;
+      display.push_back({ { "points", points } });
+    }
+  } catch (...) {
+    return nlohmann::json::array();
+  }
+  return display;
 }
 
 double kernelVolume(const TopoDS_Shape& shape) {

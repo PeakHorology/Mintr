@@ -57,7 +57,6 @@ import { barrelHoleCutDepthMm } from "@/lib/sketchCylinder";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { hasNativeOcctKernel } from "@/lib/nativeKernelProtocol";
 import {
-  cadOperandsForExactGroup,
   mixedGroupLeftOutNotice,
   occtMeshFallbackNotice,
   selectionSupportsOcctCsg,
@@ -1896,11 +1895,13 @@ export function meshPositionsToGroupShape(
   positions: number[],
   idPrefix: string,
   cleanup?: BooleanCleanupOptions,
+  normals?: number[],
 ): WorkplaneShape | null {
   const cleaned = cleanupBooleanPositions(positions, undefined, cleanup);
   if (cleaned.length < 9) {
     return null;
   }
+  const keepNormals = Boolean(normals && normals.length === cleaned.length && cleaned.length === positions.length);
 
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
@@ -1934,8 +1935,10 @@ export function meshPositionsToGroupShape(
   const height = cleanModelDimension(rawHeight);
   const depth = cleanModelDimension(rawDepth);
   const normalizedPositions: number[] = [];
+  const normalizedNormals: number[] = [];
   for (let i = 0; i < cleaned.length; i += 3) {
     normalizedPositions.push(cleaned[i] - centerX, cleaned[i + 1] - minY, cleaned[i + 2] - centerZ);
+    if (keepNormals && normals) normalizedNormals.push(normals[i], normals[i + 1], normals[i + 2]);
   }
 
   const firstSolid = solids[0];
@@ -1956,6 +1959,7 @@ export function meshPositionsToGroupShape(
     rotation: 0,
     importedMesh: {
       positions: normalizedPositions,
+      ...(keepNormals && normalizedNormals.length === normalizedPositions.length ? { normals: normalizedNormals } : {}),
       baseWidth: rawWidth,
       baseDepth: rawDepth,
       baseHeight: rawHeight,
@@ -3119,6 +3123,7 @@ export async function occtBooleanMeshShape(
         : op === "union" && !selection.some((shape) => Boolean(shape.importedMesh))
           ? { unifyCoplanar: true }
           : undefined,
+      result.quality === "exact" ? result.normals : undefined,
     );
     if (!group?.importedMesh) return null;
     const expected = boundsForShapes(selection);
@@ -3325,10 +3330,6 @@ async function ensureExactSketchOperands(shapes: WorkplaneShape[]): Promise<Work
   }));
 }
 
-function originalOperandId(shape: WorkplaneShape): string {
-  return shape.id.replace(/__hole\d+$/, "");
-}
-
 export function canUseBoxBoolean(selection: WorkplaneShape[]) {
   return selection.every(isAxisAlignedBoxCutter);
 }
@@ -3351,33 +3352,15 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
   const boxBooleanSelection = hasSolid && hasHole
     ? await ensureExactSketchOperands(expandBooleanHoleCutters(expandGroupsForBoxBoolean(solidified)))
     : [];
-  // Group fuses exact solids when the selection is small enough. If that fuse
-  // does not come back, the pieces stay put. The mesh path is for a large
-  // selection, or for a body that was already a mesh.
+  // Exact fuse when every part is CAD and the selection is small enough.
+  // If that fuse does not come back, still combine the parts into one object.
   const skipLiveOcct = !hasNativeOcctKernel() && shouldSkipLiveOcctBoolean(booleanSelection);
-  const cadOnly = skipLiveOcct ? null : cadOperandsForExactGroup(booleanSelection);
-  const occtSelection = cadOnly ?? booleanSelection;
-  const occtEligible = hasSolid && selectionSupportsOcctCsg(occtSelection);
-  const occtHasHole = occtSelection.some((shape) => shape.hole);
+  const occtEligible = hasSolid && selectionSupportsOcctCsg(booleanSelection);
+  const occtHasHole = booleanSelection.some((shape) => shape.hole);
   const occtGroup = occtEligible && !skipLiveOcct
-    ? await occtBooleanMeshShape(occtSelection, occtHasHole ? "subtract" : "union")
+    ? await occtBooleanMeshShape(booleanSelection, occtHasHole ? "subtract" : "union")
     : null;
-  // Every operand was an exact solid and the fuse did not come back. A mesh
-  // Group would look successful and is the triangulated one. Leave the pieces.
-  if (!skipLiveOcct && (occtEligible || cadOnly) && !occtGroup) {
-    return {
-      group: null,
-      booleanSelection,
-      hasSolid,
-      hasHole,
-      hasImportedMesh,
-      consumed: false,
-      failureNotice: "Could not join these as exact solids. The pieces were left as they are.",
-    };
-  }
-  const leftOutShapes = cadOnly && occtGroup
-    ? solidified.filter((shape) => !cadOnly.some((cad) => originalOperandId(cad) === shape.id))
-    : [];
+  const leftOutShapes: WorkplaneShape[] = [];
   const manifoldCutGroup = !occtGroup && hasSolid && hasHole
     ? await manifoldBooleanMeshShape(booleanSelection, { requireImported: false })
     : null;

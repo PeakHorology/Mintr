@@ -10,6 +10,8 @@ export type ReleaseNotes = {
 
 /** Feature lines drawn stronger in Settings → Updates and the update card. */
 export const FEATURED_RELEASE_NOTES: readonly string[] = [
+  "A round part keeps its side count after a Group, a fillet, or a split. Smooth, Standard, Draft, and a number you type all carry through.",
+  "Curves, holes, and grooves light from the real face. A sharp corner stays a sharp corner.",
   "Face takes Hollow's place on the toolbar. Click a flat face to add material or cut a pocket.",
   "Leave column keeps the wall and the bar between two pockets. Join through opens those pockets into each other. Opposite faces cut straight through.",
   "The part you create matches what you saw on screen.",
@@ -28,6 +30,16 @@ export function noteIsFeatured(note: string): boolean {
 export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
+  {
+    version: "1.1.5",
+    items: [
+      "I accidentally broke quality looking fillets in 1.1.4, they're fixed now lol. Sorry about that.",
+      "Face is now Pad/Pocket. It has all the functionality of Hollow and Face combined.",
+      "A round part keeps its side count after a Group, a fillet, or a split. Smooth, Standard, Draft, and a number you type all carry through.",
+      "Curves, holes, and grooves light from the real face. A sharp corner stays a sharp corner.",
+      "The line on a cut follows the solid.",
+    ],
+  },
   {
     version: "1.1.4",
     items: [

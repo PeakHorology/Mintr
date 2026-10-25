@@ -255,7 +255,7 @@ describe("face body", () => {
       depth: 3,
     });
     expect(result.error).toBeNull();
-    expect(result.shape?.name).toBe("Face");
+    expect(result.shape?.name).toBe("Pad");
     expect(result.shape?.hole).toBe(false);
     expect(result.shape?.sketchProfile?.segments.length).toBeGreaterThan(2);
     expect(result.shape?.height).toBeCloseTo(3, 1);

@@ -317,44 +317,32 @@ function buildRoof(
 }
 
 function buildRoundRoof(brep: Brep, width: number, height: number, depth: number): ShapeBrepBuild {
-  // Semicircle of radius width/2 in X-Y, scaled in Y to `height`, extruded along Z.
-  const radius = width / 2;
-  const plane = xyPlane(brep, [0, 0, -depth / 2]);
-  const disk = brep.sketchCircle(radius, { plane: plane as never });
-  let solid = brep.sketchExtrude(disk as never, depth, {
-    extrusionDirection: [0, 0, 1],
-  }) as unknown as BrepSolid;
-  // Y size is radius*2+2, so the centre must sit a full half-extent below the y=0
-  // plane for the cutter's top face to land exactly on it.
-  const cutter = brep.translate(
-    brep.box(radius * 4 + 2, radius * 2 + 2, depth + 4, { centered: true }),
-    [0, -(radius + 1), 0],
-  );
-  const cut = brep.cut(solid, cutter);
-  if (!cut.ok) {
-    const segments = 64;
-    const pts: Array<[number, number]> = [[-radius, 0]];
-    for (let i = 1; i < segments; i += 1) {
-      const a = Math.PI - (i / segments) * Math.PI;
-      pts.push([Math.cos(a) * radius, Math.sin(a) * radius]);
-    }
-    pts.push([radius, 0]);
-    const approx = extrudeClosedUv(brep, pts, plane, depth, [0, 0, 1]);
-    if (!approx) return { skip: `round roof failed: ${String(cut.error.message ?? cut.error)}` };
-    solid = approx;
-  } else {
-    solid = cut.value;
-  }
-  const sy = height / Math.max(SIZE_EPS, radius);
-  if (!nearlyEqual(sy, 1)) {
-    const scaled = brep.applyMatrix(solid, {
-      linear: [1, 0, 0, 0, sy, 0, 0, 0, 1],
-      translation: [0, 0, 0],
-    });
-    if (!scaled.ok) return { skip: `round roof scale failed: ${String(scaled.error.message ?? scaled.error)}` };
-    solid = scaled.value as unknown as BrepSolid;
-  }
-  return { solid: centerOnY(brep, solid, height) };
+  // Half-oval at the final width and height, extruded by the depth. Scaling a
+  // finished half-cylinder turns the arch into a general surface, and fillet
+  // or chamfer then refuse the corners. A tall arch is rotated so its seam
+  // sits on the crown, off the flat face.
+  const rx = width / 2;
+  const ry = height;
+  const major = Math.max(rx, ry);
+  const minor = Math.min(rx, ry);
+  const tall = ry > rx + SIZE_EPS;
+  const z = -depth / 2;
+  const start = tall ? -90 : 0;
+  const end = tall ? 90 : 180;
+  const at = (degrees: number): [number, number, number] => {
+    const u = (degrees * Math.PI) / 180;
+    return [major * Math.cos(u), minor * Math.sin(u), z];
+  };
+  const arc = brep.ellipseArc(major, minor, start, end, { at: [0, 0, z], axis: [0, 0, 1], xDir: [1, 0, 0] });
+  if (!arc.ok) return { skip: `round roof failed: ${String(arc.error.message ?? arc.error)}` };
+  const loop = brep.wireLoop([arc.value, brep.line(at(end), at(start))]);
+  if (!loop.ok) return { skip: `round roof failed: ${String(loop.error.message ?? loop.error)}` };
+  const profile = brep.face(loop.value as never);
+  if (!profile.ok) return { skip: `round roof failed: ${String(profile.error.message ?? profile.error)}` };
+  const extruded = brep.extrude(profile.value, depth);
+  if (!extruded.ok) return { skip: `round roof failed: ${String(extruded.error.message ?? extruded.error)}` };
+  const turned = tall ? brep.rotate(extruded.value, 90, { axis: [0, 0, 1] }) : extruded.value;
+  return { solid: centerOnY(brep, turned as BrepSolid, height) };
 }
 
 function buildHalfSphere(brep: Brep, width: number, height: number, depth: number): ShapeBrepBuild {

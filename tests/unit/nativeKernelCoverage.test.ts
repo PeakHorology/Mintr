@@ -119,7 +119,7 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
   it("fuses nine boxes without falling back", async () => {
     const solids = Array.from({ length: 9 }, (_, i) => toNativeKernelSolid(box(`b${i}`, { x: i * 22 })));
     const reply = await client.request({ id: 2, type: "boolean", op: "union", solids });
-    expect(reply.ok).toBe(true);
+    expect(reply.ok, String(reply.message ?? reply.fallback)).toBe(true);
     expect(Array.isArray(reply.positions) && (reply.positions as number[]).length >= 9).toBe(true);
   });
 
@@ -136,6 +136,101 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
       extents!,
     )).toBe(false);
   });
+
+  it("draws a cylinder cut at the requested sides, lit from the face, with real edges", async () => {
+    const cylinder = toNativeKernelSolid(box("cyl", {
+      kind: "cylinder",
+      width: 20,
+      depth: 20,
+      height: 30,
+      size: 20,
+    }));
+    const bite = toNativeKernelSolid(box("bite", {
+      kind: "box",
+      hole: true,
+      width: 10,
+      depth: 24,
+      height: 40,
+      size: 10,
+      x: 12,
+    }));
+    expect(cylinder && bite).toBeTruthy();
+    const run = (id: number, angularDeflection: number) => client.request({
+      id,
+      type: "boolean",
+      op: "subtract",
+      solids: [cylinder!, bite!],
+      angularDeflection,
+    });
+    const coarse = await run(401, 0.32);
+    const fine = await run(402, (Math.PI * 2) / 128);
+    expect(coarse.ok, String(coarse.message)).toBe(true);
+    expect(fine.ok, String(fine.message)).toBe(true);
+    const coarsePositions = coarse.positions as number[];
+    const finePositions = fine.positions as number[];
+    const fineNormals = fine.normals as number[];
+    expect(fineNormals.length).toBe(finePositions.length);
+    const sectors = (positions: number[]) => {
+      const seen: number[] = [];
+      for (let i = 0; i < positions.length; i += 3) {
+        const y = positions[i + 1];
+        if (y > 0.5 && y < 29.5) continue;
+        const x = positions[i];
+        const z = positions[i + 2];
+        if (Math.abs(Math.hypot(x, z) - 10) > 0.6) continue;
+        const angle = Math.atan2(z, x);
+        if (seen.every((other) => {
+          const gap = Math.abs(other - angle);
+          return gap > 0.012 && gap < Math.PI * 2 - 0.012;
+        })) seen.push(angle);
+      }
+      return seen.length;
+    };
+    expect(sectors(coarsePositions)).toBeLessThan(36);
+    expect(sectors(finePositions)).toBeGreaterThan(70);
+    let curvedTriangles = 0;
+    for (let i = 0; i < fineNormals.length; i += 9) {
+      const differs = Math.abs(fineNormals[i] - fineNormals[i + 3]) > 1e-4
+        || Math.abs(fineNormals[i + 1] - fineNormals[i + 4]) > 1e-4
+        || Math.abs(fineNormals[i + 2] - fineNormals[i + 5]) > 1e-4;
+      if (differs) curvedTriangles += 1;
+    }
+    expect(curvedTriangles).toBeGreaterThan(0);
+    const edges = fine.displayEdges as Array<{ points?: number[] }> | undefined;
+    expect(edges?.some((edge) => (edge.points?.length ?? 0) >= 6)).toBe(true);
+
+    const block = toNativeKernelSolid(box("block-hole"));
+    const bore = toNativeKernelSolid(punchThroughCutter(
+      box("bore-light", { kind: "cylinder", hole: true, width: 8, depth: 8, size: 8 }),
+      [box("block-hole")],
+    ));
+    const cut = await client.request({
+      id: 403,
+      type: "boolean",
+      op: "subtract",
+      solids: [block!, bore!],
+      angularDeflection: (Math.PI * 2) / 64,
+    });
+    expect(cut.ok, String(cut.message)).toBe(true);
+    const positions = cut.positions as number[];
+    const normals = cut.normals as number[];
+    expect(normals.length).toBe(positions.length);
+    let samples = 0;
+    let facingVoid = 0;
+    for (let i = 0; i < positions.length; i += 9) {
+      const x = (positions[i] + positions[i + 3] + positions[i + 6]) / 3;
+      const y = (positions[i + 1] + positions[i + 4] + positions[i + 7]) / 3;
+      const z = (positions[i + 2] + positions[i + 5] + positions[i + 8]) / 3;
+      const radius = Math.hypot(x, z);
+      if (y < 4 || y > 16 || Math.abs(radius - 4) > 0.8) continue;
+      const nx = (normals[i] + normals[i + 3] + normals[i + 6]) / 3;
+      const nz = (normals[i + 2] + normals[i + 5] + normals[i + 8]) / 3;
+      samples += 1;
+      if (nx * x + nz * z < -0.2 * radius) facingVoid += 1;
+    }
+    expect(samples).toBeGreaterThan(8);
+    expect(facingVoid / samples).toBeGreaterThan(0.8);
+  }, 60000);
 
   it("cuts a flush hole all the way through", async () => {
     const solid = box("block");
@@ -294,6 +389,58 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
     expect((fillet.skippedEdgeIds as number[] | undefined) ?? []).toEqual([]);
     await client.request({ id: 35, requestId: 35, type: "dispose" });
   }, 60000);
+
+  it("fillets and chamfers a round roof after its height and width change", async () => {
+    const sizes = [
+      { width: 20, depth: 24, height: 16 },
+      { width: 28, depth: 16, height: 6 },
+      { width: 20, depth: 20, height: 10 },
+    ];
+    for (const [index, size] of sizes.entries()) {
+      const prepared = await client.request({
+        id: 200 + index * 4,
+        requestId: 200 + index * 4,
+        type: "prepare",
+        sharpAngle: 12,
+        parts: [{ hole: false, primitive: { kind: "roundRoof", ...size } }],
+      });
+      expect(prepared.ok, String(prepared.message)).toBe(true);
+      const edgeIds = (prepared.selectableEdgeIds as number[] | undefined) ?? [];
+      expect(edgeIds.length).toBeGreaterThan(2);
+      const amount = size.height < size.width / 2 ? 0.4 : 0.8;
+      const fillet = await client.request({
+        id: 201 + index * 4,
+        requestId: 201 + index * 4,
+        type: "preview",
+        kind: "fillet",
+        edgeIds,
+        amount,
+        chamferAngle: 45,
+      });
+      expect(fillet.ok, `${size.height} fillet ${String(fillet.message)}`).toBe(true);
+      const skipped = (fillet.skippedEdgeIds as number[] | undefined) ?? [];
+      expect(skipped.length).toBeLessThan(edgeIds.length);
+      await client.request({ id: 202 + index * 4, requestId: 202 + index * 4, type: "dispose" });
+      const again = await client.request({
+        id: 203 + index * 4,
+        requestId: 203 + index * 4,
+        type: "prepare",
+        sharpAngle: 12,
+        parts: [{ hole: false, primitive: { kind: "roundRoof", ...size } }],
+      });
+      const chamfer = await client.request({
+        id: 204 + index * 4,
+        requestId: 204 + index * 4,
+        type: "preview",
+        kind: "chamfer",
+        edgeIds: (again.selectableEdgeIds as number[] | undefined) ?? [],
+        amount,
+        chamferAngle: 45,
+      });
+      expect(chamfer.ok, `${size.height} chamfer ${String(chamfer.message)}`).toBe(true);
+      await client.request({ id: 205 + index * 4, requestId: 205 + index * 4, type: "dispose" });
+    }
+  }, 120000);
 
   it("coves a box edge: concave groove, same outline, less volume than a round fillet keeps", async () => {
     const prepared = await client.request({

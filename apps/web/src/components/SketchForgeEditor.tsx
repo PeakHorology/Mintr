@@ -1716,9 +1716,9 @@ export function SketchForgeEditor({
             faces,
             prepared: true,
             busy: false,
-            error: faces.length > 0 ? null : "Face needs a flat face.",
+            error: faces.length > 0 ? null : "Pad/Pocket needs a flat face.",
           } : current);
-          setNotice(faces.length > 0 ? "Click a flat face" : "Face needs a flat face.");
+          setNotice(faces.length > 0 ? "Click a flat face" : "Pad/Pocket needs a flat face.");
           return;
         }
         if (pushPullSessionRef.current) {
@@ -2200,9 +2200,9 @@ export function SketchForgeEditor({
   const activeToolChip = useMemo<{ label: string; hint: string } | null>(() => {
     if (faceSession) {
       return {
-        label: "Face",
+        label: "Pad/Pocket",
         hint: faceSession.selectedFaceId === null
-          ? (faceSession.kept.length > 0 ? "Click the next flat face. It uses these same settings." : "Click a flat face")
+          ? (faceSession.kept.length > 0 ? "Click the next flat face. It uses these same settings." : "Out grows a pad. In cuts a pocket.")
           : (faceSession.kept.length > 0 ? "Edits apply to every face you added" : "Adjust, then Create. Esc cancels"),
       };
     }
@@ -5753,7 +5753,7 @@ export function SketchForgeEditor({
       const modifierCancelled = invalidateCadModifierSession();
       const currentIndex = historyIndexRef.current;
       if (currentIndex <= 0) {
-        setNotice(modifierCancelled ? (faceWasActive ? "Face cancelled" : pushPullWasActive ? "Push Pull cancelled" : "Edge modifier cancelled") : "Nothing to undo");
+        setNotice(modifierCancelled ? (faceWasActive ? "Pad/Pocket cancelled" : pushPullWasActive ? "Push Pull cancelled" : "Edge modifier cancelled") : "Nothing to undo");
         return;
       }
       setHistoryBrowse(null);
@@ -6679,7 +6679,7 @@ export function SketchForgeEditor({
 
   const cancelFace = useCallback(() => {
     invalidateCadModifierSession();
-    setNotice("Face cancelled");
+    setNotice("Pad/Pocket cancelled");
   }, [invalidateCadModifierSession]);
 
   const applyFace = useCallback(() => {
@@ -6742,7 +6742,7 @@ export function SketchForgeEditor({
           }
           prisms.push({
             ...prism,
-            name: entry.draft.direction === "in" ? "Pocket" : "Face",
+            name: entry.draft.direction === "in" ? "Pocket" : "Pad",
             color: host.color,
             solidColor: host.solidColor || host.color,
             hole: entry.draft.direction === "in",
@@ -7129,7 +7129,7 @@ export function SketchForgeEditor({
     const current = shapes.find((shape) => shape.id === base.id);
     if (current && projectShapesFingerprint([current]) === cadModifierBaseFingerprintRef.current) return;
     invalidateCadModifierSession();
-    setNotice("Face cancelled because the object changed");
+    setNotice("Pad/Pocket cancelled because the object changed");
   }, [faceSession, invalidateCadModifierSession, shapes]);
 
   const applyEdgeModifier = useCallback(() => {
@@ -11387,9 +11387,9 @@ export function SketchForgeEditor({
                 />
               </ToolbarFlow>
             ) : faceSession ? (
-              <ToolbarFlow tool="Face" label="Face">
+              <ToolbarFlow tool="Pad/Pocket" label="Pad/Pocket">
                 <FacePanel
-                  targetName={shapes.find((shape) => shape.id === faceSession.shapeId)?.name ?? "Face"}
+                  targetName={shapes.find((shape) => shape.id === faceSession.shapeId)?.name ?? "Pad/Pocket"}
                   direction={faceSession.direction}
                   inset={faceSession.inset}
                   maxInset={(() => {

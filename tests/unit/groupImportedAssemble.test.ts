@@ -62,11 +62,55 @@ describe("grouping imported solids", () => {
     expect(viewportGroupChildren(result.group!)).toEqual([]);
   });
 
-  it("leaves exact solids ungrouped when the exact fuse does not come back", async () => {
+  it("joins exact solids into one object when the exact fuse does not come back", async () => {
     const result = await buildGroupedShapeFromSelection([box("a"), box("b", 8)]);
-    expect(result.group).toBeNull();
+    expect(result.group?.csg?.op).toBe("union");
+    expect(result.group?.importedMesh?.positions.length).toBeGreaterThan(8);
+    expect(result.group?.importedMesh?.brepStep).toBeUndefined();
+    expect(result.qualityNotice).toMatch(/mesh/);
     expect(result.consumed).toBe(false);
-    expect(result.failureNotice).toBe("Could not join these as exact solids. The pieces were left as they are.");
+  });
+
+  it("includes a mesh part in the same group as exact solids", async () => {
+    const result = await buildGroupedShapeFromSelection([
+      box("a"),
+      box("b", 8),
+      importedPart("label", 4),
+    ]);
+    expect(result.group?.csg?.op).toBe("union");
+    expect(result.leftOutShapes ?? []).toEqual([]);
+    expect(result.group?.importedMesh?.positions.length).toBeGreaterThan(8);
+  });
+
+  it("joins cylinders that overlap, sit apart, or are added onto a group", async () => {
+    const cylinder = (id: string, x: number, extra: Partial<WorkplaneShape> = {}): WorkplaneShape => ({
+      id,
+      name: id,
+      kind: "cylinder",
+      color: "#e07a1f",
+      x,
+      z: 0,
+      elevation: 0,
+      size: 20,
+      width: 20,
+      depth: 20,
+      height: 20,
+      rotation: 0,
+      ...extra,
+    });
+    const overlap = await buildGroupedShapeFromSelection([cylinder("a", 0), cylinder("b", 12)]);
+    const apart = await buildGroupedShapeFromSelection([cylinder("a", 0), cylinder("b", 40)]);
+    const turned = await buildGroupedShapeFromSelection([
+      cylinder("a", 0),
+      cylinder("b", 0, { rotationX: 90, z: 16 }),
+    ]);
+    expect(overlap.group?.csg?.op).toBe("union");
+    expect(apart.group?.csg?.op).toBe("union");
+    expect(apart.group?.width).toBeGreaterThan(40);
+    expect(turned.group?.csg?.op).toBe("union");
+    const again = await buildGroupedShapeFromSelection([overlap.group!, cylinder("c", 24)]);
+    expect(again.group?.csg?.op).toBe("union");
+    expect(again.group?.importedMesh?.positions.length).toBeGreaterThan(8);
   });
 
   it("still groups a large exact selection on the mesh path", async () => {

@@ -11,6 +11,7 @@ import {
 import { buildNativeShapeSolid, NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
 import { importedMeshHasExactSource, resolveImportedBrepStep } from "@/lib/importedBrepSource";
 import { containsHelicalThreadSolid } from "@/lib/threadShape";
+import { booleanAngularDeflection } from "@/lib/displayTessellation";
 
 export { aabbsOverlap, shapeYawDegrees, worldAabb, type Aabb };
 
@@ -195,12 +196,41 @@ function intersectAllUnified(
   return { ok: true, value: unifyBooleanSolid(brep, acc) };
 }
 
+function booleanPictureFromMesh(tess: {
+  vertices?: ArrayLike<number>;
+  triangles?: ArrayLike<number>;
+  normals?: ArrayLike<number>;
+} | null | undefined): { positions: number[]; normals?: number[] } | null {
+  const vertices = tess?.vertices;
+  const triangles = tess?.triangles;
+  if (!vertices || vertices.length < 9 || !triangles || triangles.length < 3) return null;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const stored = tess?.normals;
+  const hasNormals = Boolean(stored && stored.length === vertices.length);
+  for (let i = 0; i < triangles.length; i += 1) {
+    const v = triangles[i] * 3;
+    if (v < 0 || v + 2 >= vertices.length) continue;
+    positions.push(vertices[v], vertices[v + 1], vertices[v + 2]);
+    if (hasNormals && stored) normals.push(stored[v], stored[v + 1], stored[v + 2]);
+  }
+  if (positions.length < 9) return null;
+  return {
+    positions,
+    normals: hasNormals && normals.length === positions.length ? normals : undefined,
+  };
+}
+
 function displayEdgesFromBooleanSolid(
   brep: Brep,
   solid: BrepSolid,
+  angularTolerance?: number,
 ): { points: number[] }[] {
   try {
-    const edges = brep.meshEdges(solid as never);
+    const edges = brep.meshEdges(solid as never, {
+      tolerance: 0.08,
+      ...(angularTolerance && angularTolerance > 0 ? { angularTolerance } : {}),
+    });
     const lines = edges?.lines;
     if (!lines || lines.length < 6) return [];
     const groups = edges.edgeGroups ?? [];
@@ -764,6 +794,8 @@ export async function bakeCsgBodyBrepStep(shape: WorkplaneShape): Promise<Workpl
 
 export type OcctBooleanMeshResult = {
   positions: number[];
+  /** Surface normals, one per position. Absent when the picture has none. */
+  normals?: number[];
   brepStep: string;
   quality: StepExportQuality;
   /** World-space B-Rep feature edges after unify, for a clean viewport outline. */
@@ -839,14 +871,15 @@ export async function evaluateOcctBooleanOnWorldShapesLocal(
     // Tessellate in world space first so the editor can recenter the display mesh.
     // Export STEP in the same local frame as that mesh (XZ centered, Y from 0) so a
     // later Group does not apply the body pose a second time and pull parts apart.
+    const angular = booleanAngularDeflection(active);
     let positions: number[] = [];
+    let normals: number[] | undefined;
     try {
-      const tess = brep.mesh(solid as never);
-      if (!tess?.vertices || tess.vertices.length < 9 || !tess.triangles?.length) return null;
-      for (let i = 0; i < tess.triangles.length; i += 1) {
-        const v = tess.triangles[i] * 3;
-        positions.push(tess.vertices[v], tess.vertices[v + 1], tess.vertices[v + 2]);
-      }
+      const tess = brep.mesh(solid as never, { tolerance: 0.12, angularTolerance: angular });
+      const picture = booleanPictureFromMesh(tess);
+      if (!picture) return null;
+      positions = picture.positions;
+      normals = picture.normals;
     } catch {
       return null;
     }
@@ -867,9 +900,10 @@ export async function evaluateOcctBooleanOnWorldShapesLocal(
     if (!brepStep.trim()) return null;
     return {
       positions,
+      normals,
       brepStep,
       quality: "exact",
-      displayEdges: displayEdgesFromBooleanSolid(brep, solid),
+      displayEdges: displayEdgesFromBooleanSolid(brep, solid, angular),
     };
   } catch {
     // OCCT WASM Aborted() and similar — callers fall back to Manifold / mesh CSG.

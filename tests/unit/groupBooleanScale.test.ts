@@ -18,6 +18,7 @@ vi.mock("@/lib/brepKernel", async () => {
 });
 import {
   allowSyncBooleanKernelOnUiThread,
+  buildGroupedShapeFromSelection,
   occtBooleanMeshShape,
   remeshCsgGroupFromWorldChildren,
   restoreGroupedChildren,
@@ -87,6 +88,17 @@ describe("Group scale for multi-body parts", () => {
     expect(fused?.importedMesh?.brepStep?.startsWith("ISO-10303-21")).toBe(true);
     expect(fused?.kind).toBe("mesh");
     expect((fused?.importedMesh?.positions.length ?? 0) / 3).toBeGreaterThan(8);
+  }, 120_000);
+
+  it("fuses cylinders that overlap or sit apart, then a third onto that group", async () => {
+    const overlap = await buildGroupedShapeFromSelection([cylinder("a", 0), cylinder("b", 12)]);
+    const apart = await buildGroupedShapeFromSelection([cylinder("a", 0), cylinder("b", 40)]);
+    expect(overlap.group?.importedMesh?.brepStep?.startsWith("ISO-10303-21")).toBe(true);
+    expect(apart.group?.importedMesh?.brepStep?.startsWith("ISO-10303-21")).toBe(true);
+    expect(apart.group?.width).toBeGreaterThan(40);
+    const again = await buildGroupedShapeFromSelection([overlap.group!, cylinder("c", 24)]);
+    expect(again.group?.importedMesh?.brepStep?.startsWith("ISO-10303-21")).toBe(true);
+    expect(again.group?.csg?.op).toBe("union");
   }, 120_000);
 
   it("asks MintrKernel to overshoot a flush hole so Group cuts through", async () => {
