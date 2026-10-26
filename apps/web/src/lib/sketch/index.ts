@@ -2,6 +2,7 @@ export * from "./types";
 export * from "./migrate";
 export * from "./profiles";
 export * from "./snaps";
+export * from "./shapeCenterSnap";
 export * from "./constraints";
 export * from "./solver";
 export * from "./editOps";

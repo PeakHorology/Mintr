@@ -1,6 +1,7 @@
 import { hydrateClipboardShape, hydrateHistoryMeshBlob, jsonSafeShape } from "@/lib/shapeJson";
 import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import type { EditorHistoryEntry, EditorHistoryMeshBlob, EditorHistoryMeshVault } from "@/lib/editorHistory";
+import type { MintrGuide } from "@/lib/mintrGuide";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 /** Inside the file this stays "peakcad". Renaming it would reject every saved project. */
@@ -9,6 +10,8 @@ export const PEAKCAD_DOCUMENT_VERSION = 1;
 export const PEAKCAD_FILE_EXTENSION = ".peakcad";
 /** New files and Save As use this. `.peakcad` stays a valid project file. */
 export const MINTR_FILE_EXTENSION = ".mintr";
+/** A project file plus a tutorial chapter. Format stays "peakcad" version 1. */
+export const MINTR_GUIDE_EXTENSION = ".mintrguide";
 const PROJECT_FILE_EXTENSIONS = [MINTR_FILE_EXTENSION, PEAKCAD_FILE_EXTENSION] as const;
 /** Close to V8's max string length (JSON.stringify fails past it). Keep in sync with electron/peakcadPath.cjs. */
 export const PEAKCAD_MAX_BYTES = 512 * 1024 * 1024;
@@ -38,6 +41,8 @@ export type PeakcadDocument = {
   shapes: WorkplaneShape[];
   history?: EditorHistoryEntry[];
   historyIndex?: number;
+  /** Present on a .mintrguide. Older Mintr opens the finished part and drops this on save. */
+  guide?: MintrGuide;
 };
 
 const ACCENTS = new Set<PeakcadAccent>(["cyan", "green", "gold", "red"]);
@@ -180,6 +185,7 @@ export function buildPeakcadDocument(input: {
   history?: EditorHistoryEntry[];
   historyIndex?: number;
   savedAt?: number;
+  guide?: MintrGuide;
 }): PeakcadDocument {
   const shapes = input.shapes.map(jsonSafeShape);
   return {
@@ -196,7 +202,15 @@ export function buildPeakcadDocument(input: {
     shapes,
     history: input.history ? dedupeHistoryMeshVaults(input.history).map(jsonSafeHistoryEntry) : undefined,
     historyIndex: input.historyIndex,
+    guide: input.guide,
   };
+}
+
+export function guideFilename(name: string) {
+  const trimmed = name.trim().replace(/\.mintrguide$/i, "");
+  const safe = projectFileStem(trimmed).replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+  const base = (safe || "Untitled guide").slice(0, 80);
+  return `${base}${MINTR_GUIDE_EXTENSION}`;
 }
 
 function encodePeakcadJson(document: PeakcadDocument) {
@@ -308,6 +322,20 @@ export function serializePeakcadDocument(document: PeakcadDocument) {
   throw lastError instanceof Error ? lastError : new Error("This Mintr file is too large to save.");
 }
 
+/** A guide is useless without its history, so this does not drop steps to fit. */
+export function serializeMintrGuide(document: PeakcadDocument) {
+  let lastError: unknown = new Error("This guide is too large to save. Shorten the model and try again.");
+  for (const attempt of [document, compactHistoryMeshes(document)]) {
+    try {
+      const text = encodePeakcadJson(buildPeakcadDocument(attempt));
+      if (peakcadByteLength(text) <= PEAKCAD_MAX_BYTES) return text;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("This guide is too large to save. Shorten the model and try again.");
+}
+
 export function parsePeakcadDocument(raw: string): PeakcadDocument {
   if (typeof raw !== "string" || raw.length === 0) {
     throw new Error("This Mintr file is empty.");
@@ -382,5 +410,34 @@ export function parsePeakcadDocument(raw: string): PeakcadDocument {
     shapes,
     history,
     historyIndex: typeof record.historyIndex === "number" ? record.historyIndex : undefined,
+    guide: parseMintrGuide(record.guide),
+  };
+}
+
+function parseMintrGuide(raw: unknown): MintrGuide | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const guide = raw as Record<string, unknown>;
+  if (typeof guide.title !== "string" || !guide.title.trim()) return undefined;
+  if (typeof guide.author !== "string" || !guide.author.trim()) return undefined;
+  if (!Array.isArray(guide.steps)) return undefined;
+  const steps = guide.steps.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const step = item as Record<string, unknown>;
+    if (typeof step.historyIndex !== "number" || !Number.isFinite(step.historyIndex)) return [];
+    if (typeof step.label !== "string" || !step.label.trim()) return [];
+    if (typeof step.cue !== "string" || !step.cue.trim()) return [];
+    return [{
+      historyIndex: step.historyIndex,
+      label: step.label.trim(),
+      included: step.included !== false,
+      cue: step.cue.trim(),
+    }];
+  });
+  if (!steps.length) return undefined;
+  return {
+    title: guide.title.trim(),
+    author: guide.author.trim(),
+    summary: typeof guide.summary === "string" && guide.summary.trim() ? guide.summary.trim() : `A guide by ${guide.author.trim()}.`,
+    steps,
   };
 }

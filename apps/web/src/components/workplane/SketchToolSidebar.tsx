@@ -172,6 +172,7 @@ function SketchToolButton({
     <button
       className={`editor-tool-sidebar-item sketch-tool-item ${disabled ? "disabled" : ""} ${active ? "active" : ""}`}
       type="button"
+      data-lesson-target={label.toLowerCase()}
       aria-label={label}
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -320,7 +321,7 @@ export function SketchFinishToolbar({
     <section className="editor-file-group sketch-finish-toolbar" aria-label="Turn the sketch into a solid">
       <div className="toolbar-section-label">Next</div>
       <div className="toolbar-section-tools">
-        <button className="editor-file-action sketch-finish-action primary" type="button" onClick={onSketchExtrude} onContextMenu={extrudeHelp.onContextMenu}>
+        <button className="editor-file-action sketch-finish-action primary" type="button" data-lesson-target="extrude" onClick={onSketchExtrude} onContextMenu={extrudeHelp.onContextMenu}>
           <Check size={15} strokeWidth={2.6} />
           <span>Extrude</span>
           {extrudeHelp.helpPortal}

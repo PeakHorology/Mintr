@@ -15,7 +15,7 @@ import { createGearGeometry } from "@/lib/gearMesh";
 import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
 import { ShapeInspector, SnapGridControl, TYPED_DIMENSION_MAX_MM, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
-import { ToolbarDropToWorkplaneIcon } from "@/components/icons";
+import { ToolbarDropToWorkplaneIcon, ToolbarEraserIcon } from "@/components/icons";
 import { objectSnapTolerance, snapAabbFromShape, snapMovingAabb, unionSnapAabbs, type FaceMatePose, type ObjectSnapResult } from "@/lib/objectSnap";
 import { buildPickBvh, raycastPickBvh, type PickBvh } from "@/lib/meshPickBvh";
 import { rotateHandleRect, separateDimensionLabels } from "@/lib/overlayLabelSeparation";
@@ -62,6 +62,10 @@ import {
   clearSketchOnModel,
   emptySketch3DPointer,
   interpolateSketchCameraPose,
+  sketch3DLineKey,
+  sketch3DMeasureLabel,
+  sketch3DSizeCallouts,
+  sketchUvToWorld,
   sketch3DPointerDown,
   sketch3DPointerMove,
   sketch3DPointerUp,
@@ -2777,6 +2781,58 @@ export function WorkplaneViewport({
   const sketchOnModelRef = useRef<SketchOnModelSession | null>(sketchOnModel);
   sketchOnModelRef.current = sketchOnModel;
   const sketch3DPointerRef = useRef<Sketch3DPointerState>(emptySketch3DPointer());
+  const [sketchMeasure, setSketchMeasure] = useState<string | null>(null);
+  const sketchSizeLayerRef = useRef<HTMLDivElement | null>(null);
+  const sketchSizeLive = Boolean(sketchOnModel);
+  const publishSketchMeasure = useCallback((session: SketchOnModelSession | null) => {
+    const next = session ? sketch3DMeasureLabel(session, sketch3DPointerRef.current) : null;
+    setSketchMeasure((current) => (current === next ? current : next));
+  }, []);
+  useEffect(() => {
+    const layer = sketchSizeLayerRef.current;
+    if (!sketchSizeLive) {
+      if (layer) layer.replaceChildren();
+      return;
+    }
+    let frame = 0;
+    const tick = () => {
+      frame = window.requestAnimationFrame(tick);
+      const host = sketchSizeLayerRef.current;
+      const state = threeRef.current;
+      const session = sketchOnModelRef.current;
+      if (!host || !state || !session) return;
+      const callouts = sketch3DSizeCallouts(session, sketch3DPointerRef.current);
+      const seen = new Set<string>();
+      for (const callout of callouts) {
+        seen.add(callout.id);
+        const existing = host.querySelector(`[data-callout="${CSS.escape(callout.id)}"]`);
+        const node = existing instanceof HTMLDivElement ? existing : document.createElement("div");
+        if (!(existing instanceof HTMLDivElement)) {
+          node.className = "sketch-size-label";
+          node.dataset.callout = callout.id;
+          host.appendChild(node);
+        }
+        if (node.textContent !== callout.text) node.textContent = callout.text;
+        const at = projectToCanvasPx(state, sketchUvToWorld(session.plane, callout.u, callout.v));
+        const away = projectToCanvasPx(state, sketchUvToWorld(session.plane, callout.u + callout.outU, callout.v + callout.outV));
+        let dx = away.x - at.x;
+        let dy = away.y - at.y;
+        const span = Math.hypot(dx, dy) || 1;
+        dx /= span;
+        dy /= span;
+        node.style.left = `${at.x + dx * 26}px`;
+        node.style.top = `${at.y + dy * 18}px`;
+      }
+      for (const child of [...host.children]) {
+        if (!(child instanceof HTMLElement) || !seen.has(child.dataset.callout ?? "")) child.remove();
+      }
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      sketchSizeLayerRef.current?.replaceChildren();
+    };
+  }, [sketchSizeLive]);
   const sketch3DPlaneKeyRef = useRef("");
   const sketchPlaneKeyLiveRef = useRef("");
   const skipSketchFrameOnMountRef = useRef(false);
@@ -2788,6 +2844,7 @@ export function WorkplaneViewport({
       sketchOnModel.profile.points.map((point) => `${point.id}:${point.x.toFixed(3)}:${point.z.toFixed(3)}:${point.handleOut?.x ?? ""}`).join(","),
       sketchOnModel.profile.segments.map((segment) => `${segment.id}:${segment.construction ? 1 : 0}:${segment.kind ?? "line"}`).join(","),
       sketchOnModel.profile.faceReferenceLoops?.length ?? 0,
+      sketchOnModel.guideGhost?.points.map((point) => `${point.x.toFixed(2)},${point.z.toFixed(2)}`).join(";") ?? "",
     ].join("|")
     : "";
   const sketchPlaneKey = sketchOnModel
@@ -3690,6 +3747,7 @@ export function WorkplaneViewport({
       clearSketchOnModel(state.scene);
       sketch3DPointerRef.current = emptySketch3DPointer();
       sketch3DPlaneKeyRef.current = "";
+      setSketchMeasure(null);
       state.needsRender = true;
       return;
     }
@@ -3699,8 +3757,39 @@ export function WorkplaneViewport({
       startSketchCameraTween(state, session);
     }
     syncSketchOnModel(host, session, sketch3DPointerRef.current);
+    setSketchMeasure(sketch3DMeasureLabel(session, sketch3DPointerRef.current));
     state.needsRender = true;
   }, [sketchDrawKey, sketchPlaneKey]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const session = sketchOnModelRef.current;
+      const state = threeRef.current;
+      if (!session || !state) return;
+      if (document.querySelector(".sketch-extrude-prompt-layer")) return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const result = sketch3DLineKey(session, sketch3DPointerRef.current, event.key);
+      if (result.kind === "ignore") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (result.kind === "clear") sketch3DPointerRef.current.lineEntry = "";
+      else if (result.kind === "edit") sketch3DPointerRef.current.lineEntry = result.lineEntry;
+      else if (result.kind === "need-angle") {
+        session.onNotice?.("Move the pointer to set the angle, or type 50<30");
+      } else {
+        sketch3DPointerRef.current.lineEntry = "";
+        session.onPlanePoint(result.point);
+      }
+      const host = { scene: state.scene, camera: state.camera, domElement: state.renderer.domElement, controls: state.controls };
+      syncSketchOnModel(host, session, sketch3DPointerRef.current);
+      setSketchMeasure(sketch3DMeasureLabel(session, sketch3DPointerRef.current));
+      state.needsRender = true;
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     if (skipSketchFrameOnMountRef.current) {
@@ -5069,6 +5158,7 @@ export function WorkplaneViewport({
         );
         event.currentTarget.setPointerCapture(event.pointerId);
         state.needsRender = true;
+        publishSketchMeasure(sketchSession);
         return;
       }
       const host = event.currentTarget;
@@ -5438,6 +5528,7 @@ export function WorkplaneViewport({
       toPlanePoint,
       toPlanePointAtY,
       toRawPlanePoint,
+      publishSketchMeasure,
     ],
   );
 
@@ -5477,6 +5568,7 @@ export function WorkplaneViewport({
           event.shiftKey,
         );
         sketchState.needsRender = true;
+        publishSketchMeasure(sketchSession);
         return;
       }
       if (faceSnapActiveRef.current) {
@@ -5638,7 +5730,7 @@ export function WorkplaneViewport({
         threeRef.current.needsRender = true;
       }
     },
-    [scheduleShapeHover, setMarqueeFromState, toPlanePointAtY, updateModifierEdgeHover, updateRulerHover, updateSketchFaceHover, updateTransform],
+    [publishSketchMeasure, scheduleShapeHover, setMarqueeFromState, toPlanePointAtY, updateModifierEdgeHover, updateRulerHover, updateSketchFaceHover, updateTransform],
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -5711,6 +5803,7 @@ export function WorkplaneViewport({
           );
           sketchState.needsRender = true;
         }
+        publishSketchMeasure(sketchSession);
         return;
       }
       const state = threeRef.current;
@@ -5829,7 +5922,7 @@ export function WorkplaneViewport({
       }
       onInteractionActiveChange?.(false);
     },
-    [onInteractionActiveChange, onSelectShape, onUpdateShape, openRotationEditorAfterDrag, rememberResizeAnchor, setMarqueeFromState, shapesInMarquee, suppressLiftEditAfterDrag, suppressRotationEditAfterDrag],
+    [onInteractionActiveChange, onSelectShape, onUpdateShape, openRotationEditorAfterDrag, publishSketchMeasure, rememberResizeAnchor, setMarqueeFromState, shapesInMarquee, suppressLiftEditAfterDrag, suppressRotationEditAfterDrag],
   );
 
   const clearAssetPlacementPreview = useCallback(() => {
@@ -6382,7 +6475,7 @@ export function WorkplaneViewport({
                     </PeakTipButton>
                   ) : null}
                   <PeakTipButton className={`ruler-delete-button ${rulerDeleteMode ? "active" : ""}`} label="Delete measurement part" description={TOOL_DESCRIPTIONS.deleteMeasurement} aria-pressed={rulerDeleteMode} onClick={activateRulerDelete}>
-                    <X size={20} strokeWidth={2.4} aria-hidden="true" />
+                    <ToolbarEraserIcon aria-hidden="true" />
                   </PeakTipButton>
                 </div>
               ) : null}
@@ -6429,7 +6522,7 @@ export function WorkplaneViewport({
         )}
       </div>
 
-      <section className={`workplane-wrap ${sketchOnModel ? "sketch-on-model" : ""} ${sketchFacePickMode ? "sketch-face-pick-mode" : ""} ${sketchFacePickMode && sketchFaceHovering ? "sketch-face-hover" : ""} ${sketchFacePickMode && sketchFaceHoverBlocked ? "sketch-face-hover-blocked" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${rulerMoveMode ? "ruler-move-mode" : ""} ${placementRulerMode ? "placement-ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""} ${pushPullActive ? "push-pull-face-pick" : ""} ${pushPullDragging ? "push-pull-dragging" : ""}`} aria-label="Workplane">
+      <section data-lesson-target={sketchFacePickMode || (pushPullActive && pushPullSelectedFaceId == null) ? "face" : undefined} className={`workplane-wrap ${sketchOnModel ? "sketch-on-model" : ""} ${sketchFacePickMode ? "sketch-face-pick-mode" : ""} ${sketchFacePickMode && sketchFaceHovering ? "sketch-face-hover" : ""} ${sketchFacePickMode && sketchFaceHoverBlocked ? "sketch-face-hover-blocked" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${rulerMoveMode ? "ruler-move-mode" : ""} ${placementRulerMode ? "placement-ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""} ${pushPullActive ? "push-pull-face-pick" : ""} ${pushPullDragging ? "push-pull-dragging" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -6445,6 +6538,10 @@ export function WorkplaneViewport({
             onPointerLeave={handlePointerLeave}
             onLostPointerCapture={handleLostPointerCapture}
           />
+          <div className="sketch-size-layer" ref={sketchSizeLayerRef} />
+          {sketchMeasure ? (
+            <div className="sketch-3d-measure" role="status">{sketchMeasure}</div>
+          ) : null}
           {busyLabel ? (
             <div className="viewport-busy" role="status" aria-live="polite">
               <span className="model-loading-wheel viewport-busy-wheel" aria-hidden="true" />

@@ -76,7 +76,7 @@ import {
   cleanupBooleanPositions,
   csgTreeContainsId,
   faceHoleCutDepthMm,
-  faceHoleOvershootMm,
+  faceSketchHoleCutterMm,
   findCsgBodyOwningLeaf,
   findShapeInTree,
   inferCsgOp,
@@ -363,6 +363,26 @@ import { EditorTopBar, SketchFocusTabs } from "@/components/workplane/EditorTopB
 import type { BlueprintExportFormat } from "@/lib/blueprintExport";
 import { EditorModeStrip, EditorViewportToolbar } from "@/components/workplane/EditorViewportToolbar";
 import { SketchCreateMenu } from "@/components/workplane/SketchCreateMenu";
+import {
+  hasLessonCoachBeenDismissed,
+  isLessonProjectId,
+  lessonExportNote,
+  lessonExportOk,
+  lessonPrompt,
+  lessonStlKeepsHole,
+  markLessonCoachDismissed,
+  markLessonCompleted,
+  markTutorialCompleted,
+  sceneHasThroughHole,
+  type LessonExportReport,
+} from "@/lib/introProject";
+import { guidePrompt, proposeGuideSteps, type GuideSession, type GuideStep } from "@/lib/mintrGuide";
+import { buildPeakcadDocument, serializeMintrGuide } from "@/lib/peakcadDocument";
+import { saveGuideTextAs } from "@/lib/peakcadFile";
+import { IntroCoach } from "@/components/workplane/IntroCoach";
+import { GuideCoach } from "@/components/workplane/GuideCoach";
+import { GuideConfetti } from "@/components/workplane/GuideConfetti";
+import { GuideSaveDialog } from "@/components/workplane/GuideSaveDialog";
 import { isPeakcadProSketchTool, SketchCoach, SketchFinishToolbar, SketchToolSidebar, SketchUtilitySidebar, sketchCoach, type SketchCoachKey } from "@/components/workplane/SketchToolSidebar";
 import { ShapeSidebar } from "@/components/workplane/ShapeSidebar";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
@@ -1246,6 +1266,9 @@ export function SketchForgeEditor({
   projectRevision = 0,
   onViewportReady,
   hostNotice = null,
+  guidePlayback = null,
+  onGuidePublished,
+  onGuideCompleted,
 }: {
   initialShapes?: WorkplaneShape[];
   initialHistory?: EditorHistoryEntry[];
@@ -1272,6 +1295,10 @@ export function SketchForgeEditor({
   onViewportReady?: () => void;
   /** A message from the host (e.g. a background autosave failure) to show as a toast. `seq` changes per message. */
   hostNotice?: { seq: number; message: string } | null;
+  /** Author history for a .mintrguide. The learner's undo stack stays separate. */
+  guidePlayback?: GuideSession | null;
+  onGuidePublished?: (session: GuideSession, path: string | null) => void;
+  onGuideCompleted?: (id: string) => void;
 } = {}) {
   const initialSceneRef = useRef<WorkplaneShape[] | null>(null);
   if (initialSceneRef.current === null) {
@@ -1420,7 +1447,17 @@ export function SketchForgeEditor({
   const [shapeRailPinned, setShapeRailPinned] = useState(false);
   const [sketchActive, setSketchActive] = useState(false);
   const beginBlankSketchRef = useRef<() => void>(() => {});
+  const beginSketchFacePickRef = useRef<() => void>(() => {});
+  const abandonSketchSessionRef = useRef<(nextMode: ToolbarMode) => void>(() => {});
   const [sketchFacePickMode, setSketchFacePickMode] = useState(false);
+  const [sketchEditOffer, setSketchEditOffer] = useState<{ shapeId: string; name: string; plane: SketchPlane } | null>(null);
+  const [lessonExport, setLessonExport] = useState<LessonExportReport | null>(null);
+  const [lessonCoachDismissed, setLessonCoachDismissed] = useState(hasLessonCoachBeenDismissed);
+  const [guideCoachDismissed, setGuideCoachDismissed] = useState(false);
+  const [guideConfetti, setGuideConfetti] = useState(false);
+  const [guideDraft, setGuideDraft] = useState<{ title: string; author: string; steps: GuideStep[] } | null>(null);
+  const guideCompletedRef = useRef(false);
+  const guideConfettiArmed = useRef(false);
   const [sketchTool, setSketchTool] = useState<SketchTool>("line");
   const [sketchHoverTool, setSketchHoverTool] = useState<SketchCoachKey | null>(null);
   const sketchPickAtRef = useRef<{ x: number; z: number } | null>(null);
@@ -2451,19 +2488,31 @@ export function SketchForgeEditor({
   }, [captureProjectPreviewThemes, onProjectSnapshot, projectId]);
 
   const changeToolbarMode = useCallback((mode: ToolbarMode) => {
-    if (mode === "sketch") {
+    if (mode === "sketch" && !sketchActive) {
       // Geometry viewport unmounts in sketch mode — stash the current frame first.
       captureProjectPreviewFrame();
+      setTopPanel(null);
+      setMenuOpen(false);
       const workplaneEmpty = shapesRef.current.every((shape) => shape.suppressed);
-      if (workplaneEmpty && !sketchActive) {
+      if (workplaneEmpty) {
         setSketchFacePickMode(false);
-        setTopPanel(null);
-        setMenuOpen(false);
+        setSketchEditOffer(null);
         beginBlankSketchRef.current();
         return;
       }
+      setModeTransitioning(true);
+      window.setTimeout(() => setModeTransitioning(false), 180);
+      beginSketchFacePickRef.current();
+      return;
+    }
+    if (mode === "geometry" && sketchActive) {
+      setTopPanel(null);
+      setMenuOpen(false);
+      abandonSketchSessionRef.current("geometry");
+      return;
     }
     setSketchFacePickMode(false);
+    setSketchEditOffer(null);
     setToolbarMode((current) => {
       if (current !== mode) {
         setModeTransitioning(true);
@@ -3111,9 +3160,18 @@ export function SketchForgeEditor({
   }, [commitShapes]);
   flushPendingFeatureRemeshRef.current = flushPendingFeatureRemesh;
 
-  // First-run CAD path coaching (once per browser).
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    setLessonCoachDismissed(hasLessonCoachBeenDismissed());
+    setLessonExport(null);
+    setGuideCoachDismissed(false);
+    setGuideConfetti(false);
+    guideCompletedRef.current = false;
+    guideConfettiArmed.current = false;
+  }, [projectId]);
+
+  // First-run CAD path coaching (once per browser). The lesson and a guide have their own prompts.
+  useEffect(() => {
+    if (typeof window === "undefined" || isLessonProjectId(projectId) || guidePlayback) return;
     const key = "peakcad.cadPathCoach.v1";
     try {
       if (window.localStorage.getItem(key)) return;
@@ -3126,7 +3184,7 @@ export function SketchForgeEditor({
       setTopPanel("tips");
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [guidePlayback, projectId]);
 
   const removeEdgeTreatment = useCallback(async (optionId: string) => {
     if (!selectedShape) {
@@ -3260,6 +3318,7 @@ export function SketchForgeEditor({
     doc.faceReferenceLoops = initial.faceReferenceLoops;
     const solved = solveSketchDoc(doc);
     setSketchFacePickMode(false);
+    setSketchEditOffer(null);
     setToolbarMode("sketch");
     setSketchActive(true);
     setSketchFocusMode("3d");
@@ -3293,11 +3352,22 @@ export function SketchForgeEditor({
         : hostName
           ? barrel
             ? `Unwrapped ${hostName}: up/down = height, left/right = around — Hole cuts through, Solid joins outward`
-            : `Sketching on ${hostName} — Extrude as Hole (cut) or Solid (join)`
+            : `Sketching on ${hostName} — type a length and press Enter. Extrude uses the depth you type`
           : "Sketch started: place the first point",
     );
   }, [captureProjectPreviewFrame]);
   beginBlankSketchRef.current = () => beginSketch();
+
+  const openSketchForEdit = useCallback((shape: WorkplaneShape) => {
+    const session = beginEditSketchSession(shape, "3d");
+    if (!session?.doc) {
+      setNotice("That shape has no editable sketch");
+      return;
+    }
+    const profile = shape.sketchProfile ?? sketchDocToProfile(session.doc);
+    setSketchEditOffer(null);
+    beginSketch(profile, shape.id, shape.sketchPlane ?? session.doc.plane, session.doc);
+  }, [beginSketch]);
 
   const beginEditSelectedSketch = useCallback(() => {
     const selected = selectedShape;
@@ -3312,14 +3382,8 @@ export function SketchForgeEditor({
       setNotice("Select a body with a sketch feature, or Alt-click a feature then Edit sketch");
       return;
     }
-    const session = beginEditSketchSession(shape, "3d");
-    if (!session?.doc) {
-      setNotice("That shape has no editable sketch");
-      return;
-    }
-    const profile = shape.sketchProfile ?? sketchDocToProfile(session.doc);
-    beginSketch(profile, shape.id, shape.sketchPlane ?? session.doc.plane, session.doc);
-  }, [activeFeatureId, beginSketch, selectedShape]);
+    openSketchForEdit(shape);
+  }, [activeFeatureId, openSketchForEdit, selectedShape]);
 
   /** Edit a driving sketch dimension from the inspector without entering sketch mode (Fusion-like). */
   const editSelectedSketchDimension = useCallback((dimensionId: string, value: number) => {
@@ -3546,31 +3610,59 @@ export function SketchForgeEditor({
 
   const beginSketchFacePick = useCallback(() => {
     clearEditorToolSessions();
+    setSketchEditOffer(null);
     setSketchFacePickMode(true);
-    setToolbarMode("geometry");
+    setToolbarMode("sketch");
     setSketchActive(false);
     setEditingSketchShapeId(null);
-    setNotice("Click a face to sketch on, or click the workplane");
+    setNotice("Click the workplane to start, or click a face");
   }, [clearEditorToolSessions]);
+  beginSketchFacePickRef.current = beginSketchFacePick;
+
+  const acceptSketchPlane = useCallback((plane: SketchPlane) => {
+    const host = plane.hostShapeId
+      ? shapesRef.current.find((shape) => shape.id === plane.hostShapeId) ?? null
+      : null;
+    if (host && shapeHasEditableSketch(host)) {
+      setSketchEditOffer({ shapeId: host.id, name: host.name, plane });
+      return;
+    }
+    setSketchEditOffer(null);
+    beginSketch(undefined, null, plane);
+  }, [beginSketch]);
 
   const cancelSketchFacePick = useCallback(() => {
+    if (sketchEditOffer) {
+      setSketchEditOffer(null);
+      return;
+    }
     setSketchFacePickMode(false);
     setNotice("Sketch cancelled");
-  }, []);
+  }, [sketchEditOffer]);
 
-  const cancelSketch = useCallback(() => {
+  const abandonSketchSession = useCallback((nextMode: ToolbarMode) => {
     setSketchActive(false);
-    setSketchFacePickMode(false);
+    setSketchEditOffer(null);
+    setSketchFacePickMode(nextMode === "sketch");
+    setToolbarMode(nextMode);
     setSketchActivePointId(null);
     setSketchSelection(null);
     setSketchMeasureStart(null);
     setSketchMeasurement(null);
     setEditingSketchShapeId(null);
     setRevolvePrompt(null);
+    setSweepPrompt(null);
+    setSweepPreview(null);
+    setSweepBuildError(null);
     setPolygonSidesPrompt(null);
     setExtrudeHeightPrompt(null);
-    setNotice("Sketch cancelled");
+    setNotice(nextMode === "geometry" ? "Sketch closed" : "Sketch cancelled");
   }, []);
+  abandonSketchSessionRef.current = abandonSketchSession;
+
+  const cancelSketch = useCallback(() => {
+    abandonSketchSession("sketch");
+  }, [abandonSketchSession]);
 
   const sketchUndo = useCallback(() => {
     const currentHistory = sketchHistoryRef.current;
@@ -4722,15 +4814,21 @@ export function SketchForgeEditor({
         ?? throughDepth
         ?? 10;
     setExtrudeAsHole(faceSketch || Boolean(existing?.hole));
+    // A guide writes the depth in the prompt. The field stays empty so that number is typed, not filled in.
+    if (guidePlayback) {
+      setExtrudeHeightPrompt(Number.NaN);
+      setNotice("Type the height from the tutorial.");
+      return;
+    }
     setExtrudeHeightPrompt(Math.max(0.5, Number(defaultHeight.toFixed(2))));
     setNotice(faceSketch
       ? (barrel && throughDepth
-        ? `Barrel sketch on ${host?.name ?? "cylinder"} — Hole cuts through (${throughDepth.toFixed(1)} mm), Solid joins outward`
+        ? `Barrel sketch on ${host?.name ?? "cylinder"} — ${throughDepth.toFixed(1)} mm goes through. A shorter number is a pocket that deep`
         : throughDepth
-          ? `Face sketch on ${host?.name ?? "part"} — Hole cuts through (${throughDepth.toFixed(1)} mm), Solid joins onto the face`
-          : "Face sketch — Hole cuts into the part, Solid joins onto the face")
+          ? `Face sketch on ${host?.name ?? "part"} — ${throughDepth.toFixed(1)} mm goes through. A shorter number is a pocket that deep`
+          : "Face sketch — the number is how far the cut or the solid goes")
       : "Set extrude height, then create a solid or hole");
-  }, [editingSketchShapeId, shapes, sketchDoc.faceReferenceLoops, sketchDoc.plane, sketchProfile]);
+  }, [editingSketchShapeId, guidePlayback, shapes, sketchDoc.faceReferenceLoops, sketchDoc.plane, sketchProfile]);
 
   const cancelExtrudeHeightPrompt = useCallback(() => {
     setExtrudeHeightPrompt(null);
@@ -4764,13 +4862,17 @@ export function SketchForgeEditor({
     // Face holes that match the solid size must go fully through — otherwise coplanar
     // side walls leave the cutter sitting on the surface.
     let height = Math.min(SKETCH_EXTRUDE_MAX_MM, Math.max(0.5, heightMm ?? fallbackHeight));
+    // The number in the extrude field is the depth. Leaving the part thickness
+    // (or typing at least that far) still punches through. A shorter number is
+    // a blind pocket of that many millimetres.
+    let punchThrough = false;
     if (asHole && faceSketch && throughDepth) {
-      // Face cuts are through-all: thickness measured from the sketch face, plus
-      // overshoot past both skins so the hole isn't short/offset.
-      // Barrel cuts use radial through-diameter (+ overshoot).
-      height = barrel
+      const typed = Math.min(SKETCH_EXTRUDE_MAX_MM, Math.max(0.5, heightMm ?? throughDepth));
+      const throughCutter = barrel && mergedPlane.surface
         ? barrelHoleCutDepthMm(mergedPlane.surface)
         : faceHoleCutDepthMm(throughDepth);
+      height = faceSketchHoleCutterMm(typed, throughDepth);
+      punchThrough = height + 0.05 >= throughCutter;
     }
     const profileForExtrude = closeOpenPathGaps({
       ...sketchProfile,
@@ -4815,7 +4917,7 @@ export function SketchForgeEditor({
 
     // If host was found by selection/overlap after the first build, rebuild through-all
     // along the cut normal (exact profile size — no in-plane inflate).
-    if (asHole && host && (!hostForDepth || host.id !== hostForDepth.id) && !barrel) {
+    if (asHole && punchThrough && host && (!hostForDepth || host.id !== hostForDepth.id) && !barrel) {
       const hostThrough = faceHoleCutDepthMm(
         shapeThicknessInwardFromFace(host, mergedPlane.origin, mergedPlane.normal),
       );
@@ -4930,6 +5032,10 @@ export function SketchForgeEditor({
     // building the first would commit two bodies on top of each other, and a
     // kernel exception used to leave "Building sketch…" on screen forever.
     if (sketchExtrudeBusyRef.current) return;
+    if (typeof heightMm === "number" && !Number.isFinite(heightMm)) {
+      setNotice(guidePlayback ? "Type the height from the tutorial." : "Type an extrude height.");
+      return;
+    }
     sketchExtrudeBusyRef.current = true;
     try {
       await finishSketchExtrudeInner(heightMm, asHole);
@@ -4938,7 +5044,7 @@ export function SketchForgeEditor({
     } finally {
       sketchExtrudeBusyRef.current = false;
     }
-  }, [extrudeAsHole, finishSketchExtrudeInner, setNotice]);
+  }, [extrudeAsHole, finishSketchExtrudeInner, guidePlayback, setNotice]);
 
   const completeSketchRevolve = useCallback((axis: SketchRevolveAxis) => {
     const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
@@ -9576,7 +9682,13 @@ export function SketchForgeEditor({
       try {
         const meshes = exportable.map(meshForShape);
         void downloadBlobFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
-          .then((result) => finishNotice("STL", result))
+          .then((result) => {
+            finishNotice("STL", result);
+            if (!isLessonProjectId(projectInfoRef.current.projectId)) return;
+            const report = { keptHole: lessonStlKeepsHole(sourceShapes) };
+            setLessonExport(report);
+            if (lessonExportOk(report, sceneHasThroughHole(sourceShapes))) markLessonCompleted();
+          })
           .catch((error: unknown) => failNotice("STL", error));
       } catch (error: unknown) {
         failNotice("STL", error);
@@ -10617,6 +10729,152 @@ export function SketchForgeEditor({
     </div>
   ) : null;
 
+  const lessonActive = isLessonProjectId(projectId);
+  const lessonThroughHole = lessonActive && sceneHasThroughHole(shapes);
+  const lesson = lessonActive
+    ? lessonPrompt({
+      shapes,
+      sketchMode: toolbarMode === "sketch" && !sketchActive && !sketchFacePickMode,
+      pickingFace: sketchFacePickMode,
+      sketchingOnPart: sketchActive && isFaceHostedSketch(
+        sketchProfile.sketchPlane ?? sketchDoc.plane,
+        sketchProfile.faceReferenceLoops ?? sketchDoc.faceReferenceLoops,
+      ),
+      sketchingOffPart: sketchActive && !isFaceHostedSketch(
+        sketchProfile.sketchPlane ?? sketchDoc.plane,
+        sketchProfile.faceReferenceLoops ?? sketchDoc.faceReferenceLoops,
+      ),
+      sketchClosed: closedProfilesFromLegacy(sketchProfile).length > 0,
+      extrudeOpen: extrudeHeightPrompt !== null,
+    })
+    : null;
+  const lessonNote = lesson && !lesson.complete ? lessonExportNote(lessonExport, lessonThroughHole) : null;
+  useEffect(() => {
+    if (lesson?.complete) markLessonCompleted();
+  }, [lesson?.complete]);
+  useEffect(() => {
+    const cue = lesson && !lessonCoachDismissed ? lesson.cue : null;
+    if (!cue) {
+      document.body.removeAttribute("data-lesson-prompt");
+      return;
+    }
+    document.body.setAttribute("data-lesson-prompt", cue);
+    return () => document.body.removeAttribute("data-lesson-prompt");
+  }, [lesson, lessonCoachDismissed]);
+
+  const guideLesson = guidePlayback
+    ? guidePrompt({
+      guide: guidePlayback.guide,
+      history: guidePlayback.history,
+      shapes,
+      sketchMode: toolbarMode === "sketch" && !sketchActive && !sketchFacePickMode,
+      pickingFace: sketchFacePickMode,
+      sketching: sketchActive,
+      sketchingOffPart: sketchActive && !isFaceHostedSketch(
+        sketchProfile.sketchPlane ?? sketchDoc.plane,
+        sketchProfile.faceReferenceLoops ?? sketchDoc.faceReferenceLoops,
+      ),
+      sketchClosed: closedProfilesFromLegacy(sketchProfile).length > 0,
+      extrudeOpen: extrudeHeightPrompt !== null,
+      sketchPoints: sketchProfile.points,
+      faceTool: Boolean(faceSession),
+      faceChosen: faceSession?.selectedFaceId != null,
+      faceDirection: faceSession?.direction ?? null,
+      edgeKind: edgeModifier?.kind ?? null,
+      edgeAmount: edgeModifier?.amount ?? null,
+      allEdgesSelected: Boolean(
+        edgeModifier?.prepared
+        && modifierAvailableEdgeIds.length > 0
+        && edgeModifier.selectedEdgeIds.length === modifierAvailableEdgeIds.length,
+      ),
+      edgeSelectedCount: edgeModifier?.selectedEdgeIds.length ?? 0,
+      edgeFingerprints: edgeModifier ? fingerprintsForEdgeIds(edgeModifier.edges, edgeModifier.selectedEdgeIds) : undefined,
+      alignMode,
+      mirrorMode,
+    })
+    : null;
+  useEffect(() => {
+    if (!guideLesson?.complete || !guidePlayback || guideCompletedRef.current) return;
+    guideCompletedRef.current = true;
+    markTutorialCompleted(guidePlayback.id);
+    onGuideCompleted?.(guidePlayback.id);
+  }, [guideLesson, guidePlayback, onGuideCompleted]);
+  const guideComplete = Boolean(guidePlayback && guideLesson?.complete);
+  const lessonFinished = Boolean(lessonActive && lesson?.complete);
+  useEffect(() => {
+    const finished = guideComplete || lessonFinished;
+    if (!finished) {
+      if (guidePlayback || lessonActive) guideConfettiArmed.current = true;
+      return;
+    }
+    if (!guideConfettiArmed.current) return;
+    guideConfettiArmed.current = false;
+    setGuideConfetti(true);
+  }, [guideComplete, guidePlayback, lessonActive, lessonFinished]);
+  useEffect(() => {
+    const cue = guideLesson && !guideLesson.complete && !guideCoachDismissed ? guideLesson.cue : "";
+    const marked = document.querySelectorAll(".lesson-target-hot");
+    marked.forEach((node) => node.classList.remove("lesson-target-hot"));
+    if (!cue || cue === "model") return;
+    document.querySelectorAll(`[data-lesson-target="${CSS.escape(cue)}"]`).forEach((node) => {
+      node.classList.add("lesson-target-hot");
+    });
+    return () => {
+      document.querySelectorAll(".lesson-target-hot").forEach((node) => node.classList.remove("lesson-target-hot"));
+    };
+  }, [guideCoachDismissed, guideLesson]);
+
+  const openGuideDraft = () => {
+    const steps = proposeGuideSteps(historyRef.current, historyIndexRef.current);
+    if (!steps.length) {
+      setNotice("Model a few steps first. A guide is built from the steps you kept.");
+      return;
+    }
+    setGuideDraft({ title: projectName, author: "", steps });
+  };
+  const saveGuideDraft = async () => {
+    if (!guideDraft || !projectId) return;
+    const author = guideDraft.author.trim();
+    if (!author) {
+      setNotice("Type your name. It is stored in the file and shown on the tutorial.");
+      return;
+    }
+    if (!guideDraft.steps.some((step) => step.included)) {
+      setNotice("Check at least one step to keep.");
+      return;
+    }
+    const keptIndex = historyIndexRef.current;
+    const kept = historyRef.current.slice(0, keptIndex + 1);
+    const guide = {
+      title: guideDraft.title.trim() || projectName,
+      author,
+      summary: `A guide by ${author}.`,
+      steps: guideDraft.steps,
+    };
+    try {
+      const text = serializeMintrGuide(buildPeakcadDocument({
+        project: {
+          id: projectId,
+          name: guide.title,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          accent: "cyan",
+          shapes: shapes.length,
+        },
+        shapes: kept[keptIndex]?.shapes ?? shapes,
+        history: kept,
+        historyIndex: keptIndex,
+        guide,
+      }));
+      const path = await saveGuideTextAs(text, guide.title);
+      onGuidePublished?.({ id: `guide:${projectId}`, guide, history: kept }, path);
+      setGuideDraft(null);
+      setNotice(path ? "Guide saved. It shows under Tutorials on the home page." : "Guide downloaded. Open that file to start the tutorial.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save the guide.");
+    }
+  };
+
   const sketchFocusTabs = (
     <SketchFocusTabs
       focusMode={sketchFocusMode}
@@ -10647,6 +10905,7 @@ export function SketchForgeEditor({
         }}
         onSaveProject={projectId && onSaveProject ? () => void saveProjectExplicitly("save") : undefined}
         onSaveProjectAs={projectId && onSaveProjectAs ? () => void saveProjectExplicitly("save-as") : undefined}
+        onSaveAsGuide={projectId ? openGuideDraft : undefined}
         hasMatchingSavedFile={hasMatchingSavedFile}
         onExport={() => {
           setTopPanel("export");
@@ -10943,6 +11202,7 @@ export function SketchForgeEditor({
             </div>
             <SketchWorkspace
               profile={sketchProfile}
+              guideGhost={guideLesson?.showGhost ? guideLesson.ghost : null}
               viewKey={sketchDoc.id}
               referenceShapes={shapes.filter((shape) => shape.id !== editingSketchShapeId)}
               tool={sketchTool}
@@ -11081,11 +11341,46 @@ export function SketchForgeEditor({
               hint={(sketchActive && sketchFocusMode === "3d" ? sketchToolChip : activeToolChip)?.hint}
             />
             {toolbarMode === "sketch" && !sketchActive ? (
+              <>
               <SketchCreateMenu
                 canEditSketch={shapeHasEditableSketch(selectedShape)}
+                newSketchSelected={sketchFacePickMode}
                 onNewSketch={beginSketchFacePick}
                 onEditSketch={beginEditSelectedSketch}
               />
+              {sketchEditOffer ? (
+                <div className="sketch-revolve-prompt phase-confirm" role="dialog" aria-label="Edit sketch">
+                  <div className="sketch-revolve-prompt-copy">
+                    <strong>{sketchEditOffer.name} already has a sketch</strong>
+                    <span>Edit that sketch, or start a new one on this face.</span>
+                  </div>
+                  <div className="sketch-revolve-prompt-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => {
+                        const host = shapesRef.current.find((shape) => shape.id === sketchEditOffer.shapeId) ?? null;
+                        const shape = resolveEditableSketchShape(host, { preferFaceFeatures: true });
+                        if (!shape) {
+                          setSketchEditOffer(null);
+                          setNotice("That part has no sketch to edit");
+                          return;
+                        }
+                        openSketchForEdit(shape);
+                      }}
+                    >
+                      Edit sketch
+                    </button>
+                    <button type="button" onClick={() => beginSketch(undefined, null, sketchEditOffer.plane)}>
+                      New sketch
+                    </button>
+                    <button type="button" className="cancel" onClick={() => setSketchEditOffer(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              </>
             ) : null}
             {sketchActive && sketchFocusMode === "3d" ? (
               <>
@@ -11113,7 +11408,7 @@ export function SketchForgeEditor({
                 />
                 <div className="sketch-stage-footer">
                   <div className="sketch-3d-hint">
-                    <span>Orbit to check the sketch on the part. Draw when the face is toward you.</span>
+                    <span>Orbit to check the sketch on the part. Draw when the face is toward you. On a line, type the length and press Enter.</span>
                   </div>
                   {sketchFocusTabs}
                 </div>
@@ -11161,6 +11456,8 @@ export function SketchForgeEditor({
             onMovePoint: moveSketchPoint,
             onEraseEntities: eraseSketchEntities,
             onNotice: setNotice,
+            shapes: shapes.filter((shape) => shape.id !== editingSketchShapeId),
+            guideGhost: guideLesson?.showGhost ? guideLesson.ghost : null,
           } : null}
           shapes={faceViewportShapes}
           selectedIds={historyBrowse !== null && historyBrowse !== historyIndex ? (history[historyBrowse]?.selectedIds ?? []) : selectedIds}
@@ -11175,9 +11472,7 @@ export function SketchForgeEditor({
           circularPatternRadius={circularPatternRadius}
           onCircularPatternCenterPick={setCircularPatternCenter}
           sketchFacePickMode={sketchFacePickMode}
-          onSketchPlanePicked={(plane) => {
-            beginSketch(undefined, null, plane);
-          }}
+          onSketchPlanePicked={acceptSketchPlane}
           onSketchFacePickRejected={(reason) => setNotice(reason)}
           onSketchFacePickCancel={cancelSketchFacePick}
           placementRulerMode={Boolean(placementRuler)}
@@ -11651,10 +11946,10 @@ export function SketchForgeEditor({
                   {extrudeAsHole
                     ? (isDefaultSketchPlane(sketchProfile.sketchPlane)
                       ? "Create a hole cutter, then select it with a solid and Group to cut."
-                      : "Cut into the face you sketched on (through depth by default).")
+                      : "Cut into the face you sketched on. This number is how far the cut goes. The part's thickness goes all the way through.")
                     : (isDefaultSketchPlane(sketchProfile.sketchPlane)
                       ? "Create a solid you can move and edit like any other object."
-                      : "Join onto the face you sketched on (Fusion-style Extrude → Join).")}
+                      : "Join onto the face you sketched on. This number is how far the solid sticks out.")}
                 </span>
               </div>
               <div className="shape-state-card sketch-extrude-mode" role="group" aria-label="Extrude as solid or hole">
@@ -11693,7 +11988,10 @@ export function SketchForgeEditor({
                 <button
                   type="button"
                   aria-label="Decrease height"
-                  onClick={() => setExtrudeHeightPrompt((value) => Math.max(0.5, Number(((value ?? 10) - 1).toFixed(2))))}
+                  onClick={() => setExtrudeHeightPrompt((value) => {
+                    const current = typeof value === "number" && Number.isFinite(value) ? value : 1;
+                    return Math.max(0.5, Number((current - 1).toFixed(2)));
+                  })}
                 >
                   −
                 </button>
@@ -11703,8 +12001,13 @@ export function SketchForgeEditor({
                     min={0.5}
                     max={SKETCH_EXTRUDE_MAX_MM}
                     step={0.5}
-                    value={extrudeHeightPrompt}
+                    value={Number.isFinite(extrudeHeightPrompt) ? extrudeHeightPrompt : ""}
+                    placeholder={guidePlayback ? "mm" : undefined}
                     onChange={(event) => {
+                      if (!event.target.value.trim()) {
+                        setExtrudeHeightPrompt(Number.NaN);
+                        return;
+                      }
                       const next = Number.parseFloat(event.target.value);
                       if (Number.isFinite(next)) setExtrudeHeightPrompt(Math.min(SKETCH_EXTRUDE_MAX_MM, Math.max(0.5, next)));
                     }}
@@ -11714,13 +12017,16 @@ export function SketchForgeEditor({
                 <button
                   type="button"
                   aria-label="Increase height"
-                  onClick={() => setExtrudeHeightPrompt((value) => Math.min(SKETCH_EXTRUDE_MAX_MM, Number(((value ?? 10) + 1).toFixed(2))))}
+                  onClick={() => setExtrudeHeightPrompt((value) => {
+                    const current = typeof value === "number" && Number.isFinite(value) ? value : 0;
+                    return Math.min(SKETCH_EXTRUDE_MAX_MM, Number((current + 1).toFixed(2)));
+                  })}
                 >
                   +
                 </button>
               </div>
               <div className="sketch-revolve-prompt-actions">
-                <button type="button" className="primary" onClick={() => finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole)}>
+                <button type="button" className="primary" data-lesson-target="cut" onClick={() => finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole)}>
                   {extrudeAsHole
                     ? (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create hole" : "Cut into part")
                     : (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create solid" : "Join to part")}
@@ -11896,6 +12202,40 @@ export function SketchForgeEditor({
       <pre data-codex-summary hidden>
         {compactDebugState}
       </pre>
+      {guideConfetti ? <GuideConfetti onDone={() => setGuideConfetti(false)} /> : null}
+      {lesson && !lessonCoachDismissed ? (
+        <IntroCoach
+          prompt={lesson}
+          note={lessonNote}
+          onDismiss={() => {
+            markLessonCoachDismissed();
+            setLessonCoachDismissed(true);
+            document.body.removeAttribute("data-lesson-prompt");
+          }}
+        />
+      ) : null}
+      {guideLesson && !guideCoachDismissed ? (
+        <GuideCoach
+          prompt={guideLesson}
+          author={guidePlayback?.guide.author ?? ""}
+          onDismiss={() => setGuideCoachDismissed(true)}
+        />
+      ) : null}
+      {guideDraft ? (
+        <GuideSaveDialog
+          title={guideDraft.title}
+          author={guideDraft.author}
+          steps={guideDraft.steps}
+          onTitle={(title) => setGuideDraft((current) => current ? { ...current, title } : current)}
+          onAuthor={(author) => setGuideDraft((current) => current ? { ...current, author } : current)}
+          onToggle={(index) => setGuideDraft((current) => current ? {
+            ...current,
+            steps: current.steps.map((step, stepIndex) => stepIndex === index ? { ...step, included: !step.included } : step),
+          } : current)}
+          onCancel={() => setGuideDraft(null)}
+          onSave={() => void saveGuideDraft()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -12070,7 +12410,7 @@ function TopActionPanel({
               <Download size={18} />
               Download 3MF
             </button>
-            <button type="button" onClick={() => onExport("stl")}>
+            <button type="button" data-lesson-target="download-stl" onClick={() => onExport("stl")}>
               <Download size={18} />
               Download STL
             </button>

@@ -381,6 +381,11 @@
   color: var(--accent-text);
 }
 
+.sketch-create-menu-item.is-selected {
+  background: color-mix(in srgb, #2aa77e 14%, transparent);
+  border-color: #2aa77e;
+}
+
 .sketch-create-menu-item:hover:not(:disabled) {
   color: var(--ink-strong);
   background: var(--control-surface);
@@ -1113,14 +1118,16 @@
 
 .shape-sidebar-item {
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 0;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   width: 100%;
-  min-height: 74px;
-  padding: 2px 3px;
+  min-height: 0;
+  /* A short list stays the same size as one slot of a full rail, instead of stretching to the rail width. */
+  max-height: calc(100% / 11);
+  padding: 1px 3px;
   color: var(--peak-text);
   background: transparent;
   border: 1px solid transparent;
@@ -1146,10 +1153,10 @@
 }
 
 .shape-sidebar-item img {
-  flex: 0 0 auto;
-  width: 54px;
-  height: 54px;
-  max-height: 54px;
+  flex: 0 1 auto;
+  width: auto;
+  height: calc((100% - 14px) * 0.9);
+  max-width: 100%;
   object-fit: contain;
   pointer-events: none;
 }
@@ -1498,6 +1505,14 @@
   .sketch-profile-fills path {
     animation: none;
   }
+}
+
+.sketch-guide-ghost path {
+  fill: none;
+  stroke: #2aa77e;
+  stroke-width: 4px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
 .sketch-segments path {

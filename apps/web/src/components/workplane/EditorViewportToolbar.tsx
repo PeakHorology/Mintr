@@ -90,6 +90,7 @@ function ToolbarButton({ tool }: { tool: ToolDef }) {
       aria-label={tool.label}
       aria-disabled={!tool.enabled}
       data-toolbar-tool={tool.label}
+      data-lesson-target={tool.label.toLowerCase()}
       {...tooltipProps}
       onMouseDown={(event) => {
         event.preventDefault();

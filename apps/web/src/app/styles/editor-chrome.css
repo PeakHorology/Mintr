@@ -2987,6 +2987,48 @@
   line-height: 1;
 }
 
+.sketch-size-layer {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-viewport-ui) + 6);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.sketch-size-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 3px 8px;
+  color: #040404;
+  background: #efebe8;
+  border: 1px solid #2aa77e;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(4, 4, 4, 0.28);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.sketch-3d-measure {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  z-index: calc(var(--z-viewport-ui) + 6);
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  pointer-events: none;
+  color: var(--ink-strong);
+  background: var(--glass-surface-strong);
+  border: 1px solid #d2c4a8;
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-md);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .sketch-3d-hint {
   position: relative;
   z-index: 1;

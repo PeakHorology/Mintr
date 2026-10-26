@@ -2,6 +2,16 @@
 
 Add a matching plain-language entry at the top of `apps/web/src/lib/releaseNotes.ts` when a version ships. Settings → Updates reads that file.
 
+## 1.1.6
+
+- The home page has three tutorials: Make a block with a hole, A plate from a sketch, and A pocket in a block.
+- Save as guide writes a .mintrguide from the steps you kept. Opening it walks someone through the model, highlights the next control, and finishes when their part matches. A guide tells you the number. It does not type it in for you.
+- A chamfer or fillet within a guide has you set the distance first before applying the cuts.
+- While you sketch, the size sits on the shape. A circle says how many millimeters across. A rectangle shows width and height.
+- A sketch snaps to the center of a box, a cylinder, or a triangle.
+- Clicking Geometry closes the sketch. New sketch is ready when you enter Sketch.
+- The shape pictures follow the height of the shapes bar.
+
 ## 1.1.5
 
 - I accidentally broke quality looking fillets in 1.1.4, they're fixed now lol. Sorry about that.

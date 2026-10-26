@@ -7,9 +7,9 @@ import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { SketchSnapGlyph } from "@/components/workplane/SketchSnapGlyph";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
-import { isDefaultSketchPlane } from "@/lib/sketchPlane";
+import { defaultSketchPlane, isDefaultSketchPlane } from "@/lib/sketchPlane";
 import { faceReferenceBounds } from "@/lib/sketchFaceReference";
-import { closedProfilesFromLegacy, CONSTRAINT_LABELS, curveStandInOwner, parseLineEntry, pointAtLengthAngle, screenAngleDeg, sketchCornerMarks, snapHeading, snapSketchPoint, type SketchConstraint, type SketchDefinitionStatus, type SketchDimension, type SketchEntity, type SketchSnapResult } from "@/lib/sketch";
+import { closedProfilesFromLegacy, CONSTRAINT_LABELS, curveStandInOwner, parseLineEntry, pointAtLengthAngle, screenAngleDeg, sketchCenterSnapPoints, sketchCornerMarks, snapHeading, snapSketchPoint, type SketchConstraint, type SketchDefinitionStatus, type SketchDimension, type SketchEntity, type SketchSnapResult } from "@/lib/sketch";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import { mirrorSign, resizedImportedMeshPositions } from "@/lib/workplaneShapes";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
@@ -127,6 +127,8 @@ type SketchWorkspaceProps = {
   onEditCircleRadius?: (circleId: string, radius: number) => void;
   /** Stable id for this sketch so Flat pan/zoom can return after 3D sketch. */
   viewKey?: string;
+  /** Mint outline from a guide, drawn so the learner can trace it. */
+  guideGhost?: { points: { x: number; z: number }[]; segments: { start: number; end: number }[] } | null;
 };
 
 type PathStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
@@ -744,6 +746,7 @@ export function SketchWorkspace({
   onEditCornerAngle,
   onEditCircleRadius,
   viewKey,
+  guideGhost = null,
 }: SketchWorkspaceProps) {
   const workspace = useMemo(() => normalizeWorkspaceSettings(initialWorkspace, DEFAULT_WORKPLANE_WORKSPACE), [initialWorkspace]);
   const [snap, setSnap] = useState<GridSize>(() => normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
@@ -1046,12 +1049,17 @@ export function SketchWorkspace({
         ...guideSegments,
       ],
     };
+    const plane = profile.sketchPlane ?? defaultSketchPlane();
+    const centers = sketchCenterSnapPoints(referenceShapes, plane).map((point) => (
+      isDefaultSketchPlane(plane) ? { x: point.x, z: -point.z } : point
+    ));
     const snapResult = snapSketchPoint(snapProfile, {
       cursor: raw,
       from: anchor,
       screenUnit,
       gridStep: step > 0 ? step : undefined,
       excludePointIds: options?.excludePointIds,
+      centers,
     });
     const headed = options?.headingStep && anchor && (snapResult.kind === "grid" || snapResult.kind === "horizontal" || snapResult.kind === "vertical")
       ? snapHeading(anchor, snapResult, options.headingStep)
@@ -1391,7 +1399,7 @@ export function SketchWorkspace({
     pointerAction?.kind === "circle"
       ? Math.hypot(pointerAction.current.x - pointerAction.origin.x, pointerAction.current.z - pointerAction.origin.z)
       : 0;
-  const circlePreviewLabel = formatDimension(circlePreviewRadius, workspace.accuracy);
+  const circlePreviewLabel = `${formatDimension(circlePreviewRadius * 2, workspace.accuracy)} mm across`;
   const radialPreview =
     pointerAction && (pointerAction.kind === "triangle" || pointerAction.kind === "polygon" || pointerAction.kind === "star")
       ? (() => {
@@ -1422,7 +1430,7 @@ export function SketchWorkspace({
           }
           return {
             radius,
-            label: formatDimension(radius, workspace.accuracy),
+            label: `${formatDimension(radius * 2, workspace.accuracy)} mm across`,
             d: `${pts.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.z}`).join(" ")} Z`,
           };
         })()
@@ -1438,7 +1446,7 @@ export function SketchWorkspace({
           const sz = Math.sign(dz) || 1;
           const x = Math.min(pointerAction.origin.x, pointerAction.origin.x + sx * side);
           const z = Math.min(pointerAction.origin.z, pointerAction.origin.z + sz * side);
-          return { x, z, side, label: formatDimension(side, workspace.accuracy) };
+          return { x, z, side, label: `${formatDimension(side, workspace.accuracy)} mm` };
         })()
       : null;
   const boxPreview =
@@ -1457,7 +1465,7 @@ export function SketchWorkspace({
             width,
             height,
             rx,
-            label: `${formatDimension(width, workspace.accuracy)} × ${formatDimension(height, workspace.accuracy)}`,
+            label: `${formatDimension(width, workspace.accuracy)} × ${formatDimension(height, workspace.accuracy)} mm`,
           };
         })()
       : null;
@@ -1725,6 +1733,16 @@ export function SketchWorkspace({
               );
             })}
           </g>
+          {guideGhost && guideGhost.segments.length > 0 ? (
+            <g className="sketch-guide-ghost" pointerEvents="none">
+              {guideGhost.segments.map((segment, index) => {
+                const start = guideGhost.points[segment.start];
+                const end = guideGhost.points[segment.end];
+                if (!start || !end) return null;
+                return <path key={`guide-ghost-${index}`} d={`M ${start.x} ${start.z} L ${end.x} ${end.z}`} />;
+              })}
+            </g>
+          ) : null}
           <g className="sketch-segments">
             {displayProfile.segments.map((segment) => {
               if (isCircleStandIn(segment.id)) return null;

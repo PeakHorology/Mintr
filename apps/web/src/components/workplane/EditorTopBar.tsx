@@ -40,6 +40,7 @@ export function EditorModeTabs({
         type="button"
         role="tab"
         aria-selected={toolbarMode === "sketch"}
+        data-lesson-target="sketch"
         onClick={() => onToolbarModeChange("sketch")}
         onContextMenu={sketchHelp.onContextMenu}
       >
@@ -211,6 +212,7 @@ export function EditorTopBar({
   onImport,
   onSaveProject,
   onSaveProjectAs,
+  onSaveAsGuide,
   hasMatchingSavedFile = false,
   onExport,
   toolbarMode,
@@ -225,6 +227,7 @@ export function EditorTopBar({
   onImport: () => void;
   onSaveProject?: () => void;
   onSaveProjectAs?: () => void;
+  onSaveAsGuide?: () => void;
   hasMatchingSavedFile?: boolean;
   onExport: () => void;
   toolbarMode: ToolbarMode;
@@ -279,7 +282,12 @@ export function EditorTopBar({
                 Save as…
               </PeakTipButton>
             ) : null}
-            <PeakTipButton className="editor-file-action" label="Export…" description={TOOL_DESCRIPTIONS.export} shortcut="Ctrl + E" data-toolbar-tool="Export" onClick={onExport}>
+            {onSaveAsGuide ? (
+              <PeakTipButton className="editor-file-action" label="Save as guide…" description={TOOL_DESCRIPTIONS.saveAsGuide} onClick={onSaveAsGuide}>
+                Save as guide…
+              </PeakTipButton>
+            ) : null}
+            <PeakTipButton className="editor-file-action" label="Export…" description={TOOL_DESCRIPTIONS.export} shortcut="Ctrl + E" data-toolbar-tool="Export" data-lesson-target="export" onClick={onExport}>
               Export…
             </PeakTipButton>
           </div>

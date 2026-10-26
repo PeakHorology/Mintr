@@ -217,3 +217,31 @@ export function matchRecipeEdgeIds(
     .slice(0, Math.max(1, recipe.edgeCount))
     .map((edge) => edge.id);
 }
+
+/** Every stored edge has a distinct live edge within the rematch tolerance. */
+export function sameEdgeFingerprints(
+  wanted: readonly EdgeTreatmentFingerprint[],
+  got: readonly EdgeTreatmentFingerprint[],
+) {
+  if (wanted.length === 0) return true;
+  const used = new Set<number>();
+  for (const target of wanted) {
+    let best = -1;
+    let bestScore = Number.POSITIVE_INFINITY;
+    let runnerUp: number | null = null;
+    got.forEach((candidate, index) => {
+      if (used.has(index)) return;
+      const score = fingerprintDistance(target, candidate);
+      if (score < bestScore) {
+        runnerUp = Number.isFinite(bestScore) ? bestScore : runnerUp;
+        bestScore = score;
+        best = index;
+      } else if (runnerUp == null || score < runnerUp) {
+        runnerUp = score;
+      }
+    });
+    if (best < 0 || bestScore > MATCH_SCORE_LIMIT || !beatsRunnerUp(bestScore, runnerUp)) return false;
+    used.add(best);
+  }
+  return true;
+}

@@ -406,6 +406,30 @@ export function faceHoleCutDepthMm(throughDepth: number): number {
 }
 
 /**
+ * Cutter length for a blind pocket of `pocketDepth` millimetres.
+ * The extra length is entrance overshoot only, so the depth into the part
+ * is the number that was typed.
+ */
+export function faceBlindCutDepthMm(pocketDepth: number): number {
+  const depth = Math.max(0.5, pocketDepth);
+  const withSkin = depth + 0.5;
+  if (faceHoleOvershootMm(withSkin) <= 0.5 + 1e-9) return withSkin;
+  return depth / 0.98;
+}
+
+/**
+ * Face-sketch hole cutter. The typed distance is how far the cut goes into the part.
+ * Leaving the part thickness (or typing close enough that a skin would remain) punches
+ * through. A shorter number is a blind pocket of that depth.
+ */
+export function faceSketchHoleCutterMm(typedMm: number, throughThicknessMm: number): number {
+  const typed = Math.max(0.5, typedMm);
+  const through = Math.max(0.5, throughThicknessMm);
+  if (typed + faceHoleOvershootMm(through) >= through - 1e-6) return faceHoleCutDepthMm(through);
+  return faceBlindCutDepthMm(typed);
+}
+
+/**
  * Reorder a direct child of a CSG body (feature timeline move).
  *
  * This is a listing order only. A node applies its single op to the whole operand set at once —

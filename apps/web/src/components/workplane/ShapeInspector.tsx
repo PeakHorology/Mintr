@@ -1,8 +1,8 @@
 "use client";
 
-import { ChevronDown, ChevronUp, LockKeyhole, LockKeyholeOpen, Split, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Split, X } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
-import { ToolbarHideSelectedIcon } from "@/components/icons";
+import { ToolbarHideSelectedIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
@@ -992,7 +992,7 @@ export function ShapeInspector({
             label={locked ? "Unlock shape" : "Lock shape"}
             onClick={() => updateInspectTarget({ locked: !locked })}
           >
-            {locked ? <LockKeyhole size={31} strokeWidth={2.4} /> : <LockKeyholeOpen size={31} strokeWidth={2.4} />}
+            {locked ? <ToolbarLockShapeIcon /> : <ToolbarUnlockShapeIcon />}
           </PeakTipButton>
           <PeakTipButton
             className={inspectTarget.hidden ? "inspector-header-icon active" : "inspector-header-icon"}
@@ -1020,6 +1020,7 @@ export function ShapeInspector({
           <span>Solid</span>
         </button>
         <button
+          data-lesson-target="hole"
           className={inspectTarget.hole ? "active hole-choice" : "hole-choice"}
           onClick={() => {
             updateInspectTarget({ hole: true });

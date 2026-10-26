@@ -37,6 +37,7 @@ export function EdgeModifierSlider({
   workspace,
   length = false,
   disabled = false,
+  lessonTarget,
   onChange,
 }: {
   label: string;
@@ -48,6 +49,7 @@ export function EdgeModifierSlider({
   workspace: WorkplaneWorkspaceSettings;
   length?: boolean;
   disabled?: boolean;
+  lessonTarget?: string;
   onChange: (value: number) => void;
 }) {
   const safeMin = Number.isFinite(min) ? min : 0;
@@ -85,7 +87,7 @@ export function EdgeModifierSlider({
   };
 
   return (
-    <label className="edge-modifier-field edge-modifier-slider range-property" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
+    <label className="edge-modifier-field edge-modifier-slider range-property" data-lesson-target={lessonTarget} style={{ "--slider-pos": `${position}%` } as CSSProperties}>
       <span className="range-property-header">
         <span className="range-property-name">{label}</span>
         <span className="range-value-control">
@@ -234,7 +236,7 @@ export function EdgeModifierPanel({
       </div>
 
       <div className="edge-modifier-quick-actions">
-        <button type="button" disabled={!prepared || busy} onClick={onSelectAll}>All sharp edges</button>
+        <button type="button" data-lesson-target="all-sharp-edges" disabled={!prepared || busy} onClick={onSelectAll}>All sharp edges</button>
         <button type="button" disabled={!prepared || busy} onClick={onClear}>Clear</button>
       </div>
 
@@ -299,6 +301,7 @@ export function EdgeModifierPanel({
         workspace={workspace}
         length
         disabled={!prepared || busy}
+        lessonTarget="edge-distance"
         onChange={onAmountChange}
       />
 
@@ -329,7 +332,7 @@ export function EdgeModifierPanel({
       {error ? <div className="edge-modifier-error" role="alert">{error}</div> : null}
       <div className="edge-modifier-footer">
         <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
-        <button type="button" className="primary" disabled={!prepared || busy || selectedCount === 0 || Boolean(error)} onClick={onApply}>
+        <button type="button" className="primary" data-lesson-target="edge-apply" disabled={!prepared || busy || selectedCount === 0 || Boolean(error)} onClick={onApply}>
           {busy ? <LoaderCircle className="edge-modifier-spinner" size={17} /> : <Check size={17} />}
           {editing ? "Update" : "Apply"}
         </button>

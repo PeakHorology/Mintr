@@ -131,7 +131,11 @@ function registerProjectFileIpc(app, getWindow) {
     const window = getWindow();
     const result = await dialog.showOpenDialog(window ?? undefined, {
       title: "Open Mintr project",
-      filters: [{ name: "Mintr project", extensions: ["mintr", "peakcad"] }],
+      filters: [
+        { name: "Mintr", extensions: ["mintr", "mintrguide", "peakcad"] },
+        { name: "Mintr guide", extensions: ["mintrguide"] },
+        { name: "Mintr project", extensions: ["mintr", "peakcad"] },
+      ],
       properties: ["openFile"],
     });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -148,13 +152,17 @@ function registerProjectFileIpc(app, getWindow) {
 
   ipcMain.handle("peakcad:file-save-as", async (_event, payload) => {
     const window = getWindow();
+    const guide = payload?.kind === "guide";
+    const preferred = guide ? ".mintrguide" : CURRENT_EXTENSION;
     const result = await dialog.showSaveDialog(window ?? undefined, {
-      title: "Save Mintr project",
-      defaultPath: path.join(activeProjectDir(app), typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${CURRENT_EXTENSION}`),
-      filters: [{ name: "Mintr project", extensions: ["mintr", "peakcad"] }],
+      title: guide ? "Save Mintr guide" : "Save Mintr project",
+      defaultPath: path.join(activeProjectDir(app), typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${preferred}`),
+      filters: guide
+        ? [{ name: "Mintr guide", extensions: ["mintrguide"] }]
+        : [{ name: "Mintr project", extensions: ["mintr", "peakcad"] }],
     });
     if (result.canceled || !result.filePath) return null;
-    const target = allowPath(ensureProjectExtension(result.filePath, CURRENT_EXTENSION));
+    const target = allowPath(ensureProjectExtension(result.filePath, preferred));
     return { path: writeTextFile(target, payload?.text) };
   });
 

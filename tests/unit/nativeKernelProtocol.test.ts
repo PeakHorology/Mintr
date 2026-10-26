@@ -45,6 +45,21 @@ describe("native kernel protocol", () => {
     }
   });
 
+  it("does not refit a chamfer whose size still matches the stored solid", () => {
+    const chamfered = {
+      ...box("plate"),
+      kind: "mesh" as const,
+      width: 40,
+      depth: 30,
+      height: 20,
+      size: 40,
+      cadBrep: "chamfer-brep",
+      cadBrepFrame: { x: 0, z: 0, elevation: 0, width: 40, depth: 30, height: 20 },
+    };
+    expect(toNativeKernelSolid(chamfered)).toMatchObject({ kind: "brep", fitScale: false, width: 40, height: 20 });
+    expect(toNativeKernelSolid({ ...chamfered, width: 50, size: 50 })?.fitScale).toBe(true);
+  });
+
   it("prefers stored STEP over the primitive kind", () => {
     const shape = {
       ...box("s"),

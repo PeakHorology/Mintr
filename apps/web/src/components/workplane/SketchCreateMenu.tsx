@@ -35,16 +35,25 @@ function EditSketchIcon() {
 /** Floating menu under the Sketch mode tab when not actively sketching. */
 export function SketchCreateMenu({
   canEditSketch,
+  newSketchSelected,
   onNewSketch,
   onEditSketch,
 }: {
   canEditSketch: boolean;
+  newSketchSelected: boolean;
   onNewSketch: () => void;
   onEditSketch: () => void;
 }) {
   return (
     <div className="sketch-create-menu" role="menu" aria-label="Sketch options">
-      <button className="sketch-create-menu-item primary" type="button" role="menuitem" onClick={onNewSketch}>
+      <button
+        className={`sketch-create-menu-item primary${newSketchSelected ? " is-selected" : ""}`}
+        type="button"
+        role="menuitem"
+        aria-pressed={newSketchSelected}
+        data-lesson-target="new-sketch"
+        onClick={onNewSketch}
+      >
         <NewSketchIcon />
         <span>New sketch</span>
       </button>

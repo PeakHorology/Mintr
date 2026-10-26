@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Bot, FolderDown, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, X } from "lucide-react";
+import { BookOpen, Bot, Check, FolderDown, GraduationCap, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, X } from "lucide-react";
 import { Printer3dIcon } from "@/components/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
@@ -29,13 +29,15 @@ import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
 import { hasDesktopProjectFiles, transitionDesktopPeakcadFiles, type ProjectFileTransition } from "@/lib/peakcadFile";
 import { SlicerSettingsFields } from "@/components/workplane/SlicerSettingsFields";
 import { loadUiTheme, setUiTheme, type UiTheme } from "@/lib/uiTheme";
+import { completedTutorialIds, isShippedTutorialId, isTutorialCompleted, setTutorialsHidden, TUTORIALS, tutorialsAreHidden } from "@/lib/introProject";
+import { readGuideCatalog, type GuideCatalogEntry } from "@/lib/mintrGuide";
 import { DEFAULT_WORKPLANE_WORKSPACE, savePeakcadPro } from "@/lib/workplaneSettings";
 import { brandForPreset, brandsForKind, defaultPrinterForKind, kindForPreset, printersForBrand, type PrinterKind } from "@/lib/printerBed";
 import { MAX_NOZZLE_MM, MIN_NOZZLE_MM, normalizeNozzleMm } from "@/lib/thinWalls";
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
-type WorkspaceSettingsSection = "appearance" | "measurement" | "workplane" | "printing" | "sketch" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
+type WorkspaceSettingsSection = "appearance" | "tutorials" | "measurement" | "workplane" | "printing" | "sketch" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
 type WorkspaceSettingsContext = "project" | "app";
 type LegalDocumentId = "license" | "notices" | "offer";
 
@@ -119,6 +121,7 @@ const SETTING_TIPS = {
   makeDefaultApp: "Save these settings as the default for new projects.",
   peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
   uiTheme: "Switch Mintr’s chrome between light and dark. Applies to the dashboard and editor.",
+  hideTutorials: "Take the tutorial cards off the home page. Finished tutorials leave on their own. This list stays here.",
   downloadFolder: "Local folder used for exported files and downloads on this computer.",
 } as const;
 
@@ -158,6 +161,9 @@ export function WorkspaceSettingsModal({
   downloadFolder,
   onDownloadFolderChange,
   sketchGuides,
+  tutorialsHidden,
+  onTutorialsHiddenChange,
+  onOpenTutorial,
 }: {
   workspace: WorkspaceSettings;
   snap: GridSize;
@@ -173,6 +179,9 @@ export function WorkspaceSettingsModal({
     drawAsGuides: boolean;
     onChange: (patch: { showConstruction?: boolean; constructionMode?: boolean }) => void;
   };
+  tutorialsHidden?: boolean;
+  onTutorialsHiddenChange?: (hidden: boolean) => void;
+  onOpenTutorial?: (tutorialId: string) => void;
 }) {
   const [leaving, setLeaving] = useState(false);
   const leaveTimerRef = useRef<number | null>(null);
@@ -191,6 +200,24 @@ export function WorkspaceSettingsModal({
   }, []);
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(sketchGuides ? "sketch" : "appearance");
+  const [storedTutorialsHidden, setStoredTutorialsHidden] = useState(() => tutorialsAreHidden());
+  const [finishedTutorialIds, setFinishedTutorialIds] = useState<readonly string[]>(() => completedTutorialIds());
+  const [guideCards, setGuideCards] = useState<GuideCatalogEntry[]>([]);
+  const hideTutorials = tutorialsHidden ?? storedTutorialsHidden;
+  useEffect(() => {
+    if (tutorialsHidden !== undefined) setStoredTutorialsHidden(tutorialsHidden);
+  }, [tutorialsHidden]);
+  useEffect(() => {
+    if (activeSection === "tutorials") {
+      setFinishedTutorialIds(completedTutorialIds());
+      setGuideCards(readGuideCatalog().filter((guide) => !isShippedTutorialId(guide.id)));
+    }
+  }, [activeSection]);
+  const changeTutorialsHidden = (hidden: boolean) => {
+    setTutorialsHidden(hidden);
+    setStoredTutorialsHidden(hidden);
+    onTutorialsHiddenChange?.(hidden);
+  };
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => loadUiTheme());
   const [localDownloadFolder, setLocalDownloadFolder] = useState(() => downloadFolder ?? loadDownloadFolder());
   const [toolQuery, setToolQuery] = useState("");
@@ -436,6 +463,10 @@ export function WorkspaceSettingsModal({
               <Palette size={18} />
               <span>Appearance</span>
             </button>
+            <button className={activeSection === "tutorials" ? "active" : ""} aria-current={activeSection === "tutorials" ? "page" : undefined} onClick={() => setActiveSection("tutorials")}>
+              <GraduationCap size={18} />
+              <span>Tutorials</span>
+            </button>
             <button className={activeSection === "measurement" ? "active" : ""} aria-current={activeSection === "measurement" ? "page" : undefined} onClick={() => setActiveSection("measurement")}>
               <Ruler size={18} />
               <span>Measurement</span>
@@ -558,6 +589,76 @@ export function WorkspaceSettingsModal({
                     </small>
                   </PeakTipLabel>
                   <p className="workspace-about-credit">Mintr is made by Peak Horology.</p>
+                </>
+              ) : null}
+
+              {activeSection === "tutorials" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>Tutorials</strong>
+                    <span>Guided modeling. A finished tutorial leaves the home page and keeps its check here.</span>
+                  </div>
+                  <WorkspaceToggle
+                    label="Hide tutorials"
+                    tip={SETTING_TIPS.hideTutorials}
+                    checked={hideTutorials}
+                    onChange={changeTutorialsHidden}
+                  />
+                  <ul className="settings-tutorial-list">
+                    {TUTORIALS.map((tutorial) => {
+                      const done = finishedTutorialIds.includes(tutorial.id);
+                      const body = (
+                        <>
+                          <span className={done ? "settings-tutorial-check is-done" : "settings-tutorial-check"} aria-hidden="true">
+                            {done ? <Check size={14} strokeWidth={3} /> : null}
+                          </span>
+                          <span className="settings-tutorial-copy">
+                            <strong>{tutorial.title}</strong>
+                            <small>{done ? "Completed" : tutorial.length}</small>
+                            <p><span className="mintr-guide-mark">Mintr guide</span></p>
+                            <p>{tutorial.summary}</p>
+                          </span>
+                        </>
+                      );
+                      return (
+                        <li key={tutorial.id}>
+                          {onOpenTutorial ? (
+                            <button type="button" aria-label={done ? `${tutorial.title}, completed` : tutorial.title} onClick={() => onOpenTutorial(tutorial.id)}>
+                              {body}
+                            </button>
+                          ) : (
+                            <div role="group" aria-label={done ? `${tutorial.title}, completed` : tutorial.title}>{body}</div>
+                          )}
+                        </li>
+                      );
+                    })}
+                    {guideCards.map((guide) => {
+                      const done = isTutorialCompleted(guide.id);
+                      const body = (
+                        <>
+                          <span className={done ? "settings-tutorial-check is-done" : "settings-tutorial-check"} aria-hidden="true">
+                            {done ? <Check size={14} strokeWidth={3} /> : null}
+                          </span>
+                          <span className="settings-tutorial-copy">
+                            <strong>{guide.title}</strong>
+                            <small>{done ? "Completed" : `${guide.steps} steps`}</small>
+                            <p>By {guide.author}</p>
+                          </span>
+                        </>
+                      );
+                      return (
+                        <li key={guide.id}>
+                          {onOpenTutorial ? (
+                            <button type="button" aria-label={done ? `${guide.title}, completed` : guide.title} onClick={() => onOpenTutorial(guide.id)}>
+                              {body}
+                            </button>
+                          ) : (
+                            <div role="group" aria-label={done ? `${guide.title}, completed` : guide.title}>{body}</div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </>
               ) : null}
 

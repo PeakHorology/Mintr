@@ -1011,7 +1011,7 @@ function reconstructParts(cad: OcctKernel, parts: CadModifierMeshPart[]) {
   result = cad.fixShape(result);
   result = cad.simplify(result);
   if (busy >= 3 || holes.length > 0) {
-    result = cad.unifySameDomain(result);
+  result = cad.unifySameDomain(result);
   }
   const pieces = cad.isSolid(result) ? [result] : cad.getSubShapes(result, "solid");
   if (pieces.length === 1) result = pieces[0];

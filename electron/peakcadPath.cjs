@@ -3,6 +3,7 @@ const path = require("node:path");
 
 const CURRENT_EXTENSION = ".mintr";
 const LEGACY_EXTENSION = ".peakcad";
+const GUIDE_EXTENSION = ".mintrguide";
 const EXTENSIONS = [CURRENT_EXTENSION, LEGACY_EXTENSION];
 const MAX_BYTES = 512 * 1024 * 1024;
 
@@ -11,7 +12,8 @@ function defaultProjectDir(app) {
 }
 
 function hasProjectExtension(filePath) {
-  return EXTENSIONS.includes(path.extname(filePath).toLowerCase());
+  const ext = path.extname(filePath).toLowerCase();
+  return EXTENSIONS.includes(ext) || ext === GUIDE_EXTENSION;
 }
 
 function normalizePeakcadPath(filePath) {
@@ -20,7 +22,7 @@ function normalizePeakcadPath(filePath) {
   }
   const resolved = path.resolve(filePath.trim());
   if (!hasProjectExtension(resolved)) {
-    throw new Error("Mintr projects must use the .mintr or .peakcad extension.");
+    throw new Error("Mintr projects must use the .mintr, .mintrguide, or .peakcad extension.");
   }
   return resolved;
 }

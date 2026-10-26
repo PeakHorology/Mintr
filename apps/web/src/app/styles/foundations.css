@@ -1726,6 +1726,61 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
   font-size: var(--text-xs);
 }
 
+.tutorial-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 360px));
+  gap: 16px;
+}
+
+.tutorial-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 148px;
+  padding: 16px 16px 14px;
+  color: var(--peak-text);
+  background: var(--glass-surface-strong);
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-sm);
+}
+
+.tutorial-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tutorial-card h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.tutorial-card header span,
+.tutorial-card p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.tutorial-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.tutorial-done {
+  color: #2aa77e;
+  font-size: var(--text-xs);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .library-band {
   display: grid;
   min-width: 0;
@@ -2835,18 +2890,24 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
   white-space: nowrap;
 }
 
-.project-sample-badge {
+.mintr-guide-mark {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   margin-right: 6px;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 999px;
-  background: var(--wash-strong);
-  color: var(--ink-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  background: color-mix(in srgb, var(--mintr) 16%, transparent);
+  color: var(--mintr);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+.tutorial-card .mintr-guide-mark,
+.settings-tutorial-copy .mintr-guide-mark {
+  margin-right: 0;
 }
 
 .project-card-meta {
@@ -2860,11 +2921,12 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
 
 .intro-coach {
   position: fixed;
-  left: 20px;
-  bottom: 24px;
+  /* Clear of the view cube (left) and the action toast (bottom-left). */
+  top: calc(var(--editor-toolbar-height) + 14px);
+  left: 128px;
   z-index: calc(var(--z-viewport-ui) + 8);
   display: grid;
-  width: min(360px, calc(100vw - 40px));
+  width: min(360px, calc(100vw - 128px - var(--shape-sidebar-width) - 24px));
   gap: 12px;
   padding: 14px 16px 16px;
   color: var(--peak-text);
@@ -2931,6 +2993,291 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
   color: var(--peak-text);
   font-style: normal;
   font-weight: 700;
+}
+
+.intro-coach ol.intro-coach-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.intro-coach ol.intro-coach-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.intro-coach ol.intro-coach-steps li span {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+}
+
+.intro-coach ol.intro-coach-steps li.is-now {
+  color: var(--peak-text);
+}
+
+.intro-coach ol.intro-coach-steps li.is-now span,
+.intro-coach ol.intro-coach-steps li.is-done span {
+  background: #2aa77e;
+  color: #fff;
+}
+
+.intro-coach-title {
+  margin: 0;
+  color: var(--peak-text);
+  font-size: var(--text-md);
+  font-weight: 750;
+}
+
+.intro-coach p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.intro-coach-note {
+  color: #655447;
+  font-weight: 700;
+}
+
+.guide-confetti {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-viewport-ui) + 7);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.guide-confetti span {
+  position: absolute;
+  top: 0;
+  border-radius: 2px;
+  opacity: 0;
+  animation-name: guide-confetti-fall;
+  animation-duration: 6.4s;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.guide-confetti span.is-round {
+  border-radius: 999px;
+}
+
+.guide-complete {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-viewport-ui) + 9);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.guide-complete-card {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  min-width: 220px;
+  padding: 22px 28px 20px;
+  color: var(--peak-text);
+  background: var(--glass-surface-strong);
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-md);
+  animation: guide-complete-in 0.42s cubic-bezier(0.2, 0.85, 0.2, 1) both;
+}
+
+.guide-complete-card strong {
+  font-size: var(--text-lg);
+  font-weight: 800;
+}
+
+.guide-complete-check {
+  width: 68px;
+  height: 68px;
+}
+
+.guide-complete-check circle,
+.guide-complete-check path {
+  fill: none;
+  stroke: #2aa77e;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.guide-complete-check circle {
+  stroke-width: 3;
+  stroke-dasharray: 145;
+  stroke-dashoffset: 145;
+  animation: guide-check-ring 0.55s ease forwards;
+}
+
+.guide-complete-check path {
+  stroke-width: 4;
+  stroke-dasharray: 52;
+  stroke-dashoffset: 52;
+  animation: guide-check-mark 0.35s 0.42s ease forwards;
+}
+
+@keyframes guide-confetti-fall {
+  0% {
+    opacity: 0;
+    transform: translateY(-28px) rotate(0deg);
+  }
+  4% {
+    opacity: 1;
+  }
+  94% {
+    opacity: 1;
+    transform: translateY(108vh) rotate(280deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(118vh) rotate(320deg);
+  }
+}
+
+@keyframes guide-complete-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes guide-check-ring {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes guide-check-mark {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guide-confetti span,
+  .guide-complete-card,
+  .guide-complete-check circle,
+  .guide-complete-check path {
+    animation: none;
+  }
+
+  .guide-confetti span {
+    display: none;
+  }
+
+  .guide-complete-check circle,
+  .guide-complete-check path {
+    stroke-dashoffset: 0;
+  }
+}
+
+body[data-lesson-prompt="box"] button[data-lesson-target="box"],
+body[data-lesson-prompt="sketch"] button[data-lesson-target="sketch"],
+body[data-lesson-prompt="new-sketch"] button[data-lesson-target="new-sketch"],
+body[data-lesson-prompt="circle"] button[data-lesson-target="circle"],
+body[data-lesson-prompt="extrude"] button[data-lesson-target="extrude"],
+body[data-lesson-prompt="cut"] button[data-lesson-target="cut"],
+body[data-lesson-prompt="export"] button[data-lesson-target="export"],
+body[data-lesson-prompt="download-stl"] button[data-lesson-target="download-stl"] {
+  position: relative;
+  z-index: 4;
+  color: #fff;
+  background: #2aa77e;
+  border-radius: 8px;
+  outline: 5px solid #2aa77e;
+  outline-offset: 4px;
+  box-shadow:
+    inset 0 0 0 3px #fff,
+    0 0 0 8px rgba(42, 167, 126, 0.55);
+}
+
+body[data-lesson-prompt="face"] [data-lesson-target="face"] {
+  box-shadow:
+    inset 0 0 0 10px #2aa77e,
+    inset 0 0 0 22px rgba(42, 167, 126, 0.4);
+}
+
+.edge-modifier-slider.lesson-target-hot {
+  border-radius: 8px;
+  outline: 5px solid #2aa77e;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 8px rgba(42, 167, 126, 0.55);
+}
+
+.edge-modifier-slider.lesson-target-hot .range-value-control {
+  background: #2aa77e;
+  border-color: #2aa77e;
+  color: #fff;
+}
+
+.edge-modifier-slider.lesson-target-hot .range-value-control input,
+.edge-modifier-slider.lesson-target-hot .range-value-unit {
+  color: #fff;
+}
+
+button.lesson-target-hot {
+  position: relative;
+  z-index: 4;
+  color: #fff;
+  background: #2aa77e;
+  border-radius: 8px;
+  outline: 5px solid #2aa77e;
+  outline-offset: 4px;
+  box-shadow:
+    inset 0 0 0 3px #fff,
+    0 0 0 8px rgba(42, 167, 126, 0.55);
+}
+
+[data-lesson-target="face"].lesson-target-hot {
+  background: transparent;
+  color: inherit;
+  outline: none;
+  box-shadow:
+    inset 0 0 0 10px #2aa77e,
+    inset 0 0 0 22px rgba(42, 167, 126, 0.4);
+}
+
+.guide-save-dialog {
+  width: min(440px, calc(100vw - 32px));
+}
+
+.guide-save-dialog p {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.guide-save-dialog label {
+  display: grid;
+  gap: 4px;
+}
+
+.guide-save-steps {
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.guide-save-steps label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
 }
 
 .project-empty .dashboard-secondary {

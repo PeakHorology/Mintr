@@ -97,7 +97,9 @@ bool kernelBounds(
   double& xmax, double& ymax, double& zmax
 ) {
   Bnd_Box box;
-  BRepBndLib::Add(shape, box);
+  // Add() inflates by face tolerance. A chamfer leaves a tolerance gap big
+  // enough that fitting the solid into that box pulls the real faces inward.
+  BRepBndLib::AddOptimal(shape, box, false, false);
   if (box.IsVoid()) return false;
   box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
   return true;
@@ -120,7 +122,10 @@ TopoDS_Shape kernelFitImportedLocal(const TopoDS_Shape& shape, const nlohmann::j
   const double depth = solid.value("depth", 0.0);
   const double height = solid.value("height", 0.0);
   double xmin, ymin, zmin, xmax, ymax, zmax;
-  if (kernelBounds(local, xmin, ymin, zmin, xmax, ymax, zmax)) {
+  // An unresized fillet or chamfer already is the exact solid. Scaling it so a
+  // loose box matches the display mesh is what shrinks the part on the next
+  // Group or sketch cut. Only a real resize asks for fitScale.
+  if (solid.value("fitScale", true) && kernelBounds(local, xmin, ymin, zmin, xmax, ymax, zmax)) {
     const double measuredW = xmax - xmin;
     const double measuredH = ymax - ymin;
     const double measuredD = zmax - zmin;

@@ -1,6 +1,6 @@
 {
   "name": "peakcad",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "private": true,
   "license": "GPL-3.0-or-later",
   "author": "PeakHorologyLLC",
@@ -126,6 +126,13 @@
         ],
         "name": "Mintr3d Project",
         "description": "Mintr3d project file",
+        "icon": "build/icon.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "mintrguide",
+        "name": "Mintr3d Guide",
+        "description": "Mintr3d guide file",
         "icon": "build/icon.ico",
         "role": "Editor"
       }

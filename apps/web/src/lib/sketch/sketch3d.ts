@@ -1,12 +1,13 @@
 import * as THREE from "three";
-import type { GridSize, SketchPlane, SketchProfile, SketchSegment } from "@/types/sketchforge";
+import type { GridSize, SketchPlane, SketchProfile, SketchSegment, WorkplaneShape } from "@/types/sketchforge";
 import { cylinderUVToWorld, cylinderOutwardNormalAtUV, worldToCylinderUV } from "@/lib/sketchCylinder";
 import { planeUVToWorld, resolveSketchPlane, sketchPlaneVAxis, worldToPlaneUV } from "@/lib/sketchPlane";
 import type { SketchTool } from "@/components/SketchWorkspace";
 import { curveStandInOwner } from "./migrate";
-import { snapHeading } from "./lineEntry";
+import { parseLineEntry, pointAtLengthAngle, screenAngleDeg, snapHeading } from "./lineEntry";
 import { orderedSketchPaths } from "./profiles";
 import { snapSketchPoint } from "./snaps";
+import { sketchCenterSnapPoints } from "./shapeCenterSnap";
 
 const GROUP_NAME = "sketch-on-model";
 const LIVE_GROUP_NAME = "sketch-on-model-live";
@@ -16,7 +17,15 @@ const LIFT_MM = 0.35;
 const POINT_GEOMETRY = new THREE.SphereGeometry(0.7, 12, 8);
 const POINT_MATERIAL = new THREE.MeshBasicMaterial({ color: "#f7fbfc", depthTest: true });
 const POINT_MATERIAL_ACTIVE = new THREE.MeshBasicMaterial({ color: "#ff8a00", depthTest: true });
-const SHARED_RESOURCES = new Set<THREE.BufferGeometry | THREE.Material>([POINT_GEOMETRY, POINT_MATERIAL, POINT_MATERIAL_ACTIVE]);
+const CENTER_MARK_MATERIAL = new THREE.LineBasicMaterial({ color: "#2aa77e", depthTest: false, transparent: true });
+const GUIDE_GHOST_MATERIAL = new THREE.LineBasicMaterial({ color: "#2aa77e", depthTest: false, transparent: true });
+const SHARED_RESOURCES = new Set<THREE.BufferGeometry | THREE.Material>([
+  POINT_GEOMETRY,
+  POINT_MATERIAL,
+  POINT_MATERIAL_ACTIVE,
+  CENTER_MARK_MATERIAL,
+  GUIDE_GHOST_MATERIAL,
+]);
 /** Cosine of the angle between the view and the face. Below this, a click is too side-on to draw. */
 const MIN_DRAW_FACING = 0.5;
 /** Clicking the dot on screen counts even when the ray meets the plane a little beside the point. */
@@ -84,6 +93,10 @@ export type SketchOnModelSession = {
   onMovePoint: (id: string, point: { x: number; z: number }) => void;
   onEraseEntities: (pointIds: string[], segmentIds: string[]) => void;
   onNotice?: (message: string) => void;
+  /** Solids whose centers this sketch can snap to. */
+  shapes?: readonly WorkplaneShape[];
+  /** Mint outline a guide asks the learner to trace. */
+  guideGhost?: { points: { x: number; z: number }[]; segments: { start: number; end: number }[] } | null;
 };
 
 type UV = { x: number; z: number };
@@ -97,10 +110,311 @@ export type Sketch3DPointerState = {
   gesture: Sketch3DGesture | null;
   arc: UV[];
   hover: UV | null;
+  /** Digits typed while drawing a line, same as the flat sheet (`50` or `50<30`). */
+  lineEntry?: string;
 };
 
 export function emptySketch3DPointer(): Sketch3DPointerState {
-  return { gesture: null, arc: [], hover: null };
+  return { gesture: null, arc: [], hover: null, lineEntry: "" };
+}
+
+/** Point a typed length lands on, in sketch millimetres. Angle follows the pointer unless `50<30`. */
+export function sketch3DTypedPoint(anchor: UV | null, hover: UV | null, raw: string | undefined): UV | null {
+  if (!anchor || !raw?.trim()) return null;
+  const parsed = parseLineEntry(raw);
+  if (!parsed) return null;
+  const angle = parsed.angleDeg ?? (hover ? screenAngleDeg(anchor, hover) : null);
+  if (angle === null) return null;
+  return pointAtLengthAngle(anchor, parsed.length, angle);
+}
+
+export type Sketch3DLineKeyResult =
+  | { kind: "ignore" }
+  | { kind: "clear" }
+  | { kind: "edit"; lineEntry: string }
+  | { kind: "place"; point: UV }
+  | { kind: "need-angle" };
+
+/** Keyboard length entry for a 3D line. Matches the flat sheet: type `50` or `50<30`, then Enter. */
+export function sketch3DLineKey(
+  session: Pick<SketchOnModelSession, "tool" | "activePointId" | "profile">,
+  pointer: Sketch3DPointerState,
+  key: string,
+): Sketch3DLineKeyResult {
+  if (session.tool !== "line" || !session.activePointId) return { kind: "ignore" };
+  const entry = pointer.lineEntry ?? "";
+  if (key === "Escape") return entry ? { kind: "clear" } : { kind: "ignore" };
+  if (key === "Backspace") return entry ? { kind: "edit", lineEntry: entry.slice(0, -1) } : { kind: "ignore" };
+  if (key === "Enter") {
+    if (!entry) return { kind: "ignore" };
+    const anchor = session.profile.points.find((point) => point.id === session.activePointId) ?? null;
+    if (!anchor || !parseLineEntry(entry)) return { kind: "ignore" };
+    const point = sketch3DTypedPoint(anchor, pointer.hover, entry);
+    if (!point) return { kind: "need-angle" };
+    return { kind: "place", point };
+  }
+  if (/^[0-9.<+-]$/.test(key)) return { kind: "edit", lineEntry: `${entry}${key}`.slice(0, 32) };
+  return { kind: "ignore" };
+}
+
+/** True millimetres of the line or shape under the pointer. This is the size that will be drawn. */
+export function sketch3DMeasureLabel(
+  session: Pick<SketchOnModelSession, "tool" | "activePointId" | "profile">,
+  pointer: Sketch3DPointerState,
+): string | null {
+  const drag = pointer.gesture?.kind === "drag" ? pointer.gesture : null;
+  if (drag) {
+    const dx = Math.abs(drag.current.x - drag.origin.x);
+    const dz = Math.abs(drag.current.z - drag.origin.z);
+    const span = Math.hypot(drag.current.x - drag.origin.x, drag.current.z - drag.origin.z);
+    if (span < 0.05) return null;
+    if (drag.tool === "circle" || drag.tool === "triangle" || drag.tool === "polygon" || drag.tool === "star") {
+      return `${(span * 2).toFixed(1)} mm across`;
+    }
+    if (drag.tool === "square") return `${Math.max(dx, dz).toFixed(1)} mm`;
+    if (dx >= 0.05 && dz >= 0.05) return `${dx.toFixed(1)} × ${dz.toFixed(1)} mm`;
+    return `${span.toFixed(1)} mm`;
+  }
+  if (session.tool !== "line" || !session.activePointId) return null;
+  const anchor = session.profile.points.find((point) => point.id === session.activePointId) ?? null;
+  if (!anchor) return null;
+  const entry = pointer.lineEntry?.trim() ?? "";
+  if (entry) {
+    const parsed = parseLineEntry(entry);
+    if (!parsed) return entry;
+    if (parsed.angleDeg !== null) return `${parsed.length.toFixed(1)} mm at ${parsed.angleDeg.toFixed(0)}°`;
+    if (!sketch3DTypedPoint(anchor, pointer.hover, entry)) return `${parsed.length.toFixed(1)} mm — move the pointer for the angle`;
+    return `${parsed.length.toFixed(1)} mm`;
+  }
+  if (!pointer.hover) return null;
+  const length = Math.hypot(pointer.hover.x - anchor.x, pointer.hover.z - anchor.z);
+  if (length < 0.05) return null;
+  return `${length.toFixed(1)} mm`;
+}
+
+/** A size sitting on an edge of the shape being drawn, in sketch-plane millimetres. */
+export type SketchSizeCallout = {
+  id: string;
+  text: string;
+  u: number;
+  v: number;
+  /** Sketch-plane direction that points away from the shape, used to nudge the label off the line. */
+  outU: number;
+  outV: number;
+};
+
+function formatSketchMm(value: number) {
+  return `${value.toFixed(1)} mm`;
+}
+
+function edgeCallout(
+  id: string,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  outU: number,
+  outV: number,
+): SketchSizeCallout | null {
+  const length = Math.hypot(bx - ax, bz - az);
+  if (length < 0.05) return null;
+  return {
+    id,
+    text: formatSketchMm(length),
+    u: (ax + bx) / 2,
+    v: (az + bz) / 2,
+    outU,
+    outV,
+  };
+}
+
+/** Width along the bottom edge and height along the right edge of a dragged box. */
+function boxCallouts(origin: UV, current: UV): SketchSizeCallout[] {
+  const x0 = Math.min(origin.x, current.x);
+  const x1 = Math.max(origin.x, current.x);
+  const z0 = Math.min(origin.z, current.z);
+  const z1 = Math.max(origin.z, current.z);
+  const width = edgeCallout("drag-width", x0, z0, x1, z0, 0, -1);
+  const height = edgeCallout("drag-height", x1, z0, x1, z1, 1, 0);
+  return [width, height].filter((callout): callout is SketchSizeCallout => callout !== null);
+}
+
+function radialCallout(origin: UV, current: UV, across: boolean): SketchSizeCallout | null {
+  const dx = current.x - origin.x;
+  const dz = current.z - origin.z;
+  const span = Math.hypot(dx, dz);
+  if (span < 0.05) return null;
+  return {
+    id: "drag-across",
+    text: across ? `${(span * 2).toFixed(1)} mm across` : formatSketchMm(span),
+    u: current.x,
+    v: current.z,
+    outU: dx,
+    outV: dz,
+  };
+}
+
+function profileSizeCallouts(profile: SketchProfile): SketchSizeCallout[] {
+  const pointById = new Map(profile.points.map((point) => [point.id, point]));
+  const curves = new Map<string, UV[]>();
+  const consumed = new Set<string>();
+  for (const segment of profile.segments) {
+    const owner = curveStandInOwner(segment.id);
+    if (!owner || segment.construction) continue;
+    consumed.add(segment.id);
+    const start = pointById.get(segment.startId);
+    const end = pointById.get(segment.endId);
+    if (!start || !end) continue;
+    const points = curves.get(owner) ?? [];
+    points.push(start, end);
+    curves.set(owner, points);
+  }
+  const callouts: SketchSizeCallout[] = [];
+  for (const [owner, points] of curves) {
+    const unique = new Map<string, UV>();
+    for (const point of points) unique.set(`${point.x.toFixed(3)}:${point.z.toFixed(3)}`, point);
+    const ring = [...unique.values()];
+    if (ring.length < 6) continue;
+    const center = ring.reduce((sum, point) => ({ x: sum.x + point.x, z: sum.z + point.z }), { x: 0, z: 0 });
+    center.x /= ring.length;
+    center.z /= ring.length;
+    const radius = ring.reduce((sum, point) => sum + Math.hypot(point.x - center.x, point.z - center.z), 0) / ring.length;
+    if (radius < 0.05) continue;
+    let edge = ring[0];
+    let maxReach = 0;
+    for (const point of ring) {
+      const reach = Math.hypot(point.x - center.x, point.z - center.z);
+      if (reach > maxReach) {
+        maxReach = reach;
+        edge = point;
+      }
+    }
+    const fullCircle = maxReach * 2 > radius * 1.75;
+    callouts.push({
+      id: `curve-${owner}`,
+      text: fullCircle ? `${(radius * 2).toFixed(1)} mm across` : `${radius.toFixed(1)} mm radius`,
+      u: edge.x,
+      v: edge.z,
+      outU: edge.x - center.x,
+      outV: edge.z - center.z,
+    });
+  }
+  let centroidX = 0;
+  let centroidZ = 0;
+  let counted = 0;
+  for (const segment of profile.segments) {
+    if (consumed.has(segment.id) || segment.construction) continue;
+    const start = pointById.get(segment.startId);
+    const end = pointById.get(segment.endId);
+    if (!start || !end) continue;
+    centroidX += start.x + end.x;
+    centroidZ += start.z + end.z;
+    counted += 2;
+  }
+  if (counted > 0) {
+    centroidX /= counted;
+    centroidZ /= counted;
+  }
+  for (const segment of profile.segments) {
+    if (consumed.has(segment.id) || segment.construction) continue;
+    const start = pointById.get(segment.startId);
+    const end = pointById.get(segment.endId);
+    if (!start || !end) continue;
+    const midU = (start.x + end.x) / 2;
+    const midV = (start.z + end.z) / 2;
+    let outU = midU - centroidX;
+    let outV = midV - centroidZ;
+    if (Math.hypot(outU, outV) < 0.05) {
+      outU = -(end.z - start.z);
+      outV = end.x - start.x;
+    }
+    const callout = edgeCallout(segment.id, start.x, start.z, end.x, end.z, outU, outV);
+    if (callout) callouts.push(callout);
+  }
+  return callouts;
+}
+
+function ghostSizeCallouts(ghost: NonNullable<SketchOnModelSession["guideGhost"]>): SketchSizeCallout[] {
+  let centroidU = 0;
+  let centroidV = 0;
+  let counted = 0;
+  for (const segment of ghost.segments) {
+    const start = ghost.points[segment.start];
+    const end = ghost.points[segment.end];
+    if (!start || !end) continue;
+    centroidU += start.x + end.x;
+    centroidV += start.z + end.z;
+    counted += 2;
+  }
+  if (counted > 0) {
+    centroidU /= counted;
+    centroidV /= counted;
+  }
+  const callouts: SketchSizeCallout[] = [];
+  ghost.segments.forEach((segment, index) => {
+    const start = ghost.points[segment.start];
+    const end = ghost.points[segment.end];
+    if (!start || !end) return;
+    const midU = (start.x + end.x) / 2;
+    const midV = (start.z + end.z) / 2;
+    const callout = edgeCallout(`ghost-${index}`, start.x, start.z, end.x, end.z, midU - centroidU, midV - centroidV);
+    if (callout) callouts.push(callout);
+  });
+  return callouts;
+}
+
+/**
+ * Sizes drawn on the shape itself. A drag reports the shape under the pointer.
+ * Once the pointer is up, each finished edge keeps its length, and a circle
+ * keeps how wide it is.
+ */
+export function sketch3DSizeCallouts(
+  session: Pick<SketchOnModelSession, "tool" | "activePointId" | "profile" | "guideGhost">,
+  pointer: Sketch3DPointerState,
+): SketchSizeCallout[] {
+  const drag = pointer.gesture?.kind === "drag" ? pointer.gesture : null;
+  if (drag) {
+    const span = Math.hypot(drag.current.x - drag.origin.x, drag.current.z - drag.origin.z);
+    if (span < 0.05) return profileSizeCallouts(session.profile);
+    if (drag.tool === "circle") {
+      const callout = radialCallout(drag.origin, drag.current, true);
+      return callout ? [callout] : [];
+    }
+    if (drag.tool === "triangle" || drag.tool === "polygon" || drag.tool === "star") {
+      const callout = radialCallout(drag.origin, drag.current, true);
+      return callout ? [callout] : [];
+    }
+    if (
+      drag.tool === "rectangle"
+      || drag.tool === "square"
+      || drag.tool === "ellipse"
+      || drag.tool === "roundRect"
+      || drag.tool === "slot"
+    ) {
+      return boxCallouts(drag.origin, drag.current);
+    }
+    const callout = radialCallout(drag.origin, drag.current, false);
+    return callout ? [callout] : [];
+  }
+  const placed = profileSizeCallouts(session.profile);
+  if (placed.length > 0) return placed;
+  if (session.tool === "line" && session.activePointId && pointer.hover) {
+    const anchor = session.profile.points.find((point) => point.id === session.activePointId);
+    if (anchor) {
+      const typed = sketch3DTypedPoint(anchor, pointer.hover, pointer.lineEntry);
+      const end = typed ?? pointer.hover;
+      const callout = edgeCallout("line", anchor.x, anchor.z, end.x, end.z, -(end.z - anchor.z), end.x - anchor.x);
+      if (callout) return [callout];
+    }
+  }
+  if (session.guideGhost?.segments.length) return ghostSizeCallouts(session.guideGhost);
+  return [];
+}
+
+/** World position of a sketch-plane point, lifted off the face the same way the sketch lines are. */
+export function sketchUvToWorld(plane: SketchPlane, u: number, v: number) {
+  const point = uvWorld(plane, u, v);
+  return { x: point.x, y: point.y, z: point.z };
 }
 
 export type Sketch3DHost = {
@@ -290,6 +604,7 @@ function cursorOnSketch(
     screenUnit: screenUnit(host, session.plane),
     gridStep: gridStepOf(session.snap),
     excludePointIds,
+    centers: sketchCenterSnapPoints(session.shapes ?? [], session.plane),
   });
   let point = { x: snapped.x, z: snapped.z };
   if (shiftKey && session.tool === "line" && anchor && snapped.kind === "grid") {
@@ -488,6 +803,7 @@ export function sketch3DPointerMove(
   shiftKey: boolean,
 ) {
   const draggingId = pointer.gesture?.kind === "move" ? pointer.gesture.pointId : undefined;
+  if (session.tool !== "line") pointer.lineEntry = "";
   const uv = cursorOnSketch(host, session, clientX, clientY, shiftKey, draggingId ? [draggingId] : undefined);
   if (uv && !pointer.gesture && !drawingAngleOk(host, session.plane, uv)) {
     pointer.hover = null;
@@ -548,6 +864,65 @@ export function sketch3DPointerUp(session: SketchOnModelSession, pointer: Sketch
   else if (tool === "triangle") session.onDrawTriangle(origin, current);
   else if (tool === "polygon") session.onDrawPolygon(origin, current);
   else if (tool === "star") session.onDrawStar(origin, current);
+}
+
+function addCenterMark(
+  group: THREE.Group,
+  host: Sketch3DHost,
+  plane: SketchPlane,
+  session: SketchOnModelSession,
+  pointer: Sketch3DPointerState,
+) {
+  const cursor = pointer.gesture?.kind === "drag" || pointer.gesture?.kind === "move"
+    ? pointer.gesture.current
+    : pointer.hover;
+  if (!cursor) return;
+  const centers = sketchCenterSnapPoints(session.shapes ?? [], plane);
+  if (!centers.some((center) => Math.hypot(center.x - cursor.x, center.z - cursor.z) < 0.05)) return;
+  const radius = Math.max(1.5, screenUnit(host, plane) * 10);
+  const ring: number[] = [];
+  const steps = 24;
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = (index / steps) * Math.PI * 2;
+    const point = uvWorld(plane, cursor.x + Math.cos(angle) * radius, cursor.z + Math.sin(angle) * radius);
+    ring.push(point.x, point.y, point.z);
+  }
+  const left = uvWorld(plane, cursor.x - radius, cursor.z);
+  const right = uvWorld(plane, cursor.x + radius, cursor.z);
+  const down = uvWorld(plane, cursor.x, cursor.z - radius);
+  const up = uvWorld(plane, cursor.x, cursor.z + radius);
+  const ringGeometry = new THREE.BufferGeometry();
+  ringGeometry.setAttribute("position", new THREE.Float32BufferAttribute(ring, 3));
+  const ringLine = new THREE.Line(ringGeometry, CENTER_MARK_MATERIAL);
+  ringLine.renderOrder = 24;
+  group.add(ringLine);
+  const crossGeometry = new THREE.BufferGeometry();
+  crossGeometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    left.x, left.y, left.z, right.x, right.y, right.z,
+    down.x, down.y, down.z, up.x, up.y, up.z,
+  ], 3));
+  const cross = new THREE.LineSegments(crossGeometry, CENTER_MARK_MATERIAL);
+  cross.renderOrder = 24;
+  group.add(cross);
+}
+
+function addGuideGhost(group: THREE.Group, plane: SketchPlane, ghost: SketchOnModelSession["guideGhost"]) {
+  if (!ghost?.segments.length) return;
+  const positions: number[] = [];
+  for (const segment of ghost.segments) {
+    const start = ghost.points[segment.start];
+    const end = ghost.points[segment.end];
+    if (!start || !end) continue;
+    const a = uvWorld(plane, start.x, start.z);
+    const b = uvWorld(plane, end.x, end.z);
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  if (positions.length < 6) return;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const lines = new THREE.LineSegments(geometry, GUIDE_GHOST_MATERIAL);
+  lines.renderOrder = 21;
+  group.add(lines);
 }
 
 function uvWorld(plane: SketchPlane, u: number, v: number) {
@@ -1030,9 +1405,13 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
   } else if (pointer.hover && (session.tool === "line" || session.tool === "arc")) {
     const anchor = session.activePointId ? byId.get(session.activePointId) : null;
     const from = anchor ?? pointer.arc[pointer.arc.length - 1];
-    if (from) pushWorld(preview, plane, [from, pointer.hover], curved);
+    const typed = session.tool === "line" && anchor ? sketch3DTypedPoint(anchor, pointer.hover, pointer.lineEntry) : null;
+    const end = typed ?? pointer.hover;
+    if (from) pushWorld(preview, plane, [from, end], curved);
   }
   addLine(live, preview, "#169fce");
+  addCenterMark(live, host, plane, session, pointer);
+  addGuideGhost(live, plane, session.guideGhost);
 
   host.scene.add(live);
 }

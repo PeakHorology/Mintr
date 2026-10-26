@@ -228,7 +228,49 @@ export function ToolbarShapeAddIcon(props: IconProps) {
 }
 
 export function ToolbarHideSelectedIcon(props: IconProps) {
-  return <VectorToolbarSpriteIcon rect={{ x: 138, y: 0, width: 27, height: 27 }} {...props} />;
+  return (
+    <CadGlyph width={28} height={28} strokeWidth={2.05} {...props}>
+      <path d="M2.8 12S6.2 7 12 7s9.2 5 9.2 5-3.4 5-9.2 5-9.2-5-9.2-5z" />
+      <rect x="10.15" y="10.15" width="3.7" height="3.7" rx="0.7" />
+      <path d="M5.2 18.2 18.8 5.8" />
+    </CadGlyph>
+  );
+}
+
+/** Closed shape lock. Same stroke and square mark as the hide eye. */
+export function ToolbarLockShapeIcon(props: IconProps) {
+  return (
+    <CadGlyph width={28} height={28} strokeWidth={2.05} {...props}>
+      <rect x="5" y="10.5" width="14" height="10" rx="1.6" />
+      <path d="M8.25 10.5V7.1a3.75 3.75 0 0 1 7.5 0V10.5" />
+      <rect x="10.15" y="13.65" width="3.7" height="3.7" rx="0.7" />
+    </CadGlyph>
+  );
+}
+
+/** Open shape lock. The shackle stays on the right and lifts clear on the left. */
+export function ToolbarUnlockShapeIcon(props: IconProps) {
+  return (
+    <CadGlyph width={28} height={28} strokeWidth={2.05} {...props}>
+      <rect x="5" y="10.5" width="14" height="10" rx="1.6" />
+      <path d="M15.75 10.5V7.05Q15.75 3.55 12 3.55Q8.25 3.55 8.25 6.55" />
+      <rect x="10.15" y="13.65" width="3.7" height="3.7" rx="0.7" />
+    </CadGlyph>
+  );
+}
+
+/** Sleeve, ferrule, and rounded rubber, tilted like a block eraser. */
+export function ToolbarEraserIcon(props: IconProps) {
+  return (
+    <CadGlyph width={26} height={26} strokeWidth={1.7} {...props}>
+      <g transform="translate(12 12) rotate(-40) scale(0.8)">
+        <path d="M-9-4.2H3.4A4.2 4.2 0 0 1 3.4 4.2H-9A2.5 4.2 0 0 1-9-4.2Z" />
+        <path d="M-6.7-2H1.3V2H-5.1V.45H-6.7A1.4 2 0 0 1-6.7-2Z" />
+        <path d="M1.3-4.2v8.4" />
+        <path d="M4.5-3.5v7" />
+      </g>
+    </CadGlyph>
+  );
 }
 
 export function ToolbarCaretDownIcon(props: IconProps) {

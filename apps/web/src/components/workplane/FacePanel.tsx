@@ -101,6 +101,7 @@ export function FacePanel({
               type="button"
               className={direction === value ? "active" : ""}
               aria-pressed={direction === value}
+              data-lesson-target={value === "in" ? "pocket-in" : undefined}
               disabled={locked}
               onClick={() => onDirectionChange(value)}
             >
@@ -188,7 +189,7 @@ export function FacePanel({
       {notice ? <div className="edge-modifier-target"><span>{notice}</span></div> : null}
       {error ? <div className="edge-modifier-error" role="alert">{error}</div> : null}
       <div className="edge-modifier-footer">
-        <button type="button" className="primary" disabled={locked || (!faceChosen && keptCount === 0) || Boolean(error)} onClick={onCreate}>
+        <button type="button" className="primary" data-lesson-target="create" disabled={locked || (!faceChosen && keptCount === 0) || Boolean(error)} onClick={onCreate}>
           {busy ? <LoaderCircle className="edge-modifier-spinner" size={17} /> : <Check size={17} />}
           Create
         </button>

@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
+import { alignmentLabel } from "@/lib/editorBoolean";
 import type { AlignAxis, AlignHandleStatus, AlignTarget } from "@/types/sketchforge";
 
 export type AlignOverlayState = {
@@ -36,6 +37,7 @@ export function AlignOverlay({
         <PeakTipButton
           key={handle.key}
           label={handle.title}
+          data-lesson-target={`align-${alignmentLabel(handle.axis, handle.target)}`}
           className={`align-dot axis-${handle.axis} target-${handle.target} ${handle.disabled ? "disabled" : ""} ${handle.aligned ? "aligned" : ""}`}
           style={{ left: handle.x, top: handle.y }}
           disabled={handle.disabled}
@@ -84,6 +86,7 @@ export function MirrorOverlay({
         <PeakTipButton
           key={handle.key}
           label={handle.title}
+          data-lesson-target={handle.axis === "x" ? "mirror-left-right" : handle.axis === "z" ? "mirror-front-back" : "mirror-top-bottom"}
           className={`mirror-handle axis-${handle.axis}`}
           style={{ left: handle.x, top: handle.y, "--mirror-angle": `${handle.angle}deg` } as CSSProperties}
           onPointerEnter={() => onPreview(handle.axis)}

@@ -46,6 +46,7 @@ function ShapeToolButton({
       className="shape-sidebar-item"
       type="button"
       draggable
+      data-lesson-target={shape.kind}
       aria-label={`Add ${shape.name}`}
       onContextMenu={onContextMenu}
       onClick={() => {

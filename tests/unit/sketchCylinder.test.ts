@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { faceBlindCutDepthMm } from "@/lib/csgTree";
 import {
   barrelFaceLoop,
   barrelThroughDepthMm,
@@ -98,6 +99,22 @@ describe("sketchCylinder UV", () => {
     expect(prism).not.toBeNull();
     const pos = prism?.getAttribute("position");
     expect(pos && pos.count).toBeGreaterThan(8);
+  });
+
+  it("keeps a shorter barrel cut on the surface instead of punching through", () => {
+    const surface = cylinderSurfaceFromHit(cylinder(), { x: 10, y: 20, z: 0 });
+    expect(surface).not.toBeNull();
+    if (!surface) return;
+    const depth = faceBlindCutDepthMm(5);
+    const circle = wrapCircleRadialCylinder(0, 0, 3, surface, depth, true);
+    expect(circle).not.toBeNull();
+    circle?.computeBoundingBox();
+    const box = circle?.boundingBox;
+    expect(box).toBeTruthy();
+    if (!box) return;
+    expect(box.min.x).toBeGreaterThan(surface.radius - 5 - 0.2);
+    expect(box.max.x).toBeLessThan(surface.radius + 1);
+    expect(box.min.x).toBeGreaterThan(0);
   });
 
   it("wraps nested UV loops (outer + hole) into an annular radial prism", () => {

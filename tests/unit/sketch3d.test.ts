@@ -4,6 +4,10 @@ import {
   interpolateSketchCameraPose,
   nearestScreenPoint,
   raySketchUV,
+  sketch3DLineKey,
+  sketch3DMeasureLabel,
+  sketch3DSizeCallouts,
+  sketch3DTypedPoint,
   sketchCameraEase,
   sketchCameraNearlyFramed,
   sketchCameraTweenMs,
@@ -60,6 +64,54 @@ describe("raySketchUV", () => {
     expect(side).not.toBeNull();
     expect(side!.x).toBeCloseTo(10 * Math.PI / 2, 3);
     expect(side!.z).toBeCloseTo(-4, 3);
+  });
+});
+
+describe("3D sketch typed length", () => {
+  const profile = {
+    points: [{ id: "a", x: 0, z: 0 }],
+    segments: [],
+  } as SketchProfile;
+  const session = { tool: "line" as const, activePointId: "a", profile };
+
+  it("puts the width and height on a rectangle while it is dragged", () => {
+    const pointer = {
+      gesture: { kind: "drag" as const, tool: "rectangle" as const, pointerId: 1, origin: { x: 0, z: 0 }, current: { x: 60, z: 40 } },
+      arc: [],
+      hover: null,
+      lineEntry: "",
+    };
+    const labels = sketch3DSizeCallouts(
+      { tool: "rectangle", activePointId: null, profile: { points: [], segments: [] } },
+      pointer,
+    ).map((callout) => callout.text);
+    expect(labels).toEqual(["60.0 mm", "40.0 mm"]);
+  });
+
+  it("shows a circle by its width while the pointer is dragging", () => {
+    const pointer = {
+      gesture: { kind: "drag" as const, tool: "circle" as const, pointerId: 1, origin: { x: 0, z: 0 }, current: { x: 12, z: 0 } },
+      arc: [],
+      hover: null,
+      lineEntry: "",
+    };
+    expect(sketch3DMeasureLabel({ tool: "circle", activePointId: null, profile: { points: [], segments: [] } }, pointer)).toBe("24.0 mm across");
+    expect(sketch3DSizeCallouts({ tool: "circle", activePointId: null, profile: { points: [], segments: [] } }, pointer).map((callout) => callout.text)).toEqual(["24.0 mm across"]);
+  });
+
+  it("places a typed length along the pointer, in sketch millimetres", () => {
+    const point = sketch3DTypedPoint({ x: 0, z: 0 }, { x: 10, z: 0 }, "25");
+    expect(point).toEqual({ x: 25, z: 0 });
+    expect(sketch3DMeasureLabel(session, { gesture: null, arc: [], hover: { x: 10, z: 0 }, lineEntry: "25" })).toBe("25.0 mm");
+  });
+
+  it("commits 50<30 on Enter and ignores typing until a line is started", () => {
+    const pointer = { gesture: null, arc: [], hover: { x: 4, z: 1 }, lineEntry: "50<30" };
+    const placed = sketch3DLineKey(session, pointer, "Enter");
+    expect(placed.kind).toBe("place");
+    if (placed.kind !== "place") return;
+    expect(Math.hypot(placed.point.x, placed.point.z)).toBeCloseTo(50, 5);
+    expect(sketch3DLineKey({ ...session, activePointId: null }, pointer, "5").kind).toBe("ignore");
   });
 });
 

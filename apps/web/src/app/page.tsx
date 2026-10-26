@@ -6,7 +6,6 @@ import { rememberProblem } from "@/lib/problemReport";
 import { noteIsFeatured, RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
 import { prepareCadRuntime } from "@/lib/cadRuntimeWarmup";
-import { IntroCoach } from "@/components/workplane/IntroCoach";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { toolbarShapeAssets } from "@/lib/shapeCatalog";
 import { hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry } from "@/lib/editorHistory";
@@ -27,16 +26,27 @@ import {
 } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 import {
-  createIntroProjectMeta,
-  createIntroShapes,
-  hasIntroBeenSeeded,
-  hasIntroCoachBeenDismissed,
-  INTRO_PROJECT_ID,
-  INTRO_PROJECT_NAME,
-  isIntroProjectId,
-  markIntroCoachDismissed,
-  markIntroSeeded,
+  completedTutorialIds,
+  createLessonProjectMeta,
+  createLessonShapes,
+  LESSON_PROJECT_ID,
+  isSampleProjectId,
+  isShippedTutorialId,
+  isTutorialCompleted,
+  markLessonSeeded,
+  tutorialsAreHidden,
+  tutorialsOnHome,
 } from "@/lib/introProject";
+import { builtinGuideSession } from "@/lib/builtinGuides";
+import {
+  guideSessionFor,
+  guideStartShapes,
+  playbackProjectId,
+  readGuideCatalog,
+  rememberGuideSession,
+  type GuideCatalogEntry,
+  type GuideSession,
+} from "@/lib/mintrGuide";
 import {
   buildPeakcadDocument,
   peakcadBasename,
@@ -905,11 +915,11 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [downloadFolder, setDownloadFolder] = useState("");
   const [dashboardNotice, setDashboardNotice] = useState("");
+  const [guideCatalogTick, setGuideCatalogTick] = useState(0);
   const [editorHostNotice, setEditorHostNotice] = useState<{ seq: number; message: string } | null>(null);
   const notifyEditor = useCallback((message: string) => {
     setEditorHostNotice((current) => ({ seq: (current?.seq ?? 0) + 1, message }));
   }, []);
-  const [introCoachOpen, setIntroCoachOpen] = useState(false);
   const [projectShapesById, setProjectShapesById] = useState<Record<string, ProjectShapeCacheEntry>>({});
   const projectsJsonRef = useRef("");
   const foldersJsonRef = useRef("");
@@ -1144,15 +1154,7 @@ export default function Home() {
       writeProjectFolderMap(seeded.map);
     }
     const projectsWithFolders = applyProjectFolderMap(storedProjects, projectFolderMapRef.current);
-    let homeProjects = projectsWithFolders;
-    if (!hasIntroBeenSeeded() && !homeProjects.some((project) => project.id === INTRO_PROJECT_ID)) {
-      const intro = createIntroProjectMeta();
-      const introEntry = projectShapeCacheEntry(intro.revision ?? intro.updatedAt, createIntroShapes());
-      homeProjects = [intro, ...homeProjects];
-      markIntroSeeded();
-      setProjectShapesById((current) => ({ ...current, [intro.id]: introEntry }));
-      void saveProjectShapes(intro.id, introEntry).catch(() => undefined);
-    }
+    const homeProjects = projectsWithFolders;
     const storedFolders = withValidFolderHeroes(readFolders(), homeProjects);
     const folderIds = storedFolders.map((folder) => folder.id);
     const allProjectIds = homeProjects.map((project) => project.id);
@@ -1607,6 +1609,52 @@ export default function Home() {
   const applyOpenedDocument = useCallback(
     (opened: { document: PeakcadDocument; path: string | null }, shouldOpen: boolean) => {
       const { document, path } = opened;
+      if (document.guide && document.history?.length) {
+        const id = playbackProjectId(document.project.id);
+        const end = Math.min(document.history.length - 1, Math.max(0, document.historyIndex ?? document.history.length - 1));
+        const history = document.history.slice(0, end + 1);
+        const session: GuideSession = { id, guide: document.guide, history };
+        rememberGuideSession(session, path);
+        const shapes = guideStartShapes(history, document.guide.steps);
+        const now = Date.now();
+        const existing = projectsRef.current.find((project) => project.id === id);
+        const project: DashboardProject = {
+          id,
+          name: document.guide.title,
+          createdAt: existing?.createdAt ?? document.project.createdAt ?? now,
+          updatedAt: now,
+          shapes: shapes.length,
+          accent: document.project.accent,
+          thumbnailUrl: existing?.thumbnailUrl ?? null,
+          thumbnailUrlDark: existing?.thumbnailUrlDark ?? null,
+          thumbnailVersion: existing?.thumbnailVersion,
+          revision: now,
+          workspace: document.project.workspace,
+          snapGrid: document.project.snapGrid,
+          folderId: existing?.folderId ?? null,
+          filePath: null,
+          savedFileName: null,
+        };
+        const entry = projectShapeCacheEntry(now, shapes);
+        setProjectShapesById((current) => ({ ...current, [project.id]: entry }));
+        void saveProjectShapes(project.id, entry, { fullHistory: true }).catch(() => {
+          setDashboardNotice("Could not store the tutorial locally.");
+        });
+        setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+        updateDashboardOrder((current) => ({
+          ...current,
+          projects: current.projects.includes(project.id) ? current.projects : [...current.projects, project.id],
+        }));
+        if (shouldOpen) {
+          setActiveProjectId(project.id);
+          setEditorStarted(true);
+          setView("editor");
+          if (typeof window !== "undefined") {
+            window.history.replaceState(null, "", `/?editor=1&project=${encodeURIComponent(project.id)}`);
+          }
+        }
+        return;
+      }
       const existing = projectsRef.current.find(
         (project) => project.id === document.project.id || (path != null && project.filePath === path),
       );
@@ -1671,6 +1719,64 @@ export default function Home() {
     },
     [updateDashboardOrder],
   );
+
+  const openSavedGuide = useCallback(async (id: string, restart: boolean) => {
+    const card = readGuideCatalog().find((entry) => entry.id === id);
+    let session = guideSessionFor(id);
+    if (!session && card?.path) {
+      try {
+        const opened = await readPeakcadPathText(card.path);
+        const parsed = await openProtectedPeakcad(opened.text, opened.path);
+        if (!parsed?.document.guide || !parsed.document.history?.length) {
+          setDashboardNotice("That file is not a Mintr guide.");
+          return;
+        }
+        applyOpenedDocument(parsed, true);
+        return;
+      } catch (error) {
+        setDashboardNotice(error instanceof Error ? error.message : "Could not open that guide.");
+        return;
+      }
+    }
+    if (!session) {
+      setDashboardNotice("Open the .mintrguide file to start this tutorial.");
+      return;
+    }
+    const existing = projectsRef.current.find((project) => project.id === id);
+    if (existing && !restart) {
+      setActiveProjectId(id);
+      setEditorStarted(true);
+      setView("editor");
+      if (typeof window !== "undefined") {
+        window.history.replaceState(null, "", `/?editor=1&project=${encodeURIComponent(id)}`);
+      }
+      return;
+    }
+    const sourceId = id.startsWith("guide:") ? id.slice("guide:".length) : id;
+    const end = session.history.length - 1;
+    applyOpenedDocument({
+      document: {
+        format: "peakcad",
+        version: 1,
+        savedAt: Date.now(),
+        project: {
+          id: sourceId,
+          name: session.guide.title,
+          createdAt: existing?.createdAt ?? Date.now(),
+          updatedAt: Date.now(),
+          accent: existing?.accent ?? "cyan",
+          shapes: session.history[end]?.shapes.length ?? 0,
+          workspace: existing?.workspace,
+          snapGrid: existing?.snapGrid,
+        },
+        shapes: session.history[end]?.shapes ?? [],
+        history: session.history,
+        historyIndex: end,
+        guide: session.guide,
+      },
+      path: card?.path ?? null,
+    }, true);
+  }, [applyOpenedDocument, openProtectedPeakcad]);
 
   const openFromDisk = useCallback(async () => {
     try {
@@ -2052,36 +2158,68 @@ export default function Home() {
   };
   createAndOpenProjectRef.current = createAndOpenProject;
 
-  const openOrCreateIntro = () => {
-    markIntroSeeded();
-    const existing = projectsRef.current.find((project) => project.id === INTRO_PROJECT_ID);
-    if (existing) {
-      openEditor(INTRO_PROJECT_ID, { allowMissingFromStorage: true });
+  const openBuiltinGuide = (id: string, restart: boolean) => {
+    const session = builtinGuideSession(id);
+    if (!session) return;
+    const existing = projectsRef.current.find((project) => project.id === id);
+    if (existing && !restart) {
+      rememberGuideSession(session, null);
+      openEditor(id, { allowMissingFromStorage: true });
       return;
     }
-    const intro = createIntroProjectMeta();
-    const entry = projectShapeCacheEntry(intro.revision ?? intro.updatedAt, createIntroShapes());
-    setProjectShapesById((current) => ({ ...current, [intro.id]: entry }));
-    void saveProjectShapes(intro.id, entry).catch(() => {
-      setDashboardNotice("Could not prepare the sample project.");
+    const sourceId = id.startsWith("guide:") ? id.slice("guide:".length) : id;
+    const end = session.history.length - 1;
+    applyOpenedDocument({
+      document: buildPeakcadDocument({
+        project: {
+          id: sourceId,
+          name: session.guide.title,
+          createdAt: existing?.createdAt ?? Date.now(),
+          updatedAt: Date.now(),
+          accent: existing?.accent ?? "cyan",
+          shapes: 0,
+          workspace: existing?.workspace,
+          snapGrid: existing?.snapGrid,
+        },
+        shapes: session.history[end]?.shapes ?? [],
+        history: session.history,
+        historyIndex: end,
+        guide: session.guide,
+      }),
+      path: null,
+    }, true);
+  };
+
+  const openOrCreateIntro = () => {
+    markLessonSeeded();
+    const existing = projectsRef.current.find((project) => project.id === LESSON_PROJECT_ID);
+    if (existing) {
+      openEditor(LESSON_PROJECT_ID, { allowMissingFromStorage: true });
+      return;
+    }
+    const lesson = createLessonProjectMeta();
+    const entry = projectShapeCacheEntry(lesson.revision ?? lesson.updatedAt, createLessonShapes());
+    setProjectShapesById((current) => ({ ...current, [lesson.id]: entry }));
+    void saveProjectShapes(lesson.id, entry).catch(() => {
+      setDashboardNotice("Could not prepare the lesson.");
     });
     updateDashboardOrder((current) => ({
       ...current,
-      projects: current.projects.includes(intro.id) ? current.projects : [...current.projects, intro.id],
+      projects: current.projects.includes(lesson.id) ? current.projects : [...current.projects, lesson.id],
     }));
-    setProjects((current) => [intro, ...current.filter((item) => item.id !== intro.id)]);
-    setActiveProjectId(intro.id);
+    setProjects((current) => [lesson, ...current.filter((item) => item.id !== lesson.id)]);
+    setActiveProjectId(lesson.id);
     setEditorStarted(true);
     setView("editor");
     if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", `/?editor=1&project=${encodeURIComponent(intro.id)}`);
+      window.history.replaceState(null, "", `/?editor=1&project=${encodeURIComponent(lesson.id)}`);
     }
     if (hasDesktopProjectFiles()) {
-      void writeNewDesktopPeakcad(buildDocumentForProject(intro, entry), intro.name)
+      void writeNewDesktopPeakcad(buildDocumentForProject(lesson, entry), lesson.name)
         .then((filePath) => {
           if (!filePath) return;
-          setProjects((current) => current.map((item) => (item.id === intro.id ? withSavedPeakcadFile(item, filePath) : item)));
-          persistCachedProjectFile(intro.id, filePath);
+          setProjects((current) => current.map((item) => (item.id === lesson.id ? withSavedPeakcadFile(item, filePath) : item)));
+          persistCachedProjectFile(lesson.id, filePath);
         })
         .catch(() => undefined);
     }
@@ -2363,16 +2501,6 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [view]);
 
-  useEffect(() => {
-    if (view === "editor" && isIntroProjectId(activeProjectId) && !hasIntroCoachBeenDismissed()) {
-      setIntroCoachOpen(true);
-      return;
-    }
-    if (!isIntroProjectId(activeProjectId)) {
-      setIntroCoachOpen(false);
-    }
-  }, [activeProjectId, view]);
-
   if (!mounted) {
     return null;
   }
@@ -2506,9 +2634,14 @@ export default function Home() {
           settingsOpen={settingsOpen}
           sortMode={sortMode}
           viewMode={viewMode}
+          guideCatalogTick={guideCatalogTick}
           onCloseSettings={() => setSettingsOpen(false)}
           onCreate={() => createAndOpenProject()}
-          onCreateIntro={openOrCreateIntro}
+          onOpenTutorial={(tutorialId) => {
+            if (tutorialId === LESSON_PROJECT_ID) openOrCreateIntro();
+            else if (isShippedTutorialId(tutorialId)) openBuiltinGuide(tutorialId, isTutorialCompleted(tutorialId));
+            else if (tutorialId.startsWith("guide:")) void openSavedGuide(tutorialId, isTutorialCompleted(tutorialId));
+          }}
           onCreateFolder={createFolder}
           onDeleteFolder={deleteFolder}
           onDeleteProject={deleteProject}
@@ -2577,6 +2710,14 @@ export default function Home() {
             }}
             hasMatchingSavedFile={projectMatchesSavedFile(activeProject)}
             hostNotice={editorHostNotice}
+            guidePlayback={activeProjectId ? (builtinGuideSession(activeProjectId) ?? guideSessionFor(activeProjectId)) : null}
+            onGuidePublished={(session, path) => {
+              rememberGuideSession(session, path);
+              setGuideCatalogTick((tick) => tick + 1);
+            }}
+            onGuideCompleted={() => {
+              setGuideCatalogTick((tick) => tick + 1);
+            }}
             onRegisterLeaveGuard={registerEditorLeaveGuard}
             onViewportReady={() => {
               setViewportReady(true);
@@ -2603,14 +2744,6 @@ export default function Home() {
               return saveProjectToDisk(snapshot.projectId, true, entry, { throwOnError: true });
             }}
           />
-          {introCoachOpen ? (
-            <IntroCoach
-              onDismiss={() => {
-                markIntroCoachDismissed();
-                setIntroCoachOpen(false);
-              }}
-            />
-          ) : null}
         </div>
       ) : null}
       {filePasswordPrompt ? (
@@ -2761,9 +2894,10 @@ function Dashboard({
   settingsOpen,
   sortMode,
   viewMode,
+  guideCatalogTick = 0,
   onCloseSettings,
   onCreate,
-  onCreateIntro,
+  onOpenTutorial,
   onCreateFolder,
   onDeleteFolder,
   onDeleteProject,
@@ -2805,9 +2939,10 @@ function Dashboard({
   settingsOpen: boolean;
   sortMode: string;
   viewMode: ViewMode;
+  guideCatalogTick?: number;
   onCloseSettings: () => void;
   onCreate: () => void;
-  onCreateIntro: () => void;
+  onOpenTutorial: (tutorialId: string) => void;
   onCreateFolder: (name?: string) => string;
   onDeleteFolder: (folderId: string) => void;
   onDeleteProject: (projectId: string) => void;
@@ -2854,6 +2989,15 @@ function Dashboard({
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState("");
+  const [hideTutorials, setHideTutorials] = useState(false);
+  const [finishedTutorialIds, setFinishedTutorialIds] = useState<readonly string[]>([]);
+  const [guideCards, setGuideCards] = useState<GuideCatalogEntry[]>([]);
+
+  useEffect(() => {
+    setHideTutorials(tutorialsAreHidden());
+    setFinishedTutorialIds(completedTutorialIds());
+    setGuideCards(readGuideCatalog());
+  }, [guideCatalogTick, projects]);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -2909,6 +3053,13 @@ function Dashboard({
     : [];
 
   const showHomeOverview = !openFolder && !normalizedQuery;
+  const tutorials = openFolder ? [] : tutorialsOnHome(query, { hidden: hideTutorials, completedIds: finishedTutorialIds });
+  const guideTutorials = openFolder || hideTutorials ? [] : guideCards.filter((guide) => {
+    if (isShippedTutorialId(guide.id) || isTutorialCompleted(guide.id)) return false;
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return `${guide.title} ${guide.author} ${guide.summary}`.toLowerCase().includes(needle);
+  });
   const recentProjects = showHomeOverview
     ? [...projects]
         .filter((project) => !projectStaysInsideFolder(project, folders))
@@ -3516,7 +3667,7 @@ function Dashboard({
           <span className="project-card-caption">
             <span className="project-card-title">
               {isHero ? <Star className="project-hero-star" size={14} strokeWidth={2.4} fill="currentColor" /> : null}
-              {isIntroProjectId(project.id) ? <span className="project-sample-badge">Sample</span> : null}
+              {isSampleProjectId(project.id) ? <span className="mintr-guide-mark">Mintr guide</span> : null}
               {project.name}
             </span>
             <span className="project-card-meta">
@@ -4036,6 +4187,52 @@ function Dashboard({
             </>
           ) : (
             <div className="dashboard-home-sections">
+              {tutorials.length > 0 || guideTutorials.length > 0 ? (
+                <section className="dashboard-home-section" aria-label="Tutorials">
+                  <div className="dashboard-subsection-header">
+                    <h2>Tutorials</h2>
+                    <span>Guided modeling</span>
+                  </div>
+                  <div className="tutorial-row">
+                    {tutorials.map((tutorial) => {
+                      const started = projects.some((project) => project.id === tutorial.id);
+                      return (
+                        <article className="tutorial-card" key={tutorial.id}>
+                          <header>
+                            <h3>{tutorial.title}</h3>
+                            <span>{tutorial.length}</span>
+                          </header>
+                          <p><span className="mintr-guide-mark">Mintr guide</span></p>
+                          <p>{tutorial.summary}</p>
+                          <div className="tutorial-card-actions">
+                            <button className="dashboard-primary" type="button" onClick={() => onOpenTutorial(tutorial.id)}>
+                              {started ? "Continue" : "Start"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {guideTutorials.map((guide) => {
+                      const started = projects.some((project) => project.id === guide.id);
+                      return (
+                        <article className="tutorial-card" key={guide.id}>
+                          <header>
+                            <h3>{guide.title}</h3>
+                            <span>{guide.steps} steps</span>
+                          </header>
+                          <p>By {guide.author}</p>
+                          <div className="tutorial-card-actions">
+                            <button className="dashboard-primary" type="button" onClick={() => onOpenTutorial(guide.id)}>
+                              {started ? "Continue" : "Start"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
               {recentProjects.length > 0 ? (
                 <section className="dashboard-home-section" aria-label="Recents">
                   <div className="dashboard-subsection-header">
@@ -4086,13 +4283,8 @@ function Dashboard({
                     <span>
                       {normalizedQuery
                         ? "Try a different name, or create a new design."
-                        : "Start with a sample, or create a blank design."}
+                        : "New design starts a blank file. Tutorials walk through the tools."}
                     </span>
-                    {!normalizedQuery ? (
-                      <button className="dashboard-secondary" type="button" onClick={onCreateIntro}>
-                        Try {INTRO_PROJECT_NAME}
-                      </button>
-                    ) : null}
                   </div>
                 </section>
               ) : null}
@@ -4390,14 +4582,14 @@ function Dashboard({
             <p>
               {lockDialog.mode === "create" ? (
                 <>
-                  Projects in <span>{folders.find((folder) => folder.id === lockDialog.folderId)?.name}</span> stay inside this folder. A PeakCAD file from this folder asks for the same password before it opens.
+                  Projects in <span>{folders.find((folder) => folder.id === lockDialog.folderId)?.name}</span> stay inside this folder. Do not use a password you already use for other accounts.
                 </>
               ) : lockDialog.mode === "unlock" ? (
                 <>
                   Enter the password for <span>{folders.find((folder) => folder.id === lockDialog.folderId)?.name}</span>.
                 </>
               ) : lockDialog.mode === "change" ? (
-                <>Enter the current password, then choose a new one.</>
+                <>Enter the current password, then choose a new one. Do not use a password you already use for other accounts.</>
               ) : (
                 <>
                   Enter the current password. Projects in <span>{folders.find((folder) => folder.id === lockDialog.folderId)?.name}</span> will show in the project lists again.
@@ -4524,6 +4716,12 @@ function Dashboard({
             }}
             onMakeDefault={() => {
               saveGlobalWorkspaceDefaults(appWorkspace, appSnap);
+            }}
+            tutorialsHidden={hideTutorials}
+            onTutorialsHiddenChange={setHideTutorials}
+            onOpenTutorial={(tutorialId) => {
+              onCloseSettings();
+              onOpenTutorial(tutorialId);
             }}
             onClose={onCloseSettings}
           />

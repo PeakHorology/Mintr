@@ -30,6 +30,12 @@ export type NativeKernelSolid = {
   profileLoops?: { outer: Array<[number, number]>; holes: Array<Array<[number, number]>> };
   brepStep?: string;
   cadBrep?: string;
+  /**
+   * Scale a stored solid so its box matches width/height/depth.
+   * False for a fillet or chamfer that has not been resized: the exact solid
+   * is already the right size, and fitting it to a tolerance box shrinks it.
+   */
+  fitScale?: boolean;
   /** Generator body (`kind: "recipe"`) the kernel builds from add / cut solids. */
   recipe?: GridfinityRecipe;
 };
@@ -185,6 +191,21 @@ function worldChildFromGroup(group: WorkplaneShape, child: WorkplaneShape): Work
   };
 }
 
+/** True when the user changed the size after the exact solid was stored. */
+function storedSolidWasResized(shape: WorkplaneShape): boolean {
+  const frame = shape.cadBrepFrame;
+  if (frame) {
+    return Math.abs(shapeWidth(shape) - frame.width) > 1e-3
+      || Math.abs(shapeDepth(shape) - frame.depth) > 1e-3
+      || Math.abs(shape.height - frame.height) > 1e-3;
+  }
+  const mesh = shape.importedMesh;
+  if (!mesh?.baseWidth || !mesh.baseHeight || !mesh.baseDepth) return true;
+  return Math.abs(shapeWidth(shape) - mesh.baseWidth) > 1e-3
+    || Math.abs(shapeDepth(shape) - mesh.baseDepth) > 1e-3
+    || Math.abs(shape.height - mesh.baseHeight) > 1e-3;
+}
+
 export function toNativeKernelSolid(shape: WorkplaneShape): NativeKernelSolid | null {
   if (shape.suppressed || shape.csg?.suppressed || shape.construction || shape.hidden) return null;
   const pose = {
@@ -213,10 +234,10 @@ export function toNativeKernelSolid(shape: WorkplaneShape): NativeKernelSolid | 
     pose.ridgeX = roofAnglesFromProfile(pose.width, pose.height, shape.leftAngle, shape.rightAngle).ridgeX;
   }
   if (shape.importedMesh?.brepStep) {
-    return { ...pose, kind: "step", brepStep: shape.importedMesh.brepStep };
+    return { ...pose, kind: "step", brepStep: shape.importedMesh.brepStep, fitScale: storedSolidWasResized(shape) };
   }
   if (shape.cadBrep) {
-    return { ...pose, kind: "brep", cadBrep: shape.cadBrep };
+    return { ...pose, kind: "brep", cadBrep: shape.cadBrep, fitScale: storedSolidWasResized(shape) };
   }
   if (isGridfinityKind(shape.kind)) {
     // Build still pending (no cadBrep yet): the kernel can rebuild the body from its recipe.

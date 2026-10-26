@@ -1,6 +1,8 @@
 import {
   MINTR_FILE_EXTENSION,
+  MINTR_GUIDE_EXTENSION,
   PEAKCAD_FILE_EXTENSION,
+  guideFilename,
   peakcadFilename,
   serializePeakcadDocument,
   parsePeakcadDocument,
@@ -14,7 +16,7 @@ export type PeakcadFileApi = {
   open?: () => Promise<{ path: string; text: string } | null>;
   read?: (filePath: string) => Promise<{ path: string; text: string }>;
   write?: (payload: { path: string; text: string }) => Promise<{ path: string }>;
-  saveAs?: (payload: { text: string; defaultName: string }) => Promise<{ path: string } | null>;
+  saveAs?: (payload: { text: string; defaultName: string; kind?: "guide" }) => Promise<{ path: string } | null>;
   writeNew?: (payload: { text: string; defaultName: string }) => Promise<{ path: string } | null>;
   resolveName?: (defaultName: string) => Promise<{ path: string; text: string } | null>;
   transitionLegacy?: (extraPaths: string[]) => Promise<ProjectFileTransition>;
@@ -99,7 +101,7 @@ function pickBrowserFile() {
   return new Promise<File | null>((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = `${MINTR_FILE_EXTENSION},${PEAKCAD_FILE_EXTENSION},application/json`;
+    input.accept = `${MINTR_FILE_EXTENSION},${MINTR_GUIDE_EXTENSION},${PEAKCAD_FILE_EXTENSION},application/json`;
     input.addEventListener("change", () => resolve(input.files?.[0] ?? null), { once: true });
     input.addEventListener("cancel", () => resolve(null), { once: true });
     input.click();
@@ -160,6 +162,17 @@ export async function savePeakcadTextAs(text: string, suggestedName: string): Pr
   const desktop = fileApi();
   if (desktop?.saveAs) {
     const result = await desktopCall(() => desktop.saveAs!({ text, defaultName }));
+    return result?.path ?? null;
+  }
+  await downloadTextFile(defaultName, text, "application/json");
+  return null;
+}
+
+export async function saveGuideTextAs(text: string, suggestedName: string): Promise<string | null> {
+  const defaultName = guideFilename(suggestedName);
+  const desktop = fileApi();
+  if (desktop?.saveAs) {
+    const result = await desktopCall(() => desktop.saveAs!({ text, defaultName, kind: "guide" }));
     return result?.path ?? null;
   }
   await downloadTextFile(defaultName, text, "application/json");

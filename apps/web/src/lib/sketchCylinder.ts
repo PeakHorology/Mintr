@@ -278,7 +278,8 @@ function normalizeUvLoop(loop: BarrelUvPoint[]): BarrelUvPoint[] | null {
 
 /**
  * Wrap a closed UV polyline into a radial prism (optional nested hole loops).
- * Hole: spans from +(R+os) through to -(R+os).
+ * A through hole spans from +(R+os) to -(R+os).
+ * A shorter depth is a blind pocket: +(R+os) outside the skin, and `depth` into the barrel.
  * Boss: spans from R out to R+depth.
  * Nested holes become annular cutters / bosses (outer − inners).
  */
@@ -296,9 +297,16 @@ export function wrapUvLoopRadialPrism(
     .filter((hole): hole is BarrelUvPoint[] => Boolean(hole));
 
   const safeDepth = Math.max(0.01, depth);
-  const os = faceHoleOvershootMm(surface.radius * 2);
+  const throughLen = barrelHoleCutDepthMm(surface);
+  const punching = cutIntoFace && safeDepth + 0.05 >= throughLen;
+  const os = faceHoleOvershootMm(punching ? surface.radius * 2 : safeDepth);
+  const inward = Math.max(0.05, safeDepth - os);
   const outerR = cutIntoFace ? surface.radius + os : surface.radius + safeDepth;
-  const innerR = cutIntoFace ? -(surface.radius + os) : surface.radius;
+  const innerR = !cutIntoFace
+    ? surface.radius
+    : punching
+      ? -(surface.radius + os)
+      : surface.radius - inward;
 
   const outer: THREE.Vector3[] = [];
   const inner: THREE.Vector3[] = [];
@@ -396,8 +404,10 @@ export function wrapCircleRadialCylinder(
 ): THREE.BufferGeometry | null {
   const r = Math.max(0.01, holeRadius);
   const safeDepth = Math.max(0.01, depth);
-  const os = faceHoleOvershootMm(surface.radius * 2);
-  const length = cutIntoFace ? Math.max(safeDepth, barrelHoleCutDepthMm(surface)) : safeDepth;
+  const throughLen = barrelHoleCutDepthMm(surface);
+  const punching = cutIntoFace && safeDepth + 0.05 >= throughLen;
+  const os = faceHoleOvershootMm(punching ? surface.radius * 2 : safeDepth);
+  const length = punching ? Math.max(safeDepth, throughLen) : safeDepth;
   const radialSegments = resolveHoleRadialSegments(r);
   const geometry = new THREE.CylinderGeometry(r, r, length, radialSegments, 1, false);
 
@@ -409,9 +419,14 @@ export function wrapCircleRadialCylinder(
 
   // Sketch V is negated vs +axis (see worldToCylinderUV).
   const onAxis = toThree(surface.axisOrigin).addScaledVector(axis, -centerV);
-  if (cutIntoFace) {
+  if (cutIntoFace && punching) {
     // Center on the axis so the cutter spans both skins symmetrically.
     geometry.translate(onAxis.x, onAxis.y, onAxis.z);
+  } else if (cutIntoFace) {
+    // Sit on the barrel: overshoot outside the skin, typed depth inside it.
+    const inward = Math.max(0.05, length - os);
+    const center = onAxis.clone().addScaledVector(normal, surface.radius + (os - inward) / 2);
+    geometry.translate(center.x, center.y, center.z);
   } else {
     const center = onAxis.clone().addScaledVector(normal, surface.radius + length / 2);
     geometry.translate(center.x, center.y, center.z);

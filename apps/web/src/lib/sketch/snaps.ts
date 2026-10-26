@@ -80,6 +80,8 @@ export type SnapQuery = {
   pixelTolerance?: number;
   /** Point ids to ignore (e.g. the point currently being dragged). */
   excludePointIds?: readonly string[];
+  /** Centers of cubes, cylinders, and triangle roofs the sketch plane cuts. */
+  centers?: readonly SketchVec2[];
 };
 
 /** Entity + inference snaps for a legacy profile (used by SketchWorkspace). */
@@ -145,6 +147,17 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
 
   // Circle-like closed quads: use centroid as center snap when 4+ points near equal radius
   // (lightweight; full circle entities handled via SketchDoc snap below)
+
+  for (const center of query.centers ?? []) {
+    if (dist(cursor, center) <= tol) {
+      candidates.push({
+        x: center.x,
+        z: center.z,
+        kind: "center",
+        inferredConstraints: [],
+      });
+    }
+  }
 
   if (query.from) {
     const dx = Math.abs(cursor.x - query.from.x);

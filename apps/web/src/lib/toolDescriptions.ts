@@ -33,6 +33,7 @@ export const TOOL_DESCRIPTIONS = {
   reduceFileSize: "Shrink an imported mesh so an STL export is small enough for a laser or viewer to open. Large faces use fewer triangles; small parts and sharp edges stay so the shape still reads. Exact STEP export is unchanged.",
   saveProject: "Save this design. A new file is .mintr. An open .peakcad file keeps that name.",
   saveProjectAs: "Save this design as a new .mintr file.",
+  saveAsGuide: "Save the steps you kept as a .mintrguide. Opening that file walks someone through the model.",
   blueprint: "Export a printable 2D blueprint as PDF, DXF, and/or SVG.",
   settings: "Open workspace settings for units, grid, and appearance.",
   home: "Return to the home dashboard.",

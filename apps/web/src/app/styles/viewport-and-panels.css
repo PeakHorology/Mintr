@@ -1956,6 +1956,79 @@
   box-shadow: var(--focus-ring-soft);
 }
 
+.settings-tutorial-list {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-tutorial-list li button,
+.settings-tutorial-list li > div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  width: 100%;
+  padding: 12px;
+  color: inherit;
+  text-align: left;
+  background: var(--control-surface-sunken);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+}
+
+.settings-tutorial-list li button {
+  cursor: pointer;
+}
+
+.settings-tutorial-list li button:hover {
+  border-color: var(--control-border-strong);
+}
+
+.settings-tutorial-check {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  color: #fff;
+  background: transparent;
+  border: 1.5px solid var(--control-border-strong);
+  border-radius: 50%;
+}
+
+.settings-tutorial-check.is-done {
+  background: #2aa77e;
+  border-color: #2aa77e;
+}
+
+.settings-tutorial-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-tutorial-copy strong {
+  color: var(--ink-strong);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.settings-tutorial-copy small,
+.settings-tutorial-copy p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.settings-tutorial-check.is-done + .settings-tutorial-copy small {
+  color: #2aa77e;
+  font-weight: 750;
+}
+
 .workspace-tool-index {
   display: grid;
   gap: 18px;
