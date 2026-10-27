@@ -173,6 +173,30 @@
   box-shadow: var(--elevation-lg);
   transform: translateX(-50%);
   pointer-events: auto;
+  animation: sketch-ribbon-in 260ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+/*
+ * Switching Geometry and Sketch: each mode's tools are their own components, so they arrive fresh.
+ * A short fade and settle reads as a crossfade without holding the old tools on screen.
+ */
+.editor-top-bar-tools > * {
+  animation: toolbar-swap-in 220ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+@keyframes toolbar-swap-in {
+  from { opacity: 0; transform: translateY(3px); }
+}
+
+@keyframes sketch-ribbon-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-ribbon,
+  .editor-top-bar-tools > * {
+    animation: none;
+  }
 }
 
 .sketch-ribbon-group {
@@ -1081,6 +1105,18 @@
 
 @keyframes edge-modifier-spin {
   to { transform: rotate(360deg); }
+}
+
+/* "Building sweep…" with its spinner, so a slow sweep does not look like a frozen app. */
+.sketch-revolve-prompt-copy .sweep-building {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sketch-revolve-prompt-actions .primary .edge-modifier-spinner {
+  margin-right: 5px;
+  vertical-align: -3px;
 }
 
 .toolbar-mode-content {

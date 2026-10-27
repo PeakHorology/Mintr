@@ -81,7 +81,7 @@ export function ModelBridgeSettings() {
   return (
     <div className="model-bridge-settings">
       <div className="workspace-section-heading">
-        <strong>Models</strong>
+        <strong>AI models</strong>
         <span>{enabled ? (ready ? "Ready for a model on this computer." : "Open a project. Mintr will listen on this computer.") : "Models are turned off."}</span>
       </div>
       <p>

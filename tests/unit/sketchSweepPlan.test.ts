@@ -73,7 +73,6 @@ describe("sweep plan", () => {
     const plan = planSketchSweep(profile);
     expect(plan.paths[0]?.segmentIds).toEqual(["path"]);
     const placed = placeSketchSweep(plan.outlines[0]!, plan.paths[0]!);
-    expect(placed?.simple).toBe(true);
     expect(placed?.outer.edges).toHaveLength(4);
     const start = placed?.outer.edges[0];
     expect(start && "from" in start).toBe(true);

@@ -1,7 +1,7 @@
 import { hydrateClipboardShape, hydrateHistoryMeshBlob, jsonSafeShape } from "@/lib/shapeJson";
 import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import type { EditorHistoryEntry, EditorHistoryMeshBlob, EditorHistoryMeshVault } from "@/lib/editorHistory";
-import type { MintrGuide } from "@/lib/mintrGuide";
+import { isGuideAuthorColor, type MintrGuide } from "@/lib/mintrGuide";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 /** Inside the file this stays "peakcad". Renaming it would reject every saved project. */
@@ -336,6 +336,60 @@ export function serializeMintrGuide(document: PeakcadDocument) {
   throw lastError instanceof Error ? lastError : new Error("This guide is too large to save. Shorten the model and try again.");
 }
 
+/**
+ * Guides are written packed: the document gzipped, as base64, inside a small labelled wrapper, so
+ * the file stays text like every Mintr file and opens through the same path. Typically 5-10x smaller.
+ */
+const PACKED_GUIDE_FORMAT = "mintrguide-packed";
+
+export function isPackedMintrGuide(text: string) {
+  return text.trimStart().startsWith(`{"format":"${PACKED_GUIDE_FORMAT}"`);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(text: string) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function streamThrough(bytes: Uint8Array, transform: CompressionStream | DecompressionStream) {
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(transform);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+export async function packMintrGuideText(text: string): Promise<string> {
+  const packed = await streamThrough(new TextEncoder().encode(text), new CompressionStream("gzip"));
+  return `${JSON.stringify({ format: PACKED_GUIDE_FORMAT, version: 1, encoding: "gzip+base64", data: bytesToBase64(packed) })}\n`;
+}
+
+export async function unpackMintrGuideText(text: string): Promise<string> {
+  let wrapper: { format?: unknown; encoding?: unknown; data?: unknown };
+  try {
+    wrapper = JSON.parse(text) as typeof wrapper;
+  } catch {
+    throw new Error("This guide file is damaged.");
+  }
+  if (wrapper.format !== PACKED_GUIDE_FORMAT || wrapper.encoding !== "gzip+base64" || typeof wrapper.data !== "string") {
+    throw new Error("This guide was made by a newer Mintr. Update Mintr to open it.");
+  }
+  try {
+    const plain = await streamThrough(base64ToBytes(wrapper.data), new DecompressionStream("gzip"));
+    return new TextDecoder().decode(plain);
+  } catch {
+    throw new Error("This guide file is damaged.");
+  }
+}
+
 export function parsePeakcadDocument(raw: string): PeakcadDocument {
   if (typeof raw !== "string" || raw.length === 0) {
     throw new Error("This Mintr file is empty.");
@@ -426,18 +480,42 @@ function parseMintrGuide(raw: unknown): MintrGuide | undefined {
     if (typeof step.historyIndex !== "number" || !Number.isFinite(step.historyIndex)) return [];
     if (typeof step.label !== "string" || !step.label.trim()) return [];
     if (typeof step.cue !== "string" || !step.cue.trim()) return [];
+    const text = (value: unknown, limit: number) => (typeof value === "string" && value.trim() ? value.trim().slice(0, limit) : undefined);
+    const millimetres = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+    const name = text(step.name, 80);
+    const tip = text(step.tip, 240);
+    const insetMm = millimetres(step.insetMm);
+    const depthMm = millimetres(step.depthMm);
     return [{
       historyIndex: step.historyIndex,
       label: step.label.trim(),
       included: step.included !== false,
       cue: step.cue.trim(),
+      // Pad/Pocket sizes: without these a saved pocket step reloaded with the 4 mm / 6 mm defaults.
+      ...(insetMm !== undefined ? { insetMm } : {}),
+      ...(depthMm !== undefined ? { depthMm } : {}),
+      ...(name ? { name } : {}),
+      ...(tip ? { tip } : {}),
+      ...(typeof step.fold === "boolean" ? { fold: step.fold } : {}),
     }];
   });
   if (!steps.length) return undefined;
+  // Pictures stay small; anything else is dropped rather than trusted.
+  const picture = (value: unknown, maxChars: number) => (
+    typeof value === "string" && /^data:image\/(png|jpeg|webp);base64,/.test(value) && value.length <= maxChars ? value : undefined
+  );
+  const avatar = picture(guide.avatar, 200_000);
+  const cover = picture(guide.cover, 600_000);
+  const minutes = typeof guide.minutes === "number" && Number.isFinite(guide.minutes) && guide.minutes > 0 ? Math.round(guide.minutes) : undefined;
+  // `official` is never read from a file: only guides that ship with Mintr carry the Mintr look.
   return {
     title: guide.title.trim(),
     author: guide.author.trim(),
     summary: typeof guide.summary === "string" && guide.summary.trim() ? guide.summary.trim() : `A guide by ${guide.author.trim()}.`,
     steps,
+    ...(isGuideAuthorColor(guide.color) ? { color: guide.color } : {}),
+    ...(avatar ? { avatar } : {}),
+    ...(cover ? { cover } : {}),
+    ...(minutes ? { minutes } : {}),
   };
 }

@@ -34,7 +34,7 @@ export const TOOL_DESCRIPTIONS = {
   reduceFileSize: "Shrink an imported mesh so an STL export is small enough for a laser or viewer to open. Large faces use fewer triangles; small parts and sharp edges stay so the shape still reads. Exact STEP export is unchanged.",
   saveProject: "Save this design. A new file is .mintr. An open .peakcad file keeps that name.",
   saveProjectAs: "Save this design as a new .mintr file.",
-  saveAsGuide: "Save the steps you kept as a .mintrguide. Opening that file walks someone through the model.",
+  saveAsGuide: "Turn this design into a guide: someone opens it and builds the same part step by step. Choose the steps, then save a .mintrguide.",
   blueprint: "Export a printable 2D blueprint as PDF, DXF, and/or SVG.",
   settings: "Open workspace settings for units, grid, and appearance.",
   home: "Return to the home dashboard.",
@@ -79,7 +79,7 @@ export const TOOL_DESCRIPTIONS = {
   measure: "Measure distances on the sketch plate.",
   extrude: "Extrude closed sketch profiles upward into 3D solids.",
   revolve: "Click Revolve, then click a straight line. The sketch revolves around it.",
-  sweep: "Carry a closed outline along a path on the same sheet.",
+  sweep: "Slide a profile along a path: draw the profile, click Next, draw the path, click Sweep.",
   cancelSketch: "Cancel the sketch and discard unfinished geometry.",
   // Shapes
   box: "Add a rectangular box solid.",

@@ -51,6 +51,7 @@ export function plateGuideSession(): GuideSession {
     guide: {
       title: "A plate from a sketch",
       author: "Mintr",
+      official: true,
       summary: "Draw a rectangle on the workplane, extrude it, then chamfer every edge.",
       steps: [
         { historyIndex: 1, label: "Sketch the plate", included: true, cue: "sketch" },
@@ -83,6 +84,7 @@ export function pocketGuideSession(): GuideSession {
     guide: {
       title: "A pocket in a block",
       author: "Mintr",
+      official: true,
       summary: "Place a box, then cut a pocket into the top with Pad/Pocket.",
       steps: [
         { historyIndex: 1, label: "Add a box", included: true, cue: "box" },

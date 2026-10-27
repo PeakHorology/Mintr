@@ -652,7 +652,25 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
     expect(Math.abs(volume)).toBeCloseTo(800, 0);
   });
 
-  it("sweeps a circle along a line", async () => {
+  /** Enclosed volume of an indexed mesh. An open tube without end caps comes out short. */
+  function replyMeshVolume(reply: Record<string, unknown>) {
+    const positions = reply.positions as number[];
+    const indices = reply.indices as number[];
+    let volume = 0;
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const a = indices[i] * 3;
+      const b = indices[i + 1] * 3;
+      const c = indices[i + 2] * 3;
+      volume += (
+        positions[a] * (positions[b + 1] * positions[c + 2] - positions[b + 2] * positions[c + 1])
+        - positions[a + 1] * (positions[b] * positions[c + 2] - positions[b + 2] * positions[c])
+        + positions[a + 2] * (positions[b] * positions[c + 1] - positions[b + 1] * positions[c])
+      ) / 6;
+    }
+    return Math.abs(volume);
+  }
+
+  it("sweeps a circle along a line into a capped solid", async () => {
     const reply = await client.request({
       id: 4,
       type: "sketchSweep",
@@ -663,7 +681,34 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
       },
     });
     expect(reply.ok, String(reply.message)).toBe(true);
-    expect(Array.isArray(reply.positions) && (reply.positions as number[]).length >= 9).toBe(true);
+    // π · 3² · 20. Without end caps the mesh measures about 377.
+    expect(replyMeshVolume(reply)).toBeCloseTo(Math.PI * 9 * 20, -1);
+  });
+
+  it("sweeps a square around a sharp bend with a rounded joint", async () => {
+    const reply = await client.request({
+      id: 41,
+      type: "sketchSweep",
+      pathClosed: false,
+      outer: {
+        edges: [
+          { kind: "line", from: { x: 0, y: -2, z: -2 }, to: { x: 0, y: 2, z: -2 } },
+          { kind: "line", from: { x: 0, y: 2, z: -2 }, to: { x: 0, y: 2, z: 2 } },
+          { kind: "line", from: { x: 0, y: 2, z: 2 }, to: { x: 0, y: -2, z: 2 } },
+          { kind: "line", from: { x: 0, y: -2, z: 2 }, to: { x: 0, y: -2, z: -2 } },
+        ],
+      },
+      path: {
+        edges: [
+          { kind: "line", from: { x: 0, y: 0, z: 0 }, to: { x: 30, y: 0, z: 0 } },
+          { kind: "line", from: { x: 30, y: 0, z: 0 }, to: { x: 30, y: 0, z: -30 } },
+        ],
+      },
+    });
+    expect(reply.ok, String(reply.message)).toBe(true);
+    // 4 × 4 section along 60 mm of path, a little less at the rounded inside of the bend.
+    expect(replyMeshVolume(reply)).toBeGreaterThan(900);
+    expect(replyMeshVolume(reply)).toBeLessThan(970);
   });
 
   it("round-trips a box through STEP export and import", async () => {

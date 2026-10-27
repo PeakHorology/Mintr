@@ -334,6 +334,7 @@ export function PeakTipLabel({
   ...rest
 }: PeakTipLabelProps) {
   const ref = useRef<HTMLLabelElement>(null);
+  const sage = useSageActive();
   const hasDescription = Boolean(description && description.trim() && description.trim() !== label);
   const hint = hasDescription ? "Right-click for help" : undefined;
   const { open, showLater, hide } = usePeakTooltip(shortcut || hasDescription ? 500 : PEAK_TOOLTIP_DELAY_MS);
@@ -365,7 +366,7 @@ export function PeakTipLabel({
       }}
     >
       {children}
-      <PeakTooltip label={label} open={open} anchorRef={ref} shortcut={shortcut} hint={hint} />
+      <PeakTooltip label={label} open={open && !sage} anchorRef={ref} shortcut={shortcut} hint={hint} />
       {helpPortal}
     </label>
   );

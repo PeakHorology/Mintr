@@ -1513,11 +1513,75 @@
   position: fixed;
   inset: 0;
   z-index: var(--z-popover);
+  pointer-events: none;
 }
 
-.dashboard-settings-overlay .workspace-modal,
-.workspace-modal.workspace-modal-app {
+/* On the home page, the same side sheet as in a design, below the dashboard bar. */
+.workspace-modal.workspace-modal-sheet.workspace-modal-app {
+  top: 58px;
+}
+
+/* Mintr Pro is still being built: a taped-off site with a truck, a digger and a cone. */
+.mintr-pro-site {
+  position: relative;
+  margin: 16px 0 6px;
+  padding: 14px 10px 8px;
+  border: 1.5px dashed color-mix(in srgb, var(--sketch-construction) 75%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.mintr-pro-truck {
   position: absolute;
+  top: -15px;
+  left: 12px;
+  width: 40px;
+  height: 28px;
+  padding: 0 3px;
+  color: var(--sketch-construction);
+  background: var(--modal-surface);
+  animation: mintr-pro-drive 6s ease-in-out infinite;
+}
+
+.mintr-pro-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  color: var(--modal-muted);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.mintr-pro-note svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--sketch-construction);
+}
+
+.mintr-pro-note .mintr-pro-digger {
+  width: 34px;
+  height: 24px;
+  margin-left: auto;
+  transform-origin: 30% 100%;
+  animation: mintr-pro-dig 2.8s ease-in-out infinite;
+}
+
+@keyframes mintr-pro-drive {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(140px); }
+}
+
+@keyframes mintr-pro-dig {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-5deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mintr-pro-truck,
+  .mintr-pro-note .mintr-pro-digger {
+    animation: none;
+  }
 }
 
 .workspace-download-folder input {
@@ -2992,5 +3056,110 @@
 @media (max-width: 640px) and (max-height: 640px) {
   .shape-inspector {
     width: 100%;
+  }
+}
+
+/* Sage across the top of Settings: find any setting or tool from every tab. */
+.workspace-sage-bar {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--modal-border);
+}
+
+.workspace-sage-search {
+  position: relative;
+}
+
+.workspace-sage-search .sage-home-search {
+  max-width: none;
+}
+
+.workspace-sage-owl {
+  display: grid;
+  place-items: center;
+  color: var(--modal-text);
+}
+
+.workspace-sage-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--modal-surface);
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-lg);
+  animation: sage-home-in 180ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.workspace-sage-results button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  color: var(--modal-text);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.workspace-sage-results button:hover,
+.workspace-sage-results button:focus-visible {
+  background: color-mix(in srgb, var(--mintr) 14%, transparent);
+}
+
+.workspace-sage-results span,
+.workspace-sage-empty {
+  color: var(--modal-muted);
+  font-size: var(--text-xs);
+}
+
+.workspace-sage-empty {
+  padding: 7px 10px;
+}
+
+.workspace-sage-off {
+  margin: 10px 0 0;
+  color: var(--modal-muted);
+  font-size: var(--text-sm);
+}
+
+/* The setting Sage found: a short mint glow so the eye lands on it. */
+.is-sage-found {
+  border-radius: var(--radius-sm);
+  animation: sage-found 1.8s ease-out;
+}
+
+@keyframes sage-found {
+  0%, 35% {
+    background: color-mix(in srgb, var(--mintr) 14%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mintr) 50%, transparent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-sage-results {
+    animation: none;
+  }
+
+  .is-sage-found {
+    animation: none;
+    outline: 2px solid var(--mintr);
   }
 }

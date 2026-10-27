@@ -60,7 +60,8 @@ export type HotkeyActionId =
   | "sketchRectangle"
   | "sketchDimension"
   | "sketchExtrude"
-  | "sketchFocusToggle";
+  | "sketchFocusToggle"
+  | "sage";
 
 export type HotkeyCategory = "Edit" | "Selection" | "Transform" | "Tools" | "View" | "Sketch";
 
@@ -104,6 +105,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyActionMeta[] = [
   { id: "chamfer", label: "Chamfer", description: "Start chamfer, or edit the last chamfer on the selection.", category: "Tools" },
   { id: "fillet", label: "Fillet", description: "Start fillet, or edit the last fillet on the selection.", category: "Tools" },
   { id: "cameraHome", label: "Camera home", description: "Reset the camera to the home view.", category: "View" },
+  { id: "sage", label: "Sage", description: "Show or hide Sage, the same as the Sage button. Hover a tool to see what it does.", category: "View" },
   { id: "zoomIn", label: "Zoom in", description: "Zoom the camera closer.", category: "View" },
   { id: "zoomOut", label: "Zoom out", description: "Zoom the camera farther.", category: "View" },
   { id: "sketchLine", label: "Sketch line", description: "Line tool while sketching. In geometry, L is Align.", category: "Sketch" },
@@ -172,6 +174,8 @@ export const DEFAULT_HOTKEY_BINDINGS: HotkeyBindings = {
   sketchDimension: [chord("d")],
   sketchExtrude: [chord("e")],
   sketchFocusToggle: [chord("tab")],
+  // F1 is the help key on Windows.
+  sage: [chord("f1")],
 };
 
 export function normalizeKey(key: string) {
@@ -214,7 +218,10 @@ export function formatHotkeyChord(value: HotkeyChord) {
       case "home": return "Home";
       case "space": return "Space";
       case " ": return "Space";
-      default: return value.key.length === 1 ? value.key.toUpperCase() : value.key;
+      default:
+        if (value.key.length === 1 || /^f\d{1,2}$/.test(value.key)) return value.key.toUpperCase();
+        // Named keys read as written on the keyboard: "Tab", "Enter".
+        return value.key.charAt(0).toUpperCase() + value.key.slice(1);
     }
   })();
   parts.push(keyLabel);

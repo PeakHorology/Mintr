@@ -7,7 +7,11 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
-#include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepBuilderAPI_TransitionMode.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepGProp.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <GProp_GProps.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <Geom_BezierCurve.hxx>
@@ -212,12 +216,20 @@ bool wireFromPlaced(const nlohmann::json& loop, bool closed, TopoDS_Wire& wire) 
   return true;
 }
 
+// A capped solid. The plain pipe (BRepOffsetAPI_MakePipe) builds only the walls, so the part was an
+// open skin. Sharp bends become a rounded joint: the mitred and "transformed" joints build an invalid
+// corner or silently drop the leg after it. Matches sweepWires in apps/web/src/lib/sketchSweep.ts.
 bool pipeSolid(const TopoDS_Wire& profile, const TopoDS_Wire& path, TopoDS_Shape& out) {
-  BRepOffsetAPI_MakePipe pipe(path, profile);
+  BRepOffsetAPI_MakePipeShell pipe(path);
+  pipe.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+  pipe.Add(profile, false, true);
   pipe.Build();
-  if (!pipe.IsDone()) return false;
+  if (!pipe.IsDone() || !pipe.MakeSolid()) return false;
   out = pipe.Shape();
-  return !out.IsNull();
+  if (out.IsNull() || !BRepCheck_Analyzer(out).IsValid()) return false;
+  GProp_GProps props;
+  BRepGProp::VolumeProperties(out, props);
+  return std::abs(props.Mass()) > 1e-6;
 }
 
 } // namespace
@@ -291,17 +303,17 @@ nlohmann::json handleSketchSweep(const nlohmann::json& job) {
   TopoDS_Shape solid;
   if (!pipeSolid(outer, path, solid)) return kernelFail("Sweep could not follow that curve.", true);
   if (job.contains("hole") && job["hole"].is_object()) {
+    // A hole that cannot be swept fails the sweep, so the part never comes back without it.
     TopoDS_Wire hole;
-    if (wireFromPlaced(job["hole"], true, hole)) {
-      TopoDS_Shape inner;
-      if (pipeSolid(hole, path, inner)) {
-        BRepAlgoAPI_Cut cut(solid, inner);
-        cut.SetRunParallel(true);
-        cut.Build();
-        if (!cut.IsDone()) return kernelFail("Sweep could not cut the hole in this outline.", true);
-        solid = cut.Shape();
-      }
+    TopoDS_Shape inner;
+    if (!wireFromPlaced(job["hole"], true, hole) || !pipeSolid(hole, path, inner)) {
+      return kernelFail("Sweep could not cut the hole in this outline.", true);
     }
+    BRepAlgoAPI_Cut cut(solid, inner);
+    cut.SetRunParallel(true);
+    cut.Build();
+    if (!cut.IsDone()) return kernelFail("Sweep could not cut the hole in this outline.", true);
+    solid = cut.Shape();
   }
   return okShape(kernelUnify(solid));
 }

@@ -145,6 +145,13 @@ export function resolveViewportBackground(storedBackground: string, theme: UiThe
   return storedBackground || DEFAULT_LIGHT_VIEWPORT_BACKGROUND;
 }
 
+/** Sketch line colours for the 3D view. Keep in step with `--sketch-line` and friends in foundations.css. */
+export function sketchLineColors(theme: UiTheme = readAppliedUiTheme()) {
+  return theme === "dark"
+    ? { line: "#6cc4ff", construction: "#e0a868", preview: "#38c0f0" }
+    : { line: "#173f60", construction: "#8a6232", preview: "#169fce" };
+}
+
 /** Sheet colour for the 3D workplane and the sketch plane (`--sketch-plane`). */
 export function resolveWorkplaneBaseColor(theme: UiTheme = readAppliedUiTheme()): string {
   return theme === "dark" ? "#243640" : "#ddf8ff";

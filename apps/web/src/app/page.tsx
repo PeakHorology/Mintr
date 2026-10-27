@@ -57,6 +57,8 @@ import {
   serializePeakcadDocument,
   type PeakcadDocument,
   type PeakcadProjectMeta,
+  isPackedMintrGuide,
+  unpackMintrGuideText,
 } from "@/lib/peakcadDocument";
 import {
   hasDesktopProjectFiles,
@@ -86,6 +88,8 @@ import {
 } from "@/lib/folderLock";
 import { decryptPeakcadText, encryptPeakcadText, isEncryptedPeakcadText } from "@/lib/peakcadFileLock";
 import { deleteStoredProject, loadStoredProject, saveStoredProject, serializeStoredProject } from "@/lib/projectStoreClient";
+import { SageHomePanel } from "@/components/SageHomePanel";
+import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
 
 type AppView = "dashboard" | "editor";
 type ViewMode = "grid" | "list";
@@ -1104,7 +1108,9 @@ export default function Home() {
     rewriteFolderProjectFiles(folderId, password, password);
   }, [rewriteFolderProjectFiles]);
 
-  const openProtectedPeakcad = useCallback(async (text: string, path: string | null) => {
+  const openProtectedPeakcad = useCallback(async (raw: string, path: string | null) => {
+    // A packed guide is unpacked first; what is inside goes through the same checks as any file.
+    const text = isPackedMintrGuide(raw) ? await unpackMintrGuideText(raw) : raw;
     let plain = text;
     if (isEncryptedPeakcadText(text)) {
       let unlocked: string | null = null;
@@ -4204,7 +4210,7 @@ function Dashboard({
                             <h3>{tutorial.title}</h3>
                             <span>{tutorial.length}</span>
                           </header>
-                          <p><span className="mintr-guide-mark">Mintr guide</span></p>
+                          <p className="tutorial-card-meta"><GuideAuthorBadge author="Mintr" official size="sm" /></p>
                           <p>{tutorial.summary}</p>
                           <div className="tutorial-card-actions">
                             <button className="dashboard-primary" type="button" onClick={() => onOpenTutorial(tutorial.id)}>
@@ -4218,11 +4224,18 @@ function Dashboard({
                       const started = projects.some((project) => project.id === guide.id);
                       return (
                         <article className="tutorial-card" key={guide.id}>
+                          {guide.cover ? <img className="tutorial-card-cover" src={guide.cover} alt="" /> : null}
                           <header>
                             <h3>{guide.title}</h3>
-                            <span>{guide.steps} steps</span>
+                            <span>
+                              {guide.steps} {guide.steps === 1 ? "step" : "steps"}
+                              {guide.minutes ? ` · ${guide.minutes} min` : ""}
+                            </span>
                           </header>
-                          <p>By {guide.author}</p>
+                          <p className="tutorial-card-meta">
+                            <GuideAuthorBadge author={guide.author} color={guide.color} avatar={guide.avatar} official={guide.official} size="sm" />
+                          </p>
+                          {guide.summary && guide.summary !== `A guide by ${guide.author}.` ? <p>{guide.summary}</p> : null}
                           <div className="tutorial-card-actions">
                             <button className="dashboard-primary" type="button" onClick={() => onOpenTutorial(guide.id)}>
                               {started ? "Continue" : "Start"}
@@ -4245,6 +4258,9 @@ function Dashboard({
                   </div>
                 </section>
               ) : null}
+
+              {/* Sage sits below the work itself: easy to find, not in the way. */}
+              {normalizedQuery ? null : <SageHomePanel />}
 
               {rootFolders.length > 0 || libraryProjects.length > 0 ? (
                 <section className="dashboard-home-section" aria-label={normalizedQuery ? "Results" : "Library"}>

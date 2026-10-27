@@ -1,7 +1,11 @@
 "use client";
 
-import { BookOpen, Bot, Check, FolderDown, GraduationCap, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, X } from "lucide-react";
-import { Printer3dIcon } from "@/components/icons";
+import { Bot, Check, FolderDown, GraduationCap, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, SlidersHorizontal, X } from "lucide-react";
+import { Printer3dIcon, ToolbarSageIcon } from "@/components/icons";
+import { SageHomePanel, SageSettingsSearch } from "@/components/SageHomePanel";
+import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
+import { useSageEnabled, writeSageEnabled } from "@/lib/sagePreference";
+import { SETTING_TIPS, settingSageKey, type SettingsSectionId } from "@/lib/settingGuides";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import {
@@ -20,7 +24,6 @@ import {
   type HotkeyBindings,
 } from "@/lib/hotkeys";
 import { normalizeScaleForUnits, scaleOptionsForUnits, WORKSPACE_UNIT_OPTIONS } from "@/lib/measurementUnits";
-import { TOOL_DESCRIPTIONS, TOOL_INDEX, TOOL_INDEX_CATEGORIES } from "@/lib/toolDescriptions";
 import { DISPLAY_QUALITY_OPTIONS } from "@/lib/displayTessellation";
 import { HelpFeedbackForm } from "@/components/workplane/HelpFeedbackForm";
 import { ModelBridgeSettings } from "@/components/workplane/ModelBridgeSettings";
@@ -37,7 +40,7 @@ import { MAX_NOZZLE_MM, MIN_NOZZLE_MM, normalizeNozzleMm } from "@/lib/thinWalls
 import type { DisplayQuality, GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type WorkspaceSettings = WorkplaneWorkspaceSettings;
-type WorkspaceSettingsSection = "appearance" | "tutorials" | "measurement" | "workplane" | "printing" | "sketch" | "files" | "tools" | "hotkeys" | "models" | "updates" | "help" | "about";
+type WorkspaceSettingsSection = SettingsSectionId;
 type WorkspaceSettingsContext = "project" | "app";
 type LegalDocumentId = "license" | "notices" | "offer";
 
@@ -92,39 +95,6 @@ function printerKindLabel(kind: PrinterKind) {
   return kind === "resin" ? "Resin" : "Filament";
 }
 
-const SETTING_TIPS = {
-  showShadows: "Cast soft shadows from shapes onto the workplane to make depth easier to read.",
-  showGrid: "Show or hide the grid lines drawn on the workplane.",
-  displayQuality: "How densely curved surfaces are tessellated in the viewport and for booleans. Standard is the everyday setting. Smooth looks rounder and is heavier; Draft is faster on large scenes.",
-  cruiseShapes: "Keep camera orbit and pan available while placing a new shape so you can reframe mid-add.",
-  zoomSpeed: "How quickly the camera zooms when you scroll the mouse wheel.",
-  units: "Choose metric, imperial, or brick studs for displayed measurements.",
-  scale: "Map model units to real-world size, such as 1:1 millimeters or meters.",
-  accuracy: "How many decimal places to show for typed and displayed dimensions.",
-  snapGrid: "Snap moves and resizes to this spacing. Choose Off to place freely.",
-  workplaneSize: "Preset overall size of the modeling plate.",
-  width: "Workplane size along X, in the current units.",
-  length: "Workplane size along Z (length/depth), in the current units.",
-  gridBlockSize: "Spacing between major grid lines on the workplane.",
-  blockSize: "Custom spacing between grid lines when Grid block size is set to Custom.",
-  printerProcess: "Filament printers melt plastic through a nozzle. Resin printers cure liquid in a vat. Each process has its own machines.",
-  printerBrand: "The maker of the printer. The next menu lists that maker's machines for the selected process.",
-  printer: "The machine you print on. Filament and resin both use this build volume. Parts that stick past it are marked.",
-  overhang: "Faces that lean past this many degrees from vertical are marked. 45° is typical for filament. Resin usually needs less, or none. The viewport updates as you change it.",
-  showPrinterBed: "Draw the printer's bed and height cage on the workplane.",
-  showOverhangStripes: "Show a gold wash and mint outline on faces that lean past the overhang angle. Meant for filament supports.",
-  nozzle: "Walls and holes smaller than this are marked. For filament this is the nozzle diameter. For resin it is the smallest wall or hole you want to print.",
-  showThinWalls: "Show a mint wash and gold outline on walls thinner than the nozzle or minimum wall.",
-  showSmallHoles: "Show a mint wash and mint outline on holes and slots narrower than the nozzle or minimum wall.",
-  showTrappedResin: "Show a gold wash on sealed cavities that would hold uncured resin. Open a drain to the outside to clear them. Hollow is unchanged.",
-  makeDefault: "Save these settings as the default for this project.",
-  makeDefaultApp: "Save these settings as the default for new projects.",
-  peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
-  failureNoticesOnly: "Hide coaching and “select something first” messages. A command that fails still appears. Prompts you answer, such as Click a face, stay.",
-  uiTheme: "Switch Mintr’s chrome between light and dark. Applies to the dashboard and editor.",
-  hideTutorials: "Take the tutorial cards off the home page. Finished tutorials leave on their own. This list stays here.",
-  downloadFolder: "Local folder used for exported files and downloads on this computer.",
-} as const;
 
 function transitionResultNotice(result: ProjectFileTransition) {
   const changed = result.renamed.length;
@@ -189,7 +159,7 @@ export function WorkspaceSettingsModal({
   const requestClose = useCallback(() => {
     if (leaving) return;
     const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || context === "app") {
+    if (reduce) {
       onClose();
       return;
     }
@@ -200,7 +170,34 @@ export function WorkspaceSettingsModal({
     if (leaveTimerRef.current !== null) window.clearTimeout(leaveTimerRef.current);
   }, []);
   const [defaultSaved, setDefaultSaved] = useState(false);
-  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(sketchGuides ? "sketch" : "appearance");
+  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(sketchGuides ? "sketch" : "general");
+  const sageEnabled = useSageEnabled();
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // A tool picked from Sage's search opens in the Sage tab; the nonce reopens it even if picked twice.
+  const [sageFocus, setSageFocus] = useState<{ id: string; nonce: number } | null>(null);
+  // A setting picked from Sage's search: its row lights up once its tab is showing.
+  const [sageFound, setSageFound] = useState<string | null>(null);
+
+  const showSageSetting = useCallback((section: WorkspaceSettingsSection, settingId: string) => {
+    setActiveSection(section);
+    setSageFound(settingId);
+  }, []);
+
+  useEffect(() => {
+    if (!sageFound) return;
+    const frame = window.requestAnimationFrame(() => {
+      const row = cardRef.current?.querySelector(`[data-sage-key="${sageFound}"]`);
+      if (row instanceof HTMLElement) {
+        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        row.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+        row.classList.remove("is-sage-found");
+        void row.offsetWidth;
+        row.classList.add("is-sage-found");
+      }
+      setSageFound(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSection, sageFound]);
   const [storedTutorialsHidden, setStoredTutorialsHidden] = useState(() => tutorialsAreHidden());
   const [finishedTutorialIds, setFinishedTutorialIds] = useState<readonly string[]>(() => completedTutorialIds());
   const [guideCards, setGuideCards] = useState<GuideCatalogEntry[]>([]);
@@ -221,7 +218,6 @@ export function WorkspaceSettingsModal({
   };
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => loadUiTheme());
   const [localDownloadFolder, setLocalDownloadFolder] = useState(() => downloadFolder ?? loadDownloadFolder());
-  const [toolQuery, setToolQuery] = useState("");
   const [hotkeyQuery, setHotkeyQuery] = useState("");
   const [hotkeys, setHotkeys] = useState<HotkeyBindings>(() => loadHotkeyBindings());
   const [recordingAction, setRecordingAction] = useState<HotkeyActionId | null>(null);
@@ -260,17 +256,6 @@ export function WorkspaceSettingsModal({
   useEffect(() => {
     setCanTransitionFiles(hasDesktopProjectFiles());
   }, []);
-  const toolQueryNormalized = toolQuery.trim().toLowerCase();
-  const filteredToolIndex = !toolQueryNormalized
-    ? TOOL_INDEX
-    : TOOL_INDEX.filter((entry) => {
-      const description = TOOL_DESCRIPTIONS[entry.key].toLowerCase();
-      return (
-        entry.label.toLowerCase().includes(toolQueryNormalized)
-        || entry.category.toLowerCase().includes(toolQueryNormalized)
-        || description.includes(toolQueryNormalized)
-      );
-    });
   const hotkeyQueryNormalized = hotkeyQuery.trim().toLowerCase();
   const filteredHotkeyActions = !hotkeyQueryNormalized
     ? HOTKEY_ACTIONS
@@ -449,24 +434,36 @@ export function WorkspaceSettingsModal({
   };
 
   return (
-    <div className={`workspace-modal${context === "app" ? " workspace-modal-app" : " workspace-modal-sheet"}${leaving ? " is-leaving" : ""}`} role="dialog" aria-modal="true" aria-label="Settings">
-      <div className="workspace-modal-card" onPointerDown={(event) => event.stopPropagation()}>
+    // The same side sheet everywhere; on the home page it opens below the dashboard bar.
+    <div className={`workspace-modal workspace-modal-sheet${context === "app" ? " workspace-modal-app" : ""}${leaving ? " is-leaving" : ""}`} role="dialog" aria-modal="true" aria-label="Settings">
+      <div ref={cardRef} className="workspace-modal-card" onPointerDown={(event) => event.stopPropagation()}>
         <header className="workspace-modal-header">
           <strong>Settings</strong>
           <button aria-label="Close settings" onClick={requestClose}>
             <X size={18} />
           </button>
         </header>
+        {sageEnabled ? (
+          <div className="workspace-sage-bar">
+            <SageSettingsSearch
+              onPickSetting={showSageSetting}
+              onPickTool={(id) => {
+                setActiveSection("tools");
+                setSageFocus((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+              }}
+            />
+          </div>
+        ) : null}
 
         <div className="workspace-modal-layout">
           <nav className="workspace-settings-nav" aria-label="Settings sections">
+            <button className={activeSection === "general" ? "active" : ""} aria-current={activeSection === "general" ? "page" : undefined} onClick={() => setActiveSection("general")}>
+              <SlidersHorizontal size={18} />
+              <span>General</span>
+            </button>
             <button className={activeSection === "appearance" ? "active" : ""} aria-current={activeSection === "appearance" ? "page" : undefined} onClick={() => setActiveSection("appearance")}>
               <Palette size={18} />
               <span>Appearance</span>
-            </button>
-            <button className={activeSection === "tutorials" ? "active" : ""} aria-current={activeSection === "tutorials" ? "page" : undefined} onClick={() => setActiveSection("tutorials")}>
-              <GraduationCap size={18} />
-              <span>Tutorials</span>
             </button>
             <button className={activeSection === "measurement" ? "active" : ""} aria-current={activeSection === "measurement" ? "page" : undefined} onClick={() => setActiveSection("measurement")}>
               <Ruler size={18} />
@@ -476,31 +473,35 @@ export function WorkspaceSettingsModal({
               <Grid3X3 size={18} />
               <span>Workplane</span>
             </button>
-            <button className={activeSection === "printing" ? "active" : ""} aria-current={activeSection === "printing" ? "page" : undefined} onClick={() => setActiveSection("printing")}>
-              <Printer3dIcon size={18} />
-              <span>Printing</span>
-            </button>
             {sketchGuides ? (
               <button className={activeSection === "sketch" ? "active" : ""} aria-current={activeSection === "sketch" ? "page" : undefined} onClick={() => setActiveSection("sketch")}>
                 <Pencil size={18} />
                 <span>Sketch</span>
               </button>
             ) : null}
+            <button className={activeSection === "printing" ? "active" : ""} aria-current={activeSection === "printing" ? "page" : undefined} onClick={() => setActiveSection("printing")}>
+              <Printer3dIcon size={18} />
+              <span>Printing</span>
+            </button>
             <button className={activeSection === "files" ? "active" : ""} aria-current={activeSection === "files" ? "page" : undefined} onClick={() => setActiveSection("files")}>
               <FolderDown size={18} />
               <span>Files</span>
             </button>
-            <button className={activeSection === "tools" ? "active" : ""} aria-current={activeSection === "tools" ? "page" : undefined} onClick={() => setActiveSection("tools")}>
-              <BookOpen size={18} />
-              <span>Tools</span>
-            </button>
             <button className={activeSection === "hotkeys" ? "active" : ""} aria-current={activeSection === "hotkeys" ? "page" : undefined} onClick={() => setActiveSection("hotkeys")}>
               <Keyboard size={18} />
-              <span>Hotkeys</span>
+              <span>Keyboard shortcuts</span>
+            </button>
+            <button className={activeSection === "tools" ? "active" : ""} aria-current={activeSection === "tools" ? "page" : undefined} onClick={() => setActiveSection("tools")}>
+              <ToolbarSageIcon width={18} height={18} />
+              <span>Sage</span>
+            </button>
+            <button className={activeSection === "tutorials" ? "active" : ""} aria-current={activeSection === "tutorials" ? "page" : undefined} onClick={() => setActiveSection("tutorials")}>
+              <GraduationCap size={18} />
+              <span>Tutorials</span>
             </button>
             <button className={activeSection === "models" ? "active" : ""} aria-current={activeSection === "models" ? "page" : undefined} onClick={() => setActiveSection("models")}>
               <Bot size={18} />
-              <span>Models</span>
+              <span>AI models</span>
             </button>
             <button className={activeSection === "updates" ? "active" : ""} aria-current={activeSection === "updates" ? "page" : undefined} onClick={() => setActiveSection("updates")}>
               <ScrollText size={18} />
@@ -518,21 +519,66 @@ export function WorkspaceSettingsModal({
 
           <div className="workspace-modal-content">
             <div className="workspace-modal-body">
+              {activeSection === "general" ? (
+                <>
+                  <div className="workspace-section-heading">
+                    <strong>General</strong>
+                    <span>How Mintr behaves while you work.</span>
+                  </div>
+                  {/* Mintr Pro is still being built: a little building site around its switch. */}
+                  <div className="mintr-pro-site">
+                    <ConstructionTruckIcon className="mintr-pro-truck" />
+                    <WorkspaceToggle
+                      label="Mintr Pro"
+                      tip={SETTING_TIPS.peakcadPro}
+                      checked={workspace.peakcadPro}
+                      onChange={(peakcadPro) => {
+                        savePeakcadPro(peakcadPro);
+                        patchWorkspace({ peakcadPro });
+                      }}
+                    />
+                    <p className="mintr-pro-note">
+                      <ConstructionConeIcon />
+                      <span>Under construction, a free addition to Mintr coming soon</span>
+                      <ConstructionDiggerIcon className="mintr-pro-digger" />
+                    </p>
+                  </div>
+                  <WorkspaceToggle
+                    label="Hide tips and reminders"
+                    tip={SETTING_TIPS.failureNoticesOnly}
+                    checked={workspace.failureNoticesOnly}
+                    onChange={(failureNoticesOnly) => patchWorkspace({ failureNoticesOnly })}
+                  />
+                  <WorkspaceToggle
+                    label="Move the camera while placing a shape"
+                    tip={SETTING_TIPS.cruiseShapes}
+                    checked={workspace.cruiseShapes}
+                    onChange={(cruiseShapes) => patchWorkspace({ cruiseShapes })}
+                  />
+                  <PeakTipLabel data-sage-key="setting:zoomspeed" label={SETTING_TIPS.zoomSpeed} helpTitle="Zoom speed" description={SETTING_TIPS.zoomSpeed} className="workspace-range">
+                    <span>Zoom speed</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={10}
+                      value={workspace.zoomSpeed}
+                      onChange={(event) => patchWorkspace({ zoomSpeed: Number(event.currentTarget.value) })}
+                    />
+                    <small>
+                      <span>Slow</span>
+                      <span>Fast</span>
+                    </small>
+                  </PeakTipLabel>
+                  <p className="workspace-about-credit">Mintr is made by Peak Horology.</p>
+                </>
+              ) : null}
+
               {activeSection === "appearance" ? (
                 <>
                   <div className="workspace-section-heading">
                     <strong>Appearance</strong>
-                    <span>Adjust the canvas and navigation behavior.</span>
+                    <span>The theme, and how the 3D view is drawn.</span>
                   </div>
-                  <WorkspaceToggle
-                    label="Mintr Pro"
-                    tip={SETTING_TIPS.peakcadPro}
-                    checked={workspace.peakcadPro}
-                    onChange={(peakcadPro) => {
-                      savePeakcadPro(peakcadPro);
-                      patchWorkspace({ peakcadPro });
-                    }}
-                  />
                   <WorkspaceSelect
                     label="Theme"
                     tip={SETTING_TIPS.uiTheme}
@@ -543,12 +589,6 @@ export function WorkspaceSettingsModal({
                       setUiThemeState(next);
                       setUiTheme(next);
                     }}
-                  />
-                  <WorkspaceToggle
-                    label="Only failure notices"
-                    tip={SETTING_TIPS.failureNoticesOnly}
-                    checked={workspace.failureNoticesOnly}
-                    onChange={(failureNoticesOnly) => patchWorkspace({ failureNoticesOnly })}
                   />
                   <WorkspaceToggle
                     label="Show shadows"
@@ -575,27 +615,6 @@ export function WorkspaceSettingsModal({
                       patchWorkspace({ displayQuality });
                     }}
                   />
-                  <WorkspaceToggle
-                    label="Cruise when adding new shapes"
-                    tip={SETTING_TIPS.cruiseShapes}
-                    checked={workspace.cruiseShapes}
-                    onChange={(cruiseShapes) => patchWorkspace({ cruiseShapes })}
-                  />
-                  <PeakTipLabel label={SETTING_TIPS.zoomSpeed} helpTitle="Zoom speed" description={SETTING_TIPS.zoomSpeed} className="workspace-range">
-                    <span>Zoom speed</span>
-                    <input
-                      type="range"
-                      min={1}
-                      max={10}
-                      value={workspace.zoomSpeed}
-                      onChange={(event) => patchWorkspace({ zoomSpeed: Number(event.currentTarget.value) })}
-                    />
-                    <small>
-                      <span>Slow</span>
-                      <span>Fast</span>
-                    </small>
-                  </PeakTipLabel>
-                  <p className="workspace-about-credit">Mintr is made by Peak Horology.</p>
                 </>
               ) : null}
 
@@ -622,7 +641,7 @@ export function WorkspaceSettingsModal({
                           <span className="settings-tutorial-copy">
                             <strong>{tutorial.title}</strong>
                             <small>{done ? "Completed" : tutorial.length}</small>
-                            <p><span className="mintr-guide-mark">Mintr guide</span></p>
+                            <p><GuideAuthorBadge author="Mintr" official size="sm" /></p>
                             <p>{tutorial.summary}</p>
                           </span>
                         </>
@@ -648,8 +667,8 @@ export function WorkspaceSettingsModal({
                           </span>
                           <span className="settings-tutorial-copy">
                             <strong>{guide.title}</strong>
-                            <small>{done ? "Completed" : `${guide.steps} steps`}</small>
-                            <p>By {guide.author}</p>
+                            <small>{done ? "Completed" : `${guide.steps} ${guide.steps === 1 ? "step" : "steps"}`}</small>
+                            <p><GuideAuthorBadge author={guide.author} color={guide.color} avatar={guide.avatar} official={guide.official} size="sm" /></p>
                           </span>
                         </>
                       );
@@ -697,7 +716,7 @@ export function WorkspaceSettingsModal({
                     onChange={(accuracy) => patchWorkspace({ accuracy: accuracy.slice(2).length as WorkspaceSettings["accuracy"] })}
                   />
                   <WorkspaceSelect
-                    label="Snap Grid"
+                    label="Snap grid"
                     tip={SETTING_TIPS.snapGrid}
                     value={snap}
                     options={GRID_SIZES}
@@ -723,7 +742,7 @@ export function WorkspaceSettingsModal({
                     onChange={setWorkspaceSizePreset}
                   />
                   <div className="workspace-dimensions">
-                    <PeakTipLabel label={SETTING_TIPS.width} helpTitle="Width" description={SETTING_TIPS.width}>
+                    <PeakTipLabel data-sage-key="setting:width" label={SETTING_TIPS.width} helpTitle="Width" description={SETTING_TIPS.width}>
                       <span>Width</span>
                       <input
                         type="number"
@@ -741,7 +760,7 @@ export function WorkspaceSettingsModal({
                         }}
                       />
                     </PeakTipLabel>
-                    <PeakTipLabel label={SETTING_TIPS.length} helpTitle="Length" description={SETTING_TIPS.length}>
+                    <PeakTipLabel data-sage-key="setting:length" label={SETTING_TIPS.length} helpTitle="Length" description={SETTING_TIPS.length}>
                       <span>Length</span>
                       <input
                         type="number"
@@ -769,7 +788,7 @@ export function WorkspaceSettingsModal({
                   />
                   {workspace.gridBlockPreset === "Custom" ? (
                     <div className="workspace-dimensions workspace-grid-dimensions">
-                      <PeakTipLabel label={SETTING_TIPS.blockSize} helpTitle="Block size" description={SETTING_TIPS.blockSize}>
+                      <PeakTipLabel data-sage-key="setting:blocksize" label={SETTING_TIPS.blockSize} helpTitle="Block size" description={SETTING_TIPS.blockSize}>
                         <span>Block size</span>
                         <input
                           type="number"
@@ -813,7 +832,7 @@ export function WorkspaceSettingsModal({
                     onChange={setPrinterPreset}
                   />
                   <div className="workspace-dimensions">
-                    <PeakTipLabel label="Bed width in millimetres." helpTitle="Bed width" description="Bed width in millimetres.">
+                    <PeakTipLabel data-sage-key="setting:printer" label="Bed width in millimetres." helpTitle="Bed width" description="Bed width in millimetres.">
                       <span>Width</span>
                       <input
                         type="number"
@@ -829,7 +848,7 @@ export function WorkspaceSettingsModal({
                         }}
                       />
                     </PeakTipLabel>
-                    <PeakTipLabel label="Bed depth in millimetres." helpTitle="Bed depth" description="Bed depth in millimetres.">
+                    <PeakTipLabel data-sage-key="setting:printer" label="Bed depth in millimetres." helpTitle="Bed depth" description="Bed depth in millimetres.">
                       <span>Depth</span>
                       <input
                         type="number"
@@ -847,7 +866,7 @@ export function WorkspaceSettingsModal({
                     </PeakTipLabel>
                   </div>
                   <div className="workspace-dimensions">
-                    <PeakTipLabel label="Usable height above the bed, in millimetres." helpTitle="Bed height" description="Usable height above the bed, in millimetres.">
+                    <PeakTipLabel data-sage-key="setting:printer" label="Usable height above the bed, in millimetres." helpTitle="Bed height" description="Usable height above the bed, in millimetres.">
                       <span>Height</span>
                       <input
                         type="number"
@@ -875,7 +894,7 @@ export function WorkspaceSettingsModal({
                     <span>For filament. Faces that lean past this angle are marked in gold. Resin usually needs less, or none.</span>
                   </div>
                   <div className="workspace-dimensions">
-                    <PeakTipLabel label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang}>
+                    <PeakTipLabel data-sage-key="setting:overhang" label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang}>
                       <span>Overhang °</span>
                       <input
                         type="number"
@@ -903,7 +922,7 @@ export function WorkspaceSettingsModal({
                       />
                     </PeakTipLabel>
                   </div>
-                  <PeakTipLabel label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang} className="workspace-range">
+                  <PeakTipLabel data-sage-key="setting:overhang" label={SETTING_TIPS.overhang} helpTitle="Overhang" description={SETTING_TIPS.overhang} className="workspace-range">
                     <span>Starts at</span>
                     <input
                       type="range"
@@ -935,7 +954,7 @@ export function WorkspaceSettingsModal({
                     <span>{printerKind === "resin" ? "Walls and holes smaller than this minimum are marked in mint." : "Walls and holes smaller than the nozzle are marked in mint."}</span>
                   </div>
                   <div className="workspace-dimensions">
-                    <PeakTipLabel label={SETTING_TIPS.nozzle} helpTitle={printerKind === "resin" ? "Minimum wall" : "Nozzle"} description={SETTING_TIPS.nozzle}>
+                    <PeakTipLabel data-sage-key="setting:nozzle" label={SETTING_TIPS.nozzle} helpTitle={printerKind === "resin" ? "Minimum wall" : "Nozzle"} description={SETTING_TIPS.nozzle}>
                       <span>{printerKind === "resin" ? "Minimum wall" : "Nozzle"}</span>
                       <input
                         type="number"
@@ -959,7 +978,7 @@ export function WorkspaceSettingsModal({
                       />
                     </PeakTipLabel>
                   </div>
-                  <PeakTipLabel label={SETTING_TIPS.nozzle} helpTitle={printerKind === "resin" ? "Minimum wall" : "Nozzle"} description={SETTING_TIPS.nozzle} className="workspace-range">
+                  <PeakTipLabel data-sage-key="setting:nozzle" label={SETTING_TIPS.nozzle} helpTitle={printerKind === "resin" ? "Minimum wall" : "Nozzle"} description={SETTING_TIPS.nozzle} className="workspace-range">
                     <span>{printerKind === "resin" ? "Minimum" : "Nozzle"}</span>
                     <input
                       type="range"
@@ -1031,9 +1050,10 @@ export function WorkspaceSettingsModal({
                 <>
                   <div className="workspace-section-heading">
                     <strong>Files</strong>
-                    <span>Choose where PeakCAD writes exported files on this computer.</span>
+                    <span>Choose where Mintr saves exported files on this computer.</span>
                   </div>
                   <PeakTipLabel
+                    data-sage-key="setting:downloadfolder"
                     label={SETTING_TIPS.downloadFolder}
                     helpTitle="Download folder"
                     description={SETTING_TIPS.downloadFolder}
@@ -1113,47 +1133,34 @@ export function WorkspaceSettingsModal({
               {activeSection === "tools" ? (
                 <>
                   <div className="workspace-section-heading">
-                    <strong>Tool index</strong>
-                    <span>Descriptions for every editor tool. Tip: right-click a toolbar button for the same help.</span>
+                    <strong>Sage</strong>
+                    <span>Ask about any tool or setting. With Sage showing in a design, hover a tool or a setting to see what it does.</span>
                   </div>
-                  <label className="workspace-tool-search">
-                    <input
-                      type="search"
-                      value={toolQuery}
-                      placeholder="Search tools…"
-                      aria-label="Search tools"
-                      onChange={(event) => setToolQuery(event.currentTarget.value)}
+                  <WorkspaceToggle
+                    label="Show Sage"
+                    tip={SETTING_TIPS.sageEnabled}
+                    checked={sageEnabled}
+                    onChange={writeSageEnabled}
+                  />
+                  {sageEnabled ? (
+                    <SageHomePanel
+                      key={sageFocus?.nonce ?? 0}
+                      variant="settings"
+                      focusId={sageFocus?.id}
+                      onShowSetting={showSageSetting}
                     />
-                  </label>
-                  <div className="workspace-tool-index" role="list">
-                    {TOOL_INDEX_CATEGORIES.map((category) => {
-                      const entries = filteredToolIndex.filter((entry) => entry.category === category);
-                      if (!entries.length) return null;
-                      return (
-                        <section key={category} className="workspace-tool-category" aria-label={category}>
-                          <h3>{category}</h3>
-                          <ul>
-                            {entries.map((entry) => (
-                              <li key={entry.key} role="listitem">
-                                <strong>{entry.label}</strong>
-                                <p>{TOOL_DESCRIPTIONS[entry.key]}</p>
-                              </li>
-                            ))}
-                          </ul>
-                        </section>
-                      );
-                    })}
-                    {!filteredToolIndex.length ? (
-                      <p className="workspace-tool-empty">No tools match “{toolQuery.trim()}”.</p>
-                    ) : null}
-                  </div>
+                  ) : (
+                    <p className="workspace-sage-off">
+                      Sage is hidden: no Sage button, shortcut, or search. Switch Show Sage back on to bring it back.
+                    </p>
+                  )}
                 </>
               ) : null}
 
               {activeSection === "hotkeys" ? (
                 <>
                   <div className="workspace-section-heading">
-                    <strong>Hotkeys</strong>
+                    <strong>Keyboard shortcuts</strong>
                     <span>Click a shortcut to remap it. Esc cancels recording. Sketch and geometry can share a letter; conflicts in the same mode still clear the other action.</span>
                   </div>
                   <div className="workspace-hotkey-toolbar">
@@ -1370,6 +1377,42 @@ export function WorkspaceSettingsModal({
   );
 }
 
+/** Little line-art site vehicles for the Mintr Pro "under construction" row. */
+function ConstructionTruckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 28 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 9.5 4.5 4h10l1.2 5.5Z" />
+      <path d="M2 13.5h22.5" />
+      <path d="M17.5 13.5V7h4l2.5 3.5v3" />
+      <path d="M19 8.5h2l1.3 2H19Z" />
+      <circle cx="7" cy="15.5" r="2" />
+      <circle cx="20.5" cy="15.5" r="2" />
+    </svg>
+  );
+}
+
+function ConstructionDiggerIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 28 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="14" width="14" height="4" rx="2" />
+      <path d="M4 14v-4h8v4" />
+      <path d="M8 10V6.5h4V10" />
+      <path d="M12 9 18 3.5l4.5 5" />
+      <path d="M22.5 8.5 25 11.5l-2.5 1.5-1.5-2.5" />
+    </svg>
+  );
+}
+
+function ConstructionConeIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10 2.5 6.5 15.5h7Z" />
+      <path d="M8.3 9h3.4M7.5 12.3h5" />
+      <path d="M4 17.5h12" />
+    </svg>
+  );
+}
+
 function WorkspaceToggle({
   label,
   tip,
@@ -1382,7 +1425,7 @@ function WorkspaceToggle({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <PeakTipLabel label={tip} helpTitle={label} description={tip} className="workspace-toggle">
+    <PeakTipLabel data-sage-key={settingSageKey(tip)} label={tip} helpTitle={label} description={tip} className="workspace-toggle">
       <span>{label}</span>
       <input type="checkbox" aria-label={label} checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
     </PeakTipLabel>
@@ -1403,7 +1446,7 @@ function WorkspaceSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <PeakTipLabel label={tip} helpTitle={label} description={tip} className="workspace-select">
+    <PeakTipLabel data-sage-key={settingSageKey(tip)} label={tip} helpTitle={label} description={tip} className="workspace-select">
       <span>{label}</span>
       <select value={value} onChange={(event) => onChange(event.currentTarget.value)}>
         {options.map((option) => (

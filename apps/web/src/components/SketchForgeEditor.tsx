@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, X } from "lucide-react";
+import { Download, LoaderCircle, X } from "lucide-react";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
@@ -394,13 +394,16 @@ import {
   sceneHasThroughHole,
   type LessonExportReport,
 } from "@/lib/introProject";
-import { guidePrompt, proposeGuideSteps, type GuideSession, type GuideStep } from "@/lib/mintrGuide";
-import { buildPeakcadDocument, serializeMintrGuide } from "@/lib/peakcadDocument";
-import { saveGuideTextAs } from "@/lib/peakcadFile";
+import { guideMinutes, guidePrompt, guideStartIndex, proposeGuideSteps, type GuideSession, type MintrGuide } from "@/lib/mintrGuide";
+import { applyGuideDraft, readGuideAuthor, readGuideDraft, shrinkPicture, writeGuideAuthor, writeGuideDraft } from "@/lib/guideAuthoring";
+import { buildPeakcadDocument, packMintrGuideText, serializeMintrGuide } from "@/lib/peakcadDocument";
+import { EMPTY_GUIDE_LOG, compactGuideForFile, syncGuideLog, type GuideLog } from "@/lib/guideLog";
+import { loadGuideLog, saveGuideLogSoon } from "@/lib/guideLogStore";
+import { revealPeakcadFile, saveGuideTextAs } from "@/lib/peakcadFile";
 import { IntroCoach } from "@/components/workplane/IntroCoach";
 import { GuideCoach } from "@/components/workplane/GuideCoach";
 import { GuideConfetti } from "@/components/workplane/GuideConfetti";
-import { GuideSaveDialog } from "@/components/workplane/GuideSaveDialog";
+import { GuideBuilderPanel, type GuideBuilderDraft } from "@/components/workplane/GuideBuilderPanel";
 import { isPeakcadProSketchTool, SketchCoach, SketchFinishToolbar, SketchRibbon, sketchCoach, type SketchCoachKey } from "@/components/workplane/SketchToolSidebar";
 import { ShapeSidebar } from "@/components/workplane/ShapeSidebar";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
@@ -1356,6 +1359,11 @@ export function SketchForgeEditor({
   const [systemClipboardSupported, setSystemClipboardSupported] = useState(false);
   const [history, setHistory] = useState<EditorHistoryEntry[]>(() => (initialHistoryStateRef.current as EditorHistoryState).entries);
   const [historyIndex, setHistoryIndex] = useState(() => (initialHistoryStateRef.current as EditorHistoryState).index);
+  // Every step of this design as a slim recipe, longer than the undo history, for "Make a guide".
+  const guideLogRef = useRef<GuideLog>(EMPTY_GUIDE_LOG);
+  const guideLogLoadedRef = useRef(false);
+  // The step the guide maker is showing: from the undo history when it still has it, else the log.
+  const [guidePreview, setGuidePreview] = useState<{ index: number; entry: EditorHistoryEntry } | null>(null);
   const [historyBrowse, setHistoryBrowse] = useState<number | null>(null);
   const historyBrowseRef = useRef<number | null>(null);
   historyBrowseRef.current = historyBrowse;
@@ -1501,7 +1509,8 @@ export function SketchForgeEditor({
   const [lessonCoachDismissed, setLessonCoachDismissed] = useState(hasLessonCoachBeenDismissed);
   const [guideCoachDismissed, setGuideCoachDismissed] = useState(false);
   const [guideConfetti, setGuideConfetti] = useState(false);
-  const [guideDraft, setGuideDraft] = useState<{ title: string; author: string; steps: GuideStep[] } | null>(null);
+  // "Make a guide": the open storyboard. `guideId` stays the same when a guide is saved again, so its card updates.
+  const [guideDraft, setGuideDraft] = useState<(GuideBuilderDraft & { guideId: string; editingExisting: boolean }) | null>(null);
   const guideCompletedRef = useRef(false);
   const guideConfettiArmed = useRef(false);
   const [sketchTool, setSketchTool] = useState<SketchTool>("line");
@@ -2251,6 +2260,38 @@ export function SketchForgeEditor({
     setSketchActive(true);
   }, []);
 
+  /**
+   * The Sweep steps: 1, the profile on a sheet of its own; 2, the path; then the part is built and
+   * placed. The sheet not on screen is parked whole (history included): the path while the profile
+   * is drawn, the profile while the path is drawn. `start` is the sheet the user was on, so Cancel
+   * always goes back there.
+   */
+  type SweepSteps = {
+    step: "profile" | "path";
+    start: SketchPark;
+    pathPark: SketchPark | null;
+    profilePark: SketchPark | null;
+    profile: NonNullable<NonNullable<WorkplaneShape["sketchSweep"]>["section"]> | null;
+    building: boolean;
+  };
+  const [sweepSteps, setSweepStepsState] = useState<SweepSteps | null>(null);
+  const [sweepStepsIssue, setSweepStepsIssue] = useState<string | null>(null);
+  const sweepStepsRef = useRef(sweepSteps);
+  const setSweepSteps = useCallback((next: SweepSteps | null) => {
+    sweepStepsRef.current = next;
+    setSweepStepsState(next);
+  }, []);
+
+  /** Leave the Sweep steps for the sheet the user started on. False when not in them. */
+  const cancelSweepSteps = useCallback(() => {
+    const steps = sweepStepsRef.current;
+    if (!steps) return false;
+    setSweepSteps(null);
+    setSweepStepsIssue(null);
+    reopenSketchPark(steps.start);
+    return true;
+  }, [reopenSketchPark, setSweepSteps]);
+
   useEffect(() => {
     edgeModifierRef.current = edgeModifier;
   }, [edgeModifier]);
@@ -2402,7 +2443,8 @@ export function SketchForgeEditor({
   }, [sketchActive, sketchActivePointId, sketchDoc.settings.constructionMode, sketchHoverTool, sketchProfile]);
   const sweepMarkIds = useMemo(() => {
     if (!sweepPrompt) return [];
-    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    // Same small-gap closing as Extrude, so an outline that extrudes also sweeps.
+    const guided = closeOpenPathGaps(profileWithConstructionGuides(sketchProfile, sketchDoc));
     const idsOf = (chain: SweepChain) => [...chain.segmentIds, ...(chain.curveId ? [chain.curveId] : [])];
     if (sweepPrompt.phase === "confirm") {
       const resolved = resolveSketchSweep(guided, sketchDoc, sweepPrompt.spec);
@@ -2421,6 +2463,7 @@ export function SketchForgeEditor({
   }, [sketchDoc, sketchProfile, sweepPrompt]);
   const viewportShapes = useMemo(
     () => {
+      if (guidePreview) return expandHistoryShapes(guidePreview.entry.shapes, guidePreview.entry.meshVault).map(canonicalizeShape);
       if (historyBrowse !== null && historyBrowse !== historyIndex) {
         const entry = history[historyBrowse];
         if (entry) return expandHistoryShapes(entry.shapes, entry.meshVault).map(canonicalizeShape);
@@ -2448,7 +2491,7 @@ export function SketchForgeEditor({
       }
       return shapes;
     },
-    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
+    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, guidePreview, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
   );
   const faceOperationIds = useMemo(() => {
     if (!faceSession?.prepared) return [] as number[];
@@ -3770,6 +3813,8 @@ export function SketchForgeEditor({
   abandonSketchSessionRef.current = abandonSketchSession;
 
   const cancelSketch = useCallback(() => {
+    // Cancelling the Sweep steps goes back to the sheet they started from, not out of the sketch.
+    if (cancelSweepSteps()) return;
     if (sketchHistoryIndexRef.current > 0) {
       const park = captureSketchPark();
       sketchCancelUndoRef.current = park;
@@ -3778,7 +3823,7 @@ export function SketchForgeEditor({
       setSketchCancelRedo(null);
     }
     abandonSketchSession("sketch");
-  }, [abandonSketchSession, captureSketchPark]);
+  }, [abandonSketchSession, cancelSweepSteps, captureSketchPark]);
 
   const sketchUndo = useCallback(() => {
     const currentHistory = sketchHistoryRef.current;
@@ -5159,6 +5204,10 @@ export function SketchForgeEditor({
   }, [commitShapes, exitSketchMode, noteSketchFinish]);
 
   const startSketchExtrude = useCallback(() => {
+    if (sweepStepsRef.current) {
+      setSweepStepsIssue("Finish the Sweep steps first, or Cancel them.");
+      return;
+    }
     setRevolvePrompt(null);
     setSweepPrompt(null);
     setSweepPreview(null);
@@ -5446,6 +5495,10 @@ export function SketchForgeEditor({
   }, [completeSketchRevolve, sketchProfile]);
 
   const startSketchRevolve = useCallback(() => {
+    if (sweepStepsRef.current) {
+      setSweepStepsIssue("Finish the Sweep steps first, or Cancel them.");
+      return;
+    }
     setSweepPrompt(null);
     setSweepPreview(null);
     if (!isDefaultSketchPlane(sketchProfile.sketchPlane)) {
@@ -5473,8 +5526,123 @@ export function SketchForgeEditor({
     setSweepPreview(null);
   }, [commitFinishedSketch, editingSketchShapeId, shapes]);
 
+  /** The single closed outline on the sheet on screen, or why there is not one. */
+  const sweepProfileOnSheet = useCallback((): { section: NonNullable<SweepSteps["profile"]> } | { issue: string } => {
+    const profile = closeOpenPathGaps(profileWithConstructionGuides(sketchProfile, sketchDoc));
+    const outlines = planSketchSweep(profile, sketchDoc).outlines;
+    if (outlines.length === 0) return { issue: "Draw one closed shape for the profile, like a Circle or Rectangle, then click Next." };
+    if (outlines.length > 1) return { issue: "Draw only one profile shape. A shape inside it becomes a hole." };
+    if (outlines[0].holes.length > 1) return { issue: "Sweep can cut one hole in the profile." };
+    return { section: { profile: cloneSketchProfile(profile), doc: cloneSketchDoc(sketchDoc) } };
+  }, [sketchDoc, sketchProfile]);
+
+  /** Step 1 done: keep the profile and show the path sheet, the parked one or a new blank one. */
+  const sweepStepsNext = useCallback((from?: SweepSteps) => {
+    const steps = from ?? sweepStepsRef.current;
+    if (!steps) return;
+    const picked = sweepProfileOnSheet();
+    if ("issue" in picked) {
+      setSweepSteps(steps);
+      setSweepStepsIssue(picked.issue);
+      return;
+    }
+    const profilePark = captureSketchPark();
+    setSweepStepsIssue(null);
+    if (steps.pathPark) {
+      reopenSketchPark(steps.pathPark);
+    } else {
+      beginSketch(undefined, null, mergeSketchPlanes(sketchProfile.sketchPlane, sketchDoc.plane));
+      setSketchTool("line");
+    }
+    setSweepSteps({ ...steps, step: "path", profile: picked.section, profilePark, pathPark: null });
+  }, [beginSketch, captureSketchPark, reopenSketchPark, setSweepSteps, sketchDoc.plane, sketchProfile.sketchPlane, sweepProfileOnSheet]);
+
+  /** From the path back to the profile; the path is kept for when Next is clicked again. */
+  const sweepStepsBack = useCallback(() => {
+    const steps = sweepStepsRef.current;
+    if (!steps || steps.step !== "path" || !steps.profilePark || steps.building) return;
+    const pathPark = captureSketchPark();
+    setSweepStepsIssue(null);
+    reopenSketchPark(steps.profilePark);
+    setSweepSteps({ ...steps, step: "profile", pathPark, profilePark: null, profile: null });
+  }, [captureSketchPark, reopenSketchPark, setSweepSteps]);
+
+  /** Step 2 done: build the sweep from the kept profile and the path on screen, and place it. */
+  const sweepStepsBuild = useCallback(() => {
+    const steps = sweepStepsRef.current;
+    if (!steps || steps.step !== "path" || !steps.profile || steps.building) return;
+    const guided = closeOpenPathGaps(profileWithConstructionGuides(sketchProfile, sketchDoc));
+    const plan = planSketchSweep(guided, sketchDoc);
+    // A closed loop drawn on the path sheet is a path to go around, not a second profile.
+    const paths = plan.paths.length ? plan.paths : plan.outlines;
+    if (paths.length === 0) {
+      setSweepStepsIssue("Draw the path: the line or curve the profile should follow, then click Sweep.");
+      return;
+    }
+    if (paths.length > 1) {
+      setSweepStepsIssue("Keep one path on this sheet. Erase the extra lines.");
+      return;
+    }
+    const outline = planSketchSweep(steps.profile.profile, steps.profile.doc).outlines[0];
+    if (!outline) {
+      setSweepStepsIssue("The profile is not closed any more. Go back to the profile and close it.");
+      return;
+    }
+    const spec = sweepSpec(outline, paths[0], steps.profile);
+    const existing = editingSketchShapeId ? shapesRef.current.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
+    const building = { ...steps, building: true };
+    setSweepStepsIssue(null);
+    setSweepSteps(building);
+    const stillHere = () => sweepStepsRef.current === building;
+    const stop = (message: string) => {
+      setSweepSteps(steps);
+      setSweepStepsIssue(cadFailureCopy(message, "sweep"));
+    };
+    void shapeFromSketchSweep(guided, sketchDoc, spec, existing).then((result) => {
+      if (!stillHere()) return;
+      if (!result.ok) {
+        stop(result.message);
+        return;
+      }
+      setSweepSteps(null);
+      commitSweepShape(result.shape);
+    }).catch((error: unknown) => {
+      if (stillHere()) stop(error instanceof Error && error.message ? error.message : "The sweep could not be built");
+    });
+  }, [commitSweepShape, editingSketchShapeId, setSweepSteps, sketchDoc, sketchProfile]);
+
+  /**
+   * Start the Sweep steps from what is on the sheet: nothing (draw the profile here), a profile
+   * (go on to the path), or a path (keep it, draw the profile on a sheet of its own, come back).
+   */
+  const beginSweepSteps = useCallback((on: "empty" | "profile" | "path", existingProfile?: SweepSteps["profile"]) => {
+    const start = captureSketchPark();
+    setSweepPrompt(null);
+    setSweepPreview(null);
+    setSweepBuildError(null);
+    setSweepStepsIssue(null);
+    const fresh: SweepSteps = { step: "profile", start, pathPark: null, profilePark: null, profile: null, building: false };
+    if (on === "empty") {
+      setSweepSteps(fresh);
+      setSketchTool("circle");
+      return;
+    }
+    if (on === "profile") {
+      sweepStepsNext(fresh);
+      return;
+    }
+    setSweepSteps({ ...fresh, pathPark: start });
+    beginSketch(existingProfile?.profile, null, mergeSketchPlanes(sketchProfile.sketchPlane, sketchDoc.plane), existingProfile?.doc ?? null);
+    setSketchTool(existingProfile ? "select" : "circle");
+  }, [beginSketch, captureSketchPark, setSweepSteps, sketchDoc.plane, sketchProfile.sketchPlane, sweepStepsNext]);
+
   const startSketchSweep = useCallback(() => {
     setRevolvePrompt(null);
+    if (sweepStepsRef.current) {
+      if (sweepStepsRef.current.step === "profile") sweepStepsNext();
+      else sweepStepsBuild();
+      return;
+    }
     if (sweepPrompt?.phase === "confirm") {
       if (sweepPreview) commitSweepShape(sweepPreview);
       else setNotice(sweepBuildError ?? "Building sweep…");
@@ -5488,20 +5656,31 @@ export function SketchForgeEditor({
       setNotice("Click the path.");
       return;
     }
-    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    // Same small-gap closing as Extrude, so an outline that extrudes also sweeps.
+    const guided = closeOpenPathGaps(profileWithConstructionGuides(sketchProfile, sketchDoc));
     const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
+    // Editing a sweep made with the steps: this sheet is its path, so reopen its profile first.
+    if (!sweepPrompt && existing?.sketchSweep?.section) {
+      beginSweepSteps("path", existing.sketchSweep.section);
+      return;
+    }
     if (!sweepPrompt && existing?.sketchSweep && resolveSketchSweep(guided, sketchDoc, existing.sketchSweep)) {
       setSketchTool("select");
       setSweepPrompt({ phase: "confirm", spec: existing.sketchSweep });
       return;
     }
     const plan = planSketchSweep(guided, sketchDoc);
-    if (plan.outlines.length === 0) {
-      setNotice("Close an outline first.");
+    // Anything missing is drawn in the steps: profile first, then path.
+    if (plan.outlines.length === 0 && plan.paths.length === 0) {
+      beginSweepSteps("empty");
       return;
     }
     if (plan.paths.length === 0) {
-      setNotice("Draw the path, then Sweep.");
+      beginSweepSteps("profile");
+      return;
+    }
+    if (plan.outlines.length === 0) {
+      beginSweepSteps("path");
       return;
     }
     const openPaths = plan.paths.filter((path) => !path.closed);
@@ -5517,11 +5696,12 @@ export function SketchForgeEditor({
     setSketchTool("select");
     setSweepPrompt({ phase: "pick-outline" });
     setNotice("Click the outline, then the path.");
-  }, [commitSweepShape, editingSketchShapeId, shapes, sketchDoc, sketchProfile, sweepBuildError, sweepPreview, sweepPrompt]);
+  }, [beginSweepSteps, commitSweepShape, editingSketchShapeId, shapes, sketchDoc, sketchProfile, sweepBuildError, sweepPreview, sweepPrompt, sweepStepsBuild, sweepStepsNext]);
 
   const pickSweepSegment = useCallback((segmentId: string) => {
     if (!sweepPrompt || sweepPrompt.phase === "confirm") return false;
-    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    // Same small-gap closing as Extrude, so an outline that extrudes also sweeps.
+    const guided = closeOpenPathGaps(profileWithConstructionGuides(sketchProfile, sketchDoc));
     const plan = planSketchSweep(guided, sketchDoc);
     const hit = (chain: SweepChain) => sweepChainHit(chain, segmentId);
     if (sweepPrompt.phase === "pick-outline") {
@@ -5558,8 +5738,10 @@ export function SketchForgeEditor({
       setSweepPrompt(null);
       setSweepPreview(null);
       setSweepBuildError(null);
+      setSweepSteps(null);
+      setSweepStepsIssue(null);
     }
-  }, [sketchActive]);
+  }, [setSweepSteps, sketchActive]);
 
   useEffect(() => {
     if (sweepPrompt?.phase !== "confirm") {
@@ -5572,7 +5754,8 @@ export function SketchForgeEditor({
     setSweepPreview(null);
     setSweepBuildError(null);
     setNotice("Building sweep…");
-    const guided = profileWithConstructionGuides(sketchProfile, sketchDoc);
+    // Same small-gap closing as Extrude, so an outline that extrudes also sweeps.
+    const guided = closeOpenPathGaps(profileWithConstructionGuides(sketchProfile, sketchDoc));
     const existing = editingSketchShapeId ? shapesRef.current.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
     void shapeFromSketchSweep(guided, sketchDoc, spec, existing).then((result) => {
       if (cancelled) return;
@@ -5821,6 +6004,7 @@ export function SketchForgeEditor({
               linkedGroup.id,
               `Cut hole into ${host.name}`,
             );
+            flashCadApply(linkedGroup.id, undefined, "combine");
             return;
           }
           if (result.consumed) {
@@ -7306,6 +7490,7 @@ export function SketchForgeEditor({
             linked.id,
             notice,
           );
+          flashCadApply(linked.id);
         }
         invalidateCadModifierSession();
         setNotice(notice);
@@ -8038,6 +8223,7 @@ export function SketchForgeEditor({
           parts.map((part) => part.id),
           session.joint === "none" ? "Split" : "Cut to fit",
         );
+        flashCadApply(parts.map((part) => part.id), undefined, "separate");
         setSplitSession(null);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not split that object");
@@ -8278,6 +8464,7 @@ export function SketchForgeEditor({
               linkedGroup.id,
               `Cut hole into ${host.name}`,
             );
+            flashCadApply(linkedGroup.id, undefined, "combine");
             return;
           }
           if (result.consumed) {
@@ -11106,7 +11293,44 @@ export function SketchForgeEditor({
     splitActive: Boolean(splitSession),
   };
 
-  const sweepDialog = sweepPrompt ? (
+  const sweepStepsDialog = sweepSteps ? (
+    <div className="sketch-revolve-prompt phase-pick" role="dialog" aria-live="polite" aria-label="Sweep steps">
+      <div className="sketch-revolve-prompt-copy">
+        <strong className={sweepSteps.building ? "sweep-building" : undefined}>
+          {sweepSteps.building ? <LoaderCircle className="edge-modifier-spinner" size={16} aria-hidden="true" /> : null}
+          {sweepSteps.step === "profile"
+            ? "Sweep, step 1 of 2: draw the profile"
+            : sweepSteps.building
+              ? "Building sweep…"
+              : "Sweep, step 2 of 2: draw the path"}
+        </strong>
+        <span>
+          {sweepStepsIssue
+            ?? (sweepSteps.building
+              ? "Long or curved paths can take a few seconds. Mintr is still working."
+              : sweepSteps.step === "profile"
+              ? "The profile is the shape of a slice through the finished part, like a circle for a rod. Where you draw it does not matter. Then click Next."
+              : "Draw the line or curve the profile should follow. The part is placed on this sheet. Then click Sweep.")}
+        </span>
+      </div>
+      <div className="sketch-revolve-prompt-actions">
+        {sweepSteps.step === "profile" ? (
+          <button type="button" className="primary" onClick={() => sweepStepsNext()}>Next</button>
+        ) : (
+          <>
+            <button type="button" className="primary" disabled={sweepSteps.building} onClick={sweepStepsBuild}>
+              {sweepSteps.building ? <LoaderCircle className="edge-modifier-spinner" size={15} aria-hidden="true" /> : null}
+              Sweep
+            </button>
+            <button type="button" disabled={sweepSteps.building} onClick={sweepStepsBack}>Back to profile</button>
+          </>
+        )}
+        <button type="button" className="cancel" onClick={() => cancelSweepSteps()}>Cancel</button>
+      </div>
+    </div>
+  ) : null;
+
+  const sweepDialog = sweepStepsDialog ?? (sweepPrompt ? (
     <div className={`sketch-revolve-prompt phase-${sweepPrompt.phase === "confirm" ? "confirm" : "pick"}`} role="dialog" aria-live="polite" aria-label="Sweep">
       {sweepPrompt.phase === "pick-outline" ? (
         <>
@@ -11134,7 +11358,10 @@ export function SketchForgeEditor({
       {sweepPrompt.phase === "confirm" ? (
         <>
           <div className="sketch-revolve-prompt-copy">
-            <strong>{sweepPreview ? "Sweep this outline along this path?" : sweepBuildError ? "Sweep stopped" : "Building sweep…"}</strong>
+            <strong className={!sweepPreview && !sweepBuildError ? "sweep-building" : undefined}>
+              {!sweepPreview && !sweepBuildError ? <LoaderCircle className="edge-modifier-spinner" size={16} aria-hidden="true" /> : null}
+              {sweepPreview ? "Sweep this outline along this path?" : sweepBuildError ? "Sweep stopped" : "Building sweep…"}
+            </strong>
             <span>{sweepBuildError ?? "The outline is the cross-section. It sits on the start of the path."}</span>
           </div>
           <div className="sketch-revolve-prompt-actions">
@@ -11149,7 +11376,7 @@ export function SketchForgeEditor({
         </>
       ) : null}
     </div>
-  ) : null;
+  ) : null);
 
   const lessonActive = isLessonProjectId(projectId);
   const lessonThroughHole = lessonActive && sceneHasThroughHole(shapes);
@@ -11251,54 +11478,150 @@ export function SketchForgeEditor({
     };
   }, [guideCoachDismissed, guideLesson]);
 
+  useEffect(() => {
+    guideLogRef.current = syncGuideLog(guideLogRef.current, history, historyIndex);
+    // Until the stored log has loaded, saving would overwrite its early steps.
+    if (projectId && guideLogLoadedRef.current) saveGuideLogSoon(projectId, guideLogRef.current);
+  }, [history, historyIndex, projectId]);
+  useEffect(() => {
+    if (!projectId) {
+      guideLogLoadedRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    void loadGuideLog(projectId).then((saved) => {
+      if (cancelled) return;
+      if (saved) guideLogRef.current = syncGuideLog(saved, historyRef.current, historyIndexRef.current);
+      guideLogLoadedRef.current = true;
+      saveGuideLogSoon(projectId, guideLogRef.current);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  const currentGuideLog = () => {
+    guideLogRef.current = syncGuideLog(guideLogRef.current, historyRef.current, historyIndexRef.current);
+    return guideLogRef.current;
+  };
+  const previewGuideStep = (index: number | null) => {
+    if (index === null) {
+      setGuidePreview(null);
+      return;
+    }
+    const log = guideLogRef.current;
+    const live = index - log.offset >= 0 ? historyRef.current[index - log.offset] : undefined;
+    const entry = live ?? log.entries[index];
+    setGuidePreview(entry ? { index, entry } : null);
+  };
+
   const openGuideDraft = () => {
-    const steps = proposeGuideSteps(historyRef.current, historyIndexRef.current);
-    if (!steps.length) {
+    const log = currentGuideLog();
+    const proposed = proposeGuideSteps(log.entries, log.entries.length - 1);
+    if (!proposed.length) {
       setNotice("Model a few steps first. A guide is built from the steps you kept.");
       return;
     }
-    setGuideDraft({ title: projectName, author: "", steps });
+    // Reopening picks up the author's earlier choices for this design, and the same guide card.
+    const remembered = projectId ? readGuideDraft(projectId) : null;
+    setGuideDraft({
+      guideId: remembered?.guideId ?? `${projectId ?? "design"}-g${Date.now().toString(36)}`,
+      editingExisting: Boolean(remembered),
+      title: remembered?.title || projectName,
+      summary: remembered?.summary ?? "",
+      steps: applyGuideDraft(proposed, remembered),
+      identity: readGuideAuthor(),
+      issue: null,
+      saving: false,
+      saved: null,
+    });
+  };
+  const closeGuideDraft = () => {
+    setGuideDraft(null);
+    setGuidePreview(null);
+    setHistoryBrowse(null);
+  };
+  /** A picture of the finished part for the guide's card: the live model, not a step being previewed. */
+  const captureGuideCover = async () => {
+    setGuidePreview(null);
+    setHistoryBrowse(null);
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+    const frame = captureProjectPreviewFrame();
+    if (!frame) return undefined;
+    try {
+      return await shrinkPicture(frame, 480, 300, "cover", 0.8);
+    } catch {
+      return undefined;
+    }
   };
   const saveGuideDraft = async () => {
-    if (!guideDraft || !projectId) return;
-    const author = guideDraft.author.trim();
+    if (!guideDraft || !projectId || guideDraft.saving) return;
+    const author = guideDraft.identity.name.trim();
+    // Problems are shown in the panel, where the author is looking.
     if (!author) {
-      setNotice("Type your name. It is stored in the file and shown on the tutorial.");
+      setGuideDraft((current) => current ? { ...current, issue: "Type your name. It is shown on the guide." } : current);
       return;
     }
     if (!guideDraft.steps.some((step) => step.included)) {
-      setNotice("Check at least one step to keep.");
+      setGuideDraft((current) => current ? { ...current, issue: "Keep at least one step." } : current);
       return;
     }
-    const keptIndex = historyIndexRef.current;
-    const kept = historyRef.current.slice(0, keptIndex + 1);
-    const guide = {
-      title: guideDraft.title.trim() || projectName,
+    setGuideDraft((current) => current ? { ...current, issue: null, saving: true } : current);
+    const log = currentGuideLog();
+    const title = guideDraft.title.trim() || projectName;
+    const steps = guideDraft.steps.map((step) => ({
+      ...step,
+      ...(step.name?.trim() ? { name: step.name.trim() } : { name: undefined }),
+      ...(step.tip?.trim() ? { tip: step.tip.trim() } : { tip: undefined }),
+    }));
+    const cover = await captureGuideCover();
+    const guide: MintrGuide = {
+      title,
       author,
-      summary: `A guide by ${author}.`,
-      steps: guideDraft.steps,
+      summary: guideDraft.summary.trim() || `A guide by ${author}.`,
+      steps,
+      color: guideDraft.identity.color,
+      ...(guideDraft.identity.avatar ? { avatar: guideDraft.identity.avatar } : {}),
+      ...(cover ? { cover } : {}),
     };
+    // The file holds the starting model in full and a slim recipe for each step the lesson reads.
+    const startIndex = guideStartIndex(log.entries, steps.filter((step) => step.included));
+    const liveStart = startIndex - log.offset >= 0 ? historyRef.current[startIndex - log.offset] : undefined;
+    const compact = compactGuideForFile(log.entries, steps, liveStart);
+    const kept = compact.history;
+    guide.steps = compact.steps;
+    guide.minutes = guideMinutes(guide, kept);
+    writeGuideAuthor({ name: author, color: guideDraft.identity.color, ...(guideDraft.identity.avatar ? { avatar: guideDraft.identity.avatar } : {}) });
+    writeGuideDraft(projectId, {
+      guideId: guideDraft.guideId,
+      title,
+      summary: guideDraft.summary.trim(),
+      steps: steps.map(({ historyIndex, cue, included, name, tip, fold }) => ({ historyIndex, cue, included, name, tip, fold })),
+    });
     try {
-      const text = serializeMintrGuide(buildPeakcadDocument({
+      const text = await packMintrGuideText(serializeMintrGuide(buildPeakcadDocument({
         project: {
-          id: projectId,
+          // Each guide has its own id, so one design can make several guides.
+          id: guideDraft.guideId,
           name: guide.title,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           accent: "cyan",
           shapes: shapes.length,
         },
-        shapes: kept[keptIndex]?.shapes ?? shapes,
+        shapes: kept[kept.length - 1]?.shapes ?? shapes,
         history: kept,
-        historyIndex: keptIndex,
+        historyIndex: kept.length - 1,
         guide,
-      }));
+      })));
       const path = await saveGuideTextAs(text, guide.title);
-      onGuidePublished?.({ id: `guide:${projectId}`, guide, history: kept }, path);
-      setGuideDraft(null);
-      setNotice(path ? "Guide saved. It shows under Tutorials on the home page." : "Guide downloaded. Open that file to start the tutorial.");
+      onGuidePublished?.({ id: `guide:${guideDraft.guideId}`, guide, history: kept }, path);
+      setGuideDraft((current) => current ? { ...current, saving: false, saved: { path } } : current);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not save the guide.");
+      setGuideDraft((current) => current ? {
+        ...current,
+        saving: false,
+        issue: error instanceof Error ? error.message : "Could not save the guide.",
+      } : current);
     }
   };
 
@@ -12378,7 +12701,7 @@ export function SketchForgeEditor({
               </div>
             </div>
           ) : null}
-          {historyBrowse !== null ? (
+          {historyBrowse !== null && !guideDraft ? (
             <HistoryPanel
               entries={history}
               index={historyBrowse}
@@ -12701,22 +13024,38 @@ export function SketchForgeEditor({
         <GuideCoach
           prompt={guideLesson}
           author={guidePlayback?.guide.author ?? ""}
+          color={guidePlayback?.guide.color}
+          avatar={guidePlayback?.guide.avatar}
+          official={Boolean(guidePlayback?.guide.official)}
           onDismiss={() => setGuideCoachDismissed(true)}
         />
       ) : null}
       {guideDraft ? (
-        <GuideSaveDialog
-          title={guideDraft.title}
-          author={guideDraft.author}
-          steps={guideDraft.steps}
-          onTitle={(title) => setGuideDraft((current) => current ? { ...current, title } : current)}
-          onAuthor={(author) => setGuideDraft((current) => current ? { ...current, author } : current)}
-          onToggle={(index) => setGuideDraft((current) => current ? {
+        <GuideBuilderPanel
+          draft={guideDraft}
+          history={guideLogRef.current.entries}
+          startsPartWay={(guideLogRef.current.entries[0]?.shapes.length ?? 0) > 0}
+          previewIndex={guidePreview?.index ?? null}
+          onChange={(patch) => setGuideDraft((current) => current ? { ...current, ...patch } : current)}
+          onStepChange={(index, patch) => setGuideDraft((current) => current ? {
             ...current,
-            steps: current.steps.map((step, stepIndex) => stepIndex === index ? { ...step, included: !step.included } : step),
+            issue: null,
+            steps: current.steps.map((step, stepIndex) => stepIndex === index ? { ...step, ...patch } : step),
           } : current)}
-          onCancel={() => setGuideDraft(null)}
+          onPreview={previewGuideStep}
+          onCancel={closeGuideDraft}
           onSave={() => void saveGuideDraft()}
+          onShowInFolder={(path) => void revealPeakcadFile(path).catch(() => setNotice("Could not show that file."))}
+          editingExisting={guideDraft.editingExisting}
+          onStartFresh={() => setGuideDraft((current) => current ? {
+            ...current,
+            guideId: `${projectId ?? "design"}-g${Date.now().toString(36)}`,
+            editingExisting: false,
+            title: projectName,
+            summary: "",
+            steps: proposeGuideSteps(currentGuideLog().entries, guideLogRef.current.entries.length - 1),
+            issue: null,
+          } : current)}
         />
       ) : null}
     </div>

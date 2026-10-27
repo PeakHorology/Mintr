@@ -1,4 +1,5 @@
 import { formatHotkeyBinding, loadHotkeyBindings, type HotkeyActionId } from "@/lib/hotkeys";
+import { SETTING_GUIDES, SETTING_TIPS, SETTINGS_SECTION_LABEL, type SettingsSectionId } from "@/lib/settingGuides";
 
 export type SagePicture =
   | "line"
@@ -62,7 +63,7 @@ export type SageGuide = {
 };
 
 const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
-  { keys: ["sage"], title: "Sage", what: "Explains the tool under your pointer.", steps: ["Turn Sage on.", "Hover a button to read what it is for.", "A click still runs that tool. Right-click still shows the short note."] },
+  { keys: ["sage"], title: "Sage", what: "Explains the tool under your pointer.", steps: ["Click the Sage button at the top, or press its shortcut.", "Hover a button to read what it is for.", "Click the Sage button again to hide Sage."], hotkey: "sage" },
   { keys: ["undo"], title: "Undo", what: "Steps back through the last change.", steps: ["Click Undo, or press the shortcut.", "A sketch line and a change to a solid share one list."], hotkey: "undo" },
   { keys: ["redo"], title: "Redo", what: "Brings back the last change you undid.", steps: ["Undo something first.", "Click Redo to put that change back."], hotkey: "redo" },
   { keys: ["history"], title: "History", what: "Shows earlier steps without changing the model until you restore one.", steps: ["Click History.", "Pick a step to return the design to that point."] },
@@ -108,7 +109,7 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["image"], title: "Image", what: "Lays a picture on the sheet to trace.", steps: ["Choose Select.", "Click Image and pick a picture."] },
   { keys: ["extrude"], title: "Extrude", what: "Turns a closed sketch into a solid.", steps: ["Close the outline.", "Click Extrude and set the height."], hotkey: "sketchExtrude", picture: "extrude" },
   { keys: ["revolve"], title: "Revolve", what: "Spins a sketch around a straight line.", steps: ["Click Revolve.", "Click the straight line to spin around.", "The profile becomes a solid. Revolve is only on the default workplane."], picture: "revolve" },
-  { keys: ["sweep"], title: "Sweep", what: "Carries a closed outline along a path.", steps: ["Draw a closed outline and a path on the same sheet.", "Click Sweep and follow the prompt."], picture: "sweep" },
+  { keys: ["sweep"], title: "Sweep", what: "Slides a profile along a path, like a circle along a bend to make a pipe.", steps: ["Click Sweep and draw the profile: the shape of a slice through the part, like a circle for a rod. Click Next.", "Draw the path the profile should follow, then click Sweep.", "The part is placed on the sheet. A profile you already drew counts as step 1."], picture: "sweep" },
   { keys: ["cancel"], title: "Cancel", what: "Leaves the sketch and drops unfinished geometry.", steps: ["Click Cancel.", "The sketch closes without making a solid."] },
   { keys: ["dimension"], title: "Dimension", what: "Adds a length that drives the sketch.", steps: ["Click Dimension.", "Click a line, or two points.", "Type the length. The sketch moves to match."], hotkey: "sketchDimension", picture: "dimension" },
   { keys: ["coincident"], title: "Coincident", what: "Joins two points so they stay together.", steps: ["Click Coincident.", "Click the first point, then the second."], picture: "coincident" },
@@ -126,7 +127,7 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["import"], title: "Import", what: "Brings in a STEP, STL, 3MF, or SVG file.", steps: ["Click Import.", "Choose the file. You can bring a mesh in as a hole."] },
   { keys: ["save"], title: "Save", what: "Writes this design to its file.", steps: ["Click Save.", "A new file is .mintr. An open .peakcad file keeps that name."] },
   { keys: ["save as"], title: "Save as", what: "Writes this design to a new .mintr file.", steps: ["Click Save as.", "Choose the folder and the name."] },
-  { keys: ["save as guide"], title: "Save as guide", what: "Saves the kept steps as a guide someone can play through.", steps: ["Build the model.", "Click Save as guide and name the .mintrguide file."] },
+  { keys: ["make a guide", "save as guide"], title: "Make a guide", what: "Turns this design into a guide someone can follow to build the same part, step by step.", steps: ["Build the model, then click Make a guide.", "Keep the steps worth learning, fold small ones together, and add tips. Click a step to see it in 3D.", "Click Preview as learner to check it, then Save guide."] },
   { keys: ["export"], title: "Export", what: "Writes the model out for printing or another program.", steps: ["Click Export.", "Choose STL, 3MF, STEP, or a blueprint."] },
   { keys: ["settings"], title: "Settings", what: "Opens units, grid, appearance, and the tool index.", steps: ["Click Settings.", "Change what you need and close the window."] },
   { keys: ["home"], title: "Home", what: "Returns to the project list.", steps: ["Click the Mintr mark.", "If the design has unsaved file changes, Mintr asks before leaving."] },
@@ -146,9 +147,26 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["box", "cylinder", "sphere", "cone", "pyramid", "triangle", "text", "torus", "tube", "tube / ring", "gear", "thread"], title: "Shape", what: "Adds that solid to the workplane.", steps: ["Click the shape.", "It lands on the bed.", "Use the inspector or the handles to change its size."] },
 ];
 
+/** Every setting, as a guide: what it does and where it lives in Settings. */
+const SETTING_ENTRIES = SETTING_GUIDES.map((setting) => ({
+  // Lower case, because lookups go through normalizeSageLabel.
+  keys: [`setting:${setting.key.toLowerCase()}`],
+  title: setting.title,
+  what: SETTING_TIPS[setting.key],
+  steps: [
+    "Open Settings with the gear button.",
+    `Choose ${SETTINGS_SECTION_LABEL[setting.section]}.`,
+    `Find “${setting.title}”.`,
+  ],
+  section: setting.section,
+}));
+
 const BY_KEY = new Map<string, SageGuide>();
 for (const entry of GUIDE_LIST) {
   const { keys, ...guide } = entry;
+  for (const key of keys) BY_KEY.set(key, guide);
+}
+for (const { keys, section: _section, ...guide } of SETTING_ENTRIES) {
   for (const key of keys) BY_KEY.set(key, guide);
 }
 
@@ -174,6 +192,87 @@ export function lookupSageGuide(keyOrLabel: string): SageGuide | null {
   if (known) return known;
   if (keyOrLabel.trim().toLowerCase().startsWith("add ")) return GENERIC_SOLID;
   return null;
+}
+
+/** Tools that live in a sketch. Everything else is on the workplane, or (for files, views and help) anywhere. */
+const SKETCH_GUIDE_KEYS = new Set([
+  "select", "line", "arc", "curve", "rectangle", "circle", "shapes", "sketch-shape", "offset", "sketch-fillet",
+  "sketch-chamfer", "trim", "sketch-mirror", "erase", "bend", "smooth", "sketch-linear", "sketch-circular",
+  "lineweight", "image", "extrude", "revolve", "sweep", "cancel", "dimension", "coincident", "horizontal",
+  "vertical", "equal", "parallel", "right angle", "tangent", "midpoint", "concentric", "fix", "symmetry",
+  "flat sketch", "3d sketch",
+]);
+const ANYWHERE_GUIDE_KEYS = new Set([
+  "sage", "undo", "redo", "history", "exit full screen", "import", "save", "save as", "make a guide", "save as guide", "export",
+  "settings", "home", "full screen", "camera-home", "zoom in", "zoom out", "bottom view", "hide controls",
+  "show controls", "geometry", "sketch",
+]);
+
+export type SageArea = "sketch" | "workplane" | "anywhere" | "settings";
+
+export type SageSearchHit = {
+  id: string;
+  area: SageArea;
+  guide: SageGuide;
+  /** For a setting: its Settings tab, and a label such as "Settings · Printing". */
+  section?: SettingsSectionId;
+  where?: string;
+};
+
+/** Words that carry no meaning in a question like "how do I make a pipe". */
+const SEARCH_FILLER = new Set([
+  "a", "an", "and", "are", "can", "do", "does", "for", "how", "i", "in", "into", "is", "it", "make", "me", "my",
+  "of", "on", "the", "to", "tool", "use", "what", "with", "you",
+]);
+
+/**
+ * Find tools for a name or a plain question. Names count most, then the start of a name,
+ * then words in what the tool does, so "pipe" finds Sweep and "round edges" finds Fillet.
+ */
+/** Tools first, then settings, so a tool wins a tie with a setting of the same name. */
+const SEARCH_ENTRIES: Array<{ keys: string[]; title: string; what: string; steps: string[]; section?: SettingsSectionId }> = [
+  ...GUIDE_LIST,
+  ...SETTING_ENTRIES,
+];
+
+export function searchSageGuides(query: string, limit = 6): SageSearchHit[] {
+  const words = normalizeSageLabel(query)
+    .split(/[^a-z0-9/]+/)
+    .filter((word) => word.length > 0 && !SEARCH_FILLER.has(word));
+  if (words.length === 0) return [];
+  const scored = SEARCH_ENTRIES.map((entry, order) => {
+    const title = entry.title.toLowerCase();
+    const body = `${entry.what} ${entry.steps.join(" ")}`.toLowerCase();
+    let score = 0;
+    for (const word of words) {
+      if (title === word || entry.keys.includes(word)) score += 10;
+      else if (title.startsWith(word) || entry.keys.some((key) => key.startsWith(word))) score += 6;
+      else if (title.includes(word) || entry.keys.some((key) => key.includes(word))) score += 4;
+      // Words are letters, digits and "/" only, so they are safe in a pattern as they are.
+      else if (new RegExp(`\\b${word}`).test(body)) score += 2;
+    }
+    return { entry, order, score };
+  });
+  return scored
+    .filter((hit) => hit.score > 0)
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, limit)
+    .map(({ entry }) => toHit(entry));
+}
+
+function toHit(entry: (typeof SEARCH_ENTRIES)[number]): SageSearchHit {
+  const id = entry.keys[0];
+  if (entry.section) {
+    return { id, area: "settings", guide: BY_KEY.get(id)!, section: entry.section, where: `Settings · ${SETTINGS_SECTION_LABEL[entry.section]}` };
+  }
+  const area: SageArea = SKETCH_GUIDE_KEYS.has(id) ? "sketch" : ANYWHERE_GUIDE_KEYS.has(id) ? "anywhere" : "workplane";
+  return { id, area, guide: BY_KEY.get(id)! };
+}
+
+/** One tool or setting by its id, as a search hit (for opening its answer directly). */
+export function sageHitById(id: string): SageSearchHit | null {
+  const entry = SEARCH_ENTRIES.find((candidate) => candidate.keys[0] === id);
+  return entry ? toHit(entry) : null;
 }
 
 export function sageShortcut(guide: SageGuide, fromButton?: string | null) {

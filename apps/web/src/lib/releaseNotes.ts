@@ -31,6 +31,24 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.7",
+    items: [
+      "Sage shows a short moving picture of how each sketch and workplane tool works. Turn Sage on or off with the Sage button or F1.",
+      "Sage sits below Recents on the home page, and at the top of Settings to take you to any setting.",
+      "Sweep walks you through it: draw the profile, click Next, draw the path, then click Sweep. The part comes out closed at both ends and sits on the bed. A spinner shows while it builds.",
+      "Sweep closes small gaps in an outline for you.",
+      "Intersect works on plain solids and keeps only the overlap.",
+      "Smooth works on points drawn with Curve, even ones that ended up straight.",
+      "Sketch lines stay blue and easy to see in dark mode.",
+      "Stepping into a flat sketch, panels, new parts, the toolbar, and the Home view all move with smooth animations.",
+      "Settings look the same on the home page as in a design, with General first and clearer names.",
+      "Make a guide shows each step of your model as a card. Keep it, fold it into the step above, rename it, or add a tip, and preview it the way a learner will see it.",
+      "Pick a name colour and a picture for the guides you make. Mintr's own guides carry the Mintr logo.",
+      "Guide files are far smaller, so a guide can hold many more steps. A guide made in 1.1.7 needs Mintr 1.1.7 or newer to open.",
+      "Undo goes back 500 steps, or 1000 on a stronger computer.",
+    ],
+  },
+  {
     version: "1.1.6",
     items: [
       "The home page has three tutorials: Make a block with a hole, A plate from a sketch, and A pocket in a block.",

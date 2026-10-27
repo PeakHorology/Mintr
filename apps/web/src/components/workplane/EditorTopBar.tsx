@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ToolbarSageIcon, ToolbarSettingsIcon } from "@/components/icons";
 import { FullscreenButton } from "@/components/workplane/FullscreenButton";
 import { useSageActive, useSageToggle } from "@/components/workplane/Sage";
+import { useSageEnabled } from "@/lib/sagePreference";
 import { PeakTipButton, PeakTooltip, usePeakContextHelp, usePeakTooltip } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 
@@ -16,6 +17,7 @@ const DEFAULT_PROJECT_NAME = "Untitled design";
 function SageSection() {
   const active = useSageActive();
   const toggle = useSageToggle();
+  if (!useSageEnabled()) return null;
   return (
     <div className="editor-file-group" aria-label="Sage">
       <div className="toolbar-section-label">Sage</div>
@@ -312,8 +314,8 @@ export function EditorTopBar({
               </PeakTipButton>
             ) : null}
             {onSaveAsGuide ? (
-              <PeakTipButton className="editor-file-action" label="Save as guide…" description={TOOL_DESCRIPTIONS.saveAsGuide} onClick={onSaveAsGuide}>
-                Save as guide…
+              <PeakTipButton className="editor-file-action" label="Make a guide…" description={TOOL_DESCRIPTIONS.saveAsGuide} onClick={onSaveAsGuide}>
+                Make a guide…
               </PeakTipButton>
             ) : null}
             <PeakTipButton className="editor-file-action" label="Export…" description={TOOL_DESCRIPTIONS.export} shortcut="Ctrl + E" data-toolbar-tool="Export" data-lesson-target="export" onClick={onExport}>

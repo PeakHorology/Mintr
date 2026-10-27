@@ -52,6 +52,13 @@
   --sketch-plane-axis-opacity: 0.68;
   --sketch-plane-border: #58c5e6;
   --sketch-plane-border-opacity: 0.7;
+  /* Sketch geometry: CAD blue lines, brown construction, Mintr brown selection. */
+  --sketch-line: #173f60;
+  --sketch-construction: #8a6232;
+  --sketch-selected: #655447;
+  --sketch-point-fill: #ffffff;
+  --sketch-point-stroke: #143c5c;
+  --sketch-preview: #169fce;
   --shadow: var(--elevation-md);
 
   /* Ink ramp. Every piece of text lands on one of these five steps instead of picking
@@ -246,6 +253,13 @@
   --sketch-plane-axis-opacity: 0.68;
   --sketch-plane-border: #6bb8d8;
   --sketch-plane-border-opacity: 0.7;
+  /* Same roles, lifted so they read on the dark sheet (#243640). Keep in step with sketchLineColors in uiTheme.ts. */
+  --sketch-line: #6cc4ff;
+  --sketch-construction: #e0a868;
+  --sketch-selected: #c8a78c;
+  --sketch-point-fill: #15232b;
+  --sketch-point-stroke: #6cc4ff;
+  --sketch-preview: #38c0f0;
   --shadow: var(--elevation-md);
 
   --ink-strong: #f7f4f1;
@@ -1750,6 +1764,274 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 360px));
   gap: 16px;
+}
+
+/* Sage on the dashboard: a slim bar to look up a tool without opening a design. */
+.sage-home-card {
+  display: grid;
+  gap: 12px;
+  padding: 10px 14px;
+  color: var(--peak-text);
+  background: var(--glass-surface-strong);
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-sm);
+  animation: sage-home-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.sage-home-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.sage-home-owl {
+  display: grid;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: var(--peak-text);
+  background: color-mix(in srgb, var(--mintr) 12%, var(--control-surface));
+  border: 1px solid color-mix(in srgb, var(--mintr) 35%, var(--control-border));
+  border-radius: 50%;
+}
+
+.sage-home-intro-copy {
+  display: grid;
+  flex: 1 1 280px;
+  min-width: 0;
+  gap: 1px;
+}
+
+.sage-home-intro-copy strong {
+  font-size: var(--text-md);
+  font-weight: 700;
+}
+
+.sage-home-intro-copy span {
+  color: var(--peak-text-muted);
+  font-size: var(--text-sm);
+}
+
+.sage-home-card kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-align: center;
+  background: var(--control-surface);
+  border: 1px solid var(--control-border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+}
+
+.sage-home-search {
+  display: flex;
+  flex: 1 1 240px;
+  max-width: 340px;
+  height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  color: var(--peak-text-muted);
+  background: color-mix(in srgb, var(--control-surface) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--control-border) 80%, transparent);
+  border-radius: var(--radius-pill);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.sage-home-search:focus-within {
+  border-color: var(--mintr);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mintr) 22%, transparent);
+}
+
+.sage-home-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: var(--peak-text);
+  background: transparent;
+  font-size: var(--text-sm);
+}
+
+.sage-home-results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sage-home-results button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 0;
+  padding: 5px 12px;
+  color: var(--peak-text);
+  background: var(--control-surface);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  line-height: 1.3;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.sage-home-results button:hover {
+  border-color: var(--mintr);
+  transform: translateY(-1px);
+}
+
+.sage-home-results button.active {
+  border-color: var(--mintr);
+  background: color-mix(in srgb, var(--mintr) 14%, var(--control-surface));
+}
+
+.sage-home-results button span {
+  color: var(--peak-text-muted);
+  font-size: var(--text-xs);
+}
+
+.sage-home-empty {
+  margin: 0;
+  color: var(--peak-text-muted);
+  font-size: var(--text-sm);
+}
+
+.sage-home-answer {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--control-border);
+  animation: sage-home-in 320ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.sage-home-art {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: center;
+  gap: 4px;
+}
+
+.sage-home-art .sage-card-art {
+  width: 108px;
+  height: 84px;
+}
+
+.sage-home-art button {
+  padding: 2px 8px;
+  color: var(--peak-text-muted);
+  background: none;
+  border: 0;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.sage-home-art button:hover {
+  color: var(--peak-text);
+}
+
+.sage-home-answer-copy {
+  min-width: 0;
+}
+
+.sage-home-answer-copy header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sage-home-answer-copy strong {
+  font-size: var(--text-md);
+}
+
+.sage-home-area {
+  padding: 1px 8px;
+  color: var(--peak-text-muted);
+  background: var(--control-surface);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+}
+
+.sage-home-answer-copy p {
+  margin: 4px 0 0;
+  font-size: var(--text-sm);
+}
+
+.sage-home-answer-copy ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--peak-text-muted);
+  font-size: var(--text-sm);
+}
+
+.sage-home-answer-copy li + li {
+  margin-top: 2px;
+}
+
+/* The Sage tab in Settings: the same search, sitting flat in the Settings window. */
+.sage-home-card.is-settings {
+  padding: 0;
+  color: var(--modal-text);
+  background: none;
+  border: 0;
+  box-shadow: none;
+  animation: none;
+}
+
+.sage-home-card.is-settings .sage-home-search {
+  max-width: none;
+}
+
+.sage-home-show {
+  margin-top: 10px;
+  padding: 5px 14px;
+  color: #fff;
+  background: var(--action-surface);
+  border: 1px solid var(--action-surface);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sage-home-show:hover {
+  background: var(--action-surface-hover);
+}
+
+@keyframes sage-home-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+@media (max-width: 640px) {
+  .sage-home-answer {
+    flex-direction: column;
+  }
+
+  .sage-home-search {
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sage-home-card,
+  .sage-home-answer {
+    animation: none;
+  }
+
+  .sage-home-results button:hover {
+    transform: none;
+  }
 }
 
 .tutorial-card {
@@ -3271,33 +3553,558 @@ button.lesson-target-hot {
     inset 0 0 0 22px rgba(42, 167, 126, 0.4);
 }
 
-.guide-save-dialog {
-  width: min(440px, calc(100vw - 32px));
+/*
+ * Guide authors. Mint belongs to Mintr's own guides; everyone else picks one of six colours.
+ * Yellow carries dark text so the name stays readable.
+ */
+.guide-author {
+  --author-color: #2f6bd8;
+  --author-ink: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  vertical-align: middle;
 }
 
-.guide-save-dialog p {
+.guide-author-red { --author-color: #e5484d; }
+.guide-author-orange { --author-color: #ec6a1a; }
+.guide-author-yellow { --author-color: #f2c12e; --author-ink: #3a2a00; }
+.guide-author-green { --author-color: #3e9b2a; }
+.guide-author-blue { --author-color: #2f6bd8; }
+.guide-author-purple { --author-color: #8a4fd0; }
+.guide-author-mint { --author-color: var(--mintr); }
+
+.guide-author-picture {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  overflow: hidden;
+  color: var(--author-ink);
+  background: var(--author-color);
+  border: 2px solid var(--author-color);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.guide-author-mint .guide-author-picture {
+  background: #fff;
+}
+
+.guide-author-picture img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.guide-author-name {
+  overflow: hidden;
+  padding: 1px 8px;
+  color: var(--author-ink);
+  background: var(--author-color);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.guide-author-md .guide-author-picture {
+  width: 28px;
+  height: 28px;
+}
+
+/* "Make a guide": a storyboard beside the 3D view. */
+.guide-builder {
+  position: fixed;
+  top: var(--editor-toolbar-height);
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-overlay) + 6);
+  display: flex;
+  width: min(460px, calc(100vw - 24px));
+  flex-direction: column;
+  color: var(--modal-text);
+  background: var(--modal-surface);
+  border-left: 1px solid var(--modal-border);
+  box-shadow: var(--elevation-lg);
+  animation: chrome-sheet-in var(--motion-sheet) var(--motion-ease);
+}
+
+.guide-builder-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 10px 12px 16px;
+  border-bottom: 1px solid var(--modal-border);
+}
+
+.guide-builder-header strong {
+  font-size: var(--text-lg);
+  font-weight: 800;
+}
+
+.guide-builder-header button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: var(--modal-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.guide-builder-body {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  padding: 14px 16px 18px;
+}
+
+.guide-builder-note,
+.guide-card-reason {
   margin: 0;
-  color: var(--ink-muted);
+  color: var(--modal-muted);
+  font-size: var(--text-sm);
 }
 
-.guide-save-dialog label {
+.guide-field {
   display: grid;
   gap: 4px;
+  font-size: var(--text-sm);
+  font-weight: 700;
 }
 
-.guide-save-steps {
-  max-height: 240px;
+.guide-field input,
+.guide-field textarea,
+.guide-author-name-input,
+.guide-card-edit input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  color: var(--modal-text);
+  background: var(--tile-hover);
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: 500;
+  resize: vertical;
+}
+
+.guide-author-fields {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-md);
+}
+
+.guide-author-fields legend {
+  padding: 0 4px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.guide-author-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.guide-author-picture-button {
+  display: grid;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  color: var(--modal-muted);
+  background: var(--tile-hover);
+  border: 1px dashed var(--modal-border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.guide-author-picture-button img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.guide-colors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.guide-color {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--modal-surface);
+  cursor: pointer;
+  transition: transform 160ms ease;
+}
+
+.guide-color:hover {
+  transform: scale(1.1);
+}
+
+.guide-color.is-picked {
+  border-color: var(--modal-text);
+}
+
+.guide-color-red { background: #e5484d; }
+.guide-color-orange { background: #ec6a1a; }
+.guide-color-yellow { background: #f2c12e; }
+.guide-color-green { background: #3e9b2a; }
+.guide-color-blue { background: #2f6bd8; }
+.guide-color-purple { background: #8a4fd0; }
+
+.guide-author-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--modal-muted);
+  font-size: var(--text-xs);
+}
+
+.guide-link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  color: var(--modal-muted);
+  background: none;
+  border: 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.guide-link-button:hover {
+  color: var(--modal-text);
+}
+
+.guide-warning {
+  margin: 0;
+  padding: 9px 11px;
+  color: var(--modal-text);
+  background: color-mix(in srgb, #ec6a1a 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ec6a1a 40%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.guide-issue {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.guide-steps-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.guide-steps-heading span {
+  color: var(--modal-muted);
+  font-size: var(--text-xs);
+}
+
+.guide-cards {
+  display: grid;
+  gap: 8px;
   margin: 0;
   padding: 0;
-  overflow: auto;
   list-style: none;
 }
 
-.guide-save-steps label {
+.guide-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--tile-hover);
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-md);
+  transition: border-color 160ms ease, opacity 160ms ease;
+}
+
+.guide-card.is-folded {
+  margin-left: 18px;
+  border-style: dashed;
+}
+
+.guide-card.is-skipped {
+  opacity: 0.62;
+}
+
+.guide-card.is-previewing {
+  border-color: var(--mintr);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mintr) 30%, transparent);
+}
+
+.guide-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 0;
+  width: 100%;
+  padding: 0;
+  color: var(--modal-text);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.guide-card-head strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+
+.guide-card-head svg {
+  flex: 0 0 auto;
+  color: var(--modal-muted);
+}
+
+.guide-card-status {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  color: var(--modal-muted);
+  background: var(--modal-surface);
+  border: 1px solid var(--modal-border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.guide-card-status.is-step {
+  color: #fff;
+  background: var(--action-surface);
+  border-color: var(--action-surface);
+}
+
+.guide-card-learner {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.guide-card-learner span {
+  color: var(--modal-muted);
+  font-weight: 700;
+}
+
+.guide-tip {
+  margin: 0;
+  padding: 5px 9px;
+  background: color-mix(in srgb, var(--mintr) 10%, transparent);
+  border-left: 3px solid var(--mintr);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+}
+
+.guide-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.guide-card-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.guide-card-edit {
+  display: grid;
+  gap: 6px;
+}
+
+.guide-builder-footer {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--modal-border);
+}
+
+.guide-builder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.guide-builder-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  color: var(--modal-text);
+  background: var(--tile-hover);
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.guide-builder-actions button.primary {
+  color: #fff;
+  background: var(--action-surface);
+  border-color: var(--action-surface);
+}
+
+.guide-builder-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.guide-rehearsal {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  background: var(--tile-hover);
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-md);
+  animation: sage-home-in 260ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.guide-rehearsal p {
+  margin: 0;
+}
+
+.guide-rehearsal-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.guide-rehearsal-title {
+  font-weight: 800;
+}
+
+.guide-builder-saved h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.guide-builder-saved p {
+  margin: 0;
+  color: var(--modal-muted);
+}
+
+/* The coach during a guide: the author's step name, their tip, and every step at a glance. */
+.intro-coach-heading {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.intro-coach-toggle {
+  justify-self: start;
+  padding: 2px 0;
+  color: var(--ink-muted);
+  background: none;
+  border: 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.intro-coach-checklist {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+}
+
+.intro-coach-checklist li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-muted);
+}
+
+.intro-coach-checklist li span {
+  display: grid;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid var(--control-border);
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.intro-coach-checklist li.is-done span {
+  color: #fff;
+  background: var(--mintr);
+  border-color: var(--mintr);
+}
+
+.intro-coach-checklist li.is-current {
+  color: var(--ink-strong);
+  font-weight: 700;
+}
+
+/* Guide cards on the home page: a cover picture when the guide has one. */
+.tutorial-card-cover {
+  display: block;
+  width: calc(100% + 32px);
+  height: 108px;
+  margin: -16px -16px 2px;
+  object-fit: cover;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.tutorial-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guide-builder,
+  .guide-rehearsal {
+    animation: none;
+  }
+
+  .guide-color:hover {
+    transform: none;
+  }
 }
 
 .project-empty .dashboard-secondary {

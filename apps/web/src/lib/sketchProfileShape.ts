@@ -240,6 +240,35 @@ export function smoothOneSketchPoint(profile: SketchProfile, pointId: string) {
   return next;
 }
 
+/** Shorter than this, a handle cannot bend the line. A Curve click without a drag leaves zero-length handles. */
+const FLAT_HANDLE_MM = 0.05;
+const FLAT_HANDLE_ANGLE = (3 * Math.PI) / 180;
+
+/**
+ * Handles that cannot bend anything: missing, zero length, or lying along the point's own lines.
+ * Curve points that were drawn or dragged straight look like this, and Smooth should still curve them.
+ */
+function handlesLookStraight(profile: SketchProfile, pointId: string) {
+  const point = profile.points.find((entry) => entry.id === pointId);
+  if (!point?.handleIn || !point.handleOut) return true;
+  const path = orderedSketchPaths(profile).find((entry) => entry.points.some((candidate) => candidate.id === pointId));
+  const index = path?.points.findIndex((candidate) => candidate.id === pointId) ?? -1;
+  if (!path || index < 0) return false;
+  const { previous, following } = pathNeighbors(path, index);
+  const lines = [previous, following].flatMap((neighbor) => (neighbor ? [{ x: neighbor.x - point.x, z: neighbor.z - point.z }] : []));
+  const flat = (handle: { x: number; z: number }) => {
+    const hx = handle.x - point.x;
+    const hz = handle.z - point.z;
+    const length = Math.hypot(hx, hz);
+    if (length < FLAT_HANDLE_MM) return true;
+    return lines.some((line) => {
+      const lineLength = Math.hypot(line.x, line.z);
+      return lineLength > 1e-6 && Math.abs(hx * line.z - hz * line.x) <= Math.sin(FLAT_HANDLE_ANGLE) * length * lineLength;
+    });
+  };
+  return flat(point.handleIn) && flat(point.handleOut);
+}
+
 /** Turn one existing point into a corner, a curve, or a curve with free handles. */
 export function withSketchPointMode(profile: SketchProfile, pointId: string, mode: "corner" | "smooth" | "split"): SketchProfile {
   let next = cloneSketchProfile(profile);
@@ -257,7 +286,7 @@ export function withSketchPointMode(profile: SketchProfile, pointId: string, mod
   next.segments = next.segments.map((segment) =>
     segment.startId === pointId || segment.endId === pointId ? { ...segment, kind: "bezier" } : segment,
   );
-  if (!point.handleIn || !point.handleOut) next = smoothOneSketchPoint(next, pointId);
+  if (handlesLookStraight(next, pointId)) next = smoothOneSketchPoint(next, pointId);
   const updated = next.points.find((entry) => entry.id === pointId);
   if (updated) updated.mode = mode;
   return next;

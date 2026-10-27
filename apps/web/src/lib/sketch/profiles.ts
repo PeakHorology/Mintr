@@ -1,5 +1,4 @@
 import type { SketchPoint, SketchProfile, SketchSegment } from "@/types/sketchforge";
-import { createLocalId } from "@/lib/localIds";
 import { curveStandInOwner } from "./migrate";
 import type { SketchClosedProfile, SketchDoc, SketchEntity, SketchPointEntity, SketchVec2 } from "./types";
 
@@ -181,7 +180,8 @@ export function closeOpenPathGaps(profile: SketchProfile, gapMm = CLOSE_GAP_MM):
     if (existing.has(key)) continue;
     existing.add(key);
     extra.push({
-      id: createLocalId("sketch-segment"),
+      // Stable, so a sweep that stored this outline's segment ids can find it again.
+      id: `${last.id}-gap-${first.id}`,
       startId: last.id,
       endId: first.id,
       kind: "line",

@@ -274,9 +274,10 @@ export function sweepChainHit(chain: SweepChain, segmentId: string) {
   return owner !== null && (owner === chain.curveId || owner === chain.id);
 }
 
-export function sweepSpec(outline: SweepOutline, path: SweepChain): SketchSweepSpec {
+export function sweepSpec(outline: SweepOutline, path: SweepChain, section?: SketchSweepSpec["section"]): SketchSweepSpec {
   const hole = outline.holes[0];
   return {
+    ...(section ? { section } : {}),
     outlineSegmentIds: outline.segmentIds,
     holeSegmentIds: hole?.segmentIds ?? [],
     pathSegmentIds: path.segmentIds,
@@ -299,9 +300,15 @@ function findChain(chains: SweepChain[], specIds: string[], curveId?: string) {
 export function resolveSketchSweep(profile: SketchProfile, doc: SketchDoc | null | undefined, spec: SketchSweepSpec): {
   outline: SweepOutline;
   path: SweepChain;
+  /** The outline was drawn on a sheet of its own (the Sweep steps). */
+  separateSection: boolean;
+  /** That sheet stood across the path start, so the outline is placed exactly where it was drawn. */
+  standingSection: boolean;
 } | null {
   const plan = planSketchSweep(profile, doc);
-  const outline = plan.outlines.find((candidate) => (
+  // A cross-section lives on its own sheet; every closed loop on the path sheet can then be a path.
+  const outlinePlan = spec.section ? planSketchSweep(spec.section.profile, spec.section.doc) : plan;
+  const outline = outlinePlan.outlines.find((candidate) => (
     (spec.outlineCurveId && (candidate.curveId === spec.outlineCurveId || candidate.id === spec.outlineCurveId))
     || spec.outlineSegmentIds.every((id) => candidate.segmentIds.includes(id))
   ));
@@ -309,9 +316,9 @@ export function resolveSketchSweep(profile: SketchProfile, doc: SketchDoc | null
   const hole = outline.holes[0];
   if (spec.holeSegmentIds.length > 0 && !hole) return null;
   const path = findChain(plan.paths, spec.pathSegmentIds, spec.pathCurveId)
-    ?? findChain(plan.outlines.filter((candidate) => candidate.id !== outline.id), spec.pathSegmentIds, spec.pathCurveId);
+    ?? findChain(spec.section ? plan.outlines : plan.outlines.filter((candidate) => candidate.id !== outline.id), spec.pathSegmentIds, spec.pathCurveId);
   if (!path) return null;
-  return { outline, path };
+  return { outline, path, separateSection: Boolean(spec.section), standingSection: Boolean(spec.section?.standing) };
 }
 
 function closestOnSegment(point: SweepUv, a: SweepUv, b: SweepUv) {
@@ -455,7 +462,6 @@ export type PlacedSweep = {
   hole?: PlacedLoop;
   path: PlacedLoop;
   pathClosed: boolean;
-  simple: boolean;
 };
 
 function newell(edges: PlacedEdge[]): SweepVec3 {
@@ -523,30 +529,61 @@ function alignToTangent(loop: PlacedLoop, tangent: SweepVec3): PlacedLoop {
   return { ...loop, edges: reverseEdges(loop.edges) };
 }
 
-function regularPolygon(chain: SweepChain) {
-  const corners = chain.steps.length ? chain.steps.map((step) => step.from) : chain.points;
-  if (corners.length < 3 || corners.length > 16) return false;
-  const center = centroid(corners);
-  const radii = corners.map((point) => hypot(point, center));
-  const mean = radii.reduce((sum, radius) => sum + radius, 0) / radii.length;
-  if (!(mean > 0.05)) return false;
-  if (Math.max(...radii) - Math.min(...radii) > mean * 0.02) return false;
-  const edges: number[] = [];
-  for (let index = 0; index < corners.length; index += 1) {
-    edges.push(hypot(corners[index], corners[(index + 1) % corners.length]));
-  }
-  const edgeMean = edges.reduce((sum, length) => sum + length, 0) / edges.length;
-  return Math.max(...edges) - Math.min(...edges) <= edgeMean * 0.02;
+/** Start point, travel direction, and the across / up directions of the path, in world space. */
+function pathStartFrame(path: SweepChain, planeInput?: SketchPlane | null) {
+  const plane = resolveSketchPlane(planeInput);
+  const vAxis = sketchPlaneVAxis(plane);
+  const tangentUv = startTangentUv(path);
+  if (!tangentUv) return null;
+  const tangent = planeDirection(plane, vAxis, tangentUv);
+  const across = planeDirection(plane, vAxis, uv(-tangentUv.z, tangentUv.x));
+  const up = normalize(plane.normal);
+  if (!tangent || !across || !up) return null;
+  return { plane, vAxis, tangent, across, up, start: planePoint(plane, vAxis, pathStartUv(path)) };
+}
+
+/**
+ * The sheet a cross-section is drawn on: standing across the start of the path, facing along it.
+ * Its origin is the path start and its X runs across the path. The flat sketch view draws V
+ * downward on screen, so V points down into the path's own sheet: a shape drawn above the
+ * horizontal axis on screen sits on top of that sheet, seen from behind the path start.
+ */
+export function sweepSectionPlane(path: SweepChain, planeInput?: SketchPlane | null): SketchPlane | null {
+  const frame = pathStartFrame(path, planeInput);
+  if (!frame) return null;
+  const candidate: SketchPlane = { origin: frame.start, normal: frame.tangent, uAxis: frame.across };
+  // V = normal × U; flip U if that would point V up off the path's sheet.
+  const uAxis = dot(sketchPlaneVAxis(candidate), frame.up) <= 0 ? frame.across : { x: -frame.across.x, y: -frame.across.y, z: -frame.across.z };
+  return { origin: frame.start, normal: frame.tangent, uAxis };
+}
+
+/**
+ * Largest sketch Z of the outline: its bottom edge on screen, because the flat sketch view draws
+ * Z downward. The stood-up profile rests on the sheet there, the right way up as it was drawn.
+ */
+function screenBottomZ(outline: SweepOutline) {
+  if (outline.curve?.kind === "circle") return outline.curve.cz + outline.curve.radius;
+  return Math.max(...outline.points.map((point) => point.z));
+}
+
+/** Middle of a profile drawn on its own sheet; its position there means nothing. */
+function profileCentre(outline: SweepOutline): SweepUv {
+  if (outline.curve?.kind === "circle") return uv(outline.curve.cx, outline.curve.cz);
+  const xs = outline.points.map((point) => point.x);
+  return uv((Math.min(...xs) + Math.max(...xs)) / 2, 0);
 }
 
 /**
  * Stand the outline up on the start of the path.
- * Sketch X runs across the path. Sketch Z runs along the plane normal.
+ * Sketch X runs across the path, centred on it (right on screen is right, looking along the path).
+ * Screen up on the drawing is up off the sheet, and the outline's bottom edge rests on the sheet,
+ * so the part sits on top of it like an extrude, the same way up as it was drawn.
  */
 export function placeSketchSweep(
   outline: SweepOutline,
   path: SweepChain,
   planeInput?: SketchPlane | null,
+  options: { standingSection?: boolean; separateSection?: boolean } = {},
 ): PlacedSweep | null {
   const plane = resolveSketchPlane(planeInput);
   const vAxis = sketchPlaneVAxis(plane);
@@ -558,15 +595,22 @@ export function placeSketchSweep(
   const across = planeDirection(plane, vAxis, acrossUv);
   const normal = normalize(plane.normal);
   if (!across || !normal) return null;
-  const anchor = sweepAnchor(outline, path);
+  // On its own sheet the profile cannot touch the path, so it is simply centred on it.
+  const anchor = options.separateSection ? { at: profileCentre(outline), pierced: false } : sweepAnchor(outline, path);
   const pathStart = planePoint(plane, vAxis, pathStartUv(path));
-  const sectionOf = (point: SweepUv) => add(
-    pathStart,
-    add(
-      { x: across.x * (point.x - anchor.at.x), y: across.y * (point.x - anchor.at.x), z: across.z * (point.x - anchor.at.x) },
-      { x: normal.x * (point.z - anchor.at.z), y: normal.y * (point.z - anchor.at.z), z: normal.z * (point.z - anchor.at.z) },
-    ),
-  );
+  const bottom = screenBottomZ(outline);
+  const sectionSheet = options.standingSection ? sweepSectionPlane(path, planeInput) : null;
+  if (options.standingSection && !sectionSheet) return null;
+  const sectionOf = sectionSheet
+    // Drawn on the cross-section sheet: use it exactly where it was drawn on that sheet.
+    ? (point: SweepUv) => planePoint(sectionSheet, sketchPlaneVAxis(sectionSheet), point)
+    : (point: SweepUv) => add(
+      pathStart,
+      add(
+        { x: across.x * (point.x - anchor.at.x), y: across.y * (point.x - anchor.at.x), z: across.z * (point.x - anchor.at.x) },
+        { x: normal.x * (bottom - point.z), y: normal.y * (bottom - point.z), z: normal.z * (bottom - point.z) },
+      ),
+    );
   const onPlane = (point: SweepUv) => planePoint(plane, vAxis, point);
 
   const loopOf = (chain: SweepChain, map: (point: SweepUv) => PlacedPoint, axis: SweepVec3): PlacedLoop => {
@@ -583,14 +627,12 @@ export function placeSketchSweep(
   const outer = alignToTangent(loopOf(outline, sectionOf, tangent), tangent);
   const placedHole = hole ? alignToTangent(loopOf(hole, sectionOf, tangent), tangent) : undefined;
   const pathLoop = loopOf(path, onPlane, normal);
-  const simple = outline.holes.length === 0 && (outline.curve?.kind === "circle" || regularPolygon(outline));
   return {
-    pierced: anchor.pierced,
+    pierced: !sectionSheet && anchor.pierced,
     tangent,
     outer,
     hole: placedHole,
     path: pathLoop,
     pathClosed: path.closed,
-    simple,
   };
 }

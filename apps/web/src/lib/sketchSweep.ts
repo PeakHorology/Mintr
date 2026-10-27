@@ -60,23 +60,39 @@ function wireOf(brep: Brep, loop: PlacedLoop, closed: boolean) {
   return wire.ok ? wire.value : null;
 }
 
-function pipeConfig(simple: boolean) {
-  return simple
-    ? { mode: "simple" as const }
-    : { mode: "general" as const, transitionMode: "transformed" as const, forceProfileSpineOthogonality: true };
+/**
+ * Sharp bends in the path become a rounded joint, like a bent pipe. Smooth paths are unaffected.
+ * The mitred ("right") and "transformed" styles build an invalid corner, or silently drop the leg
+ * after it, so they are not used. Neither is the quick "simple" pipe: it builds the walls without
+ * end caps, so the part is an open skin instead of a solid.
+ */
+const CORNER_STYLES = ["round"] as const;
+
+/** A real, closed solid: valid topology and positive volume. */
+function closedSolid(brep: Brep, shape: unknown) {
+  try {
+    if (!brep.isValid(shape as never)) return false;
+    const volume = brep.measureVolume(shape as never);
+    return volume.ok && volume.value > 1e-6;
+  } catch {
+    return false;
+  }
 }
 
-function sweepWires(brep: Brep, profile: PlacedLoop, path: PlacedLoop, pathClosed: boolean, simple: boolean) {
-  const section = wireOf(brep, profile, true);
-  const spine = wireOf(brep, path, pathClosed);
-  if (!section || !spine) return null;
-  let swept = brep.sweep(section as never, spine as never, pipeConfig(simple));
-  if (!swept.ok && simple) {
-    const againSection = wireOf(brep, profile, true);
-    const againSpine = wireOf(brep, path, pathClosed);
-    if (!againSection || !againSpine) return swept;
-    swept = brep.sweep(againSection as never, againSpine as never, pipeConfig(false));
+function sweepWires(brep: Brep, profile: PlacedLoop, path: PlacedLoop, pathClosed: boolean) {
+  let swept: ReturnType<Brep["sweep"]> | null = null;
+  for (const transitionMode of CORNER_STYLES) {
+    const section = wireOf(brep, profile, true);
+    const spine = wireOf(brep, path, pathClosed);
+    if (!section || !spine) return null;
+    swept = brep.sweep(section as never, spine as never, {
+      mode: "general",
+      transitionMode,
+      forceProfileSpineOthogonality: true,
+    });
+    if (swept.ok && closedSolid(brep, swept.value)) return swept;
   }
+  if (swept?.ok) return { ok: false as const, error: swept.value };
   return swept;
 }
 
@@ -91,20 +107,19 @@ export function sweepSolid(
   const resolved = resolveSketchSweep(profile, doc, spec);
   if (!resolved) return { ok: false, message: "That outline or path is no longer on the sheet." };
   if (resolved.outline.holes.length > 1) return { ok: false, message: SWEEP_ONE_HOLE };
-  const placed = placeSketchSweep(resolved.outline, resolved.path, plane ?? profile.sketchPlane ?? doc?.plane);
+  const placed = placeSketchSweep(resolved.outline, resolved.path, plane ?? profile.sketchPlane ?? doc?.plane, resolved);
   if (!placed) return { ok: false, message: "Draw the path, then Sweep." };
   try {
-    const outer = sweepWires(brep, placed.outer, placed.path, placed.pathClosed, placed.simple || Boolean(placed.outer.circle));
+    const outer = sweepWires(brep, placed.outer, placed.path, placed.pathClosed);
     if (!outer) return { ok: false, message: SWEEP_CURVE_FAILED };
     if (!outer.ok) return { ok: false, message: SWEEP_CROSSES_ITSELF };
     let solid = outer.value as BrepSolid;
     if (placed.hole) {
-      const innerSimple = Boolean(placed.hole.circle);
-      const inner = sweepWires(brep, placed.hole, placed.path, placed.pathClosed, innerSimple);
+      const inner = sweepWires(brep, placed.hole, placed.path, placed.pathClosed);
       if (!inner) return { ok: false, message: SWEEP_CURVE_FAILED };
       if (!inner.ok) return { ok: false, message: SWEEP_CROSSES_ITSELF };
       const cut = brep.cut(solid as never, inner.value as never);
-      if (!cut.ok) return { ok: false, message: SWEEP_HOLE_FAILED };
+      if (!cut.ok || !closedSolid(brep, cut.value)) return { ok: false, message: SWEEP_HOLE_FAILED };
       solid = cut.value as BrepSolid;
     }
     return { ok: true, solid };
@@ -235,11 +250,10 @@ export function serializeSketchSweepJob(
   const resolved = resolveSketchSweep(profile, doc, spec);
   if (!resolved) return null;
   if (resolved.outline.holes.length > 1) return null;
-  const placed = placeSketchSweep(resolved.outline, resolved.path, profile.sketchPlane ?? doc?.plane);
+  const placed = placeSketchSweep(resolved.outline, resolved.path, profile.sketchPlane ?? doc?.plane, resolved);
   if (!placed) return null;
   return {
     type: "sketchSweep" as const,
-    simple: placed.simple,
     pathClosed: placed.pathClosed,
     outer: serializePlacedLoop(placed.outer),
     hole: placed.hole ? serializePlacedLoop(placed.hole) : undefined,

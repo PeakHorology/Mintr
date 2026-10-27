@@ -1,9 +1,11 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { isHotkeyRecordingActive, loadHotkeyBindings, matchHotkeyAction } from "@/lib/hotkeys";
 import { createPortal } from "react-dom";
 import { SagePictureArt } from "@/components/workplane/SagePictures";
 import { lookupSageGuide, sageShortcut, type SageGuide } from "@/lib/sageGuides";
+import { useSageEnabled } from "@/lib/sagePreference";
 
 type SageContextValue = {
   active: boolean;
@@ -23,12 +25,59 @@ export function useSageToggle() {
   return useContext(SageContext).toggle;
 }
 
+/** Sage stays on between sessions once turned on. Per viewer, and optional: a blocked store just starts off. */
+const SAGE_STORAGE_KEY = "mintr:sage";
+
+function readSageOn() {
+  try {
+    return window.localStorage.getItem(SAGE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSageOn(on: boolean) {
+  try {
+    window.localStorage.setItem(SAGE_STORAGE_KEY, on ? "1" : "0");
+  } catch {
+    // Not remembered this time; Sage still works.
+  }
+}
+
+function typingInto(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 export function SageProvider({ children }: { children: ReactNode }) {
   const [active, setActive] = useState(false);
+  // Switched off in Settings → Sage: no button, no shortcut, no hover cards.
+  const enabled = useSageEnabled();
+  const shown = enabled && active;
+
+  useEffect(() => {
+    if (readSageOn()) setActive(true);
+  }, []);
+
+  useEffect(() => {
+    writeSageOn(active);
+  }, [active]);
+
+  // The Sage shortcut (F1 unless changed) works anywhere in the editor except while typing.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!enabled || event.repeat || isHotkeyRecordingActive() || typingInto(event.target)) return;
+      if (matchHotkeyAction(event, loadHotkeyBindings(), ["sage"]) !== "sage") return;
+      event.preventDefault();
+      setActive((on) => !on);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [enabled]);
+
   return (
-    <SageContext.Provider value={{ active, toggle: () => setActive((on) => !on) }}>
+    <SageContext.Provider value={{ active: shown, toggle: () => { if (enabled) setActive((on) => !on); } }}>
       {children}
-      {active ? <SageHoverCard /> : null}
+      {shown ? <SageHoverCard /> : null}
     </SageContext.Provider>
   );
 }
@@ -58,7 +107,8 @@ function SageHoverCard() {
       const rect = button.getBoundingClientRect();
       setTarget({
         guide,
-        title: buttonName(button) || guide.title,
+        // A setting row's text includes its current value, so use the setting's own name.
+        title: key.startsWith("setting:") ? guide.title : buttonName(button) || guide.title,
         shortcut: sageShortcut(guide, button.getAttribute("data-tool-shortcut")),
         rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       });
@@ -151,7 +201,8 @@ function buttonName(button: HTMLElement) {
 function eventTargetButton(event: Event) {
   const node = event.target;
   if (!(node instanceof Element)) return null;
-  const button = node.closest("button");
+  // Buttons, plus anything Sage has a guide for, such as a row in Settings.
+  const button = node.closest("button, [data-sage-key]");
   if (!(button instanceof HTMLElement)) return null;
   if (!button.closest(".peakcad-editor")) return null;
   if (button.closest(".sage-card, .top-action-panel, .modal, .value-dialog, .inline-value-dialog")) return null;

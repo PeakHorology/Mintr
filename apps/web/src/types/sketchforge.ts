@@ -411,6 +411,14 @@ export type WorkplaneShape = {
     holeCurveId?: string;
     pathCurveId?: string;
     pathClosed: boolean;
+    /**
+     * Profile drawn on a sheet of its own. When set, the outline ids above point into this sketch,
+     * not the path sheet. A flat profile (the Sweep steps) is stood up on the path start, centred
+     * on it and resting on the sheet. `standing` means it was drawn on the sheet standing across
+     * the path start (see sweepSectionPlane) and is used exactly where it was drawn.
+     * Absent: the older one-sheet sweep.
+     */
+    section?: { profile: SketchProfile; doc?: SketchDoc; standing?: boolean };
   };
   edgeTreatments?: EdgeTreatmentFeature[];
   edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];

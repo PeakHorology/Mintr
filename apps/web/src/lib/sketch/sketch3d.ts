@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { GridSize, SketchPlane, SketchProfile, SketchSegment, WorkplaneShape } from "@/types/sketchforge";
 import { cylinderUVToWorld, cylinderOutwardNormalAtUV, worldToCylinderUV } from "@/lib/sketchCylinder";
 import { planeUVToWorld, resolveSketchPlane, sketchPlaneVAxis, worldToPlaneUV } from "@/lib/sketchPlane";
+import { sketchLineColors } from "@/lib/uiTheme";
 import type { SketchTool } from "@/components/SketchWorkspace";
 import { curveStandInOwner } from "./migrate";
 import { parseLineEntry, pointAtLengthAngle, screenAngleDeg, snapHeading } from "./lineEntry";
@@ -1462,7 +1463,7 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
     if (loop.length >= 3 && (loop[0].x !== loop[loop.length - 1].x || loop[0].z !== loop[loop.length - 1].z)) {
       loop.push(loop[0]);
     }
-    if (loop.length >= 4) addFill(live, plane, loop, "#169fce", 0.12);
+    if (loop.length >= 4) addFill(live, plane, loop, sketchLineColors().preview, 0.12);
     pushWorld(preview, plane, loop.length >= 2 ? loop : [drag.origin, drag.current], curved || drag.tool === "circle" || drag.tool === "ellipse");
   } else if (pointer.hover && (session.tool === "line" || session.tool === "arc")) {
     const anchor = session.activePointId ? byId.get(session.activePointId) : null;
@@ -1471,7 +1472,7 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
     const end = typed ?? pointer.hover;
     if (from) pushWorld(preview, plane, [from, end], curved);
   }
-  addLine(live, preview, "#169fce");
+  addLine(live, preview, sketchLineColors().preview);
   addCenterMark(live, host, plane, session, pointer);
   addGuideGhost(live, plane, session.guideGhost);
   addOffsetGhost(live, plane, session.offsetGhost);
@@ -1536,13 +1537,14 @@ function buildStaticLayer(
     addFill(group, plane, loop, "#4a8cc8", 0.22);
   }
 
+  const colors = sketchLineColors();
   for (const segment of session.profile.segments) {
     const start = byId.get(segment.startId);
     const end = byId.get(segment.endId);
     if (!start || !end) continue;
     const positions: number[] = [];
     pushWorld(positions, plane, sampleCurve(start, end, segment.kind), curved || segment.kind === "bezier" || segment.kind === "smooth");
-    addLine(group, positions, segment.construction ? "#8a6232" : "#173f60", Boolean(segment.construction));
+    addLine(group, positions, segment.construction ? colors.construction : colors.line, Boolean(segment.construction));
   }
 
   return group;

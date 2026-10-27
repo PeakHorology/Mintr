@@ -152,6 +152,41 @@ describe("bezier pen join", () => {
 });
 
 describe("insert point on a curve", () => {
+  /** How far the handles bend away from the straight line through the point, in degrees. */
+  function handleBend(profile: SketchProfile, id: string) {
+    const target = profile.points.find((entry) => entry.id === id)!;
+    const out = target.handleOut!;
+    return Math.abs((Math.atan2(out.z - target.z, out.x - target.x) * 180) / Math.PI);
+  }
+
+  it("curves a Curve point that was clicked without a drag", () => {
+    // The Curve tool stores zero-length handles on a click, so the line is straight but the handles exist.
+    const profile = chain([
+      point("a", 0, 0),
+      point("b", 10, 0, { mode: "smooth", handleIn: { x: 10, z: 0 }, handleOut: { x: 10, z: 0 } }),
+      point("c", 20, 0),
+    ], "bezier");
+    expect(handleBend(withSketchPointMode(profile, "b", "smooth"), "b")).toBeGreaterThan(10);
+  });
+
+  it("curves a Curve point whose handles were dragged flat along the line", () => {
+    const profile = chain([
+      point("a", 0, 0),
+      point("b", 10, 0, { mode: "smooth", handleIn: { x: 6, z: 0 }, handleOut: { x: 14, z: 0 } }),
+      point("c", 20, 0),
+    ], "bezier");
+    expect(handleBend(withSketchPointMode(profile, "b", "smooth"), "b")).toBeGreaterThan(10);
+  });
+
+  it("keeps the handles of a point that is already curved", () => {
+    const shaped = { handleIn: { x: 7, z: -4 }, handleOut: { x: 13, z: 4 } };
+    const profile = chain([point("a", 0, 0), point("b", 10, 0, { mode: "smooth", ...shaped }), point("c", 20, 0)], "bezier");
+    const next = withSketchPointMode(profile, "b", "smooth");
+    const kept = next.points.find((entry) => entry.id === "b")!;
+    expect(kept.handleIn).toEqual(shaped.handleIn);
+    expect(kept.handleOut).toEqual(shaped.handleOut);
+  });
+
   it("splits a cubic without moving the curve", () => {
     const start = point("a", 0, 0, { handleOut: { x: 0, z: 30 } });
     const end = point("b", 40, 0, { handleIn: { x: 40, z: 30 } });

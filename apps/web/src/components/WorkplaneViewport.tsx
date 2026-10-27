@@ -6046,7 +6046,7 @@ export function WorkplaneViewport({
   const resetView = useCallback(() => {
     const state = threeRef.current;
     if (state) {
-      resetCamera(state);
+      glideCameraHome(state);
       state.needsRender = true;
     }
   }, []);
@@ -6056,7 +6056,7 @@ export function WorkplaneViewport({
     if (!state) {
       return;
     }
-    setCameraToViewFace(state, face);
+    glideCameraToViewFace(state, face);
     syncViewCube(state, viewCubeRef.current);
   }, []);
 
@@ -7058,8 +7058,15 @@ function cancelSketchCameraTween(state: ThreeState) {
 }
 
 function startSketchCameraTween(state: ThreeState, session: SketchOnModelSession) {
+  startCameraTween(state, sketchFramingPose(session));
+}
+
+/**
+ * Glide the camera to `to`, orbiting around the target rather than sliding through the model.
+ * Used for sketch framing, Home, and view-cube clicks; reduced motion jumps straight there.
+ */
+function startCameraTween(state: ThreeState, to: SketchCameraPose) {
   const host = sketch3dHost(state);
-  const to = sketchFramingPose(session);
   const from = captureSketchCameraPose(host);
   cancelSketchCameraTween(state);
   if (prefersReducedMotion() || sketchCameraNearlyFramed(from, to)) {
@@ -7108,6 +7115,36 @@ function resetCamera(state: ThreeState) {
   state.controls.update();
   state.needsRender = true;
 }
+
+/** Home, as a glide: the same pose as resetCamera. */
+function glideCameraHome(state: ThreeState) {
+  startCameraTween(state, {
+    target: { x: CAMERA_TARGET.x, y: CAMERA_TARGET.y, z: CAMERA_TARGET.z },
+    position: { x: CAMERA_HOME.x, y: CAMERA_HOME.y, z: CAMERA_HOME.z },
+    up: { x: 0, y: 1, z: 0 },
+  });
+}
+
+/** A view-cube face, as a glide: the same pose as setCameraToViewFace. */
+function glideCameraToViewFace(state: ThreeState, face: ViewCubeFace) {
+  const target = state.controls.target;
+  const distance = clamp(state.camera.position.clone().sub(target).length(), 22, 4200);
+  const direction = VIEW_FACE_DIRECTIONS[face];
+  startCameraTween(state, {
+    target: { x: target.x, y: target.y, z: target.z },
+    position: { x: target.x + direction.x * distance, y: target.y + direction.y * distance, z: target.z + direction.z * distance },
+    up: { x: 0, y: 1, z: 0 },
+  });
+}
+
+const VIEW_FACE_DIRECTIONS: Record<ViewCubeFace, { x: number; y: number; z: number }> = {
+  top: { x: 0, y: 1, z: 0 },
+  bottom: { x: 0, y: -1, z: 0 },
+  front: { x: 0, y: 0, z: 1 },
+  back: { x: 0, y: 0, z: -1 },
+  right: { x: 1, y: 0, z: 0 },
+  left: { x: -1, y: 0, z: 0 },
+};
 
 function viewCubeFaceFromTarget(target: EventTarget | null): ViewCubeFace | null {
   const element = target instanceof Element ? target.closest("[data-view-cube-face]") : null;
@@ -8165,8 +8202,9 @@ function shapeGeometryFingerprint(shape: WorkplaneShape) {
   }, false);
 }
 
-const NEW_SOLID_SETTLE_MM = 2.5;
-const NEW_SOLID_SETTLE_MS = 180;
+/** A new part drops this far onto the bed and lands softly: enough to read as arriving, not falling. */
+const NEW_SOLID_SETTLE_MM = 6;
+const NEW_SOLID_SETTLE_MS = 320;
 const SKETCH_EXTRUDE_RISE_MS = 420;
 const SKETCH_EXTRUDE_START_SCALE = 0.06;
 const MAX_SETTLE_SHAPES = 6;
@@ -8269,7 +8307,8 @@ function startShapeSettle(state: ThreeState, object: THREE.Object3D) {
     }
     const targetY = typeof object.userData.settleRestY === "number" ? object.userData.settleRestY : restY;
     const t = Math.min(1, (now - started) / NEW_SOLID_SETTLE_MS);
-    const eased = 1 - (1 - t) ** 3;
+    // Quintic ease-out: most of the drop early, then a long soft landing.
+    const eased = 1 - (1 - t) ** 5;
     object.position.y = targetY + NEW_SOLID_SETTLE_MM * (1 - eased);
     object.updateMatrixWorld(true);
     state.needsRender = true;

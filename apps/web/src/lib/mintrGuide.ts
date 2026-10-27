@@ -15,13 +15,43 @@ export type GuideStep = {
   /** Pad/Pocket lessons write these into the prompt. They are not filled in for the learner. */
   insetMm?: number;
   depthMm?: number;
+  /** The author's own name for the step, shown above the instruction. */
+  name?: string;
+  /** A hint shown under the instruction, such as "Hold Shift to keep it square". */
+  tip?: string;
+  /**
+   * Part of the kept step before it: the learner sees one step and it is done when the last
+   * folded part is. `false` keeps a step on its own that playback would otherwise fold.
+   */
+  fold?: boolean;
 };
+
+/** The colours people can give their name. Mint is Mintr's own, for the guides Mintr makes. */
+export const GUIDE_AUTHOR_COLORS = ["red", "orange", "yellow", "green", "blue", "purple"] as const;
+export type GuideAuthorColor = (typeof GUIDE_AUTHOR_COLORS)[number];
+
+export function isGuideAuthorColor(value: unknown): value is GuideAuthorColor {
+  return typeof value === "string" && (GUIDE_AUTHOR_COLORS as readonly string[]).includes(value);
+}
 
 export type MintrGuide = {
   title: string;
   author: string;
   summary: string;
   steps: GuideStep[];
+  /** The author's name colour on the home page. */
+  color?: GuideAuthorColor;
+  /** A small square profile picture, as a data URL. */
+  avatar?: string;
+  /** A picture of the finished part for the card, as a data URL. */
+  cover?: string;
+  /** Rough minutes to follow it. */
+  minutes?: number;
+  /**
+   * Made by Mintr: shown with the Mintr logo and mint. Only the guides that ship with Mintr set
+   * this; it is never read from a file, so a guide someone saves cannot claim it.
+   */
+  official?: boolean;
 };
 
 export type GuideGhost = {
@@ -38,6 +68,12 @@ export type GuidePrompt = {
   complete: boolean;
   ghost: GuideGhost | null;
   showGhost: boolean;
+  /** The author's name for this step, when they gave one. */
+  heading?: string;
+  /** The author's tip for this step. */
+  tip?: string;
+  /** Every step's name, in order, for the checklist. */
+  checklist?: string[];
 };
 
 export type GuideCatalogEntry = {
@@ -47,6 +83,11 @@ export type GuideCatalogEntry = {
   summary: string;
   path: string | null;
   steps: number;
+  color?: GuideAuthorColor;
+  avatar?: string;
+  cover?: string;
+  minutes?: number;
+  official?: boolean;
 };
 
 export type GuideSession = {
@@ -236,7 +277,18 @@ function classifyChange(prev: readonly WorkplaneShape[], next: readonly Workplan
       label: treatment === "chamfer" ? "Chamfer the edges" : "Round the edges",
     };
   }
+  if (sizeOnlyScene(prev, next)) return { cue: "model", included: true, label: "Change the size" };
+  if (rotationOnlyScene(prev, next)) return { cue: "model", included: true, label: "Turn the part" };
+  if (somethingMoved(prev, next)) return { cue: "model", included: true, label: "Move a part" };
   return { cue: "model", included: true, label: "Update the model" };
+}
+
+function somethingMoved(prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]) {
+  const before = new Map(prev.map((shape) => [shape.id, shape]));
+  return next.some((shape) => {
+    const prior = before.get(shape.id);
+    return Boolean(prior && shapeRole(prior) === shapeRole(shape) && !poseUntouched(prior, shape));
+  });
 }
 
 function treatmentCue(prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]): "chamfer" | "fillet" | null {
@@ -471,7 +523,7 @@ function sizeRunFor(history: readonly EditorHistoryEntry[], steps: readonly Guid
   let end = step.historyIndex;
   for (const later of steps) {
     if (!later.included || later.historyIndex <= end) continue;
-    if (later.historyIndex !== end + 1 || later.cue !== "model") break;
+    if (later.historyIndex !== end + 1 || later.cue !== "model" || later.fold === false) break;
     const before = history[later.historyIndex - 1]?.shapes ?? [];
     const after = history[later.historyIndex]?.shapes ?? [];
     if (!ownedResize(before, after, shapeId)) break;
@@ -812,21 +864,187 @@ export function proposeGuideSteps(history: readonly EditorHistoryEntry[], histor
   if (history.length < 2) return [];
   const end = Math.min(Math.max(0, Math.floor(historyIndex)), history.length - 1);
   const steps: GuideStep[] = [];
+  const seen = new Set<string>([sceneSignature(history[0]?.shapes ?? [])]);
   for (let index = 1; index <= end; index += 1) {
     const prev = history[index - 1]?.shapes ?? [];
     const next = history[index]?.shapes ?? [];
     const change = classifyChange(prev, next);
     const recorded = history[index]?.label?.trim();
     const cut = recorded && /pocket/i.test(recorded) ? pocketCut(prev, next) : null;
-    steps.push({
+    const signature = sceneSignature(next);
+    // Mintr's own names read better than editor notices ("Box added", "Moved"). A recorded notice is
+    // kept where playback reads it (Align, Mirror, a pocket), or when there is nothing clearer.
+    const recordedMatters = Boolean(recorded && (/^(aligned |mirrored )/i.test(recorded) || /pocket/i.test(recorded)));
+    const label = change.cue === "sketch"
+      ? change.label
+      : recordedMatters
+        ? recorded!
+        : change.label !== "Update the model" && change.label !== "Adjust appearance" ? change.label : (recorded || change.label);
+    const step: GuideStep = {
       historyIndex: index,
-      label: change.cue === "sketch" ? change.label : (recorded || change.label),
+      label,
       included: change.included,
       cue: cut ? "pad/pocket" : change.cue,
       ...(cut ? { insetMm: Math.round(cut.inset * 100) / 100, depthMm: Math.round(cut.depth * 100) / 100 } : {}),
-    });
+    };
+    // Nothing for a learner to do: hiding or showing a part, dragging the only part about,
+    // or a change that puts the model back the way it already was.
+    if (/^(selection hidden|selection visible|showed )/i.test(step.label)) step.included = false;
+    else if (soloPlacementStep(step, history)) step.included = false;
+    else if (seen.has(signature) && step.cue === "model") step.included = false;
+    seen.add(signature);
+    steps.push(step);
+  }
+  // Size edits straight after adding a shape belong to that shape.
+  for (const step of steps) {
+    const run = sizeRunFor(history, steps, step);
+    if (!run) continue;
+    for (const member of steps) {
+      if (member.historyIndex > run.start && member.historyIndex <= run.end) member.fold = true;
+    }
   }
   return steps;
+}
+
+/** Why a step starts skipped or folded, for the author to read in the builder. */
+export function guideStepDefaultReason(step: GuideStep, history: readonly EditorHistoryEntry[]): string | null {
+  if (step.fold) {
+    const prev = history[step.historyIndex - 1]?.shapes ?? [];
+    const next = history[step.historyIndex]?.shapes ?? [];
+    return sizeOnlyScene(prev, next)
+      ? "Folded: a size change right after adding the shape."
+      : "Folded: the learner does this and the step above as one step.";
+  }
+  if (step.included) return null;
+  if (sceneMatchesGuide(history[step.historyIndex - 1]?.shapes ?? [], history[step.historyIndex]?.shapes ?? [])) {
+    return "Skipped: only the colour or name changed.";
+  }
+  if (/^(selection hidden|selection visible|showed )/i.test(step.label)) return "Skipped: only hid or showed a part.";
+  if (soloPlacementStep(step, history)) return "Skipped: just moved the only part.";
+  return "Skipped: the model went back to how it already was.";
+}
+
+/**
+ * The steps the learner sees, in order. Each group is one learner step: a kept step plus any
+ * steps folded into it. Dragging the only part about and size edits that belong to a new shape
+ * are not steps of their own.
+ */
+export function guideLessonGroups(guide: MintrGuide, history: readonly EditorHistoryEntry[]): GuideStep[][] {
+  const included = guide.steps.filter((step) => step.included);
+  const groups: GuideStep[][] = [];
+  for (const step of included) {
+    if (soloPlacementStep(step, history)) continue;
+    const ownedBySizeRun = included.some((candidate) => {
+      if (candidate.historyIndex >= step.historyIndex) return false;
+      const run = sizeRunFor(history, included, candidate);
+      return Boolean(run && step.historyIndex <= run.end);
+    });
+    if (ownedBySizeRun) continue;
+    if (step.fold && groups.length) {
+      groups[groups.length - 1].push(step);
+      continue;
+    }
+    groups.push([step]);
+  }
+  return groups;
+}
+
+export function guideStepCount(guide: MintrGuide, history: readonly EditorHistoryEntry[]) {
+  return guideLessonGroups(guide, history).length;
+}
+
+/** About how long the guide takes: a minute a step, three for a sketch. */
+export function guideMinutes(guide: MintrGuide, history: readonly EditorHistoryEntry[]) {
+  const groups = guideLessonGroups(guide, history);
+  const minutes = groups.reduce((total, group) => total + (group.some((step) => step.cue === "sketch") ? 3 : 1), 0);
+  return Math.max(1, minutes);
+}
+
+function measureList(shape: WorkplaneShape) {
+  return `${formatMm(shapeWidth(shape)).replace(" mm", "")} × ${formatMm(shapeDepth(shape)).replace(" mm", "")} × ${formatMm(shape.height)}`;
+}
+
+/**
+ * What a step is, in plain words with its real numbers, and what the learner will be told.
+ * The builder shows both so the author can judge every step before saving.
+ */
+export function describeGuideStep(
+  step: GuideStep,
+  history: readonly EditorHistoryEntry[],
+  steps: readonly GuideStep[],
+): { title: string; body: string } {
+  const prev = history[step.historyIndex - 1]?.shapes ?? [];
+  const next = history[step.historyIndex]?.shapes ?? [];
+  if (sceneMatchesGuide(prev, next)) return { title: "Change the colour or name", body: "Nothing for the learner to do." };
+  if (step.cue === "sketch") {
+    const profile = newSketchProfile(prev, next);
+    const ghost = profile ? ghostFromProfile(profile) : null;
+    const tool = ghost ? guideSketchTool(ghost) : "line";
+    const distance = profile ? extrudeDistanceMm(prev, next, profile) : null;
+    const cuts = hasHole(next) && !hasHole(prev);
+    const onPart = profileWantsFace(profile);
+    const xs = ghost?.points.map((point) => point.x) ?? [0];
+    const zs = ghost?.points.map((point) => point.z) ?? [0];
+    const spanX = Math.max(...xs) - Math.min(...xs);
+    const spanZ = Math.max(...zs) - Math.min(...zs);
+    const shape = tool === "circle"
+      ? `a circle ${formatMm(Math.max(spanX, spanZ))} across`
+      : tool === "rectangle"
+        ? `a rectangle ${formatMm(spanX)} by ${formatMm(spanZ)}`
+        : `a shape ${formatMm(spanX)} by ${formatMm(spanZ)}`;
+    const how = distance == null ? "" : cuts ? `, cut ${formatMm(distance)} into the part` : `, extruded ${formatMm(distance)}`;
+    return {
+      title: `Sketch ${shape}${onPart ? " on the part" : ""}${how}`,
+      body: `${onPart ? "Click New sketch, then the face. " : "Click Sketch. "}${ghost ? outlineSentence(ghost, tool) : "Draw the outline."}${distance == null ? "" : cuts ? ` Then Extrude, type ${formatMm(distance)}, and Cut into part.` : ` Then Extrude and type ${formatMm(distance)}.`}`,
+    };
+  }
+  if (step.cue === "chamfer" || step.cue === "fillet") {
+    const amount = treatmentAmount(next, step.cue);
+    const wanted = targetTreatment(next, step.cue);
+    const name = step.cue === "chamfer" ? "Chamfer" : "Fillet";
+    const edges = wanted?.allEdges ? "every sharp edge" : wanted?.edgeCount === 1 ? "1 edge" : `${wanted?.edgeCount ?? 0} edges`;
+    const size = amount == null ? "" : `, ${formatMm(amount)}`;
+    return {
+      title: `${step.cue === "chamfer" ? "Chamfer" : "Round"} ${edges}${size}`,
+      body: `Click ${name}, set the ${step.cue === "chamfer" ? "distance" : "radius"}${amount == null ? "" : ` to ${formatMm(amount)}`}, select ${edges}, then Apply.`,
+    };
+  }
+  const pocket = step.cue === "pad/pocket"
+    ? { inset: step.insetMm ?? 4, depth: step.depthMm ?? 6 }
+    : recordedPocket(step, history);
+  if (pocket) {
+    return {
+      title: `Cut a pocket, ${formatMm(pocket.inset)} in and ${formatMm(pocket.depth)} deep`,
+      body: `Click Pad/Pocket, click the top face, choose In, set Inset to ${formatMm(pocket.inset)} and Depth to ${formatMm(pocket.depth)}, then Create.`,
+    };
+  }
+  if (step.cue === "group") return { title: "Group the parts", body: "Select the parts, then click Group." };
+  if (step.cue === "model") {
+    const align = alignAction(step.label, prev, next);
+    if (align) {
+      const name = alignmentLabel(align.axis, align.target);
+      return { title: `Align ${name}`, body: `Select the parts, click Align, then ${name}.` };
+    }
+    const mirror = mirrorAxis(step.label);
+    if (mirror) {
+      const name = mirror === "x" ? "left-right" : mirror === "z" ? "front-back" : "top-bottom";
+      return { title: `Mirror ${name}`, body: `Select the parts, click Mirror, then ${name}.` };
+    }
+    if (rotationOnlyScene(prev, next)) return { title: step.label, body: rotationSentence(prev, next) };
+    const moved = relativeMoveSentence(prev, next);
+    if (moved) return { title: step.label, body: moved };
+    return { title: step.label, body: changedMeasurement(prev, next) };
+  }
+  const addedIds = new Set(prev.map((shape) => shape.id));
+  const added = next.find((shape) => !addedIds.has(shape.id) && shape.kind === step.cue);
+  const run = sizeRunFor(history, steps, step);
+  const sized = (run ? shapeAtRunEnd(history, run) : null) ?? added;
+  const name = guideCueName(step.cue);
+  if (!sized) return { title: step.label, body: `Click ${name}.` };
+  return {
+    title: `Add a ${name.toLowerCase()} ${measureList(sized)}${sized.hole ? ", as a hole" : ""}`,
+    body: `Click ${name}. ${sizeSentence(sized)}${sized.hole ? " Then click Hole." : ""}`,
+  };
 }
 
 export function guideStartIndex(history: readonly EditorHistoryEntry[], steps: readonly GuideStep[]) {
@@ -1013,14 +1231,13 @@ export function guidePrompt(input: {
   mirrorMode?: boolean;
 }): GuidePrompt | null {
   const included = input.guide.steps.filter((step) => step.included);
-  const shown = included.filter((step) => !soloPlacementStep(step, input.history) && !included.some((candidate) => {
-    if (candidate.historyIndex >= step.historyIndex) return false;
-    const run = sizeRunFor(input.history, included, candidate);
-    return Boolean(run && step.historyIndex <= run.end);
-  }));
-  if (!shown.length) return null;
-  const activeIndex = shown.findIndex((step) => !guideStepSatisfied(step, input.history, input.shapes, included));
-  const total = shown.length;
+  const groups = guideLessonGroups(input.guide, input.history);
+  if (!groups.length) return null;
+  const done = (step: GuideStep) => guideStepSatisfied(step, input.history, input.shapes, included);
+  // A group is done when its last part is; earlier parts may no longer match once later ones change the model.
+  const activeIndex = groups.findIndex((group) => !done(group[group.length - 1]));
+  const total = groups.length;
+  const checklist = groups.map((group) => group[0].name?.trim() || describeGuideStep(group[0], input.history, included).title);
   if (activeIndex < 0) {
     return {
       cue: "",
@@ -1031,9 +1248,19 @@ export function guidePrompt(input: {
       complete: true,
       ghost: null,
       showGhost: false,
+      checklist,
     };
   }
-  const step = shown[activeIndex];
+  const group = groups[activeIndex];
+  let lastDone = -1;
+  for (let index = group.length - 1; index >= 0; index -= 1) {
+    if (done(group[index])) {
+      lastDone = index;
+      break;
+    }
+  }
+  const step = group[Math.min(lastDone + 1, group.length - 1)];
+  const tips = group.map((member) => member.tip?.trim()).filter((tip): tip is string => Boolean(tip));
   const prev = input.history[step.historyIndex - 1]?.shapes ?? [];
   const next = input.history[step.historyIndex]?.shapes ?? [];
   const profile = step.cue === "sketch" ? newSketchProfile(prev, next) : null;
@@ -1044,6 +1271,9 @@ export function guidePrompt(input: {
     complete: false,
     ghost,
     showGhost: false,
+    heading: group[0].name?.trim() || undefined,
+    tip: tips.length ? tips.join(" ") : undefined,
+    checklist,
   };
   if (step.cue === "sketch") {
     const tool = ghost ? guideSketchTool(ghost) : "line";
@@ -1237,7 +1467,8 @@ export function guidePrompt(input: {
   return {
     ...base,
     cue: step.cue,
-    title: step.label,
+    // Older guides stored the editor's notice ("Box added") as the label.
+    title: `Add a ${name.toLowerCase()}`,
     body: sized ? `Click ${name}. ${sizeSentence(sized)}` : `Click ${name}.`,
   };
 }
@@ -1284,6 +1515,10 @@ export function readGuideCatalog(): GuideCatalogEntry[] {
         summary: typeof record.summary === "string" ? record.summary : `A guide by ${record.author}.`,
         path: typeof record.path === "string" ? record.path : null,
         steps: typeof record.steps === "number" ? record.steps : 0,
+        ...(isGuideAuthorColor(record.color) ? { color: record.color } : {}),
+        ...(typeof record.avatar === "string" && record.avatar.startsWith("data:image/") ? { avatar: record.avatar } : {}),
+        ...(typeof record.cover === "string" && record.cover.startsWith("data:image/") ? { cover: record.cover } : {}),
+        ...(typeof record.minutes === "number" && record.minutes > 0 ? { minutes: record.minutes } : {}),
       }];
     });
   } catch {
@@ -1313,7 +1548,8 @@ export function rememberGuideSession(session: GuideSession, path: string | null)
   memorySessions.set(session.id, session);
   const store = storage();
   if (!store) return;
-  const included = session.guide.steps.filter((step) => step.included).length;
+  // The count a learner will see, after folding, not the number of rows the author kept.
+  const steps = guideStepCount(session.guide, session.history);
   const catalog = readGuideCatalog().filter((entry) => entry.id !== session.id);
   catalog.unshift({
     id: session.id,
@@ -1321,7 +1557,11 @@ export function rememberGuideSession(session: GuideSession, path: string | null)
     author: session.guide.author,
     summary: session.guide.summary || `A guide by ${session.guide.author}.`,
     path,
-    steps: included,
+    steps,
+    ...(session.guide.color ? { color: session.guide.color } : {}),
+    ...(session.guide.avatar ? { avatar: session.guide.avatar } : {}),
+    ...(session.guide.cover ? { cover: session.guide.cover } : {}),
+    minutes: session.guide.minutes ?? guideMinutes(session.guide, session.history),
   });
   try {
     store.setItem(CATALOG_KEY, JSON.stringify(catalog));

@@ -479,6 +479,18 @@
   box-shadow: var(--elevation-lg);
   transform: translateX(-50%);
   pointer-events: auto;
+  /* Glides in instead of popping: a short fade and rise, kept on its centring translate. */
+  animation: sketch-prompt-in 240ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+@keyframes sketch-prompt-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-revolve-prompt {
+    animation: none;
+  }
 }
 
 .sketch-polygon-sides-prompt {
@@ -1256,6 +1268,44 @@
   background: var(--sketch-plane);
 }
 
+/*
+ * Workplane → flat sketch: the sheet fades in while the drawing settles from slightly close, as if
+ * the view drops straight down onto the paper. Back to the workplane, the 3D scene eases up out of
+ * it. `backwards` only holds the start state, so nothing keeps a transform once it has played.
+ */
+.sketch-workspace-stage {
+  animation: sketch-sheet-fade 320ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.sketch-workspace-stage .sketch-plate {
+  transform-origin: 50% 50%;
+  animation: sketch-sheet-settle 440ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.editor-canvas-area .workplane-stage {
+  animation: workplane-return 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+@keyframes sketch-sheet-fade {
+  from { opacity: 0; }
+}
+
+@keyframes sketch-sheet-settle {
+  from { transform: scale(1.06); }
+}
+
+@keyframes workplane-return {
+  from { opacity: 0; transform: scale(0.97); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-workspace-stage,
+  .sketch-workspace-stage .sketch-plate,
+  .editor-canvas-area .workplane-stage {
+    animation: none;
+  }
+}
+
 .sketch-solve-strip {
   position: absolute;
   top: 8px;
@@ -1580,7 +1630,7 @@
 
 .sketch-segments path {
   fill: none;
-  stroke: #173f60;
+  stroke: var(--sketch-line);
   stroke-width: 2.5;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -1599,7 +1649,7 @@
 }
 
 .sketch-segments path.construction {
-  stroke: #8a6232;
+  stroke: var(--sketch-construction);
   stroke-dasharray: 7 5;
 }
 
@@ -1607,7 +1657,7 @@
 .sketch-segments path.selected,
 .sketch-analytic-circles circle:hover,
 .sketch-analytic-circles circle.selected {
-  stroke: #655447;
+  stroke: var(--sketch-selected);
   stroke-width: 4;
 }
 
@@ -1630,7 +1680,7 @@
 
 .sketch-analytic-circles circle {
   fill: none;
-  stroke: #173f60;
+  stroke: var(--sketch-line);
   stroke-width: 2.5;
   vector-effect: non-scaling-stroke;
   pointer-events: stroke;
@@ -1638,12 +1688,12 @@
 }
 
 .sketch-analytic-circles circle.construction {
-  stroke: #8a6232;
+  stroke: var(--sketch-construction);
   stroke-dasharray: 7 5;
 }
 
 .sketch-construction-guides line {
-  stroke: #8a6232;
+  stroke: var(--sketch-construction);
   stroke-width: 2;
   stroke-dasharray: 7 5;
   vector-effect: non-scaling-stroke;
@@ -1660,13 +1710,13 @@
 .sketch-angle-dimension .witness,
 .sketch-angle-dimension .arc {
   fill: none;
-  stroke: #655447;
+  stroke: var(--sketch-selected);
   stroke-width: 1.6;
   vector-effect: non-scaling-stroke;
 }
 
 .sketch-angle-dimension .arrow {
-  fill: #655447;
+  fill: var(--sketch-selected);
   stroke: none;
 }
 
@@ -1677,13 +1727,13 @@
 }
 
 .sketch-segment-dimensions .sketch-angle-callout text {
-  fill: #655447;
+  fill: var(--sketch-selected);
   font-weight: 600;
 }
 
 .sketch-preview-line {
   fill: none;
-  stroke: #169fce;
+  stroke: var(--sketch-preview);
   stroke-width: 2.5;
   stroke-dasharray: 6 5;
   vector-effect: non-scaling-stroke;
@@ -1691,14 +1741,14 @@
 
 .sketch-preview-circle {
   fill: rgba(22, 159, 206, 0.08);
-  stroke: #169fce;
+  stroke: var(--sketch-preview);
   stroke-width: 2;
   stroke-dasharray: 6 5;
   vector-effect: non-scaling-stroke;
 }
 
 .sketch-drag-handles .sketch-preview-line {
-  stroke: #173f60;
+  stroke: var(--sketch-line);
   stroke-width: 2.5;
 }
 
@@ -1725,8 +1775,8 @@
 }
 
 .sketch-points circle.mark {
-  fill: #ffffff;
-  stroke: #143c5c;
+  fill: var(--sketch-point-fill);
+  stroke: var(--sketch-point-stroke);
   stroke-width: 1.4;
   vector-effect: non-scaling-stroke;
 }
@@ -1738,7 +1788,7 @@
 }
 
 .sketch-points circle.mark.selected {
-  fill: #655447;
+  fill: var(--sketch-selected);
   stroke: #efebe8;
   stroke-width: 2;
 }
@@ -1750,7 +1800,7 @@
 }
 
 .sketch-cursor-point {
-  fill: #169fce;
+  fill: var(--sketch-preview);
   stroke: #ffffff;
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;

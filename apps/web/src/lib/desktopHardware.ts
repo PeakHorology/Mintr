@@ -110,7 +110,8 @@ export function getHardwareProfile(): HardwareProfile {
       maxTextureSide: 2048,
       booleanTriangleLimit: 150_000,
       importedEdgeTriangleLimit: 8_000,
-      historyEntries: 100,
+      // Undo depth. The memory budget below is the real guard: heavy designs trim on bytes long before this.
+      historyEntries: 500,
       historyBytes: 64 * 1024 * 1024,
       sketchHistoryEntries: 100,
       thumbnailSize: 640,
@@ -136,7 +137,8 @@ export function getHardwareProfile(): HardwareProfile {
     maxTextureSide: 8192,
     booleanTriangleLimit: strong ? 2_000_000 : 400_000,
     importedEdgeTriangleLimit: strong ? 400_000 : 16_000,
-    historyEntries: 250,
+    // Undo depth. The memory budget below is the real guard: heavy designs trim on bytes long before this.
+    historyEntries: 1000,
     historyBytes: 512 * 1024 * 1024,
     sketchHistoryEntries: 250,
     thumbnailSize: 1280,
