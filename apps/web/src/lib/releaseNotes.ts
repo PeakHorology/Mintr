@@ -31,6 +31,12 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.7.1",
+    items: [
+      "Sketch sizes are easy to read again in dark mode. The labels behind the numbers now match the dark sheet.",
+    ],
+  },
+  {
     version: "1.1.7",
     items: [
       "Sage shows a short moving picture of how each sketch and workplane tool works. Turn Sage on or off with the Sage button or F1.",

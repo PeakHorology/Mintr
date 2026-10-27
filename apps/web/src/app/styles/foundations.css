@@ -59,6 +59,13 @@
   --sketch-point-fill: #ffffff;
   --sketch-point-stroke: #143c5c;
   --sketch-preview: #169fce;
+  /* Size labels on a sketch: plain sizes, and the brown angle and side callouts. */
+  --sketch-label-bg: rgba(255, 255, 255, 0.94);
+  --sketch-label-border: rgba(220, 229, 235, 0.86);
+  --sketch-label-ink: #040404;
+  --sketch-callout-bg: #efebe8;
+  --sketch-callout-border: #d2c4a8;
+  --sketch-callout-ink: #655447;
   --shadow: var(--elevation-md);
 
   /* Ink ramp. Every piece of text lands on one of these five steps instead of picking
@@ -260,6 +267,12 @@
   --sketch-point-fill: #15232b;
   --sketch-point-stroke: #6cc4ff;
   --sketch-preview: #38c0f0;
+  --sketch-label-bg: rgba(21, 35, 43, 0.94);
+  --sketch-label-border: rgba(108, 196, 255, 0.45);
+  --sketch-label-ink: #e8f1f6;
+  --sketch-callout-bg: #2b231d;
+  --sketch-callout-border: #8a6f55;
+  --sketch-callout-ink: #e7cdb4;
   --shadow: var(--elevation-md);
 
   --ink-strong: #f7f4f1;

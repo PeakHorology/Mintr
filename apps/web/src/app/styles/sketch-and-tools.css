@@ -8,6 +8,21 @@
   stroke: #888;
 }
 
+.sketch-driving-dimensions text {
+  fill: var(--sketch-label-ink);
+  text-anchor: middle;
+}
+
+[data-theme="dark"] .sketch-driving-dimensions .driving rect {
+  fill: #16324a;
+  stroke: #6cc4ff;
+}
+
+[data-theme="dark"] .sketch-driving-dimensions .driven rect {
+  fill: var(--sketch-label-bg);
+  stroke: #6f7d86;
+}
+
 .sketch-inspector-dimensions {
   display: flex;
   flex-direction: column;
@@ -1573,7 +1588,7 @@
 }
 
 .sketch-image-dimension rect {
-  fill: rgba(255, 255, 255, 0.97);
+  fill: var(--sketch-label-bg);
   stroke: rgba(127, 151, 168, 0.9);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
@@ -1581,7 +1596,7 @@
 }
 
 .sketch-image-dimension text {
-  fill: var(--ink-strong);
+  fill: var(--sketch-label-ink);
   font-weight: 700;
   text-anchor: middle;
 }
@@ -1721,13 +1736,13 @@
 }
 
 .sketch-segment-dimensions .sketch-angle-callout rect {
-  fill: #efebe8;
-  stroke: #d2c4a8;
+  fill: var(--sketch-callout-bg);
+  stroke: var(--sketch-callout-border);
   stroke-width: 1;
 }
 
 .sketch-segment-dimensions .sketch-angle-callout text {
-  fill: var(--sketch-selected);
+  fill: var(--sketch-callout-ink);
   font-weight: 600;
 }
 
@@ -1807,14 +1822,14 @@
 }
 
 .sketch-segment-dimensions rect {
-  fill: rgba(255, 255, 255, 0.94);
-  stroke: rgba(220, 229, 235, 0.86);
+  fill: var(--sketch-label-bg);
+  stroke: var(--sketch-label-border);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
 .sketch-segment-dimensions text {
-  fill: var(--ink-strong);
+  fill: var(--sketch-label-ink);
   font-weight: 500;
   text-anchor: middle;
 }
@@ -1822,7 +1837,7 @@
 .sketch-side-callout .witness,
 .sketch-side-callout .span {
   fill: none;
-  stroke: #655447;
+  stroke: var(--sketch-selected);
   stroke-width: 1.35;
   vector-effect: non-scaling-stroke;
 }
@@ -1832,25 +1847,25 @@
 }
 
 .sketch-side-callout rect {
-  fill: #efebe8;
-  stroke: #d2c4a8;
+  fill: var(--sketch-callout-bg);
+  stroke: var(--sketch-callout-border);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
 .sketch-side-callout text {
-  fill: #655447;
+  fill: var(--sketch-callout-ink);
   font-weight: 600;
   text-anchor: middle;
 }
 
 .sketch-segment-dimensions.preview rect {
-  fill: rgba(255, 255, 255, 0.94);
-  stroke: rgba(220, 229, 235, 0.86);
+  fill: var(--sketch-label-bg);
+  stroke: var(--sketch-label-border);
 }
 
 .sketch-segment-dimensions.preview text {
-  fill: var(--ink-strong);
+  fill: var(--sketch-label-ink);
 }
 
 .sketch-measurement > line {
