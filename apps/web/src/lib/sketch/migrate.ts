@@ -37,6 +37,8 @@ export function sketchProfileToDoc(
       startId: segment.startId,
       endId: segment.endId,
       construction: segment.construction || undefined,
+      regionId: segment.regionId || undefined,
+      weight: segment.weight || undefined,
     });
   }
   doc.entities = entities;
@@ -93,6 +95,8 @@ export function sketchDocToProfile(doc: SketchDoc): SketchProfile {
         endId: e.endId,
         kind: e.kind === "line" ? ("line" as const) : e.kind,
         construction: e.construction || undefined,
+        regionId: e.regionId || undefined,
+        weight: e.weight || undefined,
       };
     });
 
@@ -119,6 +123,7 @@ export function sketchDocToProfile(doc: SketchDoc): SketchProfile {
         startId: circlePointIds[i],
         endId: circlePointIds[(i + 1) % segmentsCount],
         kind: "line",
+        weight: entity.weight || undefined,
       });
     }
   }
@@ -157,6 +162,7 @@ export function sketchDocToProfile(doc: SketchDoc): SketchProfile {
         startId: arcIds[i],
         endId: arcIds[i + 1],
         kind: "line",
+        weight: entity.weight || undefined,
       });
     }
   }
@@ -269,7 +275,9 @@ export function mergeProfileIntoDoc(doc: SketchDoc, profile: SketchProfile): Ske
   const entities: SketchEntity[] = [];
   for (const entity of next.entities) {
     if (entity.kind === "circle" || entity.kind === "arc") {
-      if (keptCurveIds.has(entity.id)) entities.push(entity);
+      if (!keptCurveIds.has(entity.id)) continue;
+      const standIn = profile.segments.find((segment) => curveStandInOwner(segment.id) === entity.id);
+      entities.push(standIn ? { ...entity, weight: standIn.weight } : entity);
       continue;
     }
     if (entity.kind === "point") {
@@ -297,6 +305,8 @@ export function mergeProfileIntoDoc(doc: SketchDoc, profile: SketchProfile): Ske
         startId: updated.startId,
         endId: updated.endId,
         construction: updated.construction ?? entity.construction,
+        regionId: updated.regionId ?? entity.regionId,
+        weight: updated.weight,
       });
     }
   }
@@ -327,6 +337,8 @@ export function mergeProfileIntoDoc(doc: SketchDoc, profile: SketchProfile): Ske
       startId: segment.startId,
       endId: segment.endId,
       construction: segment.construction || undefined,
+      regionId: segment.regionId || undefined,
+      weight: segment.weight || undefined,
     });
   }
 

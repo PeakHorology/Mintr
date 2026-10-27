@@ -43,6 +43,7 @@ export const DEFAULT_WORKPLANE_WORKSPACE: WorkplaneWorkspaceSettings = {
   showThinWalls: false,
   showSmallHoles: false,
   showTrappedResin: false,
+  failureNoticesOnly: false,
 };
 
 const snapGridOptions: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
@@ -116,6 +117,7 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
     showThinWalls: printer.showThinWalls,
     showSmallHoles: printer.showSmallHoles,
     showTrappedResin: printer.showTrappedResin,
+    failureNoticesOnly: booleanOrDefault(candidate.failureNoticesOnly, fallback.failureNoticesOnly),
   };
 }
 

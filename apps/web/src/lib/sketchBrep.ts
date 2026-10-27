@@ -3,7 +3,7 @@ import { loadBrepWithOcct, type Brep, type BrepSolid } from "@/lib/brepKernel";
 import { faceHoleOvershootMm } from "@/lib/csgTree";
 import { isDefaultSketchPlane, isFaceHostedSketch, resolveSketchPlane, sketchPlaneVAxis } from "@/lib/sketchPlane";
 import { findSweepInputs } from "@/lib/sketch/directEdit";
-import { materialOutlines, type OrderedSketchPath } from "@/lib/sketch/profiles";
+import { materialOutlines, sketchLoopRegion, type OrderedSketchPath } from "@/lib/sketch/profiles";
 import { buildSweepMesh } from "@/lib/sketch/sweepMath";
 import { sweepSolid } from "@/lib/sketchSweep";
 import {
@@ -19,7 +19,24 @@ export type SketchBrepBakeResult = {
   solid: BrepSolid;
 };
 
-export type ClosedPath = { points: { x: number; z: number }[] };
+export type ClosedPath = { points: { x: number; z: number }[]; regionId?: string | null };
+
+/**
+ * How many same-region loops enclose this one. Call with paths sorted largest first.
+ * Even depth is material, odd depth is a void. A different region is a separate shape, not a hole.
+ */
+export function closedPathNestingDepth(sortedLargestFirst: readonly ClosedPath[], index: number): number {
+  const path = sortedLargestFirst[index];
+  if (!path) return 0;
+  const region = path.regionId ?? null;
+  let depth = 0;
+  for (let earlier = 0; earlier < index; earlier += 1) {
+    const other = sortedLargestFirst[earlier];
+    if ((other.regionId ?? null) !== region) continue;
+    if (pathContains(other, path)) depth += 1;
+  }
+  return depth;
+}
 
 async function drawingFromClosedPaths(brep: Brep, paths: ClosedPath[]) {
   const sorted = [...paths].sort((a, b) => pathArea(b) - pathArea(a));
@@ -31,12 +48,7 @@ async function drawingFromClosedPaths(brep: Brep, paths: ClosedPath[]) {
     // Count enclosing loops rather than testing only the single largest one. A sketch with two
     // separate outlines that each carry a hole put the second hole outside sorted[0], so it was
     // fused as solid material — the STEP gained a plug where the mesh viewport showed a hole.
-    // Even depth is material, odd depth is a void, matching closedProfilesFromLegacy.
-    let depth = 0;
-    for (let j = 0; j < i; j += 1) {
-      if (pathContains(sorted[j], sorted[i])) depth += 1;
-    }
-    drawing = depth % 2 === 1
+    drawing = closedPathNestingDepth(sorted, i) % 2 === 1
       ? brep.drawingCut(drawing, loop)
       : brep.drawingFuse(drawing, loop);
   }
@@ -164,11 +176,9 @@ async function bakeCylinderSketchExtrusion(
   if (solids.length === 0) return null;
   let acc = solids[0];
   for (let i = 1; i < solids.length; i += 1) {
-    let nest = 0;
-    for (let j = 0; j < i; j += 1) {
-      if (pathContains(sorted[j], sorted[i])) nest += 1;
-    }
-    const next = nest % 2 === 1 ? brep.cut(acc as never, solids[i] as never) : brep.fuse(acc as never, solids[i] as never);
+    const next = closedPathNestingDepth(sorted, i) % 2 === 1
+      ? brep.cut(acc as never, solids[i] as never)
+      : brep.fuse(acc as never, solids[i] as never);
     if (!next.ok) return null;
     acc = next.value as unknown as BrepSolid;
   }
@@ -364,7 +374,10 @@ export async function bakeSketchShapeSolid(
     segments: shape.sketchProfile.segments.filter((segment) => !segment.construction),
   });
   if (closed.length === 0) return null;
-  const closedPaths = closed.map((path) => ({ points: densifyClosedPathUv(path) }));
+  const closedPaths = closed.map((path) => ({
+    points: densifyClosedPathUv(path),
+    regionId: sketchLoopRegion(path.steps),
+  }));
   if (shape.sketchFinish === "revolve" && shape.sketchRevolveAxis) {
     const baked = await bakeSketchRevolveBrep(shape.sketchProfile, shape.sketchRevolveAxis, { plane, closedPaths });
     return baked?.solid ?? null;

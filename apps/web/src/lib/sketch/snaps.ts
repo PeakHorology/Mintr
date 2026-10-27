@@ -3,6 +3,11 @@ import type { SketchDoc, SketchSnapResult, SketchVec2 } from "./types";
 
 const DEFAULT_PIXEL_TOL = 10;
 
+/** Circle and arc outlines are drawn as chords. Those samples are not corners. */
+function isDisplayStandIn(id: string) {
+  return /-[ps]\d+$/.test(id);
+}
+
 function dist(a: SketchVec2, b: SketchVec2) {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
@@ -60,7 +65,8 @@ function profileIntersections(profile: SketchProfile, pointById: Map<string, Ske
       const box2 = boxes[j];
       if (!box2) continue;
       if (box1.maxX < box2.minX || box2.maxX < box1.minX || box1.maxZ < box2.minZ || box2.maxZ < box1.minZ) continue;
-      if (s1.startId === s2.startId || s1.startId === s2.endId || s1.endId === s2.startId || s1.endId === s2.endId) continue;
+      if (isDisplayStandIn(s1.id) || isDisplayStandIn(s2.id)) continue;
+    if (s1.startId === s2.startId || s1.startId === s2.endId || s1.endId === s2.startId || s1.endId === s2.endId) continue;
       const hit = segmentIntersection(box1.a, box1.b, box2.a, box2.b);
       if (hit) hits.push({ x: hit.x, z: hit.z, entityId: s1.id });
     }
@@ -92,7 +98,7 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
 
   const excluded = query.excludePointIds?.length ? new Set(query.excludePointIds) : null;
   for (const point of profile.points) {
-    if (excluded?.has(point.id)) continue;
+    if (excluded?.has(point.id) || isDisplayStandIn(point.id)) continue;
     const d = dist(cursor, point);
     if (d <= tol) {
       candidates.push({
@@ -107,6 +113,7 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
 
   const pointById = new Map(profile.points.map((p) => [p.id, p]));
   for (const segment of profile.segments) {
+    if (isDisplayStandIn(segment.id)) continue;
     const a = pointById.get(segment.startId);
     const b = pointById.get(segment.endId);
     if (!a || !b) continue;
@@ -167,6 +174,7 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
         x: cursor.x,
         z: query.from.z,
         kind: "horizontal",
+        alignTo: [query.from],
         inferredConstraints: [{ kind: "horizontal", entityIds: [] }],
       });
     }
@@ -175,9 +183,40 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
         x: query.from.x,
         z: cursor.z,
         kind: "vertical",
+        alignTo: [query.from],
         inferredConstraints: [{ kind: "vertical", entityIds: [] }],
       });
     }
+  }
+
+  // Line up with another sketch point: same x (vertical) or same z (horizontal).
+  let alignX: SketchVec2 | null = null;
+  let alignZ: SketchVec2 | null = null;
+  let alignXError = tol;
+  let alignZError = tol;
+  for (const point of profile.points) {
+    if (excluded?.has(point.id) || isDisplayStandIn(point.id)) continue;
+    const dx = Math.abs(cursor.x - point.x);
+    const dz = Math.abs(cursor.z - point.z);
+    if (dx <= alignXError && dz > tol) {
+      alignX = { x: point.x, z: point.z };
+      alignXError = dx;
+    }
+    if (dz <= alignZError && dx > tol) {
+      alignZ = { x: point.x, z: point.z };
+      alignZError = dz;
+    }
+  }
+  if (alignX || alignZ) {
+    const crossed = alignX && alignZ ? { x: alignX.x, z: alignZ.z } : null;
+    const both = crossed !== null && dist(cursor, crossed) <= tol * 1.25;
+    candidates.push({
+      x: alignX ? alignX.x : cursor.x,
+      z: both && alignZ ? alignZ.z : alignZ && !alignX ? alignZ.z : cursor.z,
+      kind: alignX ? "vertical" : "horizontal",
+      alignTo: both ? [alignX!, alignZ!] : [alignX ?? alignZ!],
+      inferredConstraints: [],
+    });
   }
 
   const priority: Record<SketchSnapResult["kind"], number> = {
@@ -199,9 +238,14 @@ export function snapSketchPoint(profile: SketchProfile, query: SnapQuery): Sketc
     return dist(cursor, a) - dist(cursor, b);
   });
 
-  if (candidates.length > 0 && dist(cursor, candidates[0]) <= tol * 1.25) {
-    return candidates[0];
-  }
+  const within = (candidate: SketchSnapResult) => dist(cursor, candidate) <= tol * 1.25;
+  const feature = candidates.find((candidate) => priority[candidate.kind] <= 4 && within(candidate));
+  if (feature) return feature;
+  // Lining up with another point beats sticking to the edge you're leaving.
+  const aligned = candidates.find((candidate) => candidate.alignTo?.length && within(candidate));
+  if (aligned) return aligned;
+  const rest = candidates.find((candidate) => within(candidate));
+  if (rest) return rest;
 
   if (query.gridStep && query.gridStep > 0) {
     const step = query.gridStep;

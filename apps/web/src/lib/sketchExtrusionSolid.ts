@@ -3,7 +3,7 @@ import { loadBrepWithOcct } from "@/lib/brepKernel";
 import { faceHoleOvershootMm } from "@/lib/csgTree";
 import { pathContains } from "@/lib/sketchBrep";
 import { curveStandInOwner } from "@/lib/sketch/migrate";
-import { materialOutlines, type OrderedSketchPath } from "@/lib/sketch/profiles";
+import { materialOutlines, sketchLoopRegion, type OrderedSketchPath } from "@/lib/sketch/profiles";
 import type { SketchDoc } from "@/lib/sketch/types";
 import { circleFromClosedPath } from "@/lib/sketchProfileShape";
 import { isFaceHostedSketch, resolveSketchPlane, sketchPlaneVAxis } from "@/lib/sketchPlane";
@@ -219,8 +219,10 @@ function buildExactExtrusion(
     const loop = drawingFromPath(brep, sorted[index], doc);
     if (!loop) continue;
     const outer = { points: sorted[index].points.map((point) => ({ x: point.x, z: point.z })) };
+    const region = sketchLoopRegion(sorted[index].steps);
     let depth = 0;
     for (let previous = 0; previous < index; previous += 1) {
+      if (sketchLoopRegion(sorted[previous].steps) !== region) continue;
       if (pathContains({ points: sorted[previous].points }, outer)) depth += 1;
     }
     drawing = depth % 2 === 1 ? brep.drawingCut(drawing, loop) : brep.drawingFuse(drawing, loop);

@@ -57,4 +57,32 @@ describe("sketch center snap", () => {
     expect(snap.x).toBe(0);
     expect(snap.z).toBe(0);
   });
+
+  it("lines a point up with another point", () => {
+    const profile = {
+      points: [
+        { id: "a", x: 0, z: 0 },
+        { id: "b", x: 20, z: 10 },
+      ],
+      segments: [],
+    };
+    const level = snapSketchPoint(profile, {
+      cursor: { x: 5, z: 10.3 },
+      screenUnit: 0.2,
+      gridStep: 1,
+    });
+    expect(level.kind).toBe("horizontal");
+    expect(level.z).toBe(10);
+    expect(level.alignTo).toEqual([{ x: 20, z: 10 }]);
+
+    const plumb = snapSketchPoint(profile, {
+      cursor: { x: 0.2, z: 6 },
+      screenUnit: 0.2,
+      gridStep: 1,
+      excludePointIds: ["b"],
+    });
+    expect(plumb.kind).toBe("vertical");
+    expect(plumb.x).toBe(0);
+    expect(plumb.alignTo).toEqual([{ x: 0, z: 0 }]);
+  });
 });

@@ -30,7 +30,7 @@ export const metadata: Metadata = {
   },
 };
 
-const themeBootScript = `(function(){try{var t=localStorage.getItem("peakcad:uiTheme")||localStorage.getItem("sketchForge.theme");if(t==="dark"){document.documentElement.dataset.theme="dark";document.documentElement.style.colorScheme="dark";}else{document.documentElement.style.colorScheme="light";}}catch(e){document.documentElement.style.colorScheme="light";}})();`;
+const themeBootScript = `(function(){try{var t=localStorage.getItem("peakcad:uiTheme")||localStorage.getItem("sketchForge.theme");var dark=t==="dark";if(dark){document.documentElement.dataset.theme="dark";document.documentElement.style.colorScheme="dark";}else{document.documentElement.style.colorScheme="light";}var w=window.peakcadWindow;if(w&&w.setTheme)w.setTheme(dark?"dark":"light");}catch(e){document.documentElement.style.colorScheme="light";}})();`;
 
 export default function RootLayout({
   children,

@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ToolbarSettingsIcon } from "@/components/icons";
+import { ToolbarSageIcon, ToolbarSettingsIcon } from "@/components/icons";
+import { FullscreenButton } from "@/components/workplane/FullscreenButton";
+import { useSageActive, useSageToggle } from "@/components/workplane/Sage";
 import { PeakTipButton, PeakTooltip, usePeakContextHelp, usePeakTooltip } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 
@@ -10,6 +12,27 @@ type SketchFocusMode = "2d" | "3d";
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 const DEFAULT_PROJECT_NAME = "Untitled design";
+
+function SageSection() {
+  const active = useSageActive();
+  const toggle = useSageToggle();
+  return (
+    <div className="editor-file-group" aria-label="Sage">
+      <div className="toolbar-section-label">Sage</div>
+      <div className="toolbar-section-tools">
+        <PeakTipButton
+          className={`toolbar-icon sage-tool${active ? " active" : ""}`}
+          label="Sage"
+          description="Hover a button to read what it does. A click still runs the tool. Right-click still shows the short note."
+          aria-pressed={active}
+          onClick={toggle}
+        >
+          <ToolbarSageIcon />
+        </PeakTipButton>
+      </div>
+    </div>
+  );
+}
 
 export function EditorModeTabs({
   toolbarMode,
@@ -29,6 +52,7 @@ export function EditorModeTabs({
         type="button"
         role="tab"
         aria-selected={toolbarMode === "geometry"}
+        data-sage-label="Geometry"
         onClick={() => onToolbarModeChange("geometry")}
         onContextMenu={geometryHelp.onContextMenu}
       >
@@ -41,6 +65,7 @@ export function EditorModeTabs({
         role="tab"
         aria-selected={toolbarMode === "sketch"}
         data-lesson-target="sketch"
+        data-sage-label="Sketch"
         onClick={() => onToolbarModeChange("sketch")}
         onContextMenu={sketchHelp.onContextMenu}
       >
@@ -71,6 +96,7 @@ export function SketchFocusTabs({
         type="button"
         role="tab"
         aria-selected={focusMode === "2d"}
+        data-sage-label="Flat sketch"
         onClick={() => onFocusModeChange("2d")}
         onContextMenu={flatHelp.onContextMenu}
       >
@@ -89,6 +115,7 @@ export function SketchFocusTabs({
           }
           onFocusModeChange("3d");
         }}
+        data-sage-label="3D sketch"
         onContextMenu={sketch3dHelp.onContextMenu}
       >
         3D sketch
@@ -250,6 +277,8 @@ export function EditorTopBar({
             className="editor-top-bar-logo"
             type="button"
             aria-label="Home dashboard"
+            data-sage-key="home"
+            data-sage-label="Home"
             onClick={onHome}
             {...homeTipProps}
             onContextMenu={(event) => {
@@ -308,9 +337,11 @@ export function EditorTopBar({
 
       <div className="editor-top-bar-right">
         {rightTools ? <div className="editor-top-bar-tools editor-top-bar-tools--modify">{rightTools}</div> : null}
+        <SageSection />
         <div className="editor-file-group" aria-label="Settings">
           <div className="toolbar-section-label">Settings</div>
           <div className="toolbar-section-tools">
+            <FullscreenButton />
             <PeakTipButton
               className="toolbar-icon"
               label="Settings"

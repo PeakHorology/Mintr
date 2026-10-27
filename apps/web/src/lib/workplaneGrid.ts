@@ -16,6 +16,7 @@ export type WorkplaneGridPalette = {
   border: { color: string; opacity: number };
 };
 
+/** Same colours as the sketch sheet tokens `--sketch-plane-*` in foundations.css. */
 export function workplaneGridPalette(theme: UiTheme = readAppliedUiTheme()): WorkplaneGridPalette {
   if (theme === "dark") {
     return {

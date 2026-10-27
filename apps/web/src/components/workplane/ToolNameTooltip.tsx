@@ -14,6 +14,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { useSageActive } from "@/components/workplane/Sage";
 
 export const PEAK_TOOLTIP_DELAY_MS = 750;
 /** @deprecated Use PEAK_TOOLTIP_DELAY_MS */
@@ -258,6 +259,7 @@ export function PeakTipButton({
   ...rest
 }: PeakTipButtonProps) {
   const ref = useRef<HTMLButtonElement>(null);
+  const sage = useSageActive();
   const hasDescription = Boolean(description && description.trim() && description.trim() !== label);
   const hint = hasDescription ? "Right-click for help" : undefined;
   const { open, showLater, hide } = usePeakTooltip(shortcut || hasDescription ? 500 : PEAK_TOOLTIP_DELAY_MS);
@@ -272,6 +274,8 @@ export function PeakTipButton({
       style={style as CSSProperties | undefined}
       disabled={disabled}
       aria-label={rest["aria-label"] ?? label}
+      data-tool-help={description ?? undefined}
+      data-tool-shortcut={shortcut}
       title=""
       onPointerEnter={(event) => {
         showLater(event);
@@ -296,7 +300,7 @@ export function PeakTipButton({
       }}
     >
       {children}
-      <PeakTooltip label={label} open={open} anchorRef={ref} shortcut={shortcut} hint={hint} />
+      <PeakTooltip label={label} open={open && !sage} anchorRef={ref} shortcut={shortcut} hint={hint} />
       {helpPortal}
     </button>
   );

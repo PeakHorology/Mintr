@@ -27,6 +27,7 @@ import {
   ToolbarUngroupIcon,
   ToolbarUndoIcon,
 } from "@/components/icons";
+import { useSageActive } from "@/components/workplane/Sage";
 import { PeakTooltip, usePeakContextHelp, usePeakTooltip } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import type { CadModifierKind } from "@/lib/cadModifierTypes";
@@ -77,6 +78,7 @@ function shortcutLabel(bindings: HotkeyBindings, actionId: HotkeyActionId) {
 function ToolbarButton({ tool }: { tool: ToolDef }) {
   const Icon = tool.icon;
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const sage = useSageActive();
   const hasDescription = Boolean(tool.description && tool.description.trim() && tool.description.trim() !== tool.label);
   const disabledHint = !tool.enabled ? tool.disabledReason : undefined;
   const { open, tooltipProps, hide } = usePeakTooltip(tool.shortcut || hasDescription || disabledHint ? 500 : undefined);
@@ -90,6 +92,8 @@ function ToolbarButton({ tool }: { tool: ToolDef }) {
       aria-label={tool.label}
       aria-disabled={!tool.enabled}
       data-toolbar-tool={tool.label}
+      data-tool-help={tool.description}
+      data-tool-shortcut={tool.shortcut}
       data-lesson-target={tool.label.toLowerCase()}
       {...tooltipProps}
       onMouseDown={(event) => {
@@ -105,7 +109,7 @@ function ToolbarButton({ tool }: { tool: ToolDef }) {
       <Icon className={tool.iconClassName} />
       <PeakTooltip
         label={tool.label}
-        open={open}
+        open={open && !sage}
         anchorRef={buttonRef}
         shortcut={tool.enabled ? tool.shortcut : undefined}
         hint={disabledHint ?? (hasDescription ? "Right-click for help" : undefined)}
@@ -276,7 +280,7 @@ function OverflowToolRow({
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <Ellipsis size={22} strokeWidth={2.2} aria-hidden="true" />
+            <Ellipsis size={26} strokeWidth={2.2} aria-hidden="true" />
           </button>
           {menuPresence.mounted ? (
             <div
@@ -509,7 +513,7 @@ export function EditorViewportToolbar({
       { label: "Group", description: TOOL_DESCRIPTIONS.group, icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup, shortcut: shortcutLabel(hotkeys, "group"), disabledReason: "Select two or more shapes to group" },
       { label: "Tie", description: TOOL_DESCRIPTIONS.assembly, icon: ToolbarAssemblyIcon, action: onAssemble, enabled: canGroup, disabledReason: "Select two or more shapes to tie together" },
       { label: "Ungroup", description: TOOL_DESCRIPTIONS.ungroup, icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup, shortcut: shortcutLabel(hotkeys, "ungroup"), disabledReason: "Select a grouped shape to ungroup" },
-      { label: "Intersect", description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select a solid and a hole shape" },
+      { label: "Intersect", description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select two or more overlapping shapes" },
     ],
   };
   const modifySection: ToolSection = {

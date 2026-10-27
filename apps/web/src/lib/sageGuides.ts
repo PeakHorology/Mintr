@@ -1,0 +1,185 @@
+import { formatHotkeyBinding, loadHotkeyBindings, type HotkeyActionId } from "@/lib/hotkeys";
+
+export type SagePicture =
+  | "line"
+  | "arc"
+  | "curve"
+  | "rectangle"
+  | "circle"
+  | "select"
+  | "offset"
+  | "sketch-fillet"
+  | "sketch-chamfer"
+  | "trim"
+  | "sketch-mirror"
+  | "erase"
+  | "bend"
+  | "smooth"
+  | "sketch-linear"
+  | "sketch-circular"
+  | "lineweight"
+  | "dimension"
+  | "extrude"
+  | "revolve"
+  | "sweep"
+  | "coincident"
+  | "horizontal"
+  | "vertical"
+  | "equal"
+  | "parallel"
+  | "right-angle"
+  | "tangent"
+  | "midpoint"
+  | "concentric"
+  | "fix"
+  | "symmetry"
+  | "duplicate"
+  | "duplicate-repeat"
+  | "group"
+  | "ungroup"
+  | "tie"
+  | "intersect"
+  | "chamfer"
+  | "fillet"
+  | "push-pull"
+  | "pad-pocket"
+  | "split"
+  | "align"
+  | "snap"
+  | "lay-flat"
+  | "mirror"
+  | "circular-pattern"
+  | "linear-pattern"
+  | "ruler";
+
+export type SageGuide = {
+  title: string;
+  what: string;
+  steps: string[];
+  hotkey?: HotkeyActionId;
+  /** Animated gesture diagram, drawn in SagePictures. */
+  picture?: SagePicture;
+};
+
+const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
+  { keys: ["sage"], title: "Sage", what: "Explains the tool under your pointer.", steps: ["Turn Sage on.", "Hover a button to read what it is for.", "A click still runs that tool. Right-click still shows the short note."] },
+  { keys: ["undo"], title: "Undo", what: "Steps back through the last change.", steps: ["Click Undo, or press the shortcut.", "A sketch line and a change to a solid share one list."], hotkey: "undo" },
+  { keys: ["redo"], title: "Redo", what: "Brings back the last change you undid.", steps: ["Undo something first.", "Click Redo to put that change back."], hotkey: "redo" },
+  { keys: ["history"], title: "History", what: "Shows earlier steps without changing the model until you restore one.", steps: ["Click History.", "Pick a step to return the design to that point."] },
+  { keys: ["copy"], title: "Copy", what: "Copies the selected shapes, including a group’s history.", steps: ["Select what you want.", "Click Copy, then Paste."], hotkey: "copy" },
+  { keys: ["paste"], title: "Paste", what: "Places copied shapes on the workplane.", steps: ["Copy or cut something first.", "Click Paste. Groups stay groups."], hotkey: "paste" },
+  { keys: ["duplicate"], title: "Duplicate", what: "Makes a copy sitting on the original.", steps: ["Select a shape.", "Click Duplicate, then move the copy."], hotkey: "duplicate", picture: "duplicate" },
+  { keys: ["duplicate and repeat"], title: "Duplicate and repeat", what: "Copies the selection and keeps repeating the same move.", steps: ["Select a shape and duplicate it once so Mintr knows the offset.", "Click Duplicate and repeat to add another copy at that same spacing."], hotkey: "duplicateRepeat", picture: "duplicate-repeat" },
+  { keys: ["delete"], title: "Delete", what: "Removes the selected shapes.", steps: ["Select what should go.", "Click Delete."], hotkey: "delete" },
+  { keys: ["group"], title: "Group", what: "Fuses the selected shapes into one solid. A hole cuts the solids.", steps: ["Select two or more shapes.", "Click Group. If they do not fuse exactly, Mintr keeps a mesh."] , hotkey: "group", picture: "group" },
+  { keys: ["tie"], title: "Tie", what: "Keeps shapes separate and moves them together.", steps: ["Select the shapes that should stay a set.", "Click Tie. They move as one and do not fuse."], picture: "tie" },
+  { keys: ["ungroup"], title: "Ungroup", what: "Unwraps one level of the last Group.", steps: ["Select a grouped shape.", "Click Ungroup. Nested groups unwrap one level at a time."], hotkey: "ungroup", picture: "ungroup" },
+  { keys: ["intersect"], title: "Intersect", what: "Keeps only the volume where the selected shapes overlap.", steps: ["Select the shapes that overlap.", "Click Intersect. Everything outside the overlap is removed."], picture: "intersect" },
+  { keys: ["chamfer"], title: "Chamfer", what: "Cuts a flat bevel along the edges you pick.", steps: ["Select one solid.", "Click Chamfer, then the edges, and set the distance."], picture: "chamfer" },
+  { keys: ["fillet"], title: "Fillet", what: "Rounds the edges you pick.", steps: ["Select one solid.", "Click Fillet, then the edges, and set the radius."], picture: "fillet" },
+  { keys: ["push pull"], title: "Push Pull", what: "Grows or shrinks a solid by dragging a flat face.", steps: ["Select one solid.", "Click Push Pull, drag a face, then Apply."], picture: "push-pull" },
+  { keys: ["pad/pocket"], title: "Pad/Pocket", what: "Grows a pad off a face or cuts a pocket into it.", steps: ["Select one solid.", "Click Pad/Pocket, then a flat face.", "Choose Out or In, and set the depth."], picture: "pad-pocket" },
+  { keys: ["split"], title: "Split", what: "Cuts the selected object into two pieces.", steps: ["Select one solid.", "Click Split and choose the cut.", "A dovetail, plug, snap, or thread can join the pieces afterward."], picture: "split" },
+  { keys: ["align"], title: "Align", what: "Lines selected shapes up with each other.", steps: ["Select two or more shapes.", "Click Align and choose the side or center."], hotkey: "align", picture: "align" },
+  { keys: ["snap"], title: "Snap", what: "Moves a face onto another face.", steps: ["Click Snap.", "Click the face that should move, then the face it should meet."], picture: "snap" },
+  { keys: ["lay flat"], title: "Lay flat", what: "Turns a shape so a face sits on the workplane.", steps: ["Click Lay flat.", "Click the face that should lie on the bed."], picture: "lay-flat" },
+  { keys: ["mirror"], title: "Mirror", what: "Copies selected shapes across a plane.", steps: ["Select the shapes.", "Click Mirror and choose the plane."] , hotkey: "mirror", picture: "mirror" },
+  { keys: ["circular pattern"], title: "Circular pattern", what: "Copies the selection around a center.", steps: ["Select a shape.", "Click Circular pattern, click the center, and set how many copies."], picture: "circular-pattern" },
+  { keys: ["linear pattern"], title: "Linear pattern", what: "Copies the selection in rows.", steps: ["Select a shape.", "Click Linear pattern.", "Set the count and spacing along width, length, or height."], picture: "linear-pattern" },
+  { keys: ["select"], title: "Select", what: "Picks sketch points, lines, and whole shapes.", steps: ["Click a line to select that line.", "Click inside a closed shape to select the whole shape, then drag to move it."], picture: "select" },
+  { keys: ["line"], title: "Line", what: "Draws straight segments.", steps: ["Click the start.", "Click the next point. Type 50<30 for a length and an angle, or hold Shift for 15° steps.", "Click the first point again to close a shape."], hotkey: "sketchLine", picture: "line" },
+  { keys: ["arc"], title: "Arc", what: "Draws an arc through three clicks.", steps: ["Click the start.", "Click the end.", "Click a point the arc should pass through."], picture: "arc" },
+  { keys: ["curve"], title: "Curve", what: "Draws a smooth bend you can pull with handles.", steps: ["Click a point and drag to pull the handle.", "Click the next point.", "Close on the first point when the shape should be a loop."], picture: "curve" },
+  { keys: ["rectangle"], title: "Rectangle", what: "Draws a rectangle from corner to corner.", steps: ["Click one corner.", "Drag to the opposite corner and release."], hotkey: "sketchRectangle", picture: "rectangle" },
+  { keys: ["circle"], title: "Circle", what: "Draws a circle from its center.", steps: ["Click the center.", "Drag out to the radius and release."], hotkey: "sketchCircle", picture: "circle" },
+  { keys: ["shapes"], title: "Shapes", what: "Opens the ready-made outlines.", steps: ["Click Shapes.", "Pick square, rounded, slot, triangle, polygon, star, or ellipse.", "Click and drag on the sheet to size it."] },
+  { keys: ["sketch-shape"], title: "Shape", what: "Places a ready-made outline.", steps: ["Choose the shape.", "Click one corner, or the center for a polygon or star.", "Drag to size it."] },
+  { keys: ["offset"], title: "Offset", what: "Copies an outline inside or outside itself.", steps: ["Select a closed shape, or one line.", "Click Offset and type the distance, or drag an edge.", "The copy is its own shape."], picture: "offset" },
+  { keys: ["sketch-fillet"], title: "Fillet", what: "Rounds a sketch corner.", steps: ["Click Fillet.", "Click a corner, or click inside a shape to round its corners.", "Type the radius."], picture: "sketch-fillet" },
+  { keys: ["sketch-chamfer"], title: "Chamfer", what: "Cuts a sketch corner straight across.", steps: ["Click Chamfer.", "Click a corner, or click inside a shape.", "Type the distance."], picture: "sketch-chamfer" },
+  { keys: ["trim"], title: "Trim", what: "Removes the piece of a line you click, up to the nearest crossing.", steps: ["Click Trim.", "Click the piece that should disappear."], picture: "trim" },
+  { keys: ["sketch-mirror"], title: "Mirror", what: "Copies the sketch across a straight line.", steps: ["Click Mirror.", "Click the straight line to use as the mirror.", "Everything else is copied across it."], picture: "sketch-mirror" },
+  { keys: ["erase"], title: "Erase", what: "Removes sketch points and lines.", steps: ["Click Erase and drag across what should go.", "Click Erase again for one-click removal of a whole shape or line.", "Click Erase once more to return to the brush."], picture: "erase" },
+  { keys: ["bend"], title: "Bend", what: "Adds a point on a line.", steps: ["Click Bend.", "Click a segment.", "On a curve the new point stays smooth. On a straight line it is a corner."], picture: "bend" },
+  { keys: ["smooth"], title: "Smooth", what: "Curves the points you click.", steps: ["Click Smooth.", "Click each point that should become a bend.", "It stays on so you can curve several points."], picture: "smooth" },
+  { keys: ["sketch-linear"], title: "Linear", what: "Copies sketch geometry in rows.", steps: ["Click Linear.", "Click a line to copy that line, or click inside a shape to copy the whole shape.", "Set the count and spacing."], picture: "sketch-linear" },
+  { keys: ["sketch-circular"], title: "Circular", what: "Spins sketch copies around the middle.", steps: ["Click Circular.", "Click a line to spin that line, or click inside a shape to spin the whole shape.", "Set how many copies."], picture: "sketch-circular" },
+  { keys: ["lineweight"], title: "Lineweight", what: "Sets how thick a line is drawn. The shape does not move.", steps: ["Click Lineweight.", "Click a line, or click inside a shape.", "Type a thickness. 1 is a hairline, 2.5 is standard, 8 is heavy.", "Lineweight stays on so you can set the next line too."], picture: "lineweight" },
+  { keys: ["image"], title: "Image", what: "Lays a picture on the sheet to trace.", steps: ["Choose Select.", "Click Image and pick a picture."] },
+  { keys: ["extrude"], title: "Extrude", what: "Turns a closed sketch into a solid.", steps: ["Close the outline.", "Click Extrude and set the height."], hotkey: "sketchExtrude", picture: "extrude" },
+  { keys: ["revolve"], title: "Revolve", what: "Spins a sketch around a straight line.", steps: ["Click Revolve.", "Click the straight line to spin around.", "The profile becomes a solid. Revolve is only on the default workplane."], picture: "revolve" },
+  { keys: ["sweep"], title: "Sweep", what: "Carries a closed outline along a path.", steps: ["Draw a closed outline and a path on the same sheet.", "Click Sweep and follow the prompt."], picture: "sweep" },
+  { keys: ["cancel"], title: "Cancel", what: "Leaves the sketch and drops unfinished geometry.", steps: ["Click Cancel.", "The sketch closes without making a solid."] },
+  { keys: ["dimension"], title: "Dimension", what: "Adds a length that drives the sketch.", steps: ["Click Dimension.", "Click a line, or two points.", "Type the length. The sketch moves to match."], hotkey: "sketchDimension", picture: "dimension" },
+  { keys: ["coincident"], title: "Coincident", what: "Joins two points so they stay together.", steps: ["Click Coincident.", "Click the first point, then the second."], picture: "coincident" },
+  { keys: ["horizontal"], title: "Horizontal", what: "Keeps a line, or two points, level.", steps: ["Click Horizontal.", "Click the line, or the two points."], picture: "horizontal" },
+  { keys: ["vertical"], title: "Vertical", what: "Keeps a line upright.", steps: ["Click Vertical.", "Click the line."], picture: "vertical" },
+  { keys: ["equal"], title: "Equal", what: "Keeps two lines the same length.", steps: ["Click Equal.", "Click the first line, then the second."], picture: "equal" },
+  { keys: ["parallel"], title: "Parallel", what: "Keeps two lines parallel.", steps: ["Click Parallel.", "Click the first line, then the second."], picture: "parallel" },
+  { keys: ["right angle"], title: "Right angle", what: "Keeps two lines at 90 degrees.", steps: ["Click Right angle.", "Click the first line, then the second."], picture: "right-angle" },
+  { keys: ["tangent"], title: "Tangent", what: "Keeps a line touching a circle at one point.", steps: ["Click Tangent.", "Click the line, then the circle."], picture: "tangent" },
+  { keys: ["midpoint"], title: "Midpoint", what: "Locks a point to the middle of a line.", steps: ["Click Midpoint.", "Click the point, then the line."], picture: "midpoint" },
+  { keys: ["concentric"], title: "Concentric", what: "Makes two circles share a center.", steps: ["Click Concentric.", "Click the first circle, then the second."], picture: "concentric" },
+  { keys: ["fix"], title: "Fix", what: "Locks a point or a line so it cannot move.", steps: ["Click Fix.", "Click the point or the line."], picture: "fix" },
+  { keys: ["symmetry"], title: "Symmetry", what: "Mirrors two points or lines across an axis.", steps: ["Click Symmetry.", "Click the pair, then the axis line."], picture: "symmetry" },
+  { keys: ["exit full screen"], title: "Full screen", what: "Leaves full screen.", steps: ["Click the button, or press F11."] },
+  { keys: ["import"], title: "Import", what: "Brings in a STEP, STL, 3MF, or SVG file.", steps: ["Click Import.", "Choose the file. You can bring a mesh in as a hole."] },
+  { keys: ["save"], title: "Save", what: "Writes this design to its file.", steps: ["Click Save.", "A new file is .mintr. An open .peakcad file keeps that name."] },
+  { keys: ["save as"], title: "Save as", what: "Writes this design to a new .mintr file.", steps: ["Click Save as.", "Choose the folder and the name."] },
+  { keys: ["save as guide"], title: "Save as guide", what: "Saves the kept steps as a guide someone can play through.", steps: ["Build the model.", "Click Save as guide and name the .mintrguide file."] },
+  { keys: ["export"], title: "Export", what: "Writes the model out for printing or another program.", steps: ["Click Export.", "Choose STL, 3MF, STEP, or a blueprint."] },
+  { keys: ["settings"], title: "Settings", what: "Opens units, grid, appearance, and the tool index.", steps: ["Click Settings.", "Change what you need and close the window."] },
+  { keys: ["home"], title: "Home", what: "Returns to the project list.", steps: ["Click the Mintr mark.", "If the design has unsaved file changes, Mintr asks before leaving."] },
+  { keys: ["full screen"], title: "Full screen", what: "Fills the screen with Mintr.", steps: ["Click Full screen, or press F11.", "Press F11 or the button again to leave."] },
+  { keys: ["camera-home"], title: "Home", what: "Returns the camera to the starting view.", steps: ["Click Home.", "The model frames itself again."] },
+  { keys: ["zoom in"], title: "Zoom in", what: "Moves the view closer.", steps: ["Click Zoom in.", "The model, or the sketch sheet, grows in the window."] },
+  { keys: ["zoom out"], title: "Zoom out", what: "Moves the view farther away.", steps: ["Click Zoom out."] },
+  { keys: ["bottom view", "top view", "front view", "back view", "right view", "left view"], title: "View", what: "Snaps the camera to that side of the model.", steps: ["Click a face of the cube.", "Drag the cube if you want to orbit instead."] },
+  { keys: ["hide controls"], title: "Hide controls", what: "Tucks the camera buttons away.", steps: ["Click Hide controls.", "Click the arrow again to bring them back."] },
+  { keys: ["show controls"], title: "Show controls", what: "Brings the camera buttons back.", steps: ["Click the arrow."] },
+  { keys: ["ruler tools"], title: "Ruler tools", what: "Measures distances on the model.", steps: ["Click Ruler tools.", "Add a measurement, move its points, or delete one."], picture: "ruler" },
+  { keys: ["x-ray view"], title: "X-ray view", what: "Looks through the model. The part and the export stay whole.", steps: ["Click X-ray view.", "Turn the cut on, and drag it if you want a different slice."] },
+  { keys: ["geometry"], title: "Geometry", what: "Switches the bar to solid tools.", steps: ["Click Geometry.", "The sketch sheet closes its tools and the solid tools come back."] },
+  { keys: ["sketch"], title: "Sketch", what: "Opens sketch tools. A new sketch starts on the flat sheet.", steps: ["Click Sketch.", "Draw, then use Finish to make a solid."] },
+  { keys: ["flat sketch"], title: "Flat sketch", what: "Draws on the flat sheet.", steps: ["Click Flat sketch.", "The sheet fills the view."] },
+  { keys: ["3d sketch"], title: "3D sketch", what: "Draws on the part in the 3D view.", steps: ["Click 3D sketch.", "Click it again to look straight at the face."] },
+  { keys: ["box", "cylinder", "sphere", "cone", "pyramid", "triangle", "text", "torus", "tube", "tube / ring", "gear", "thread"], title: "Shape", what: "Adds that solid to the workplane.", steps: ["Click the shape.", "It lands on the bed.", "Use the inspector or the handles to change its size."] },
+];
+
+const BY_KEY = new Map<string, SageGuide>();
+for (const entry of GUIDE_LIST) {
+  const { keys, ...guide } = entry;
+  for (const key of keys) BY_KEY.set(key, guide);
+}
+
+export function normalizeSageLabel(label: string) {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/…/g, "")
+    .replace(/\.\.\./g, "")
+    .replace(/^add /, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const GENERIC_SOLID = {
+  title: "Shape",
+  what: "Adds that solid to the workplane.",
+  steps: ["Click the shape.", "It lands on the bed.", "Use the inspector or the handles to change its size."],
+} satisfies SageGuide;
+
+export function lookupSageGuide(keyOrLabel: string): SageGuide | null {
+  const known = BY_KEY.get(normalizeSageLabel(keyOrLabel));
+  if (known) return known;
+  if (keyOrLabel.trim().toLowerCase().startsWith("add ")) return GENERIC_SOLID;
+  return null;
+}
+
+export function sageShortcut(guide: SageGuide, fromButton?: string | null) {
+  const typed = fromButton?.trim();
+  if (typed && typed !== "None") return typed;
+  if (!guide.hotkey) return undefined;
+  const label = formatHotkeyBinding(loadHotkeyBindings()[guide.hotkey] ?? []);
+  return label === "None" ? undefined : label;
+}

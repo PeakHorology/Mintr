@@ -41,6 +41,17 @@
   --workplane: #b8dce8;
   --workplane-soft: rgba(94, 184, 232, 0.22);
   --workplane-plane-bg: #f8fbfc;
+  /* Sketch sheet. Same sheet and grid as the 3D workplane
+     (resolveWorkplaneBaseColor + workplaneGridPalette). */
+  --sketch-plane: #ddf8ff;
+  --sketch-plane-minor: #91dff0;
+  --sketch-plane-minor-opacity: 0.38;
+  --sketch-plane-major: #4bbddf;
+  --sketch-plane-major-opacity: 0.5;
+  --sketch-plane-axis: #34aad2;
+  --sketch-plane-axis-opacity: 0.68;
+  --sketch-plane-border: #58c5e6;
+  --sketch-plane-border-opacity: 0.7;
   --shadow: var(--elevation-md);
 
   /* Ink ramp. Every piece of text lands on one of these five steps instead of picking
@@ -172,8 +183,8 @@
   --z-toast: 60;
   --z-tooltip: 70;
 
-  --editor-toolbar-height: 60px;
-  --editor-toolbar-tools-height: 60px;
+  --editor-toolbar-height: 72px;
+  --editor-toolbar-tools-height: 72px;
   --editor-viewport-toolbar-height: 0px;
   /* Geometry/Sketch hangs below the toolbar. Centered overlays clear it. */
   --editor-mode-notch-height: 46px;
@@ -226,6 +237,15 @@
   /* Matches DEFAULT_DARK_VIEWPORT_BACKGROUND so the CSS plane behind the canvas and the
      WebGL clear colour cannot show a seam. */
   --workplane-plane-bg: #141a18;
+  --sketch-plane: #243640;
+  --sketch-plane-minor: #3d7a8a;
+  --sketch-plane-minor-opacity: 0.36;
+  --sketch-plane-major: #5eb8e8;
+  --sketch-plane-major-opacity: 0.46;
+  --sketch-plane-axis: #7ec8e8;
+  --sketch-plane-axis-opacity: 0.68;
+  --sketch-plane-border: #6bb8d8;
+  --sketch-plane-border-opacity: 0.7;
   --shadow: var(--elevation-md);
 
   --ink-strong: #f7f4f1;
@@ -3827,10 +3847,20 @@ button.lesson-target-hot {
   height: 20px;
 }
 
+.editor-file-group .toolbar-icon.sage-tool {
+  width: 42px;
+  height: 42px;
+}
+
+.editor-file-group .toolbar-icon.sage-tool svg {
+  width: 30px;
+  height: 30px;
+}
+
 .editor-top-bar-logo {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: calc(var(--editor-toolbar-height) - 8px);
+  height: calc(var(--editor-toolbar-height) - 8px);
   margin-left: 2px;
   place-items: center;
   padding: 0;
@@ -3858,8 +3888,8 @@ button.lesson-target-hot {
 
 .editor-top-bar-logo img,
 .editor-top-bar-logo .peakcad-logo {
-  width: 40px;
-  height: 40px;
+  width: 100%;
+  height: 100%;
   display: block;
   object-fit: contain;
 }

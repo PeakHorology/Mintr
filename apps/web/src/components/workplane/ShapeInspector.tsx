@@ -54,6 +54,8 @@ import {
   normalizeGridfinityBinSpec,
 } from "@/lib/gridfinity";
 import { withGridfinityBaseplateSpec, withGridfinityBinSpec } from "@/lib/gridfinityShape";
+import { parseDimensionEntry } from "@/lib/dimensionEntry";
+import { uniformScalePatch } from "@/lib/uniformScale";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
 import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
 import { isConstructionShape } from "@/lib/holeFeature";
@@ -138,6 +140,8 @@ type RangePropertyConfig = {
   value: number;
   min: number;
   max: number;
+  /** Typed values may pass the slider. The slider itself stays on min–max. */
+  typedMax?: number;
   step?: number;
   hint?: string;
   /** Draw a center mark and snap the thumb to 0. */
@@ -176,6 +180,10 @@ export const TYPED_DIMENSION_MAX_MM = 2000;
 function formatPropertyNumber(value: number, accuracy: MeasurementAccuracy, step: number) {
   if (step >= 1) return String(Math.round(value));
   return formatMeasurementNumber(value, accuracy, step);
+}
+
+function isFootprintSize(property: ShapePropertyConfig): property is RangePropertyConfig {
+  return !("type" in property) && (property.label === "Length" || property.label === "Width" || property.label === "Height");
 }
 
 function propertyUsesLengthUnit(label: string) {
@@ -779,7 +787,16 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
 
   if (shape.kind === "polygon") {
     return [
-      { label: "Sides", value: shape.sides ?? 6, min: 3, max: MAX_SHAPE_SIDES, step: 1, onChange: (sides) => onUpdate({ sides: Math.round(sides) }) },
+      {
+        label: "Sides",
+        value: shape.sides ?? 6,
+        min: 3,
+        max: 32,
+        typedMax: 1024,
+        step: 1,
+        hint: "Up to 1024 by typing.",
+        onChange: (sides) => onUpdate({ sides: Math.round(sides) }),
+      },
       { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
       { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight },
@@ -903,6 +920,39 @@ export function ShapeInspector({
   const inspectTarget = feature ?? shape;
   const solidColor = inspectTarget.hole ? fallbackSolidColor(inspectTarget) : inspectTarget.color;
   const locked = Boolean(inspectTarget.locked);
+  const [keepProportions, setKeepProportions] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("mintr.keepProportions") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [scalePercent, setScalePercent] = useState("100");
+  const coupledKind = inspectTarget.kind === "cone"
+    || inspectTarget.kind === "torus"
+    || inspectTarget.kind === "tube"
+    || inspectTarget.kind === "ring"
+    || inspectTarget.kind === "roof"
+    || inspectTarget.kind === "thread"
+    || inspectTarget.kind === "text"
+    || inspectTarget.kind === "gear"
+    || inspectTarget.kind === "gridfinityBin"
+    || inspectTarget.kind === "gridfinityBaseplate";
+  const canScale = inspectTarget.kind !== "thread"
+    && inspectTarget.kind !== "text"
+    && inspectTarget.kind !== "gear"
+    && inspectTarget.kind !== "gridfinityBin"
+    && inspectTarget.kind !== "gridfinityBaseplate";
+  const coupledNote = inspectTarget.kind === "cone"
+    ? "The radii set the width. Scale % changes length, width, and height together."
+    : inspectTarget.kind === "torus"
+      ? "Height follows the tube radius."
+      : inspectTarget.kind === "tube" || inspectTarget.kind === "ring"
+        ? "Thickness is the wall. Scale % changes the overall size and the wall together."
+        : inspectTarget.kind === "roof"
+          ? "The roof angles stay put. Scale % changes length, width, and height together."
+          : null;
   const updateInspectTarget: ShapeInspectorUpdate = (patch, options) => {
     if (feature && onUpdateFeature) {
       onUpdateFeature(feature.id, patch, options);
@@ -911,6 +961,8 @@ export function ShapeInspector({
     onUpdate(patch, options);
   };
   const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget, sceneShapes ?? []));
+  const sizeProperties = properties.filter(isFootprintSize);
+  const detailProperties = properties.filter((property) => !isFootprintSize(property));
   const sketchFeature = resolveEditableSketchShape(
     feature ?? shape,
     { preferredId: activeFeatureId, preferFaceFeatures: !activeFeatureId },
@@ -965,6 +1017,32 @@ export function ShapeInspector({
     inspectTarget.importedMesh?.brepStep,
     inspectTarget.cadBrep,
   ]);
+
+  const renderProperty = (property: ShapePropertyConfig) => {
+    if (property.type === "text") {
+      return <TextProperty key={property.label} {...property} disabled={locked} />;
+    }
+    if (property.type === "select") {
+      return <SelectProperty key={property.label} {...property} disabled={locked} />;
+    }
+    const sizeLabel = property.label === "Length" || property.label === "Width" || property.label === "Height";
+    const { onChange: propertyOnChange, ...propertyRest } = property;
+    const onChange = keepProportions && !coupledKind && sizeLabel
+      ? (next: number) => {
+          const current = property.label === "Length"
+            ? shapeDepth(inspectTarget)
+            : property.label === "Width"
+              ? shapeWidth(inspectTarget)
+              : inspectTarget.height;
+          if (!(current > 1e-6)) return;
+          const patch = uniformScalePatch(inspectTarget, next / current);
+          if (!patch) return;
+          const axis = property.label === "Length" ? "depth" : property.label === "Width" ? "width" : "height";
+          updateInspectTarget(patch, { resizeAxis: axis });
+        }
+      : propertyOnChange;
+    return <RangeProperty key={property.label} {...propertyRest} onChange={onChange} workspace={workspace} disabled={locked} onInteractionActiveChange={onInteractionActiveChange} />;
+  };
 
   return (
     <aside className="shape-inspector" aria-label={`${inspectTarget.name} shape settings`} onPointerDown={(event) => event.stopPropagation()}>
@@ -1083,6 +1161,69 @@ export function ShapeInspector({
               />
               <span>Custom</span>
             </PeakTipLabel>
+          </div>
+        </div>
+      ) : null}
+
+      {sizeProperties.length > 0 || canScale ? (
+        <div className="property-card shape-size-card" aria-label="Size">
+          <div className="property-list">
+            {sizeProperties.map(renderProperty)}
+            {canScale ? (
+              <div className="proportion-row">
+                {coupledKind ? null : (
+                  <button
+                    type="button"
+                    className={keepProportions ? "active" : ""}
+                    aria-pressed={keepProportions}
+                    disabled={locked}
+                    onClick={() => {
+                      setKeepProportions((on) => {
+                        const next = !on;
+                        try {
+                          window.localStorage.setItem("mintr.keepProportions", next ? "1" : "0");
+                        } catch {
+                          // The lock still applies for this visit.
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    Keep proportions
+                  </button>
+                )}
+                <label>
+                  Scale
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    step={1}
+                    value={scalePercent}
+                    disabled={locked}
+                    aria-label="Scale by percent"
+                    onChange={(event) => setScalePercent(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                  %
+                </label>
+                <button
+                  type="button"
+                  disabled={locked}
+                  onClick={() => {
+                    const ratio = Number(scalePercent) / 100;
+                    const patch = uniformScalePatch(inspectTarget, ratio);
+                    if (!patch) return;
+                    updateInspectTarget(patch, { resizeAxis: "height" });
+                  }}
+                >
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {coupledNote ? <p className="proportion-note">{coupledNote}</p> : null}
           </div>
         </div>
       ) : null}
@@ -1212,15 +1353,7 @@ export function ShapeInspector({
         </button>
         {propertiesOpen ? (
           <div className="property-list" id={`properties-${shape.id}`}>
-            {properties.map((property) => {
-              if (property.type === "text") {
-                return <TextProperty key={property.label} {...property} disabled={locked} />;
-              }
-              if (property.type === "select") {
-                return <SelectProperty key={property.label} {...property} disabled={locked} />;
-              }
-              return <RangeProperty key={property.label} {...property} workspace={workspace} disabled={locked} onInteractionActiveChange={onInteractionActiveChange} />;
-            })}
+            {detailProperties.map(renderProperty)}
           </div>
         ) : null}
       </div>
@@ -1493,6 +1626,7 @@ function RangeProperty({
   value,
   min,
   max,
+  typedMax,
   step = 0.01,
   hint,
   centerDetent,
@@ -1502,6 +1636,7 @@ function RangeProperty({
   onInteractionActiveChange,
 }: RangePropertyConfig & { workspace: WorkplaneWorkspaceSettings; disabled?: boolean; onInteractionActiveChange?: (active: boolean) => void }) {
   const allowsAboveSliderMax = label === "Length" || label === "Width" || label === "Height";
+  const typedCeiling = typedMax ?? (allowsAboveSliderMax ? TYPED_DIMENSION_MAX_MM : max);
   const isLength = propertyUsesLengthUnit(label);
   const isAngle = propertyUsesDegreeUnit(label);
   const accuracy = workspace.accuracy;
@@ -1526,9 +1661,7 @@ function RangeProperty({
     }
   }, [displayText, editing]);
   const toModelValue = (nextValue: number) => isLength ? displayToMillimeters(nextValue, workspace) : nextValue;
-  const boundTyped = (nextValue: number) => (
-    allowsAboveSliderMax ? clamp(nextValue, min, TYPED_DIMENSION_MAX_MM) : clamp(nextValue, min, max)
-  );
+  const boundTyped = (nextValue: number) => clamp(nextValue, min, typedCeiling);
   const withCenterDetent = (nextValue: number) => {
     const bounded = clamp(nextValue, min, max);
     return centerDetent && Math.abs(bounded) <= 3 ? 0 : bounded;
@@ -1543,8 +1676,8 @@ function RangeProperty({
     // Blank or unparsable text (cleared field, "10 mm", "12,5") reverts instead
     // of collapsing the shape to the minimum; unchanged text is not a change.
     if (text === "" || text === focusTextRef.current) return;
-    const next = Number(text);
-    if (!Number.isFinite(next)) return;
+    const next = parseDimensionEntry(text, controlValue);
+    if (next === null || !Number.isFinite(next)) return;
     onChange(boundTyped(toModelValue(next)));
   };
   const handleSliderChange = (nextValue: number) => {
@@ -1559,13 +1692,10 @@ function RangeProperty({
         <span className="range-property-name">{label}</span>
         <span className="range-value-control">
           <input
-            type="number"
-            min={controlMin}
-            max={allowsAboveSliderMax ? undefined : controlMax}
-            step={controlStep}
+            type="text"
+            inputMode="decimal"
             value={editing ? draft : formatPropertyNumber(controlValue, accuracy, controlStep)}
             disabled={disabled}
-            inputMode="decimal"
             onFocus={() => {
               focusTextRef.current = displayText;
               cancelCommitRef.current = false;

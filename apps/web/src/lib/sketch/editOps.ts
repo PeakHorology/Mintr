@@ -1,5 +1,5 @@
 import type { SketchPoint, SketchProfile, SketchSegment } from "@/types/sketchforge";
-import { cloneSketchDoc, pruneDanglingReferences } from "./migrate";
+import { cloneSketchDoc, curveStandInOwner, pruneDanglingReferences } from "./migrate";
 import type { SketchDoc, SketchEntity, SketchPointEntity, SketchVec2 } from "./types";
 
 function newId(prefix: string) {
@@ -11,6 +11,43 @@ function pointById(doc: SketchDoc, id: string): SketchPointEntity | null {
   return e && e.kind === "point" ? e : null;
 }
 
+
+/** Standard drawn thickness. Anything this close is stored as "no custom weight". */
+export const SKETCH_LINEWEIGHT_DEFAULT = 2.5;
+export const SKETCH_LINEWEIGHT_MIN = 0.5;
+export const SKETCH_LINEWEIGHT_MAX = 12;
+
+/**
+ * Screen thickness for a sketch stroke. The standard weight is stored as absent
+ * so a line with no choice keeps the sheet's normal stroke.
+ */
+export function clampSketchLineweight(value: number): number | undefined {
+  if (!Number.isFinite(value)) return undefined;
+  const clamped = Math.min(SKETCH_LINEWEIGHT_MAX, Math.max(SKETCH_LINEWEIGHT_MIN, value));
+  const rounded = Math.round(clamped * 100) / 100;
+  if (Math.abs(rounded - SKETCH_LINEWEIGHT_DEFAULT) < 0.051) return undefined;
+  return rounded;
+}
+
+/**
+ * Set the drawn thickness of the named lines, curves, circles, and arcs.
+ * A display chord (`id-s3`) applies to the circle or arc it stands in for.
+ * Positions are left alone.
+ */
+export function setSketchLineweight(doc: SketchDoc, entityIds: readonly string[], value: number): SketchDoc {
+  const weight = clampSketchLineweight(value);
+  const ids = new Set(entityIds);
+  for (const id of entityIds) {
+    const owner = curveStandInOwner(id);
+    if (owner) ids.add(owner);
+  }
+  const next = cloneSketchDoc(doc);
+  next.entities = next.entities.map((entity) => {
+    if (!ids.has(entity.id) || entity.kind === "point") return entity;
+    return { ...entity, weight };
+  });
+  return next;
+}
 
 /** Toggle construction flag on entities. */
 export function setConstruction(doc: SketchDoc, entityIds: string[], construction: boolean): SketchDoc {
@@ -41,12 +78,14 @@ export function splitLineAtPoint(doc: SketchDoc, lineId: string, at: SketchVec2)
     startId: a.id,
     endId: mid.id,
     construction: line.construction,
+    weight: line.weight,
   }, {
     kind: "line",
     id: newId("sketch-segment"),
     startId: mid.id,
     endId: b.id,
     construction: line.construction,
+    weight: line.weight,
   });
   // The original line id is gone. Which half should inherit an equal/parallel/tangent constraint
   // is genuinely ambiguous, so drop them rather than guess or leave them pointing at a dead id.
@@ -171,6 +210,7 @@ function trimLineAt(doc: SketchDoc, line: Extract<SketchEntity, { kind: "line" }
       startId: start.pointId,
       endId: end.pointId,
       construction: line.construction,
+      weight: line.weight,
     });
   }
   return dropOrphanPoints(next);
@@ -233,6 +273,7 @@ function trimCircleAt(doc: SketchDoc, circle: Extract<SketchEntity, { kind: "cir
       endId,
       ccw: true,
       construction: circle.construction,
+      weight: circle.weight,
     });
   }
   return dropOrphanPoints(next);
@@ -497,10 +538,26 @@ export function mirrorEntities(doc: SketchDoc, entityIds: string[], axisLineId: 
 
   const idMap = new Map<string, string>();
   const selected = new Set(entityIds);
-  // Include points referenced by selected curves
+  // Include points referenced by selected curves, and a circle or arc named by its center or display stand-ins.
   for (const e of next.entities) {
-    if (!selected.has(e.id)) continue;
     if (e.kind === "line" || e.kind === "bezier" || e.kind === "smooth") {
+      if (!selected.has(e.id)) continue;
+      selected.add(e.startId);
+      selected.add(e.endId);
+      continue;
+    }
+    if (e.kind === "circle") {
+      const named = selected.has(e.id) || selected.has(e.centerId) || [...selected].some((id) => id.startsWith(`${e.id}-`));
+      if (!named) continue;
+      selected.add(e.id);
+      selected.add(e.centerId);
+      continue;
+    }
+    if (e.kind === "arc") {
+      const named = selected.has(e.id) || selected.has(e.centerId);
+      if (!named) continue;
+      selected.add(e.id);
+      selected.add(e.centerId);
       selected.add(e.startId);
       selected.add(e.endId);
     }
@@ -511,9 +568,13 @@ export function mirrorEntities(doc: SketchDoc, entityIds: string[], axisLineId: 
     if (!selected.has(e.id) || e.kind !== "point") continue;
     const id = newId("sketch-point");
     idMap.set(e.id, id);
-    const r = reflect(e.x, e.z);
-    additions.push({ kind: "point", id, x: r.x, z: r.z, construction: e.construction });
+    const reflected = reflect(e.x, e.z);
+    const copy: SketchPointEntity = { kind: "point", id, x: reflected.x, z: reflected.z, construction: e.construction, mode: e.mode };
+    if (e.handleIn) copy.handleIn = reflect(e.handleIn.x, e.handleIn.z);
+    if (e.handleOut) copy.handleOut = reflect(e.handleOut.x, e.handleOut.z);
+    additions.push(copy);
   }
+  const regionId = newId("sketch-region");
   for (const e of next.entities) {
     if (!selected.has(e.id)) continue;
     if (e.kind === "line" || e.kind === "bezier" || e.kind === "smooth") {
@@ -526,9 +587,26 @@ export function mirrorEntities(doc: SketchDoc, entityIds: string[], axisLineId: 
         startId,
         endId,
         construction: e.construction,
+        regionId,
+        weight: e.weight,
       });
+      continue;
+    }
+    if (e.kind === "circle") {
+      const centerId = idMap.get(e.centerId);
+      if (!centerId) continue;
+      additions.push({ kind: "circle", id: newId("sketch-circle"), centerId, radius: e.radius, construction: e.construction, weight: e.weight });
+      continue;
+    }
+    if (e.kind === "arc") {
+      const centerId = idMap.get(e.centerId);
+      const startId = idMap.get(e.startId);
+      const endId = idMap.get(e.endId);
+      if (!centerId || !startId || !endId) continue;
+      additions.push({ kind: "arc", id: newId("sketch-arc"), centerId, startId, endId, ccw: e.ccw, construction: e.construction, weight: e.weight });
     }
   }
+  if (!additions.length) return doc;
   next.entities.push(...additions);
   return next;
 }
@@ -584,12 +662,12 @@ function appendTransformedCopy(
     const startId = idMap.get(curve.startId);
     const endId = idMap.get(curve.endId);
     if (!startId || !endId) continue;
-    doc.entities.push({ kind: curve.kind, id: newId("sketch-segment"), startId, endId, construction: curve.construction });
+    doc.entities.push({ kind: curve.kind, id: newId("sketch-segment"), startId, endId, construction: curve.construction, regionId: curve.regionId, weight: curve.weight });
   }
   for (const circle of sources.circles) {
     const centerId = idMap.get(circle.centerId);
     if (!centerId) continue;
-    doc.entities.push({ kind: "circle", id: newId("sketch-circle"), centerId, radius: circle.radius, construction: circle.construction });
+    doc.entities.push({ kind: "circle", id: newId("sketch-circle"), centerId, radius: circle.radius, construction: circle.construction, weight: circle.weight });
   }
   for (const arc of sources.arcs) {
     const centerId = idMap.get(arc.centerId);
@@ -604,6 +682,7 @@ function appendTransformedCopy(
       endId,
       ccw: arc.ccw,
       construction: arc.construction,
+      weight: arc.weight,
     });
   }
 }

@@ -6,6 +6,7 @@ import {
   circularPatternSketch,
   clampSketchPatternCount,
   closedProfilesFromLegacy,
+  closedShapeSelection,
   createEmptySketchDoc,
   projectEdgesOntoSketch,
   rectangularPattern,
@@ -61,6 +62,29 @@ describe("sketch document foundations", () => {
     });
     expect(horiz.kind).toBe("horizontal");
     expect(horiz.z).toBe(0);
+  });
+
+  it("does not treat a circle outline as a row of endpoints", () => {
+    const doc = createEmptySketchDoc(defaultSketchPlane(), "circle-snap");
+    doc.entities = [
+      { kind: "point", id: "c", x: 0, z: 0 },
+      { kind: "circle", id: "circ", centerId: "c", radius: 10 },
+      { kind: "point", id: "corner", x: 30, z: 0 },
+    ];
+    const profile = sketchDocToProfile(doc);
+    const chord = profile.points.find((point) => point.id.startsWith("circ-p"));
+    expect(chord).toBeTruthy();
+    const onOutline = snapSketchPoint(profile, {
+      cursor: { x: chord!.x, z: chord!.z },
+      screenUnit: 0.05,
+    });
+    expect(onOutline.kind).not.toBe("endpoint");
+    const onCorner = snapSketchPoint(profile, {
+      cursor: { x: 30.1, z: 0.1 },
+      screenUnit: 0.05,
+    });
+    expect(onCorner.kind).toBe("endpoint");
+    expect(onCorner.pointId).toBe("corner");
   });
 
   it("solves horizontal constraints and driving dimensions", () => {
@@ -156,5 +180,42 @@ describe("sketch document foundations", () => {
     expect(clampSketchPatternCount(0, 3)).toBe(1);
     doc = rectangularPattern(doc, ["l1", "a", "b"], 4, 1, 12, 0);
     expect(lines(doc)).toBe(4);
+  });
+
+  it("patterns one line from a line click and the whole shape from a fill click", () => {
+    const profile = {
+      points: [
+        { id: "p1", x: 0, z: 0 },
+        { id: "p2", x: 10, z: 0 },
+        { id: "p3", x: 10, z: 8 },
+        { id: "p4", x: 0, z: 8 },
+      ],
+      segments: [
+        { id: "s1", startId: "p1", endId: "p2", kind: "line" as const },
+        { id: "s2", startId: "p2", endId: "p3", kind: "line" as const },
+        { id: "s3", startId: "p3", endId: "p4", kind: "line" as const },
+        { id: "s4", startId: "p4", endId: "p1", kind: "line" as const },
+      ],
+      sketchPlane: defaultSketchPlane(),
+    };
+    const doc = sketchProfileToDoc(profile, "box-sketch");
+    const fromFill = closedShapeSelection(profile, doc.entities, { profileId: closedProfilesFromLegacy(profile)[0]?.id });
+    expect(fromFill?.segmentIds.slice().sort()).toEqual(["s1", "s2", "s3", "s4"]);
+    const copied = rectangularPattern(doc, [...fromFill!.pointIds, ...fromFill!.segmentIds], 2, 1, 20, 0);
+    expect(copied.entities.filter((entity) => entity.kind === "line")).toHaveLength(8);
+    const oneLine = rectangularPattern(doc, ["s2", "p2", "p3"], 2, 1, 20, 0);
+    expect(oneLine.entities.filter((entity) => entity.kind === "line")).toHaveLength(5);
+
+    const circle = createEmptySketchDoc(defaultSketchPlane(), "circle-sketch");
+    circle.entities = [
+      { kind: "point", id: "c", x: 0, z: 0 },
+      { kind: "circle", id: "circ", centerId: "c", radius: 10 },
+    ];
+    const circleProfile = sketchDocToProfile(circle);
+    const chord = circleProfile.segments.find((segment) => segment.id.startsWith("circ-s"));
+    const wholeCircle = closedShapeSelection(circleProfile, circle.entities, { segmentId: chord?.id });
+    expect(wholeCircle?.segmentIds).toContain("circ");
+    const spun = circularPatternSketch(circle, [...wholeCircle!.pointIds, ...wholeCircle!.segmentIds], { x: 0, z: 0 }, 4);
+    expect(spun.entities.filter((entity) => entity.kind === "circle")).toHaveLength(4);
   });
 });

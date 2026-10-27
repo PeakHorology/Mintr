@@ -214,6 +214,33 @@ export function ToolbarBlueprintIcon(props: IconProps) {
   );
 }
 
+export function ToolbarFullscreenIcon({ exit = false, ...props }: IconProps & { exit?: boolean }) {
+  return (
+    <CadGlyph {...props}>
+      {exit ? (
+        <path d="M9 4.5V9H4.5M15 4.5V9h4.5M9 19.5V15H4.5M15 19.5V15h4.5" />
+      ) : (
+        <path d="M4.5 9V4.5H9M15 4.5H19.5V9M4.5 15v4.5H9M15 19.5h4.5V15" />
+      )}
+    </CadGlyph>
+  );
+}
+
+/** Sage. Perched great horned owl: wide tufts, round eyes, a wing, feet, and a mint beak. */
+export function ToolbarSageIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M8.6 5Q12 7 15.4 5L18.4 2Q19.2 5.2 18.4 8C20 11 19.8 15.6 16.4 18.2Q12 19.8 7.6 18.2C4.2 15.6 4 11 5.6 8Q4.8 5.2 5.6 2Z" />
+      <circle cx="9" cy="9.6" r="1.6" />
+      <circle cx="15" cy="9.6" r="1.6" />
+      <path d="M16 12.2Q18 14.8 15.6 17" />
+      <path d="M9.8 19v2.4M14.2 19v2.4" />
+      <path d="M6 21.6H18" />
+      <path d="M10.5 10.8H13.5L12 14.4Z" fill="#2aa77e" stroke="none" />
+    </CadGlyph>
+  );
+}
+
 export function ToolbarSettingsIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
@@ -368,6 +395,15 @@ export function ToolbarHollowIcon(props: IconProps) {
     <CadGlyph {...props}>
       <path d="M4.5 18.5V8.5h15v10" />
       <path d="M8 15.5V11h8v4.5" />
+    </CadGlyph>
+  );
+}
+
+export function ToolbarHoleIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <rect x="4.5" y="4.5" width="15" height="15" rx="1.5" />
+      <circle cx="12" cy="12" r="3" />
     </CadGlyph>
   );
 }

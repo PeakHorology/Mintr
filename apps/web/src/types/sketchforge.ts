@@ -130,6 +130,8 @@ export type WorkplaneWorkspaceSettings = {
   showSmallHoles: boolean;
   /** Draw marks on sealed cavities that cannot drain. */
   showTrappedResin: boolean;
+  /** Hide coaching and refusal toasts. A command that fails still shows. */
+  failureNoticesOnly: boolean;
 };
 
 export type AlignAxis = "x" | "y" | "z";
@@ -158,6 +160,13 @@ export type SketchSegment = {
   kind?: "line" | "bezier" | "smooth";
   /** Dashed guide. It snaps, and it is left out of extrude and revolve. */
   construction?: boolean;
+  /**
+   * Closed loops nest into holes only within one region.
+   * An offset copy gets its own region so it stays a separate shape.
+   */
+  regionId?: string;
+  /** Drawn thickness in screen pixels. Absent is the standard line. The shape is unchanged. */
+  weight?: number;
 };
 
 export type SketchImage = {

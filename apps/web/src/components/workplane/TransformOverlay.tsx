@@ -260,7 +260,8 @@ export function TransformOverlay({
       {box.handles.map((handle) => (
         <PeakTipButton
           key={handle.key}
-          label={handle.title}
+          label={handle.kind === "scale" ? "" : handle.title}
+          aria-label={handle.title}
           className={`transform-handle ${handle.className}`}
           style={{ "--overlay-x": `${handle.x}px`, "--overlay-y": `${handle.y}px` } as CSSProperties}
           onPointerEnter={() => onHoverMeasure(handle.kind === "lift" ? null : handleMeasureKey(handle))}
@@ -296,7 +297,11 @@ export function TransformOverlay({
             onCancelDimensionEdit();
             onDropSelectionToWorkplane();
           }}
-        />
+        >
+          {handle.kind === "height" ? (
+            <span className="transform-handle-name">{handle.title}</span>
+          ) : null}
+        </PeakTipButton>
       ))}
       {box.rotateHandles.map((handle) => {
         const isYaw = handle.className.includes("axis-y");

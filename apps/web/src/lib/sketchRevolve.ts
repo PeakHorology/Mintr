@@ -118,6 +118,102 @@ function sampleClosedPath(path: OrderedPath): Array<{ x: number; z: number }> {
   return samples;
 }
 
+const ON_AXIS_RADIUS = 1e-3;
+
+function signedProfileArea(points: Array<{ x: number; y: number }>) {
+  let area = 0;
+  for (let index = 0, previous = points.length - 1; index < points.length; previous = index, index += 1) {
+    area += points[previous].x * points[index].y - points[index].x * points[previous].y;
+  }
+  return area * 0.5;
+}
+
+/**
+ * LatheGeometry faces outward only for a counterclockwise profile in (radius, along).
+ * A sketch loop can be walked either way, and the opposite way turns the solid inside out.
+ * An edge that lies on the axis is the cut: the polyline starts and ends there so that edge is not spun.
+ */
+function orientLatheProfile(points: THREE.Vector2[]): THREE.Vector2[] {
+  const open: THREE.Vector2[] = [];
+  for (const point of points) {
+    const previous = open[open.length - 1];
+    if (previous && previous.distanceTo(point) < 1e-4) continue;
+    open.push(point);
+  }
+  if (open.length > 1 && open[0].distanceTo(open[open.length - 1]) < 1e-4) open.pop();
+  if (open.length < 3) return open;
+  if (signedProfileArea(open) < 0) open.reverse();
+
+  const onAxis = (point: THREE.Vector2) => point.x <= ON_AXIS_RADIUS;
+  let axisEdge = -1;
+  for (let index = 0; index < open.length; index += 1) {
+    const next = open[(index + 1) % open.length];
+    if (onAxis(open[index]) && onAxis(next)) {
+      axisEdge = index;
+      break;
+    }
+  }
+  if (axisEdge >= 0) {
+    const start = (axisEdge + 1) % open.length;
+    const rotated: THREE.Vector2[] = [];
+    for (let step = 0; step < open.length; step += 1) rotated.push(open[(start + step) % open.length]);
+    return rotated;
+  }
+  const closed = open.slice();
+  closed.push(open[0].clone());
+  return closed;
+}
+
+function weldLatheSeam(geometry: THREE.BufferGeometry, profileCount: number, segments: number) {
+  const index = geometry.getIndex();
+  const position = geometry.getAttribute("position");
+  if (!index || !position || profileCount < 2) return;
+  const ring = profileCount;
+  for (let row = 0; row < ring; row += 1) {
+    const source = row;
+    const copy = row + segments * ring;
+    if (copy >= position.count) continue;
+    position.setXYZ(copy, position.getX(source), position.getY(source), position.getZ(source));
+  }
+  const array = index.array;
+  for (let entry = 0; entry < array.length; entry += 1) {
+    const vertex = array[entry];
+    const column = Math.floor(vertex / ring);
+    const row = vertex % ring;
+    if (column === segments) array[entry] = row;
+  }
+  position.needsUpdate = true;
+  index.needsUpdate = true;
+}
+
+function flatTriangleNormals(positions: ArrayLike<number>): number[] {
+  const normals: number[] = [];
+  for (let index = 0; index < positions.length; index += 9) {
+    const ax = positions[index];
+    const ay = positions[index + 1];
+    const az = positions[index + 2];
+    const bx = positions[index + 3] - ax;
+    const by = positions[index + 4] - ay;
+    const bz = positions[index + 5] - az;
+    const cx = positions[index + 6] - ax;
+    const cy = positions[index + 7] - ay;
+    const cz = positions[index + 8] - az;
+    let nx = by * cz - bz * cy;
+    let ny = bz * cx - bx * cz;
+    let nz = bx * cy - by * cx;
+    const length = Math.hypot(nx, ny, nz);
+    if (length < 1e-12) {
+      normals.push(0, 0, 0, 0, 0, 0, 0, 0, 0);
+      continue;
+    }
+    nx /= length;
+    ny /= length;
+    nz /= length;
+    normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+  }
+  return normals;
+}
+
 function pathArea(samples: Array<{ x: number; z: number }>) {
   let area = 0;
   for (let index = 0, previous = samples.length - 1; index < samples.length; previous = index, index += 1) {
@@ -183,31 +279,23 @@ export function shapeFromSketchRevolve(
   if (crossed) return null;
 
   const points2 = latheSamples.map((sample) => new THREE.Vector2(Math.max(0, sample.radius), sample.along));
-  // Remove consecutive duplicates that collapse to the axis or same point.
-  const cleaned: THREE.Vector2[] = [];
-  for (const point of points2) {
-    const previous = cleaned[cleaned.length - 1];
-    if (previous && Math.hypot(previous.x - point.x, previous.y - point.y) < 1e-4) continue;
-    cleaned.push(point);
-  }
+  const cleaned = orientLatheProfile(points2);
   if (cleaned.length < 3) return null;
-  const first = cleaned[0];
-  const last = cleaned[cleaned.length - 1];
-  if (Math.hypot(first.x - last.x, first.y - last.y) > 1e-4) {
-    cleaned.push(first.clone());
-  }
 
   const maxRadius = cleaned.reduce((max, point) => Math.max(max, point.x), 0);
   if (maxRadius < 0.25) return null;
 
-  const geometry = new THREE.LatheGeometry(cleaned, Math.max(16, Math.min(128, radialSegments)));
+  const segments = Math.max(16, Math.min(128, Math.floor(radialSegments)));
+  const geometry = new THREE.LatheGeometry(cleaned, segments);
+  // The lathe repeats the first meridian as a separate last column. Those two
+  // copies are the same edge, and leaving them split draws a crack down the solid.
+  weldLatheSeam(geometry, cleaned.length, segments);
   const radial = new THREE.Vector3(-uz * side, 0, ux * side).normalize();
   const axisVec = new THREE.Vector3(ux, 0, uz);
   const binormal = new THREE.Vector3().crossVectors(radial, axisVec).normalize();
   const matrix = new THREE.Matrix4().makeBasis(radial, axisVec, binormal);
   matrix.setPosition(axis.start.x, 0, axis.start.z);
   geometry.applyMatrix4(matrix);
-  geometry.computeVertexNormals();
   geometry.computeBoundingBox();
 
   const box = geometry.boundingBox;
@@ -220,13 +308,13 @@ export function shapeFromSketchRevolve(
 
   // Center on the footprint and seat the solid on the plate (y = 0).
   geometry.translate(-meshCenterX, -box.min.y, -meshCenterZ);
-  geometry.computeVertexNormals();
 
   const meshGeometry = geometry.index ? geometry.toNonIndexed() : geometry;
   const position = meshGeometry.getAttribute("position");
-  const normal = meshGeometry.getAttribute("normal");
   const positions = Array.from(position.array as ArrayLike<number>);
-  const normals = normal ? Array.from(normal.array as ArrayLike<number>) : undefined;
+  // One normal per face. Display shading welds the gentle steps around the
+  // axis and keeps a corner where the profile actually turns.
+  const normals = flatTriangleNormals(positions);
   if (meshGeometry !== geometry) meshGeometry.dispose();
   geometry.dispose();
 

@@ -14,6 +14,7 @@ import { hardwareProfile } from "@/lib/desktopHardware";
 import { createLocalId } from "@/lib/localIds";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { StartupThemeTabs } from "@/components/workplane/StartupThemeTabs";
+import { FullscreenButton } from "@/components/workplane/FullscreenButton";
 import { applyUiTheme, loadUiTheme, readAppliedUiTheme, UI_THEME_CHANGED_EVENT, type UiTheme } from "@/lib/uiTheme";
 import {
   DEFAULT_SNAP_GRID,
@@ -4057,6 +4058,7 @@ function Dashboard({
               ) : null}
             </div>
           ) : null}
+          <FullscreenButton variant="dashboard" />
           {!settingsOpen ? (
             <button className="dashboard-topbar-settings" type="button" aria-label="Settings" title="Settings" onClick={onOpenSettings}>
               <Settings size={20} strokeWidth={2.4} />

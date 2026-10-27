@@ -1,18 +1,21 @@
 "use client";
 
-import { ChevronUp, Home, Link, Link2Off, Minus, Plus, Ruler, Trash2 } from "lucide-react";
+import { ChevronUp, Eye, EyeOff, Home, Link, Link2Off, Minus, Plus, Ruler, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { SnapGridControl } from "@/components/workplane/ShapeInspector";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { SketchSnapGlyph } from "@/components/workplane/SketchSnapGlyph";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
+import { sketchOffsetAt } from "@/lib/sketchDrawShapes";
 import { defaultSketchPlane, isDefaultSketchPlane } from "@/lib/sketchPlane";
 import { faceReferenceBounds } from "@/lib/sketchFaceReference";
-import { closedProfilesFromLegacy, CONSTRAINT_LABELS, curveStandInOwner, parseLineEntry, pointAtLengthAngle, screenAngleDeg, sketchCenterSnapPoints, sketchCornerMarks, snapHeading, snapSketchPoint, type SketchConstraint, type SketchDefinitionStatus, type SketchDimension, type SketchEntity, type SketchSnapResult } from "@/lib/sketch";
+import { closedProfilesFromLegacy, CONSTRAINT_LABELS, curveStandInOwner, parseLineEntry, pointAtLengthAngle, screenAngleDeg, shapeMovePointIds, sketchCenterSnapPoints, sketchCornerMarks, snapHeading, snapSketchPoint, wholeEraseTarget, type SketchConstraint, type SketchDefinitionStatus, type SketchDimension, type SketchEntity, type SketchSnapResult } from "@/lib/sketch";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
-import { mirrorSign, resizedImportedMeshPositions } from "@/lib/workplaneShapes";
+import { sketchReferenceNode, type SketchReferenceNode } from "@/lib/sketchReferenceFootprint";
+import { mirrorSign } from "@/lib/workplaneShapes";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import { normalizePrinterBed } from "@/lib/printerBed";
 import type { GridSize, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 export type SketchTool =
@@ -65,6 +68,8 @@ type SketchWorkspaceProps = {
   profile: SketchProfile;
   referenceShapes: WorkplaneShape[];
   tool: SketchTool;
+  /** Double-clicked Erase: one click removes a whole closed shape or line. */
+  eraseWhole?: boolean;
   activePointId: string | null;
   selected: SketchSelection;
   measurement: SketchMeasurement;
@@ -97,8 +102,12 @@ type SketchWorkspaceProps = {
   onDrawStar: (center: { x: number; z: number }, tip: { x: number; z: number }) => void;
   onDrawArc: (start: { x: number; z: number }, end: { x: number; z: number }, through: { x: number; z: number }) => void;
   onOffsetSegment: (segmentId: string, toward: { x: number; z: number }) => void;
+  /** Clicking a closed outline while Offset is active targets that outline. */
+  onBeginOffsetProfile?: (profileId: string) => void;
+  /** Preview of a typed offset, in sketch coordinates. */
+  offsetGhost?: Array<{ x: number; z: number }> | null;
   polygonSides?: number;
-  onPointPress: (id: string) => void;
+  onPointPress: (id: string, handles?: { handleIn: { x: number; z: number }; handleOut: { x: number; z: number } }) => void;
   onSelectSegment: (id: string, at?: { x: number; z: number }) => void;
   onSelectMany: (pointIds: string[], segmentIds: string[], imageIds: string[]) => void;
   onSelectImage: (id: string) => void;
@@ -107,7 +116,7 @@ type SketchWorkspaceProps = {
   onDeletePoint: (id: string) => void;
   onDeleteSegment: (id: string) => void;
   onEraseEntities: (pointIds: string[], segmentIds: string[]) => void;
-  onMovePoint: (id: string, point: { x: number; z: number }) => void;
+  onMovePoint: (id: string, point: { x: number; z: number }, alsoPointIds?: string[]) => void;
   onMoveHandle: (id: string, handle: "in" | "out", point: { x: number; z: number }) => void;
   onInsertPoint: (segmentId: string, point: { x: number; z: number }) => void;
   onSetPointMode: (id: string, mode: "corner" | "smooth" | "split") => void;
@@ -133,9 +142,8 @@ type SketchWorkspaceProps = {
 
 type PathStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
 type DisplayPath = { id: string; points: SketchPoint[]; steps: PathStep[]; closed: boolean };
-type SketchReferenceFootprint = { fillD: string | null; outlineD: string | null };
 type PointerAction =
-  | { kind: "bezier"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
+  | { kind: "bezier"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number }; joinPointId?: string }
   | { kind: "circle"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
   | { kind: "ellipse"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
   | { kind: "square"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
@@ -147,7 +155,8 @@ type PointerAction =
   | { kind: "star"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
   | { kind: "offset"; pointerId: number; segmentId: string; current: { x: number; z: number } }
   | { kind: "erase"; pointerId: number; current: { x: number; z: number } }
-  | { kind: "move-point"; pointerId: number; pointId: string; current: { x: number; z: number } }
+  | { kind: "move-point"; pointerId: number; pointId: string; current: { x: number; z: number }; alsoPointIds?: string[] }
+  | { kind: "move-outline"; pointerId: number; pointIds: string[]; origin: { x: number; z: number }; current: { x: number; z: number } }
   | { kind: "resize-circle"; pointerId: number; circleId: string; center: { x: number; z: number }; radius: number; current: { x: number; z: number } }
   | { kind: "move-handle"; pointerId: number; pointId: string; handle: "in" | "out"; current: { x: number; z: number } }
   | { kind: "pan"; pointerId: number; clientX: number; clientY: number }
@@ -243,26 +252,14 @@ const CONSTRAINT_GLYPH: Record<SketchConstraint["kind"], string> = {
   fix: "🔒",
 };
 
-function limitHandle(anchor: { x: number; z: number }, handle: { x: number; z: number }, maxLength: number) {
-  const dx = handle.x - anchor.x;
-  const dz = handle.z - anchor.z;
-  const length = Math.hypot(dx, dz);
-  if (length <= maxLength || length < 1e-9) return handle;
-  const scale = maxLength / length;
-  return { x: anchor.x + dx * scale, z: anchor.z + dz * scale };
-}
-
 /** The curve a Bézier drag will commit: previous point to the click, pulled by the mirrored handle. */
 function bezierDragPreview(
   start: { x: number; z: number; handleOut?: { x: number; z: number } },
   end: { x: number; z: number },
   incoming: { x: number; z: number },
 ) {
-  const chord = Math.hypot(end.x - start.x, end.z - start.z);
-  const maxLength = chord * 0.5;
-  const leave = limitHandle(start, start.handleOut ?? start, maxLength);
-  const arrive = limitHandle(end, incoming, maxLength);
-  return `M ${start.x} ${start.z} C ${leave.x} ${leave.z} ${arrive.x} ${arrive.z} ${end.x} ${end.z}`;
+  const leave = start.handleOut ?? start;
+  return `M ${start.x} ${start.z} C ${leave.x} ${leave.z} ${incoming.x} ${incoming.z} ${end.x} ${end.z}`;
 }
 
 function sketchEntityPointIds(entity: SketchEntity): string[] {
@@ -321,6 +318,158 @@ function dimensionPillSize(label: string, screenUnit: number, extra = 24) {
     height: 26 * screenUnit,
     radius: 5 * screenUnit,
   };
+}
+
+function sideCalloutPill(label: string, screenUnit: number) {
+  return {
+    width: Math.max(36, label.length * 7.2 + 14) * screenUnit,
+    height: 20 * screenUnit,
+    radius: 4 * screenUnit,
+  };
+}
+
+type SideCallout = {
+  key: string;
+  segmentId: string | null;
+  circleId: string | null;
+  length: number;
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+  nx: number;
+  nz: number;
+};
+
+/** One straight side, with the direction that points outside its closed shape. */
+function lineSideCallout(
+  profile: SketchProfile,
+  paths: DisplayPath[],
+  segmentId: string,
+  pointById: Map<string, SketchPoint>,
+): SideCallout | null {
+  if (!segmentId || curveStandInOwner(segmentId)) return null;
+  const segment = profile.segments.find((entry) => entry.id === segmentId);
+  if (!segment || segment.construction || (segment.kind && segment.kind !== "line")) return null;
+  const dimension = segmentDimension(segment, pointById);
+  if (!dimension || !(dimension.length > 1e-6)) return null;
+  const path = paths.find((entry) => entry.closed && entry.steps.some((step) => step.segment.id === segment.id));
+  const step = path?.steps.find((entry) => entry.segment.id === segment.id);
+  const from = step?.from ?? pointById.get(segment.startId);
+  const to = step?.to ?? pointById.get(segment.endId);
+  if (!from || !to) return null;
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const span = Math.hypot(dx, dz) || 1;
+  let nx = dz / span;
+  let nz = -dx / span;
+  if (path && path.points.length >= 3) {
+    let area = 0;
+    for (let index = 0; index < path.points.length; index += 1) {
+      const current = path.points[index];
+      const next = path.points[(index + 1) % path.points.length];
+      area += current.x * next.z - next.x * current.z;
+    }
+    if (area < 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+  } else if (nz < 0) {
+    nx = -nx;
+    nz = -nz;
+  }
+  return {
+    key: segment.id,
+    segmentId: segment.id,
+    circleId: null,
+    length: dimension.length,
+    ax: from.x,
+    az: from.z,
+    bx: to.x,
+    bz: to.z,
+    nx,
+    nz,
+  };
+}
+
+/** Opposite sides of a rectangle share a length. Keep the one that sits below or to the right. */
+function dedupeParallelCallouts(callouts: SideCallout[]): SideCallout[] {
+  const kept: SideCallout[] = [];
+  const score = (item: SideCallout) => item.nz * 2 + item.nx;
+  for (const callout of callouts) {
+    const dx = callout.bx - callout.ax;
+    const dz = callout.bz - callout.az;
+    const span = Math.hypot(dx, dz) || 1;
+    const match = kept.find((other) => {
+      const odx = other.bx - other.ax;
+      const odz = other.bz - other.az;
+      const ospan = Math.hypot(odx, odz) || 1;
+      const parallel = Math.abs((dx * odx + dz * odz) / (span * ospan)) > 0.985;
+      return parallel && Math.abs(other.length - callout.length) < 0.05;
+    });
+    if (!match) {
+      kept.push(callout);
+      continue;
+    }
+    if (score(callout) > score(match)) kept[kept.indexOf(match)] = callout;
+  }
+  return kept;
+}
+
+function selectedSideCallouts(
+  profile: SketchProfile,
+  paths: DisplayPath[],
+  selected: SketchSelection,
+  pointById: Map<string, SketchPoint>,
+  circles: Array<{ id: string; cx: number; cz: number; radius: number; construction?: boolean }>,
+): SideCallout[] {
+  const segmentIds = selected?.kind === "segment"
+    ? [selected.id]
+    : selected?.kind === "multiple"
+      ? selected.segmentIds
+      : [];
+  if (!segmentIds.length) return [];
+  const lines = segmentIds
+    .map((id) => lineSideCallout(profile, paths, id, pointById))
+    .filter((entry): entry is SideCallout => entry !== null);
+  if (segmentIds.length === 1) return lines;
+  if (lines.length) return dedupeParallelCallouts(lines);
+  const circleIds = [...new Set(segmentIds.map((id) => curveStandInOwner(id)).filter((id): id is string => Boolean(id)))];
+  const circleCallouts = circleIds.flatMap((id) => {
+    const circle = circles.find((entry) => entry.id === id && !entry.construction);
+    if (!circle || !(circle.radius > 0)) return [];
+    return [{
+      key: `circle-${circle.id}`,
+      segmentId: null,
+      circleId: circle.id,
+      length: circle.radius * 2,
+      ax: circle.cx - circle.radius,
+      az: circle.cz + circle.radius,
+      bx: circle.cx + circle.radius,
+      bz: circle.cz + circle.radius,
+      nx: 0,
+      nz: 1,
+    } satisfies SideCallout];
+  });
+  if (circleCallouts.length) return circleCallouts;
+  if (selected?.kind !== "multiple") return [];
+  const points = selected.pointIds.flatMap((id) => {
+    const point = pointById.get(id);
+    if (!point || curveStandInOwner(point.id)) return [];
+    return [point];
+  });
+  if (points.length < 3) return [];
+  const minX = Math.min(...points.map((point) => point.x));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const minZ = Math.min(...points.map((point) => point.z));
+  const maxZ = Math.max(...points.map((point) => point.z));
+  const width = maxX - minX;
+  const length = maxZ - minZ;
+  if (!(width > 1e-6) || !(length > 1e-6)) return [];
+  return [
+    { key: "width", segmentId: null, circleId: null, length: width, ax: minX, az: maxZ, bx: maxX, bz: maxZ, nx: 0, nz: 1 },
+    { key: "length", segmentId: null, circleId: null, length, ax: maxX, az: minZ, bx: maxX, bz: maxZ, nx: 1, nz: 0 },
+  ];
 }
 
 function cubicPoint(start: SketchPoint, first: { x: number; z: number }, second: { x: number; z: number }, end: SketchPoint, amount: number) {
@@ -519,6 +668,38 @@ function pathData(path: DisplayPath) {
   return commands.join(" ");
 }
 
+function lineweightStyle(weight?: number): { strokeWidth: number } | undefined {
+  return weight && weight > 0 ? { strokeWidth: weight } : undefined;
+}
+
+/** One stroke per run of curve segments, so a point added on a curve does not leave a crease in the line. */
+function curveStrokeRuns(path: DisplayPath): Array<{ d: string; weight?: number }> {
+  const runs: Array<{ d: string; weight?: number }> = [];
+  let commands: string[] = [];
+  let weight: number | undefined;
+  const flush = () => {
+    if (commands.length > 1) runs.push({ d: commands.join(" "), weight });
+    commands = [];
+    weight = undefined;
+  };
+  for (const step of path.steps) {
+    const controls = curveControls(step);
+    if (step.segment.construction || !controls.curved) {
+      flush();
+      continue;
+    }
+    const nextWeight = step.segment.weight;
+    if (commands.length > 0 && nextWeight !== weight) flush();
+    if (commands.length === 0) {
+      commands.push(`M ${step.from.x} ${step.from.z}`);
+      weight = nextWeight;
+    }
+    commands.push(`C ${controls.first.x} ${controls.first.z} ${controls.second.x} ${controls.second.z} ${step.to.x} ${step.to.z}`);
+  }
+  flush();
+  return runs;
+}
+
 function segmentData(segment: SketchSegment, pointById: Map<string, SketchPoint>) {
   const from = pointById.get(segment.startId);
   const to = pointById.get(segment.endId);
@@ -530,166 +711,46 @@ function segmentData(segment: SketchSegment, pointById: Map<string, SketchPoint>
     : `M ${from.x} ${from.z} L ${to.x} ${to.z}`;
 }
 
-function isRoundReference(shape: WorkplaneShape) {
-  return ["cylinder", "sphere", "cone", "torus", "tube", "ring", "halfSphere"].includes(shape.kind);
-}
-
-function sketchReferencePoint(shape: WorkplaneShape, x: number, z: number) {
-  return {
-    x: shape.x + x * mirrorSign(shape.mirrorX),
-    z: shape.z + z * mirrorSign(shape.mirrorZ),
-  };
-}
-
-function pointKey(point: { x: number; z: number }, tolerance: number) {
-  return `${Math.round(point.x / tolerance)},${Math.round(point.z / tolerance)}`;
-}
-
-function triangleArea2d(a: { x: number; z: number }, b: { x: number; z: number }, c: { x: number; z: number }) {
-  return Math.abs((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)) / 2;
-}
-
-function trianglePath(points: Array<{ x: number; z: number }>) {
-  return `M ${points[0].x} ${points[0].z} L ${points[1].x} ${points[1].z} L ${points[2].x} ${points[2].z} Z`;
-}
-
-function convexHull(points: Array<{ x: number; z: number }>) {
-  const unique = new Map<string, { x: number; z: number }>();
-  points.forEach((point) => unique.set(pointKey(point, 0.001), point));
-  const sorted = [...unique.values()].sort((a, b) => a.x === b.x ? a.z - b.z : a.x - b.x);
-  if (sorted.length <= 2) return sorted;
-  const cross = (origin: { x: number; z: number }, a: { x: number; z: number }, b: { x: number; z: number }) =>
-    (a.x - origin.x) * (b.z - origin.z) - (a.z - origin.z) * (b.x - origin.x);
-  const lower: Array<{ x: number; z: number }> = [];
-  sorted.forEach((point) => {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
-    lower.push(point);
-  });
-  const upper: Array<{ x: number; z: number }> = [];
-  [...sorted].reverse().forEach((point) => {
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
-    upper.push(point);
-  });
-  lower.pop();
-  upper.pop();
-  return [...lower, ...upper];
-}
-
-function boundaryPath(points: Array<{ x: number; z: number }>, triangles: number[][], tolerance: number) {
-  const pointByKey = new Map<string, { x: number; z: number }>();
-  const edgeCounts = new Map<string, { count: number; a: string; b: string }>();
-  const addEdge = (aIndex: number, bIndex: number) => {
-    const a = points[aIndex];
-    const b = points[bIndex];
-    const aKey = pointKey(a, tolerance);
-    const bKey = pointKey(b, tolerance);
-    pointByKey.set(aKey, a);
-    pointByKey.set(bKey, b);
-    const key = aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
-    const current = edgeCounts.get(key);
-    edgeCounts.set(key, current ? { ...current, count: current.count + 1 } : { count: 1, a: aKey, b: bKey });
-  };
-  triangles.forEach(([a, b, c]) => {
-    addEdge(a, b);
-    addEdge(b, c);
-    addEdge(c, a);
-  });
-
-  const boundaryEdges = [...edgeCounts.values()].filter((edge) => edge.count === 1);
-  if (boundaryEdges.length === 0) return null;
-  const adjacency = new Map<string, string[]>();
-  boundaryEdges.forEach(({ a, b }) => {
-    adjacency.set(a, [...(adjacency.get(a) ?? []), b]);
-    adjacency.set(b, [...(adjacency.get(b) ?? []), a]);
-  });
-  const unused = new Set(boundaryEdges.map(({ a, b }) => (a < b ? `${a}|${b}` : `${b}|${a}`)));
-  const takeEdge = (a: string, b: string) => unused.delete(a < b ? `${a}|${b}` : `${b}|${a}`);
-  const hasEdge = (a: string, b: string) => unused.has(a < b ? `${a}|${b}` : `${b}|${a}`);
-  const commands: string[] = [];
-
-  while (unused.size > 0) {
-    const firstKey = unused.values().next().value as string;
-    const [start, firstNext] = firstKey.split("|");
-    const chain = [start, firstNext];
-    takeEdge(start, firstNext);
-    while (chain.length <= boundaryEdges.length + 1) {
-      const current = chain[chain.length - 1];
-      const previous = chain[chain.length - 2];
-      const next = (adjacency.get(current) ?? []).find((candidate) => candidate !== previous && hasEdge(current, candidate))
-        ?? (adjacency.get(current) ?? []).find((candidate) => hasEdge(current, candidate));
-      if (!next) break;
-      takeEdge(current, next);
-      chain.push(next);
-      if (next === start) break;
-    }
-    const startPoint = pointByKey.get(chain[0]);
-    if (!startPoint) continue;
-    const pointsD = chain
-      .slice(1)
-      .map((key) => pointByKey.get(key))
-      .filter((point): point is { x: number; z: number } => Boolean(point))
-      .map((point) => `L ${point.x} ${point.z}`);
-    commands.push(`M ${startPoint.x} ${startPoint.z} ${pointsD.join(" ")}${chain[chain.length - 1] === chain[0] ? " Z" : ""}`);
-  }
-
-  return commands.join(" ");
-}
-
-function importedMeshFootprint(shape: WorkplaneShape): SketchReferenceFootprint | null {
-  if (!shape.importedMesh) return null;
-  const positions = resizedImportedMeshPositions(shape);
-  if (positions.length < 9) return null;
-  let minY = Number.POSITIVE_INFINITY;
-  for (let index = 1; index < positions.length; index += 3) {
-    minY = Math.min(minY, positions[index]);
-  }
-  if (!Number.isFinite(minY)) return null;
-
-  const tolerance = Math.max(0.001, Math.max(shape.width, shape.depth, shape.height) / 100000);
-  const bottomTolerance = Math.max(0.025, shape.height * 0.003);
-  const points: Array<{ x: number; z: number }> = [];
-  const triangles: number[][] = [];
-  const allProjected: Array<{ x: number; z: number }> = [];
-  const indices = shape.importedMesh.indices?.length ? shape.importedMesh.indices : null;
-  const triangleCount = indices ? Math.floor(indices.length / 3) : Math.floor(positions.length / 9);
-  const corner = (triangle: number, slot: number) => (indices ? indices[triangle * 3 + slot] : triangle * 3 + slot) * 3;
-
-  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
-    const a = corner(triangle, 0);
-    const b = corner(triangle, 1);
-    const c = corner(triangle, 2);
-    const ys = [positions[a + 1], positions[b + 1], positions[c + 1]];
-    const projected = [
-      sketchReferencePoint(shape, positions[a], positions[a + 2]),
-      sketchReferencePoint(shape, positions[b], positions[b + 2]),
-      sketchReferencePoint(shape, positions[c], positions[c + 2]),
-    ];
-    allProjected.push(...projected);
-    if (!ys.every((value) => value <= minY + bottomTolerance) || triangleArea2d(projected[0], projected[1], projected[2]) <= tolerance) {
-      continue;
-    }
-    const offset = points.length;
-    points.push(...projected);
-    triangles.push([offset, offset + 1, offset + 2]);
-  }
-
-  if (triangles.length > 0) {
-    return {
-      fillD: triangles.length <= 5000 ? triangles.map((triangle) => trianglePath(triangle.map((index) => points[index]))).join(" ") : null,
-      outlineD: boundaryPath(points, triangles, tolerance),
-    };
-  }
-
-  const hull = convexHull(allProjected);
-  if (hull.length < 3) return null;
-  const d = `M ${hull[0].x} ${hull[0].z} ${hull.slice(1).map((point) => `L ${point.x} ${point.z}`).join(" ")} Z`;
-  return { fillD: d, outlineD: d };
+function ReferenceMark({ node }: { node: SketchReferenceNode }) {
+  return (
+    <g transform={`translate(${node.x} ${node.z}) rotate(${node.rotation}) scale(${node.mirrorX} ${node.mirrorZ})`}>
+      {node.imageHref ? (
+        <image
+          href={node.imageHref}
+          x={-node.imageWidth / 2}
+          y={-node.imageDepth / 2}
+          width={node.imageWidth}
+          height={node.imageDepth}
+          preserveAspectRatio="none"
+        />
+      ) : node.fillD ? (
+        <path
+          className="sketch-reference-mesh-face"
+          d={node.fillD}
+          style={{ fill: node.color, fillOpacity: node.opacity, fillRule: node.evenOdd ? "evenodd" : "nonzero" }}
+        />
+      ) : null}
+      {node.outlineD ? (
+        <path
+          className="sketch-reference-mesh-outline"
+          d={node.outlineD}
+          style={{ stroke: node.color }}
+        />
+      ) : null}
+      {node.scaleX !== 1 || node.scaleZ !== 1 ? (
+        <g transform={`scale(${node.scaleX} ${node.scaleZ})`}>
+          {node.children.map((child, index) => <ReferenceMark key={index} node={child} />)}
+        </g>
+      ) : node.children.map((child, index) => <ReferenceMark key={index} node={child} />)}
+    </g>
+  );
 }
 
 export function SketchWorkspace({
   profile,
   referenceShapes,
   tool,
+  eraseWhole = false,
   activePointId,
   selected,
   measurement,
@@ -720,6 +781,8 @@ export function SketchWorkspace({
   onDrawStar,
   onDrawArc,
   onOffsetSegment,
+  onBeginOffsetProfile,
+  offsetGhost = null,
   polygonSides = 6,
   onPointPress,
   onSelectSegment,
@@ -749,6 +812,8 @@ export function SketchWorkspace({
   guideGhost = null,
 }: SketchWorkspaceProps) {
   const workspace = useMemo(() => normalizeWorkspaceSettings(initialWorkspace, DEFAULT_WORKPLANE_WORKSPACE), [initialWorkspace]);
+  const printerBed = useMemo(() => normalizePrinterBed(workspace), [workspace]);
+  const showSketchPrinterBed = printerBed.showBed && isDefaultSketchPlane(profile.sketchPlane ?? defaultSketchPlane());
   const [snap, setSnap] = useState<GridSize>(() => normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
   const [snapOpen, setSnapOpen] = useState(false);
   const [dimensionDialog, setDimensionDialog] = useState<{ id: string; value: number } | null>(null);
@@ -758,6 +823,14 @@ export function SketchWorkspace({
     setSnap(normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
   }, [initialSnap]);
   const resumeView = viewKey && rememberedFlatSketchView?.key === viewKey ? rememberedFlatSketchView : null;
+  const [showMeasurements, setShowMeasurements] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return window.localStorage.getItem("mintr.showSketchMeasurements") !== "0";
+    } catch {
+      return true;
+    }
+  });
   const [zoom, setZoom] = useState(resumeView?.zoom ?? 1);
   const [pan, setPan] = useState(resumeView?.pan ?? { x: 0, z: 0 });
   const faceFitKeyRef = useRef<string | null>(null);
@@ -783,7 +856,7 @@ export function SketchWorkspace({
     const nextPan = { x: bounds.centerX, z: bounds.centerZ };
     const plate = Math.max(workspace.width, workspace.depth);
     const span = Math.max(bounds.width, bounds.depth, 8);
-    const nextZoom = clamp(plate / (span * 1.6), 0.75, 6);
+    const nextZoom = clamp(plate / (span * 1.6), 0.35, 6);
     panRef.current = nextPan;
     zoomRef.current = nextZoom;
     setPan(nextPan);
@@ -805,6 +878,7 @@ export function SketchWorkspace({
   const [lineEntry, setLineEntry] = useState("");
   const [lengthEdit, setLengthEdit] = useState<{ segmentId: string; value: number; grow: "end" | "both" } | null>(null);
   const [radiusEdit, setRadiusEdit] = useState<{ circleId: string; value: number } | null>(null);
+  const [diameterEdit, setDiameterEdit] = useState<{ circleId: string; value: number } | null>(null);
   const [angleEdit, setAngleEdit] = useState<{ pointId: string; value: number; leg: 0 | 1 } | null>(null);
   const [pointerAction, setPointerAction] = useState<PointerAction | null>(null);
   const [arcDraft, setArcDraft] = useState<Array<{ x: number; z: number }>>([]);
@@ -813,30 +887,57 @@ export function SketchWorkspace({
   const svgRef = useRef<SVGSVGElement | null>(null);
   const eraseStrokeRef = useRef<{ pointIds: Set<string>; segmentIds: Set<string> } | null>(null);
   const pointClickRef = useRef<{ id: string; at: number } | null>(null);
-  const pendingPointDragRef = useRef<{ pointerId: number; pointId: string; x: number; z: number; clientX: number; clientY: number } | null>(null);
-  const width = workspace.width / zoom;
-  const depth = workspace.depth / zoom;
+  const pendingPointDragRef = useRef<{ pointerId: number; pointId: string; x: number; z: number; clientX: number; clientY: number; alsoPointIds?: string[] } | null>(null);
+  const plateWidth = workspace.width / zoom;
+  const plateDepth = workspace.depth / zoom;
+  const viewAspect = svgSize.width > 0 && svgSize.height > 0 ? svgSize.width / svgSize.height : plateWidth / plateDepth;
+  const viewWidth = Math.max(plateWidth, plateDepth * viewAspect);
+  const viewDepth = Math.max(plateDepth, plateWidth / viewAspect);
   const screenUnit = useMemo(() => {
     const fittedScale = Math.min(
-      svgSize.width > 0 ? svgSize.width / width : 0,
-      svgSize.height > 0 ? svgSize.height / depth : 0,
+      svgSize.width > 0 ? svgSize.width / viewWidth : 0,
+      svgSize.height > 0 ? svgSize.height / viewDepth : 0,
     );
-    return fittedScale > 0 ? 1 / fittedScale : Math.max(width, depth) / 720;
-  }, [depth, svgSize.height, svgSize.width, width]);
+    return fittedScale > 0 ? 1 / fittedScale : Math.max(viewWidth, viewDepth) / 720;
+  }, [svgSize.height, svgSize.width, viewDepth, viewWidth]);
   const displayProfile = useMemo(() => {
     if (pointerAction?.kind === "move-point") {
       const source = profile.points.find((point) => point.id === pointerAction.pointId);
       if (!source) return profile;
       const deltaX = pointerAction.current.x - source.x;
       const deltaZ = pointerAction.current.z - source.z;
+      const moving = new Set(pointerAction.alsoPointIds && pointerAction.alsoPointIds.length > 1 ? pointerAction.alsoPointIds : [source.id]);
       return {
         ...profile,
-        points: profile.points.map((point) => point.id === source.id ? {
-          ...point,
-          ...pointerAction.current,
-          handleIn: point.handleIn ? { x: point.handleIn.x + deltaX, z: point.handleIn.z + deltaZ } : undefined,
-          handleOut: point.handleOut ? { x: point.handleOut.x + deltaX, z: point.handleOut.z + deltaZ } : undefined,
-        } : point),
+        points: profile.points.map((point) => {
+          if (!moving.has(point.id)) return point;
+          return {
+            ...point,
+            x: point.id === source.id ? pointerAction.current.x : point.x + deltaX,
+            z: point.id === source.id ? pointerAction.current.z : point.z + deltaZ,
+            handleIn: point.handleIn ? { x: point.handleIn.x + deltaX, z: point.handleIn.z + deltaZ } : undefined,
+            handleOut: point.handleOut ? { x: point.handleOut.x + deltaX, z: point.handleOut.z + deltaZ } : undefined,
+          };
+        }),
+      };
+    }
+    if (pointerAction?.kind === "move-outline") {
+      const deltaX = pointerAction.current.x - pointerAction.origin.x;
+      const deltaZ = pointerAction.current.z - pointerAction.origin.z;
+      if (deltaX === 0 && deltaZ === 0) return profile;
+      const moving = new Set(pointerAction.pointIds);
+      return {
+        ...profile,
+        points: profile.points.map((point) => {
+          if (!moving.has(point.id)) return point;
+          return {
+            ...point,
+            x: point.x + deltaX,
+            z: point.z + deltaZ,
+            handleIn: point.handleIn ? { x: point.handleIn.x + deltaX, z: point.handleIn.z + deltaZ } : undefined,
+            handleOut: point.handleOut ? { x: point.handleOut.x + deltaX, z: point.handleOut.z + deltaZ } : undefined,
+          };
+        }),
       };
     }
     if (pointerAction?.kind === "move-handle") {
@@ -907,9 +1008,34 @@ export function SketchWorkspace({
         radius = Math.hypot(pointerAction.current.x - cx, pointerAction.current.z - cz);
       }
       if (!(radius > 0) || erasePreview?.segmentIds.includes(entity.id)) return [];
-      return [{ id: entity.id, cx, cz, radius, construction: Boolean(entity.construction) }];
+      return [{ id: entity.id, cx, cz, radius, construction: Boolean(entity.construction), weight: entity.weight }];
     });
   }, [constraintEntities, erasePreview, pointById, pointerAction]);
+  const eraseWholePreview = useMemo(() => {
+    if (tool !== "erase" || !eraseWhole || !hover) return null;
+    const reach = Math.max(1.25, 12 * screenUnit);
+    let nearestId: string | null = null;
+    let nearest = reach;
+    for (const segment of profile.segments) {
+      if (curveStandInOwner(segment.id)) continue;
+      const distance = distanceToSketchSegment(hover, segment, pointById);
+      if (distance <= nearest) {
+        nearest = distance;
+        nearestId = segment.id;
+      }
+    }
+    for (const circle of drawnCircles) {
+      const distance = Math.abs(Math.hypot(hover.x - circle.cx, hover.z - circle.cz) - circle.radius);
+      if (distance <= nearest) {
+        nearest = distance;
+        nearestId = circle.id;
+      }
+    }
+    if (nearestId) return wholeEraseTarget(profile, { segmentId: nearestId }, constraintEntities);
+    return wholeEraseTarget(profile, { at: hover }, constraintEntities);
+  }, [constraintEntities, drawnCircles, eraseWhole, hover, pointById, profile, screenUnit, tool]);
+  const eraseWholeSegmentIds = useMemo(() => new Set(eraseWholePreview?.segmentIds ?? []), [eraseWholePreview]);
+  const eraseWholePointIds = useMemo(() => new Set(eraseWholePreview?.pointIds ?? []), [eraseWholePreview]);
   const paths = useMemo(() => orderedPaths(displayProfile), [displayProfile]);
   // Closed-region analysis is the most expensive per-render step on a busy
   // sketch; hover/cursor re-renders don't change the profile, so cache it and
@@ -965,10 +1091,7 @@ export function SketchWorkspace({
         }
         const placed = pointAtLengthAngle(activePoint, parsed.length, angle);
         setLineEntry("");
-        onPlanePoint({
-          x: clamp(placed.x, -workspace.width / 2, workspace.width / 2),
-          z: clamp(placed.z, -workspace.depth / 2, workspace.depth / 2),
-        });
+        onPlanePoint(placed);
         return;
       }
       if (/^[0-9.<+-]$/.test(event.key)) {
@@ -978,7 +1101,7 @@ export function SketchWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activePoint, activePointId, hover, lineEntry, onNotice, onPlanePoint, tool, workspace.depth, workspace.width]);
+  }, [activePoint, activePointId, hover, lineEntry, onNotice, onPlanePoint, tool]);
   const selectedPoint = selected?.kind === "point" ? pointById.get(selected.id) ?? null : null;
   const selectedImage = selected?.kind === "image" ? displayImages.find((image) => image.id === selected.id) ?? null : null;
   const isPointSelected = (id: string) => selected?.kind === "point" ? selected.id === id : selected?.kind === "multiple" ? selected.pointIds.includes(id) : false;
@@ -996,16 +1119,20 @@ export function SketchWorkspace({
     : 4;
   const verticalLines = useMemo(() => {
     const lines: number[] = [];
-    const start = Math.ceil((-workspace.width / 2) / gridStep) * gridStep;
-    for (let x = start; x <= workspace.width / 2 + 0.0001; x += gridStep) lines.push(Number(x.toFixed(6)));
+    const left = pan.x - viewWidth / 2;
+    const right = pan.x + viewWidth / 2;
+    const start = Math.ceil(left / gridStep) * gridStep;
+    for (let x = start; x <= right + 0.0001; x += gridStep) lines.push(Number(x.toFixed(6)));
     return lines;
-  }, [gridStep, workspace.width]);
+  }, [gridStep, pan.x, viewWidth]);
   const horizontalLines = useMemo(() => {
     const lines: number[] = [];
-    const start = Math.ceil((-workspace.depth / 2) / gridStep) * gridStep;
-    for (let z = start; z <= workspace.depth / 2 + 0.0001; z += gridStep) lines.push(Number(z.toFixed(6)));
+    const top = pan.z - viewDepth / 2;
+    const bottom = pan.z + viewDepth / 2;
+    const start = Math.ceil(top / gridStep) * gridStep;
+    for (let z = start; z <= bottom + 0.0001; z += gridStep) lines.push(Number(z.toFixed(6)));
     return lines;
-  }, [gridStep, workspace.depth]);
+  }, [gridStep, pan.z, viewDepth]);
 
   const pointFromEvent = (
     event: { clientX: number; clientY: number; shiftKey?: boolean },
@@ -1020,10 +1147,7 @@ export function SketchWorkspace({
     screenPoint.y = event.clientY;
     const local = screenPoint.matrixTransform(matrix.inverse());
     const step = snapStep(snap);
-    const raw = {
-      x: clamp(local.x, -workspace.width / 2, workspace.width / 2),
-      z: clamp(local.y, -workspace.depth / 2, workspace.depth / 2),
-    };
+    const raw = { x: local.x, z: local.y };
     if (options?.snap === false) {
       onSnapResolved?.(null);
       return raw;
@@ -1066,16 +1190,10 @@ export function SketchWorkspace({
       : null;
     if (headed) {
       onSnapResolved?.(null);
-      return {
-        x: clamp(headed.x, -workspace.width / 2, workspace.width / 2),
-        z: clamp(headed.z, -workspace.depth / 2, workspace.depth / 2),
-      };
+      return { x: headed.x, z: headed.z };
     }
     onSnapResolved?.(snapResult);
-    return {
-      x: clamp(snapResult.x, -workspace.width / 2, workspace.width / 2),
-      z: clamp(snapResult.z, -workspace.depth / 2, workspace.depth / 2),
-    };
+    return { x: snapResult.x, z: snapResult.z };
   };
 
   useEffect(() => {
@@ -1174,7 +1292,7 @@ export function SketchWorkspace({
     if (!point) return;
     event.preventDefault();
     if (tool === "erase") {
-      beginEraseStroke(event, point);
+      if (!eraseWhole) beginEraseStroke(event, point);
       return;
     }
     if (tool === "bezier") {
@@ -1224,7 +1342,13 @@ export function SketchWorkspace({
       if (moved >= 4) {
         pendingPointDragRef.current = null;
         pointClickRef.current = null;
-        beginEntityDrag(event, { kind: "move-point", pointerId: event.pointerId, pointId: pendingDrag.pointId, current: { x: pendingDrag.x, z: pendingDrag.z } });
+        const dragged = pointFromEvent(event, null, { excludePointIds: [pendingDrag.pointId] });
+        beginEntityDrag(event, {
+          kind: "move-point",
+          pointerId: event.pointerId,
+          pointId: pendingDrag.pointId,
+          current: dragged ?? { x: pendingDrag.x, z: pendingDrag.z },
+        });
       }
     }
     if (pointerAction?.kind === "pan") {
@@ -1233,16 +1357,19 @@ export function SketchWorkspace({
       const scaleY = matrix ? Math.max(0.0001, Math.hypot(matrix.c, matrix.d)) : 1;
       const deltaX = event.clientX - pointerAction.clientX;
       const deltaY = event.clientY - pointerAction.clientY;
+      const panLimitX = Math.max(workspace.width, printerBed.width);
+      const panLimitZ = Math.max(workspace.depth, printerBed.depth);
       setPan((current) => ({
-        x: clamp(current.x - deltaX / scaleX, -workspace.width / 2, workspace.width / 2),
-        z: clamp(current.z - deltaY / scaleY, -workspace.depth / 2, workspace.depth / 2),
+        x: clamp(current.x - deltaX / scaleX, -panLimitX, panLimitX),
+        z: clamp(current.z - deltaY / scaleY, -panLimitZ, panLimitZ),
       }));
       setPointerAction({ ...pointerAction, clientX: event.clientX, clientY: event.clientY });
       return;
     }
     const moveOptions = {
       ...(pointerAction?.kind === "marquee" ? { snap: false as const } : {}),
-      ...(pointerAction?.kind === "move-point" ? { excludePointIds: [pointerAction.pointId] } : {}),
+      ...(pointerAction?.kind === "move-point" ? { excludePointIds: [pointerAction.pointId, ...(pointerAction.alsoPointIds ?? [])] } : {}),
+      ...(pointerAction?.kind === "move-outline" ? { excludePointIds: pointerAction.pointIds } : {}),
       ...(event.shiftKey && tool === "line" && pointerAction?.kind !== "marquee" ? { headingStep: 15 } : {}),
     };
     const point = pointFromEvent(event, null, Object.keys(moveOptions).length ? moveOptions : undefined);
@@ -1304,10 +1431,13 @@ export function SketchWorkspace({
     if (action.kind === "bezier") {
       const dx = action.current.x - action.origin.x;
       const dz = action.current.z - action.origin.z;
-      onPlanePoint(action.origin, {
+      const handles = {
         handleIn: { x: action.origin.x - dx, z: action.origin.z - dz },
         handleOut: { x: action.origin.x + dx, z: action.origin.z + dz },
-      });
+      };
+      // A press on an existing point waits for release, so the drag can bend the closing curve.
+      if (action.joinPointId) onPointPress(action.joinPointId, Math.hypot(dx, dz) > 0.4 ? handles : undefined);
+      else onPlanePoint(action.origin, handles);
     } else if (action.kind === "circle") {
       const radius = Math.hypot(action.current.x - action.origin.x, action.current.z - action.origin.z);
       if (radius >= 0.25) {
@@ -1330,7 +1460,15 @@ export function SketchWorkspace({
     } else if (action.kind === "offset") {
       onOffsetSegment(action.segmentId, action.current);
     } else if (action.kind === "move-point") {
-      onMovePoint(action.pointId, action.current);
+      onMovePoint(action.pointId, action.current, action.alsoPointIds);
+      onSnapResolved?.(null);
+    } else if (action.kind === "move-outline") {
+      const anchor = profile.points.find((point) => action.pointIds.includes(point.id));
+      const deltaX = action.current.x - action.origin.x;
+      const deltaZ = action.current.z - action.origin.z;
+      if (anchor && Math.hypot(deltaX, deltaZ) >= 0.05) {
+        onMovePoint(anchor.id, { x: anchor.x + deltaX, z: anchor.z + deltaZ }, action.pointIds);
+      }
     } else if (action.kind === "move-handle") {
       onMoveHandle(action.pointId, action.handle, action.current);
     } else if (action.kind === "move-image") {
@@ -1376,11 +1514,13 @@ export function SketchWorkspace({
 
   const handleWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
     event.preventDefault();
-    setZoom((current) => clamp(current * (event.deltaY > 0 ? 0.88 : 1.14), 0.75, 6));
+    setZoom((current) => clamp(current * (event.deltaY > 0 ? 0.88 : 1.14), 0.35, 6));
   };
 
   const beginEntityDrag = (event: ReactPointerEvent<SVGElement>, action: PointerAction) => {
-    if (event.button !== 0) return;
+    // A drag that starts on pointermove reports button -1. The held button is in `buttons`.
+    const primaryDown = event.button === 0 || (event.button === -1 && (event.buttons & 1) === 1);
+    if (!primaryDown) return;
     event.preventDefault();
     event.stopPropagation();
     try {
@@ -1472,33 +1612,51 @@ export function SketchWorkspace({
   const offsetPreview =
     pointerAction?.kind === "offset"
       ? (() => {
-          const segment = profile.segments.find((entry) => entry.id === pointerAction.segmentId);
-          const start = segment ? pointById.get(segment.startId) : null;
-          const end = segment ? pointById.get(segment.endId) : null;
-          if (!start || !end) return null;
-          const dx = end.x - start.x;
-          const dz = end.z - start.z;
-          const length = Math.hypot(dx, dz);
-          if (length < 0.01) return null;
-          const nx = -dz / length;
-          const nz = dx / length;
-          const mid = { x: (start.x + end.x) / 2, z: (start.z + end.z) / 2 };
-          const side = (pointerAction.current.x - mid.x) * nx + (pointerAction.current.z - mid.z) * nz;
-          const distance = Math.abs(side);
-          const ox = nx * Math.sign(side || 1) * distance;
-          const oz = nz * Math.sign(side || 1) * distance;
+          const offset = sketchOffsetAt(profile, pointerAction.segmentId, pointerAction.current);
+          if (!offset || offset === "curve") return null;
+          const mid = offset.preview.reduce(
+            (sum, point) => ({ x: sum.x + point.x / offset.preview.length, z: sum.z + point.z / offset.preview.length }),
+            { x: 0, z: 0 },
+          );
           return {
-            x1: start.x + ox,
-            z1: start.z + oz,
-            x2: end.x + ox,
-            z2: end.z + oz,
-            label: formatDimension(distance, workspace.accuracy),
-            midX: mid.x + ox,
-            midZ: mid.z + oz,
+            preview: offset.preview,
+            closed: offset.closed,
+            label: formatDimension(offset.distance, workspace.accuracy),
+            midX: mid.x,
+            midZ: mid.z,
           };
         })()
       : null;
   const labelOffset = 22 * screenUnit;
+  const sideCallouts = selectedSideCallouts(displayProfile, paths, selected, pointById, drawnCircles);
+  const cornerMarks = sketchCornerMarks(displayProfile).filter((mark) => {
+    if (isCircleStandIn(mark.pointId)) return false;
+    if (showMeasurements) return true;
+    if (selected?.kind === "point") return selected.id === mark.pointId;
+    if (selected?.kind === "segment") {
+      const segment = displayProfile.segments.find((entry) => entry.id === selected.id);
+      return segment?.startId === mark.pointId || segment?.endId === mark.pointId;
+    }
+    if (selected?.kind === "multiple") return selected.pointIds.includes(mark.pointId);
+    return false;
+  });
+  const alignedSegmentIds = new Set<string>();
+  if (pointerAction?.kind === "move-point") {
+    const moving = pointById.get(pointerAction.pointId);
+    if (moving) {
+      const tol = 0.05;
+      for (const segment of displayProfile.segments) {
+        if (segment.construction || (segment.kind && segment.kind !== "line")) continue;
+        const otherId = segment.startId === moving.id ? segment.endId : segment.endId === moving.id ? segment.startId : null;
+        if (!otherId) continue;
+        const other = pointById.get(otherId);
+        if (!other) continue;
+        const dx = Math.abs(moving.x - other.x);
+        const dz = Math.abs(moving.z - other.z);
+        if ((dx <= tol && dz > tol) || (dz <= tol && dx > tol)) alignedSegmentIds.add(segment.id);
+      }
+    }
+  }
   const pointRadius = 5 * screenUnit;
   const controlPointRadius = 6 * screenUnit;
   const hoverPointRadius = 5 * screenUnit;
@@ -1520,8 +1678,8 @@ export function SketchWorkspace({
     { id: "sw", x: selectedImageBounds.minX, z: selectedImageBounds.maxZ },
     { id: "w", x: selectedImageBounds.minX, z: selectedImage.z },
   ] : [];
-  const referenceFootprints = useMemo(
-    () => new Map(referenceShapes.map((shape) => [shape.id, importedMeshFootprint(shape)])),
+  const referenceNodes = useMemo(
+    () => referenceShapes.filter((shape) => !shape.hidden).map((shape) => ({ shape, node: sketchReferenceNode(shape) })),
     [referenceShapes],
   );
   const showReferenceFootprints = isDefaultSketchPlane(profile.sketchPlane);
@@ -1565,8 +1723,8 @@ export function SketchWorkspace({
       {planeBanner ? <div className="sketch-plane-banner">{planeBanner}</div> : null}
       <div className="camera-controls sketch-camera-controls" aria-label="Sketch view controls">
         <button aria-label="Reset sketch view" onClick={() => { setZoom(1); setPan({ x: 0, z: 0 }); }}><Home size={28} /></button>
-        <button aria-label="Zoom in" onClick={() => setZoom((value) => clamp(value * 1.25, 0.75, 6))}><Plus size={33} /></button>
-        <button aria-label="Zoom out" onClick={() => setZoom((value) => clamp(value / 1.25, 0.75, 6))}><Minus size={33} /></button>
+        <button aria-label="Zoom in" onClick={() => setZoom((value) => clamp(value * 1.25, 0.35, 6))}><Plus size={33} /></button>
+        <button aria-label="Zoom out" onClick={() => setZoom((value) => clamp(value / 1.25, 0.35, 6))}><Minus size={33} /></button>
         <div className="ruler-control-group">
           <PeakTipButton
             className={tool === "measure" ? "active" : ""}
@@ -1585,13 +1743,31 @@ export function SketchWorkspace({
           >
             <Ruler size={26} strokeWidth={2.2} aria-hidden="true" />
           </PeakTipButton>
+          <PeakTipButton
+            label={showMeasurements ? "Hide measurements" : "Show measurements"}
+            description="Show or hide the lengths and corner angles on the sketch."
+            aria-pressed={showMeasurements}
+            onClick={() => {
+              setShowMeasurements((shown) => {
+                const next = !shown;
+                try {
+                  window.localStorage.setItem("mintr.showSketchMeasurements", next ? "1" : "0");
+                } catch {
+                  // The sketch still toggles for this visit.
+                }
+                return next;
+              });
+            }}
+          >
+            {showMeasurements ? <Eye size={26} strokeWidth={2.2} aria-hidden="true" /> : <EyeOff size={26} strokeWidth={2.2} aria-hidden="true" />}
+          </PeakTipButton>
         </div>
       </div>
       <section className="sketch-plate-wrap" aria-label="2D sketch plate">
         <svg
           ref={svgRef}
-          className={`sketch-plate tool-${tool} ${pointerAction?.kind === "pan" ? "panning" : ""}`}
-          viewBox={`${pan.x - width / 2} ${pan.z - depth / 2} ${width} ${depth}`}
+          className={`sketch-plate tool-${tool}${eraseWhole ? " erase-whole" : ""} ${pointerAction?.kind === "pan" ? "panning" : ""}`}
+          viewBox={`${pan.x - viewWidth / 2} ${pan.z - viewDepth / 2} ${viewWidth} ${viewDepth}`}
           preserveAspectRatio="xMidYMid meet"
           onPointerDown={handlePlanePointerDown}
           onPointerMove={handlePointerMove}
@@ -1606,18 +1782,18 @@ export function SketchWorkspace({
           onPointerLeave={() => !pointerAction && setHover(null)}
           onWheel={handleWheel}
         >
-          <rect className="sketch-plate-background" x={-workspace.width / 2} y={-workspace.depth / 2} width={workspace.width} height={workspace.depth} />
+          <rect className="sketch-plate-background" x={pan.x - viewWidth / 2} y={pan.z - viewDepth / 2} width={viewWidth} height={viewDepth} />
           {workspace.showGrid ? (
             <g className="sketch-grid" pointerEvents="none">
               {verticalLines.map((x) => {
                 const atOrigin = Math.abs(x) < 0.0001;
                 const major = !atOrigin && Math.round(Math.abs(x) / gridStep) % majorEvery === 0;
-                return <line className={atOrigin ? "axis" : major ? "major" : "minor"} key={`x-${x}`} x1={x} y1={-workspace.depth / 2} x2={x} y2={workspace.depth / 2} />;
+                return <line className={atOrigin ? "axis" : major ? "major" : "minor"} key={`x-${x}`} x1={x} y1={pan.z - viewDepth / 2} x2={x} y2={pan.z + viewDepth / 2} />;
               })}
               {horizontalLines.map((z) => {
                 const atOrigin = Math.abs(z) < 0.0001;
                 const major = !atOrigin && Math.round(Math.abs(z) / gridStep) % majorEvery === 0;
-                return <line className={atOrigin ? "axis" : major ? "major" : "minor"} key={`z-${z}`} x1={-workspace.width / 2} y1={z} x2={workspace.width / 2} y2={z} />;
+                return <line className={atOrigin ? "axis" : major ? "major" : "minor"} key={`z-${z}`} x1={pan.x - viewWidth / 2} y1={z} x2={pan.x + viewWidth / 2} y2={z} />;
               })}
             </g>
           ) : null}
@@ -1660,23 +1836,11 @@ export function SketchWorkspace({
           </g>
           <g className="sketch-reference-shapes" pointerEvents="none">
             {showReferenceFootprints
-              ? referenceShapes.filter((shape) => !shape.hidden).map((shape) => {
-                  const footprint = referenceFootprints.get(shape.id);
-                  return (
-                    <g key={shape.id} transform={`rotate(${shape.rotation ?? 0} ${shape.x} ${shape.z})`}>
-                      {footprint?.fillD || footprint?.outlineD ? (
-                        <>
-                          {footprint.fillD ? <path className="sketch-reference-mesh-face" d={footprint.fillD} /> : null}
-                          {footprint.outlineD ? <path className="sketch-reference-mesh-outline" d={footprint.outlineD} /> : null}
-                        </>
-                      ) : isRoundReference(shape) ? (
-                        <ellipse cx={shape.x} cy={shape.z} rx={shape.width / 2} ry={shape.depth / 2} />
-                      ) : (
-                        <rect x={shape.x - shape.width / 2} y={shape.z - shape.depth / 2} width={shape.width} height={shape.depth} />
-                      )}
-                    </g>
-                  );
-                })
+              ? referenceNodes.map(({ shape, node }) => (
+                  <g key={shape.id} transform={`rotate(${shape.rotation ?? 0} ${shape.x} ${shape.z}) translate(${shape.x} ${shape.z}) scale(${mirrorSign(shape.mirrorX)} ${mirrorSign(shape.mirrorZ)})`}>
+                    <ReferenceMark node={node} />
+                  </g>
+                ))
               : null}
           </g>
           {faceReferenceLoops.length > 0 ? (
@@ -1704,6 +1868,18 @@ export function SketchWorkspace({
             </g>
           ) : null}
           <rect className="sketch-plate-border" x={-workspace.width / 2} y={-workspace.depth / 2} width={workspace.width} height={workspace.depth} pointerEvents="none" />
+          {showSketchPrinterBed ? (
+            <rect
+              className="sketch-printer-bed"
+              x={-printerBed.width / 2}
+              y={-printerBed.depth / 2}
+              width={printerBed.width}
+              height={printerBed.depth}
+              pointerEvents="none"
+            >
+              <title>Print bed</title>
+            </rect>
+          ) : null}
           {pointerAction?.kind === "marquee" ? (
             <rect
               className="sketch-selection-marquee"
@@ -1720,14 +1896,51 @@ export function SketchWorkspace({
               return (
                 <path
                   key={closedProfile.id}
-                  className={selected ? "selected-profile" : ""}
+                  className={`${selected ? "selected-profile" : ""} ${closedProfile.pointIds.some((id) => eraseWholePointIds.has(id) || eraseWholeSegmentIds.has(curveStandInOwner(id) ?? "")) ? "is-erase-target" : ""}`.trim()}
                   d={d}
                   pointerEvents="auto"
                   onPointerDown={(event) => {
-                    if (event.button !== 0 || tool !== "select" || !onSelectProfile) return;
-                    event.preventDefault();
-                    event.stopPropagation();
+                    if (event.button !== 0) return;
+                    if (tool === "erase" && eraseWhole) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const point = pointFromEvent(event);
+                      if (!point) return;
+                      const target = wholeEraseTarget(profile, { at: point }, constraintEntities);
+                      if (target && (target.pointIds.length || target.segmentIds.length)) {
+                        onEraseEntities(target.pointIds, target.segmentIds);
+                      }
+                      return;
+                    }
+                    if (tool === "offset" && onBeginOffsetProfile) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onBeginOffsetProfile(closedProfile.id);
+                      return;
+                    }
+                    if ((tool === "pattern" || tool === "circular-pattern" || tool === "stroke") && onSelectProfile) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onSelectProfile(closedProfile.id);
+                      return;
+                    }
+                    if (tool !== "select" || !onSelectProfile) return;
+                    const point = pointFromEvent(event);
+                    const pointIds = shapeMovePointIds(closedProfile, constraintEntities);
+                    if (!point || pointIds.length === 0) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onSelectProfile(closedProfile.id);
+                      return;
+                    }
                     onSelectProfile(closedProfile.id);
+                    beginEntityDrag(event, {
+                      kind: "move-outline",
+                      pointerId: event.pointerId,
+                      pointIds,
+                      origin: point,
+                      current: point,
+                    });
                   }}
                 />
               );
@@ -1744,21 +1957,33 @@ export function SketchWorkspace({
             </g>
           ) : null}
           <g className="sketch-segments">
+            {paths.flatMap((path, pathIndex) => curveStrokeRuns(path).map((run, runIndex) => (
+              <path key={`curve-run-${path.id}-${pathIndex}-${runIndex}`} className="sketch-chain" d={run.d} style={lineweightStyle(run.weight)} />
+            )))}
             {displayProfile.segments.map((segment) => {
               if (isCircleStandIn(segment.id)) return null;
               if (!showConstruction && segment.construction) return null;
+              const from = pointById.get(segment.startId);
+              const to = pointById.get(segment.endId);
+              const chained = !segment.construction && Boolean(from && to && curveControls({ segment, from, to }).curved);
               return (
               <path
                 data-sketch-entity="segment"
-                className={`${isSegmentSelected(segment.id) ? "selected" : ""} ${isSweepMarked(segment.id) ? "sweep-mark" : ""} ${segment.construction ? "construction" : ""}`.trim()}
+                className={`${isSegmentSelected(segment.id) ? "selected" : ""} ${alignedSegmentIds.has(segment.id) ? "is-aligned" : ""} ${eraseWholeSegmentIds.has(segment.id) ? "is-erase-target" : ""} ${isSweepMarked(segment.id) ? "sweep-mark" : ""} ${segment.construction ? "construction" : ""} ${chained ? "is-chained" : ""}`.trim()}
                 key={segment.id}
                 d={segmentData(segment, pointById)}
+                style={lineweightStyle(segment.weight)}
                 onPointerDown={(event) => {
                   const point = pointFromEvent(event);
                   event.preventDefault();
                   event.stopPropagation();
                   if (event.button === 1) beginPan(event);
-                  else if (event.button === 0 && tool === "erase" && point) beginEraseStroke(event, point);
+                  else if (event.button === 0 && tool === "erase" && eraseWhole) {
+                    const target = wholeEraseTarget(profile, { segmentId: segment.id }, constraintEntities);
+                    if (target && (target.pointIds.length || target.segmentIds.length)) {
+                      onEraseEntities(target.pointIds, target.segmentIds);
+                    }
+                  } else if (event.button === 0 && tool === "erase" && point) beginEraseStroke(event, point);
                   else if (event.button === 0 && tool === "refine" && point) onInsertPoint(segment.id, point);
                   else if (event.button === 0 && tool === "offset" && point) {
                     svgRef.current?.setPointerCapture(event.pointerId);
@@ -1779,16 +2004,19 @@ export function SketchWorkspace({
                   <circle
                     key={circle.id}
                     data-sketch-entity="segment"
-                    className={`${circleSelected ? "selected" : ""} ${isSweepMarked(circle.id) ? "sweep-mark" : ""} ${circle.construction ? "construction" : ""}`.trim()}
+                    className={`${circleSelected ? "selected" : ""} ${eraseWholeSegmentIds.has(circle.id) ? "is-erase-target" : ""} ${isSweepMarked(circle.id) ? "sweep-mark" : ""} ${circle.construction ? "construction" : ""}`.trim()}
                     cx={circle.cx}
                     cy={circle.cz}
                     r={circle.radius}
+                    style={lineweightStyle(circle.weight)}
                     onPointerDown={(event) => {
                       const point = pointFromEvent(event);
                       event.preventDefault();
                       event.stopPropagation();
                       if (event.button === 1) beginPan(event);
-                      else if (event.button === 0 && tool === "erase" && point) beginEraseStroke(event, point);
+                      else if (event.button === 0 && tool === "erase" && eraseWhole) {
+                        onEraseEntities([], [circle.id]);
+                      } else if (event.button === 0 && tool === "erase" && point) beginEraseStroke(event, point);
                       else if (event.button === 0 && tool === "select" && point) {
                         onSelectSegment(circle.id, point);
                         beginEntityDrag(event, {
@@ -1814,8 +2042,8 @@ export function SketchWorkspace({
             </g>
           ) : null}
           <g className="sketch-segment-dimensions">
-            {displayProfile.segments.map((segment) => {
-              if (segment.construction || isCircleStandIn(segment.id)) return null;
+            {showMeasurements ? displayProfile.segments.map((segment) => {
+              if (segment.construction || isCircleStandIn(segment.id) || sideCallouts.some((callout) => callout.segmentId === segment.id)) return null;
               const dimension = segmentDimension(segment, pointById);
               if (!dimension) return null;
               const label = formatDimension(dimension.length, workspace.accuracy);
@@ -1839,24 +2067,26 @@ export function SketchWorkspace({
                   <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
                 </g>
               );
-            })}
-            {tool === "select" ? sketchCornerMarks(displayProfile).filter((mark) => !isCircleStandIn(mark.pointId)).map((mark) => {
+            }) : null}
+            {cornerMarks.map((mark) => {
               const rightAngle = Math.abs(mark.degrees - 90) < 0.8;
               const size = Math.max(4 * screenUnit, Math.min((rightAngle ? 14 : 18) * screenUnit, mark.reach * 0.34));
-              const label = `${mark.degrees.toFixed(0)}°`;
+              const rounded = Math.round(mark.degrees);
+              const label = Math.abs(mark.degrees - rounded) < 0.15 ? `${rounded}°` : `${mark.degrees.toFixed(1)}°`;
               const pill = dimensionPillSize(label, screenUnit, 18);
               const labelDistance = size + 16 * screenUnit;
               const labelX = mark.x + mark.bx * labelDistance;
               const labelZ = mark.z + mark.bz * labelDistance;
+              const editable = mark.straight && tool === "select" && Boolean(onEditCornerAngle);
               const open = (event: ReactPointerEvent<SVGGElement>) => {
-                if (event.button !== 0 || !onEditCornerAngle) return;
+                if (!editable || event.button !== 0) return;
                 event.preventDefault();
                 event.stopPropagation();
                 setAngleEdit({ pointId: mark.pointId, value: mark.degrees, leg: 1 });
               };
               const callout = (
-                <g className="editable" transform={`translate(${labelX} ${labelZ})`} onPointerDown={open}>
-                  <title>Click to type the corner angle</title>
+                <g className={editable ? "editable" : ""} pointerEvents={editable ? "auto" : "none"} transform={`translate(${labelX} ${labelZ})`} onPointerDown={open}>
+                  <title>{editable ? "Click to type the corner angle" : undefined}</title>
                   <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
                   <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
                 </g>
@@ -1869,7 +2099,7 @@ export function SketchWorkspace({
                 const cx = mark.x + mark.ux1 * size;
                 const cz = mark.z + mark.uz1 * size;
                 return (
-                  <g key={`corner-${mark.pointId}`}>
+                  <g key={`corner-${mark.pointId}`} className="sketch-angle-callout">
                     <g className="sketch-angle-dimension" pointerEvents="none">
                       <path className="witness" d={`M ${ax} ${az} L ${bx} ${bz} L ${cx} ${cz}`} />
                     </g>
@@ -1890,7 +2120,7 @@ export function SketchWorkspace({
               const travel1z = turn * mark.ux1;
               const arrow = 3.6 * screenUnit;
               return (
-                <g key={`corner-${mark.pointId}`}>
+                <g key={`corner-${mark.pointId}`} className="sketch-angle-callout">
                   <g className="sketch-angle-dimension" pointerEvents="none">
                     <path className="arc" d={`M ${startX} ${startZ} A ${size} ${size} 0 0 ${sweep} ${endX} ${endZ}`} />
                     <path className="arrow" d={angleArrow(startX, startZ, -travel0x, -travel0z, arrow)} />
@@ -1899,7 +2129,7 @@ export function SketchWorkspace({
                   {callout}
                 </g>
               );
-            }) : null}
+            })}
             {showDimensions ? drawnCircles.filter((circle) => (showConstruction || !circle.construction) && !dimensions.some((dimension) => (dimension.kind === "radius" || dimension.kind === "diameter") && dimension.entityIds.includes(circle.id))).map((circle) => {
               const label = formatDimension(circle.radius, workspace.accuracy);
               const pill = dimensionPillSize(label, screenUnit, 18);
@@ -1924,6 +2154,49 @@ export function SketchWorkspace({
               );
             }) : null}
           </g>
+          {sideCallouts.map((sideCallout) => {
+            const gap = 3 * screenUnit;
+            const overshoot = 3.5 * screenUnit;
+            const label = formatDimension(sideCallout.length, workspace.accuracy);
+            const pill = sideCalloutPill(label, screenUnit);
+            const offset = Math.abs(sideCallout.nx) * pill.width / 2 + Math.abs(sideCallout.nz) * pill.height / 2 + 8 * screenUnit;
+            const shift = (amount: number, x: number, z: number) => ({
+              x: x + sideCallout.nx * amount,
+              z: z + sideCallout.nz * amount,
+            });
+            const dimA = shift(offset, sideCallout.ax, sideCallout.az);
+            const dimB = shift(offset, sideCallout.bx, sideCallout.bz);
+            const witnessA0 = shift(gap, sideCallout.ax, sideCallout.az);
+            const witnessA1 = shift(offset + overshoot, sideCallout.ax, sideCallout.az);
+            const witnessB0 = shift(gap, sideCallout.bx, sideCallout.bz);
+            const witnessB1 = shift(offset + overshoot, sideCallout.bx, sideCallout.bz);
+            const editable = tool === "select" && (sideCallout.circleId ? Boolean(onEditCircleRadius) : Boolean(onEditSegmentLength) && Boolean(sideCallout.segmentId));
+            return (
+              <g key={sideCallout.key} className="sketch-side-callout">
+                <g pointerEvents="none">
+                  <line className="witness" x1={witnessA0.x} y1={witnessA0.z} x2={witnessA1.x} y2={witnessA1.z} />
+                  <line className="witness" x1={witnessB0.x} y1={witnessB0.z} x2={witnessB1.x} y2={witnessB1.z} />
+                  <line className="span" x1={dimA.x} y1={dimA.z} x2={dimB.x} y2={dimB.z} />
+                </g>
+                <g
+                  className={editable ? "editable" : ""}
+                  pointerEvents={editable ? "auto" : "none"}
+                  transform={`translate(${(dimA.x + dimB.x) / 2} ${(dimA.z + dimB.z) / 2})`}
+                  onPointerDown={(event) => {
+                    if (!editable || event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (sideCallout.circleId) setDiameterEdit({ circleId: sideCallout.circleId, value: sideCallout.length });
+                    else if (sideCallout.segmentId) setLengthEdit({ segmentId: sideCallout.segmentId, value: sideCallout.length, grow: "end" });
+                  }}
+                >
+                  <title>{editable ? "Click to type the length" : undefined}</title>
+                  <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                  <text y={4 * screenUnit} fontSize={12 * screenUnit}>{label}</text>
+                </g>
+              </g>
+            );
+          })}
           {activePoint && rubberEnd && (tool === "line" || (tool === "bezier" && pointerAction?.kind !== "bezier")) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={rubberEnd.x} y2={rubberEnd.z} pointerEvents="none" /> : null}
           {activePoint && rubberEnd && (tool === "line" || (tool === "bezier" && pointerAction?.kind !== "bezier")) ? (
             <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + rubberEnd.x) / 2} ${(activePoint.z + rubberEnd.z) / 2 - labelOffset})`}>
@@ -2062,9 +2335,18 @@ export function SketchWorkspace({
               </g>
             </g>
           ) : null}
+          {offsetGhost && offsetGhost.length >= 3 ? (
+            <g className="sketch-shape-preview" pointerEvents="none">
+              <polygon className="sketch-preview-line" fill="none" points={offsetGhost.map((point) => `${point.x},${point.z}`).join(" ")} />
+            </g>
+          ) : null}
           {offsetPreview ? (
             <g className="sketch-shape-preview" pointerEvents="none">
-              <line className="sketch-preview-line" x1={offsetPreview.x1} y1={offsetPreview.z1} x2={offsetPreview.x2} y2={offsetPreview.z2} />
+              {offsetPreview.closed ? (
+                <polygon className="sketch-preview-line" fill="none" points={offsetPreview.preview.map((point) => `${point.x},${point.z}`).join(" ")} />
+              ) : (
+                <line className="sketch-preview-line" x1={offsetPreview.preview[0]?.x ?? 0} y1={offsetPreview.preview[0]?.z ?? 0} x2={offsetPreview.preview[1]?.x ?? 0} y2={offsetPreview.preview[1]?.z ?? 0} />
+              )}
               <g className="sketch-segment-dimensions preview" transform={`translate(${offsetPreview.midX} ${offsetPreview.midZ - labelOffset})`}>
                 {(() => {
                   const pill = dimensionPillSize(offsetPreview.label, screenUnit, 18);
@@ -2151,14 +2433,27 @@ export function SketchWorkspace({
                   event.stopPropagation();
                   if (event.button === 1) {
                     beginPan(event);
+                  } else if (event.button === 0 && tool === "erase" && eraseWhole) {
+                    const target = wholeEraseTarget(profile, { pointId: point.id }, constraintEntities);
+                    if (target && (target.pointIds.length || target.segmentIds.length)) {
+                      onEraseEntities(target.pointIds, target.segmentIds);
+                    }
                   } else if (event.button === 0 && tool === "erase") {
                     beginEraseStroke(event, { x: point.x, z: point.z });
                   } else if (tool === "refine") {
                     onDeletePoint(point.id);
+                  } else if (event.button === 0 && tool === "bezier") {
+                    beginEntityDrag(event, {
+                      kind: "bezier",
+                      pointerId: event.pointerId,
+                      origin: { x: point.x, z: point.z },
+                      current: { x: point.x, z: point.z },
+                      joinPointId: point.id,
+                    });
                   } else if (event.button === 0) {
                     const now = performance.now();
                     const last = pointClickRef.current;
-                    const again = tool !== "smooth" && last?.id === point.id && now - last.at < 600;
+                    const again = tool !== "smooth" && tool !== "fillet" && tool !== "chamfer" && last?.id === point.id && now - last.at < 600;
                     if (again) {
                       pointClickRef.current = null;
                       pendingPointDragRef.current = null;
@@ -2177,7 +2472,7 @@ export function SketchWorkspace({
                 }}
               />
               <circle
-                className={`mark ${isPointSelected(point.id) ? "selected" : ""} ${activePointId === point.id ? "active" : ""}`}
+                className={`mark ${isPointSelected(point.id) ? "selected" : ""} ${activePointId === point.id ? "active" : ""} ${eraseWholePointIds.has(point.id) ? "is-erase-target" : ""}`}
                 cx={point.x}
                 cy={point.z}
                 r={pointRadius}
@@ -2259,7 +2554,7 @@ export function SketchWorkspace({
               const tip = hover ?? (pointerAction?.kind === "erase" ? pointerAction.current : null);
               if (!tip) return null;
               return (
-                <g className="sketch-eraser-tip" pointerEvents="none">
+                <g className={`sketch-eraser-tip${eraseWhole ? " is-whole" : ""}`} pointerEvents="none">
                   <circle className="sketch-eraser-brush" cx={tip.x} cy={tip.z} r={eraseBrushRadius} />
                   <g transform={`translate(${tip.x + eraseBrushRadius * 0.35} ${tip.z - eraseBrushRadius * 1.15}) scale(${screenUnit * 1.15})`}>
                     <path
@@ -2271,7 +2566,35 @@ export function SketchWorkspace({
               );
             })()
           ) : null}
-          {activeSnap && activeSnap.kind !== "grid" ? (
+          {activeSnap?.alignTo?.length ? (
+            <g className="sketch-align" pointerEvents="none">
+              {activeSnap.alignTo.map((point, index) => (
+                <g key={`${point.x}-${point.z}-${index}`}>
+                  <line className="sketch-align-line" x1={point.x} y1={point.z} x2={activeSnap.x} y2={activeSnap.z} />
+                  <circle className="sketch-align-point" cx={point.x} cy={point.z} r={4.5 * screenUnit} />
+                </g>
+              ))}
+            </g>
+          ) : null}
+          {activeSnap && activeSnap.kind !== "grid" && !activeSnap.alignTo?.length && (
+            tool === "line"
+            || tool === "bezier"
+            || tool === "arc"
+            || tool === "measure"
+            || tool === "circle"
+            || tool === "ellipse"
+            || tool === "square"
+            || tool === "rectangle"
+            || tool === "roundRect"
+            || tool === "slot"
+            || tool === "triangle"
+            || tool === "polygon"
+            || tool === "star"
+            || pointerAction?.kind === "move-point"
+            || pointerAction?.kind === "move-outline"
+            || pointerAction?.kind === "resize-circle"
+            || pointerAction?.kind === "move-handle"
+          ) ? (
             <SketchSnapGlyph
               kind={activeSnap.kind}
               x={activeSnap.x}
@@ -2444,6 +2767,20 @@ export function SketchWorkspace({
             const edit = radiusEdit;
             setRadiusEdit(null);
             if (edit && Number.isFinite(value) && value > 0.05) onEditCircleRadius?.(edit.circleId, value);
+          }}
+        />
+      ) : null}
+      {diameterEdit ? (
+        <InlineValueDialog
+          title="Diameter"
+          fields={[{ key: "value", label: "Diameter", value: diameterEdit.value.toFixed(2), unit: "mm", min: 0 }]}
+          confirmLabel="Apply"
+          onCancel={() => setDiameterEdit(null)}
+          onConfirm={(values) => {
+            const value = Number.parseFloat(values.value ?? "");
+            const edit = diameterEdit;
+            setDiameterEdit(null);
+            if (edit && Number.isFinite(value) && value > 0.1) onEditCircleRadius?.(edit.circleId, value / 2);
           }}
         />
       ) : null}

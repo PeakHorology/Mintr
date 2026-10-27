@@ -1585,10 +1585,11 @@ export function resultGeometryToMeshShape(
 
   const firstSolid = solids[0];
   const hasHole = selection.some((shape) => shape.hole);
-  const csgOp: CsgOp = hasHole
-    ? "subtract"
-    : idPrefix.includes("intersection")
-      ? "intersect"
+  // Intersection operands include holes, so check it first or the body would rebuild and export as a cut.
+  const csgOp: CsgOp = idPrefix.includes("intersect")
+    ? "intersect"
+    : hasHole
+      ? "subtract"
       : "union";
 
   return withCsgMeta({
@@ -1943,7 +1944,8 @@ export function meshPositionsToGroupShape(
 
   const firstSolid = solids[0];
   const hasHole = selection.some((shape) => shape.hole);
-  const csgOp: CsgOp = hasHole ? "subtract" : idPrefix.includes("intersection") ? "intersect" : "union";
+  // Intersection operands include holes, so check it first or the body would rebuild and export as a cut.
+  const csgOp: CsgOp = idPrefix.includes("intersect") ? "intersect" : hasHole ? "subtract" : "union";
   return withCsgMeta({
     id: createLocalId(idPrefix),
     name: "Group",
@@ -2380,7 +2382,50 @@ export function bvhIntersectionMeshShape(selection: WorkplaneShape[], operation:
   }
 }
 
+/** Intersect needs a solid and something to overlap it: a hole, or a second solid. */
+export function canIntersectShapes(shapes: WorkplaneShape[]) {
+  const open = shapes.filter((shape) => !shape.locked);
+  const solidCount = open.filter((shape) => !shape.hole).length;
+  return solidCount > 0 && (solidCount >= 2 || open.some((shape) => shape.hole));
+}
+
+/** A finished body as one operand, so a chained step cannot reopen a group into its parts. */
+function asBakedOperand(shape: WorkplaneShape, hole: boolean): WorkplaneShape {
+  const baked = shape.importedMesh && shape.groupedShapes?.length
+    ? { ...shape, groupedShapes: undefined, csg: undefined }
+    : shape;
+  return { ...baked, hole };
+}
+
+/**
+ * Plain solids only: keep the space every one of them shares, two at a time.
+ * Each step treats the next solid as the keep-volume; the result remembers the solids as they were.
+ */
+async function buildSolidOnlyIntersection(solids: WorkplaneShape[]): Promise<IntersectionBuildResult> {
+  let current = asBakedOperand(solids[0], false);
+  let result: IntersectionBuildResult | null = null;
+  for (const next of solids.slice(1)) {
+    result = await buildIntersectionShapeFromSelection([current, asBakedOperand(next, true)]);
+    if (!result.group) return result;
+    current = asBakedOperand(result.group, false);
+  }
+  const group = result?.group;
+  if (!group) return { group: null, empty: false, failureNotice: "Select two or more overlapping shapes for Intersection" };
+  return {
+    ...result!,
+    group: {
+      ...group,
+      groupedShapes: solids.map((shape) => cloneAsGroupChild(shape, group.x, group.z, group.elevation ?? 0)),
+    },
+  };
+}
+
 export async function buildIntersectionShapeFromSelection(groupable: WorkplaneShape[]): Promise<IntersectionBuildResult> {
+  if (!groupable.some((shape) => shape.hole)) {
+    const plainSolids = groupable.filter((shape) => !shape.locked);
+    if (plainSolids.length >= 2) return buildSolidOnlyIntersection(plainSolids);
+  }
+
   const booleanSelection = expandGroupsForBoolean(groupable.map(solidThreadShape));
   const solids = booleanSelection.filter((shape) => !shape.hole && !shape.locked);
   const holes = booleanSelection.filter((shape) => shape.hole && !shape.locked);
@@ -2388,7 +2433,7 @@ export async function buildIntersectionShapeFromSelection(groupable: WorkplaneSh
     return {
       group: null,
       empty: false,
-      failureNotice: "Select at least one solid and one hole for Intersection",
+      failureNotice: "Select two or more overlapping shapes for Intersection",
     };
   }
 
@@ -3088,6 +3133,9 @@ export async function evaluateCsgOpOnOperands(
     if (!skipOcct) {
       const occt = await occtBooleanMeshShape(selection, "intersect");
       if (occt) return occt;
+    }
+    if (!selection.some((shape) => shape.hole)) {
+      return (await buildSolidOnlyIntersection(selection)).group;
     }
     const attempt = await manifoldIntersectionMeshShape(selection);
     if (attempt.status === "success") return attempt.group;

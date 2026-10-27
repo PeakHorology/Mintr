@@ -61,14 +61,33 @@ export type SketchCornerMark = {
   uz1: number;
   /** Shorter leg, so the arc stays inside the corner. */
   reach: number;
+  /** Both legs are straight, so a typed angle can swing one of them. */
+  straight: boolean;
 };
 
-function lineLegs(profile: SketchProfile, vertexId: string) {
+function departure(segment: SketchSegment, vertex: SketchPoint, other: SketchPoint) {
+  const handle = segment.startId === vertex.id ? vertex.handleOut : vertex.handleIn;
+  const curved = segment.kind === "bezier" || segment.kind === "smooth";
+  if (curved && handle) {
+    const hx = handle.x - vertex.x;
+    const hz = handle.z - vertex.z;
+    const handleLength = Math.hypot(hx, hz);
+    const chord = Math.hypot(other.x - vertex.x, other.z - vertex.z);
+    if (handleLength > 1e-4 && chord > 1e-6) return { x: hx / handleLength, z: hz / handleLength, length: chord };
+  }
+  const dx = other.x - vertex.x;
+  const dz = other.z - vertex.z;
+  const length = Math.hypot(dx, dz);
+  if (length < 1e-6) return null;
+  return { x: dx / length, z: dz / length, length };
+}
+
+function cornerJoint(profile: SketchProfile, vertexId: string, linesOnly: boolean) {
   const point = profile.points.find((entry) => entry.id === vertexId);
   if (!point) return null;
   const legs = profile.segments.filter((segment) => {
     if (segment.construction) return false;
-    if (segment.kind && segment.kind !== "line") return false;
+    if (linesOnly && segment.kind && segment.kind !== "line") return false;
     return segment.startId === vertexId || segment.endId === vertexId;
   });
   if (legs.length !== 2) return null;
@@ -76,18 +95,50 @@ function lineLegs(profile: SketchProfile, vertexId: string) {
   const p0 = other(legs[0]);
   const p1 = other(legs[1]);
   if (!p0 || !p1) return null;
-  const len0 = Math.hypot(p0.x - point.x, p0.z - point.z);
-  const len1 = Math.hypot(p1.x - point.x, p1.z - point.z);
-  if (len0 < 1e-6 || len1 < 1e-6) return null;
-  const u0 = { x: (p0.x - point.x) / len0, z: (p0.z - point.z) / len0 };
-  const u1 = { x: (p1.x - point.x) / len1, z: (p1.z - point.z) / len1 };
-  const dot = Math.min(1, Math.max(-1, u0.x * u1.x + u0.z * u1.z));
+  const d0 = departure(legs[0], point, p0);
+  const d1 = departure(legs[1], point, p1);
+  if (!d0 || !d1) return null;
+  const dot = Math.min(1, Math.max(-1, d0.x * d1.x + d0.z * d1.z));
   const interior = Math.acos(dot);
   if (interior < 1e-3 || Math.PI - interior < 1e-3) return null;
-  return { point, legs, far: [p0, p1] as const, unit: [u0, u1] as const, lengths: [len0, len1] as const, interior };
+  return {
+    point,
+    legs,
+    far: [p0, p1] as const,
+    unit: [{ x: d0.x, z: d0.z }, { x: d1.x, z: d1.z }] as const,
+    lengths: [d0.length, d1.length] as const,
+    interior,
+    straight: legs.every((segment) => !segment.kind || segment.kind === "line"),
+  };
 }
 
-/** Corner angles where two straight solid lines meet. */
+function lineLegs(profile: SketchProfile, vertexId: string) {
+  const joint = cornerJoint(profile, vertexId, true);
+  if (!joint?.straight) return null;
+  return joint;
+}
+
+/** Corners a sketch fillet or chamfer can cut: picked points, plus a vertex where two picked lines meet. */
+export function filletChamferTargets(profile: SketchProfile, pointIds: string[], segmentIds: string[]): string[] {
+  const endpointCount = new Map<string, number>();
+  for (const segmentId of segmentIds) {
+    const segment = profile.segments.find((entry) => entry.id === segmentId);
+    if (!segment) continue;
+    endpointCount.set(segment.startId, (endpointCount.get(segment.startId) ?? 0) + 1);
+    endpointCount.set(segment.endId, (endpointCount.get(segment.endId) ?? 0) + 1);
+  }
+  const shared = [...endpointCount.entries()].filter(([, count]) => count >= 2).map(([id]) => id);
+  const seen = new Set<string>();
+  const joints: string[] = [];
+  for (const id of [...pointIds, ...shared]) {
+    if (seen.has(id) || !lineLegs(profile, id)) continue;
+    seen.add(id);
+    joints.push(id);
+  }
+  return joints;
+}
+
+/** Corner angles where two solid edges meet, including a curve's tangent. */
 export function sketchCornerMarks(profile: SketchProfile): SketchCornerMark[] {
   const marks: SketchCornerMark[] = [];
   const seen = new Set<string>();
@@ -95,7 +146,7 @@ export function sketchCornerMarks(profile: SketchProfile): SketchCornerMark[] {
     for (const pointId of [segment.startId, segment.endId]) {
       if (seen.has(pointId)) continue;
       seen.add(pointId);
-      const corner = lineLegs(profile, pointId);
+      const corner = cornerJoint(profile, pointId, false);
       if (!corner) continue;
       let bx = corner.unit[0].x + corner.unit[1].x;
       let bz = corner.unit[0].z + corner.unit[1].z;
@@ -115,6 +166,7 @@ export function sketchCornerMarks(profile: SketchProfile): SketchCornerMark[] {
         ux1: corner.unit[1].x,
         uz1: corner.unit[1].z,
         reach: Math.min(corner.lengths[0], corner.lengths[1]),
+        straight: corner.straight,
       });
     }
   }

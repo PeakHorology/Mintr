@@ -11,6 +11,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { createBooleanTextGeometry } from "@/lib/editorShapeMesh";
+import { shapeFromSketchRevolve } from "@/lib/sketchRevolve";
 import { createGearGeometry } from "@/lib/gearMesh";
 import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
@@ -111,7 +112,7 @@ import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, norm
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
 import { hasUsableCsgResultMesh, viewportCadDisplayEdges, viewportGroupChildren } from "@/lib/csgTree";
-import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, fallbackSolidColor, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, roofPatchForHeight, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, fallbackSolidColor, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
@@ -2426,7 +2427,7 @@ function resizeShapeFromFrameHandle(
   transform: TransformDragState,
   point: THREE.Vector3,
   handleKey: string,
-  shiftKey: boolean,
+  _shiftKey: boolean,
   altKey: boolean,
   step: number,
 ): Partial<WorkplaneShape> {
@@ -2452,8 +2453,9 @@ function resizeShapeFromFrameHandle(
 
   let nextWidth = axisResize(width, localDelta.x, signs.x);
   let nextDepth = axisResize(depth, localDelta.z, signs.z);
+  const corner = Boolean(signs.x && signs.z);
 
-  if (shiftKey && (shape.kind === "roof" || (signs.x && signs.z))) {
+  if (corner) {
     const scale = proportionalResizeScale(width, depth, nextWidth, nextDepth);
     const limitedScale = clamp(scale, MIN_SHAPE_SIZE / Math.max(MIN_SHAPE_SIZE, Math.min(width, depth)), maxSize / Math.max(width, depth));
     nextWidth = snapDimension(width * limitedScale, step, MIN_SHAPE_SIZE, maxSize);
@@ -2464,8 +2466,11 @@ function resizeShapeFromFrameHandle(
     ? frame.center.clone()
     : resizeCenterFromAnchor(frame, transform.scaleAnchorPoint ?? resizeAnchorPointForFrame(frame, signs), signs, nextWidth, nextDepth);
   const patch = resizedShapePatchFromFrame(shape, nextCenter, nextWidth, nextDepth);
-  if (shiftKey && shape.kind === "roof") {
+  if (corner && shape.kind === "roof") {
     Object.assign(patch, roofPatchForFootprint(shape, nextWidth, nextDepth));
+  } else if (corner) {
+    const scale = nextWidth / Math.max(MIN_SHAPE_SIZE, width);
+    patch.height = snapDimension(shape.height * scale, step, MIN_SHAPE_SIZE, maxSize);
   }
   return patch;
 }
@@ -2474,7 +2479,7 @@ function resizeSelectionFromHandle(
   transform: TransformDragState,
   point: THREE.Vector3,
   handleKey: string,
-  shiftKey: boolean,
+  _shiftKey: boolean,
   altKey: boolean,
   step: number,
 ) {
@@ -2500,7 +2505,8 @@ function resizeSelectionFromHandle(
 
   let nextX = axisResize(frame.width, localDelta.x, signs.x);
   let nextZ = axisResize(frame.depth, localDelta.z, signs.z);
-  if (shiftKey && signs.x && signs.z) {
+  const corner = Boolean(signs.x && signs.z);
+  if (corner) {
     const scale = proportionalResizeScale(frame.width, frame.depth, nextX.size, nextZ.size);
     const limitedScale = clamp(scale, MIN_SHAPE_SIZE / Math.max(MIN_SHAPE_SIZE, Math.min(frame.width, frame.depth)), 260 / Math.max(frame.width, frame.depth));
     const width = snapDimension(frame.width * limitedScale, step, MIN_SHAPE_SIZE, 260);
@@ -2536,8 +2542,12 @@ function resizeSelectionFromHandle(
       depth,
       size: resizedShapeSize(width, depth),
     };
-    if (shiftKey && item.startShape.kind === "roof") {
-      Object.assign(patch, roofPatchForFootprint(item.startShape, width, depth));
+    if (corner) {
+      if (item.startShape.kind === "roof") {
+        Object.assign(patch, roofPatchForFootprint(item.startShape, width, depth));
+      } else {
+        patch.height = snapDimension(item.startShape.height * nextX.scale, step, MIN_SHAPE_SIZE, 260);
+      }
     }
     return {
       id: item.id,
@@ -2845,6 +2855,7 @@ export function WorkplaneViewport({
       sketchOnModel.profile.segments.map((segment) => `${segment.id}:${segment.construction ? 1 : 0}:${segment.kind ?? "line"}`).join(","),
       sketchOnModel.profile.faceReferenceLoops?.length ?? 0,
       sketchOnModel.guideGhost?.points.map((point) => `${point.x.toFixed(2)},${point.z.toFixed(2)}`).join(";") ?? "",
+      sketchOnModel.offsetGhost?.map((point) => `${point.x.toFixed(2)},${point.z.toFixed(2)}`).join(";") ?? "",
     ].join("|")
     : "";
   const sketchPlaneKey = sketchOnModel
@@ -4294,9 +4305,7 @@ export function WorkplaneViewport({
             ? transform.selectionFrame.center.y + transform.selectionFrame.height / 2 - (transform.selectionFrame.height / 2 - localCenter.y) * scaleY
             : transform.selectionFrame.center.y - transform.selectionFrame.height / 2 + (localCenter.y + transform.selectionFrame.height / 2) * scaleY;
           const height = clamp(item.startShape.height * scaleY, MIN_SHAPE_SIZE, 180);
-          const sizePatch = item.startShape.kind === "roof" && shiftKey
-            ? roofPatchForHeight(item.startShape, height)
-            : { height };
+          const sizePatch = { height };
           const nextHeight = sizePatch.height ?? height;
           let elevation = nextCenterY - nextHeight / 2;
           if (transform.items.length === 1) {
@@ -6438,7 +6447,7 @@ export function WorkplaneViewport({
             <PeakTipButton className="camera-controls-toggle" label="Hide controls" description={TOOL_DESCRIPTIONS.hideControls} aria-expanded={true} onClick={collapseCameraControls}>
               <ChevronLeft size={24} strokeWidth={2.25} aria-hidden="true" />
             </PeakTipButton>
-            <PeakTipButton label="Home" description={TOOL_DESCRIPTIONS.cameraHome} onClick={resetView}>
+            <PeakTipButton label="Home" description={TOOL_DESCRIPTIONS.cameraHome} data-sage-key="camera-home" onClick={resetView}>
               <Home size={24} strokeWidth={2.25} />
             </PeakTipButton>
             <PeakTipButton label="Zoom in" description={TOOL_DESCRIPTIONS.zoomIn} onClick={() => zoomCamera(0.7)}>
@@ -9827,14 +9836,14 @@ function syncTransformOverlay(
       ...footprintGuides,
     ],
     handles: [
-      { key: "near-left", className: "corner", kind: "scale" as const, x: bottom.nearLeft.x, y: bottom.nearLeft.y, title: "Resize" },
-      { key: "near-right", className: "corner", kind: "scale" as const, x: bottom.nearRight.x, y: bottom.nearRight.y, title: "Resize" },
-      { key: "far-right", className: "corner", kind: "scale" as const, x: bottom.farRight.x, y: bottom.farRight.y, title: "Resize" },
-      { key: "far-left", className: "corner", kind: "scale" as const, x: bottom.farLeft.x, y: bottom.farLeft.y, title: "Resize" },
-      { key: "near-mid", className: "edge dark", kind: "scale" as const, x: mid.near.x, y: mid.near.y, title: "Resize" },
-      { key: "right-mid", className: "edge dark", kind: "scale" as const, x: mid.right.x, y: mid.right.y, title: "Resize" },
-      { key: "far-mid", className: "edge dark", kind: "scale" as const, x: mid.far.x, y: mid.far.y, title: "Resize" },
-      { key: "left-mid", className: "edge dark", kind: "scale" as const, x: mid.left.x, y: mid.left.y, title: "Resize" },
+      { key: "near-left", className: "corner", kind: "scale" as const, x: bottom.nearLeft.x, y: bottom.nearLeft.y, title: "Even" },
+      { key: "near-right", className: "corner", kind: "scale" as const, x: bottom.nearRight.x, y: bottom.nearRight.y, title: "Even" },
+      { key: "far-right", className: "corner", kind: "scale" as const, x: bottom.farRight.x, y: bottom.farRight.y, title: "Even" },
+      { key: "far-left", className: "corner", kind: "scale" as const, x: bottom.farLeft.x, y: bottom.farLeft.y, title: "Even" },
+      { key: "near-mid", className: "edge dark", kind: "scale" as const, x: mid.near.x, y: mid.near.y, title: "Stretch" },
+      { key: "right-mid", className: "edge dark", kind: "scale" as const, x: mid.right.x, y: mid.right.y, title: "Stretch" },
+      { key: "far-mid", className: "edge dark", kind: "scale" as const, x: mid.far.x, y: mid.far.y, title: "Stretch" },
+      { key: "left-mid", className: "edge dark", kind: "scale" as const, x: mid.left.x, y: mid.left.y, title: "Stretch" },
       { key: heightHandleKey, className: "height-top", kind: "height" as const, x: heightPoint.x, y: heightPoint.y, title: "Height" },
       { key: liftHandleKey, className: showLowerHandles ? "height-lift lower" : "height-lift", kind: "lift" as const, x: liftPoint.x, y: liftPoint.y, title: "Lift (double-click to drop to workplane)" },
     ],
@@ -11063,9 +11072,10 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
       // footprint box stands in so the shape can be placed and sized.
       if (shape.importedMesh) {
         const preserveEdgeSize = preservesEdgeTreatmentSize(shape);
+        const revolveGeometry = shape.sketchFinish === "revolve" ? revolveSolidGeometry(shape) : null;
         addMesh(
           group,
-          preserveEdgeSize ? getPreservedImportedMeshGeometry(shape) : getImportedMeshGeometry(shape.importedMesh, patternGeometryKey(shape)),
+          revolveGeometry ?? (preserveEdgeSize ? getPreservedImportedMeshGeometry(shape) : getImportedMeshGeometry(shape.importedMesh, patternGeometryKey(shape))),
           material,
           shape,
           undefined,
@@ -11420,6 +11430,27 @@ function getImportedMeshGeometry(mesh: NonNullable<WorkplaneShape["importedMesh"
   return getImportedMeshCache(mesh, shareKey).geometry;
 }
 
+function revolveSolidGeometry(shape: WorkplaneShape): THREE.BufferGeometry | null {
+  const axis = shape.sketchRevolveAxis;
+  const profile = shape.sketchProfile;
+  if (!axis || !profile) return null;
+  const signature = `${profile.points.length}:${profile.segments.length}:${axis.x1}:${axis.z1}:${axis.x2}:${axis.z2}`;
+  const shareKey = `revolve-solid:outward:${shape.id}:${signature}`;
+  const cached = patternGeometryCache.get(shareKey);
+  if (cached) {
+    cached.geometry.userData.useThisForEdges = true;
+    return cached.geometry;
+  }
+  const rebuilt = shapeFromSketchRevolve(profile, {
+    start: { x: axis.x1, z: axis.z1 },
+    end: { x: axis.x2, z: axis.z2 },
+  }, shape);
+  if (!rebuilt?.importedMesh) return null;
+  const geometry = getImportedMeshGeometry(rebuilt.importedMesh, shareKey);
+  geometry.userData.useThisForEdges = true;
+  return geometry;
+}
+
 function getPreservedImportedMeshGeometry(shape: WorkplaneShape) {
   const cached = preservedImportedGeometryCache.get(shape);
   if (cached) return cached;
@@ -11447,7 +11478,7 @@ function getPreservedImportedMeshGeometry(shape: WorkplaneShape) {
 }
 
 function getEdgesGeometry(shape: WorkplaneShape, geometry: THREE.BufferGeometry, threshold: number) {
-  if (!shape.importedMesh || preservesEdgeTreatmentSize(shape)) {
+  if (!shape.importedMesh || preservesEdgeTreatmentSize(shape) || geometry.userData.useThisForEdges) {
     return new THREE.EdgesGeometry(geometry, threshold);
   }
 

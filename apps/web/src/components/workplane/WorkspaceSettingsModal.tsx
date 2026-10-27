@@ -120,6 +120,7 @@ const SETTING_TIPS = {
   makeDefault: "Save these settings as the default for this project.",
   makeDefaultApp: "Save these settings as the default for new projects.",
   peakcadPro: "Show sketch constraints, driving dimensions, and other advanced modeling tools on every project. Leave this off while learning the basics.",
+  failureNoticesOnly: "Hide coaching and “select something first” messages. A command that fails still appears. Prompts you answer, such as Click a face, stay.",
   uiTheme: "Switch Mintr’s chrome between light and dark. Applies to the dashboard and editor.",
   hideTutorials: "Take the tutorial cards off the home page. Finished tutorials leave on their own. This list stays here.",
   downloadFolder: "Local folder used for exported files and downloads on this computer.",
@@ -542,6 +543,12 @@ export function WorkspaceSettingsModal({
                       setUiThemeState(next);
                       setUiTheme(next);
                     }}
+                  />
+                  <WorkspaceToggle
+                    label="Only failure notices"
+                    tip={SETTING_TIPS.failureNoticesOnly}
+                    checked={workspace.failureNoticesOnly}
+                    onChange={(failureNoticesOnly) => patchWorkspace({ failureNoticesOnly })}
                   />
                   <WorkspaceToggle
                     label="Show shadows"

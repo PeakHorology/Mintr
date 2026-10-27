@@ -137,7 +137,7 @@ describe("smooth sketch handles", () => {
 });
 
 describe("bezier pen join", () => {
-  it("shortens the new segment's handles so they cannot pass the other point", () => {
+  it("keeps a long drag, so the curve keeps bending as the handle moves out", () => {
     const profile = chain([
       point("a", 0, 0, { mode: "smooth", handleOut: { x: 80, z: 0 }, handleIn: { x: -80, z: 0 } }),
       point("b", 10, 0, { mode: "smooth", handleIn: { x: -40, z: 0 }, handleOut: { x: 70, z: 30 } }),
@@ -145,11 +145,9 @@ describe("bezier pen join", () => {
     const settled = settleBezierSegment(profile, "a", "b");
     const start = settled.points.find((entry) => entry.id === "a")!;
     const end = settled.points.find((entry) => entry.id === "b")!;
-    expect(Math.hypot(start.handleOut!.x, start.handleOut!.z)).toBeCloseTo(5, 5);
-    expect(Math.hypot(end.handleIn!.x - 10, end.handleIn!.z)).toBeCloseTo(5, 5);
-    // The outgoing handle is the tangent for the next segment, so it stays.
+    expect(start.handleOut).toEqual({ x: 80, z: 0 });
+    expect(end.handleIn).toEqual({ x: -40, z: 0 });
     expect(end.handleOut).toEqual({ x: 70, z: 30 });
-    expect(profile.points.find((entry) => entry.id === "a")!.handleOut).toEqual({ x: 80, z: 0 });
   });
 });
 
@@ -164,7 +162,7 @@ describe("insert point on a curve", () => {
     const added = inserted!.profile.points.find((entry) => entry.id === inserted!.pointId)!;
     expect(added.x).toBeCloseTo(mid.x, 1);
     expect(added.z).toBeCloseTo(mid.z, 1);
-    expect(added.mode).toBe("split");
+    expect(added.mode).toBe("smooth");
     const left = inserted!.profile.segments.find((entry) => entry.endId === added.id)!;
     const right = inserted!.profile.segments.find((entry) => entry.startId === added.id)!;
     const leftStart = inserted!.profile.points.find((entry) => entry.id === left.startId)!;
@@ -181,6 +179,19 @@ describe("insert point on a curve", () => {
       expect(piece.x).toBeCloseTo(original.x, 4);
       expect(piece.z).toBeCloseTo(original.z, 4);
     }
+    for (let step = 0; step <= 4; step += 1) {
+      const t = step / 4;
+      const original = cubicAt(start, start.handleOut!, end.handleIn!, end, 0.5 + t * 0.5);
+      const piece = cubicAt(added, added.handleOut!, rightEnd.handleIn!, rightEnd, t);
+      expect(piece.x).toBeCloseTo(original.x, 4);
+      expect(piece.z).toBeCloseTo(original.z, 4);
+    }
+    const into = { x: added.x - added.handleIn!.x, z: added.z - added.handleIn!.z };
+    const outOf = { x: added.handleOut!.x - added.x, z: added.handleOut!.z - added.z };
+    const intoLen = Math.hypot(into.x, into.z);
+    const outLen = Math.hypot(outOf.x, outOf.z);
+    const tangent = (into.x * outOf.x + into.z * outOf.z) / (intoLen * outLen);
+    expect(tangent).toBeGreaterThan(0.999);
   });
 
   it("puts a point added to a line on the line", () => {

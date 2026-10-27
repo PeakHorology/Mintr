@@ -5,7 +5,9 @@ import { planeUVToWorld, resolveSketchPlane, sketchPlaneVAxis, worldToPlaneUV } 
 import type { SketchTool } from "@/components/SketchWorkspace";
 import { curveStandInOwner } from "./migrate";
 import { parseLineEntry, pointAtLengthAngle, screenAngleDeg, snapHeading } from "./lineEntry";
-import { orderedSketchPaths } from "./profiles";
+import { offsetTargetForSegments } from "@/lib/sketchDrawShapes";
+import { orderedSketchPaths, wholeEraseTarget } from "./profiles";
+import type { SketchEntity } from "./types";
 import { snapSketchPoint } from "./snaps";
 import { sketchCenterSnapPoints } from "./shapeCenterSnap";
 
@@ -16,15 +18,17 @@ const LIFT_MM = 0.35;
 // Shared across every point dot; never disposed with the overlay groups.
 const POINT_GEOMETRY = new THREE.SphereGeometry(0.7, 12, 8);
 const POINT_MATERIAL = new THREE.MeshBasicMaterial({ color: "#f7fbfc", depthTest: true });
-const POINT_MATERIAL_ACTIVE = new THREE.MeshBasicMaterial({ color: "#ff8a00", depthTest: true });
+const POINT_MATERIAL_ACTIVE = new THREE.MeshBasicMaterial({ color: "#655447", depthTest: true });
 const CENTER_MARK_MATERIAL = new THREE.LineBasicMaterial({ color: "#2aa77e", depthTest: false, transparent: true });
 const GUIDE_GHOST_MATERIAL = new THREE.LineBasicMaterial({ color: "#2aa77e", depthTest: false, transparent: true });
+const OFFSET_GHOST_MATERIAL = new THREE.LineBasicMaterial({ color: "#169fce", depthTest: false, transparent: true });
 const SHARED_RESOURCES = new Set<THREE.BufferGeometry | THREE.Material>([
   POINT_GEOMETRY,
   POINT_MATERIAL,
   POINT_MATERIAL_ACTIVE,
   CENTER_MARK_MATERIAL,
   GUIDE_GHOST_MATERIAL,
+  OFFSET_GHOST_MATERIAL,
 ]);
 /** Cosine of the angle between the view and the face. Below this, a click is too side-on to draw. */
 const MIN_DRAW_FACING = 0.5;
@@ -70,6 +74,9 @@ export type SketchOnModelSession = {
   plane: SketchPlane;
   profile: SketchProfile;
   tool: SketchTool;
+  /** Double-clicked Erase: one click removes the whole shape or line. */
+  eraseWhole?: boolean;
+  entities?: readonly SketchEntity[];
   snap: GridSize;
   activePointId: string | null;
   onPlanePoint: (
@@ -87,7 +94,11 @@ export type SketchOnModelSession = {
   onDrawStar: (center: { x: number; z: number }, tip: { x: number; z: number }) => void;
   onDrawArc: (start: { x: number; z: number }, end: { x: number; z: number }, through: { x: number; z: number }) => void;
   onOffsetSegment: (segmentId: string, toward: { x: number; z: number }) => void;
-  onPointPress: (id: string) => void;
+  /** A click on a closed outline opens the distance command instead of committing. */
+  onBeginOffsetSegment?: (segmentId: string) => void;
+  /** Typed offset preview, in sketch coordinates. */
+  offsetGhost?: Array<{ x: number; z: number }> | null;
+  onPointPress: (id: string, handles?: { handleIn: { x: number; z: number }; handleOut: { x: number; z: number } }) => void;
   onSelectSegment: (id: string, at?: { x: number; z: number }) => void;
   onSelectMany: (pointIds: string[], segmentIds: string[], imageIds: string[]) => void;
   onMovePoint: (id: string, point: { x: number; z: number }) => void;
@@ -102,7 +113,7 @@ export type SketchOnModelSession = {
 type UV = { x: number; z: number };
 
 export type Sketch3DGesture =
-  | { kind: "drag"; tool: SketchTool; pointerId: number; origin: UV; current: UV }
+  | { kind: "drag"; tool: SketchTool; pointerId: number; origin: UV; current: UV; joinPointId?: string }
   | { kind: "move"; pointerId: number; pointId: string; origin: UV; current: UV; moved: boolean }
   | { kind: "erase"; pointerId: number; pointIds: string[]; segmentIds: string[] };
 
@@ -735,6 +746,19 @@ export function sketch3DPointerDown(
     return;
   }
   if (session.tool === "erase") {
+    if (session.eraseWhole) {
+      const pointId = nearestPoint(session.profile, uv, tolerance);
+      const segmentId = pointId ? null : nearestSegment(session.profile, uv, tolerance);
+      const target = wholeEraseTarget(
+        session.profile,
+        pointId ? { pointId } : segmentId ? { segmentId } : { at: uv },
+        session.entities ?? [],
+      );
+      if (target && (target.pointIds.length || target.segmentIds.length)) {
+        session.onEraseEntities(target.pointIds, target.segmentIds);
+      }
+      return;
+    }
     const pointIds = new Set<string>();
     const segmentIds = new Set<string>();
     addEraseHit(session.profile, uv, tolerance, pointIds, segmentIds);
@@ -743,8 +767,12 @@ export function sketch3DPointerDown(
   }
   if (session.tool === "offset") {
     const segmentId = nearestSegment(session.profile, uv, tolerance * 1.4);
+    if (segmentId && session.onBeginOffsetSegment && offsetTargetForSegments(session.profile, [segmentId])) {
+      session.onBeginOffsetSegment(segmentId);
+      return;
+    }
     if (segmentId) session.onOffsetSegment(segmentId, uv);
-    else session.onNotice?.("Click a line to offset");
+    else session.onNotice?.("Select a closed outline first.");
     return;
   }
   if (DRAG_TOOLS.has(session.tool)) {
@@ -781,6 +809,21 @@ export function sketch3DPointerDown(
   }
   const pointId = nearestPoint(session.profile, uv, tolerance);
   if (pointId) {
+    if (session.tool === "bezier") {
+      const point = session.profile.points.find((entry) => entry.id === pointId);
+      if (point) {
+        pointer.gesture = {
+          kind: "drag",
+          tool: "bezier",
+          pointerId,
+          origin: { x: point.x, z: point.z },
+          current: { x: point.x, z: point.z },
+          joinPointId: pointId,
+        };
+        syncSketchOnModel(host, session, pointer);
+        return;
+      }
+    }
     session.onPointPress(pointId);
     return;
   }
@@ -848,10 +891,12 @@ export function sketch3DPointerUp(session: SketchOnModelSession, pointer: Sketch
   if (tool === "bezier") {
     const dx = current.x - origin.x;
     const dz = current.z - origin.z;
-    session.onPlanePoint(origin, span > 0.4 ? {
+    const handles = span > 0.4 ? {
       handleIn: { x: origin.x - dx, z: origin.z - dz },
       handleOut: { x: origin.x + dx, z: origin.z + dz },
-    } : undefined);
+    } : undefined;
+    if (gesture.joinPointId) session.onPointPress(gesture.joinPointId, handles);
+    else session.onPlanePoint(origin, handles);
     return;
   }
   if (span < 0.4) return;
@@ -904,6 +949,23 @@ function addCenterMark(
   const cross = new THREE.LineSegments(crossGeometry, CENTER_MARK_MATERIAL);
   cross.renderOrder = 24;
   group.add(cross);
+}
+
+function addOffsetGhost(group: THREE.Group, plane: SketchPlane, points: Array<{ x: number; z: number }> | null | undefined) {
+  if (!points || points.length < 3) return;
+  const positions: number[] = [];
+  for (let index = 0; index < points.length; index += 1) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    const a = uvWorld(plane, start.x, start.z);
+    const b = uvWorld(plane, end.x, end.z);
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const lines = new THREE.LineSegments(geometry, OFFSET_GHOST_MATERIAL);
+  lines.renderOrder = 22;
+  group.add(lines);
 }
 
 function addGuideGhost(group: THREE.Group, plane: SketchPlane, ghost: SketchOnModelSession["guideGhost"]) {
@@ -1412,6 +1474,7 @@ export function syncSketchOnModel(host: Sketch3DHost, session: SketchOnModelSess
   addLine(live, preview, "#169fce");
   addCenterMark(live, host, plane, session, pointer);
   addGuideGhost(live, plane, session.guideGhost);
+  addOffsetGhost(live, plane, session.offsetGhost);
 
   host.scene.add(live);
 }

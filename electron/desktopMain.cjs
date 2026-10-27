@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell } = require("electron");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -126,7 +126,20 @@ function installFileMenu() {
         ],
       },
       { role: "editMenu" },
-      { role: "viewMenu" },
+      {
+        label: "View",
+        submenu: [
+          { role: "reload" },
+          { role: "forceReload" },
+          { role: "toggleDevTools" },
+          { type: "separator" },
+          { role: "resetZoom" },
+          { role: "zoomIn" },
+          { role: "zoomOut" },
+          { type: "separator" },
+          { role: "togglefullscreen", label: "Full screen" },
+        ],
+      },
       { role: "windowMenu" },
       {
         role: "help",
@@ -411,6 +424,13 @@ function createWindow(port) {
     },
   });
 
+  const publishFullScreen = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("peakcad:fullscreen", mainWindow.isFullScreen());
+  };
+  mainWindow.on("enter-full-screen", publishFullScreen);
+  mainWindow.on("leave-full-screen", publishFullScreen);
+
   mainWindow.webContents.on("did-finish-load", () => {
     if (pendingOpenPath && mainWindow) {
       mainWindow.webContents.send("peakcad:open-path", pendingOpenPath);
@@ -584,6 +604,17 @@ if (!gotSingleInstanceLock) {
     registerUpdateIpc(ipcMain);
     registerCrashReportIpc(ipcMain);
     installFileMenu();
+    ipcMain.on("peakcad:set-theme", (_event, theme) => {
+      if (theme !== "light" && theme !== "dark") return;
+      nativeTheme.themeSource = theme;
+    });
+    ipcMain.handle("peakcad:fullscreen-toggle", () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return false;
+      const next = !mainWindow.isFullScreen();
+      mainWindow.setFullScreen(next);
+      return next;
+    });
+    ipcMain.handle("peakcad:fullscreen-state", () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
     return bootstrap();
   }).catch((error) => {
     console.error(error);

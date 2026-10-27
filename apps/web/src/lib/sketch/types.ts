@@ -32,6 +32,10 @@ export type SketchEntityBase = {
   /** Opaque host edge/vertex key for relinking projections. */
   projectSourceId?: string;
   fixed?: boolean;
+  /** Offset copies carry their own region so a contained loop is not a hole. */
+  regionId?: string;
+  /** Drawn thickness in screen pixels. Absent is the standard line. The shape is unchanged. */
+  weight?: number;
 };
 
 export type SketchPointEntity = SketchEntityBase & {
@@ -169,6 +173,8 @@ export type SketchSnapResult = {
   kind: SketchSnapKind;
   entityId?: string;
   pointId?: string;
+  /** Other points this snap lines up with, horizontally or vertically. */
+  alignTo?: SketchVec2[];
   /** Constraints inferred by accepting this snap. */
   inferredConstraints: Array<Omit<SketchConstraint, "id">>;
 };

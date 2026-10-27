@@ -61,6 +61,18 @@ describe("mergeProfileIntoDoc", () => {
     expect(merged.entities.filter((entity) => entity.id.startsWith("hole-"))).toHaveLength(0);
   });
 
+  it("keeps an offset region's id through a profile round trip", () => {
+    const doc = createEmptySketchDoc(PLANE, "sketch-offset");
+    doc.entities.push(
+      { kind: "point", id: "a", x: 0, z: 0 },
+      { kind: "point", id: "b", x: 10, z: 0 },
+      { kind: "line", id: "copy", startId: "a", endId: "b", regionId: "offset-1" },
+    );
+    const merged = mergeProfileIntoDoc(doc, sketchDocToProfile(doc));
+    expect(merged.entities.find((entity) => entity.id === "copy")).toMatchObject({ regionId: "offset-1" });
+    expect(sketchDocToProfile(merged).segments.find((segment) => segment.id === "copy")?.regionId).toBe("offset-1");
+  });
+
   it("applies a moved point back to the doc", () => {
     const doc = richDoc();
     const profile = sketchDocToProfile(doc);

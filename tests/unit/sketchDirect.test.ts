@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chamferCorners,
+  filletChamferTargets,
   filletCorners,
   findSweepInputs,
   resizeSegmentLength,
@@ -78,6 +79,30 @@ describe("sketch numbers and corners", () => {
     expect(angle).toBeCloseTo(45, 0);
     const end = next?.points.find((point) => point.id === "c");
     expect(Math.hypot((end?.x ?? 0) - 10, (end?.z ?? 0) - 0)).toBeCloseTo(4);
+  });
+
+  it("measures the angle where a curve meets a line", () => {
+    const profile: SketchProfile = {
+      points: [
+        { id: "a", x: 0, z: 0, handleOut: { x: 0, z: 12 } },
+        { id: "b", x: 10, z: 10 },
+        { id: "c", x: 10, z: 0 },
+      ],
+      segments: [
+        { id: "ab", startId: "a", endId: "b", kind: "bezier" },
+        { id: "ac", startId: "a", endId: "c", kind: "line" },
+      ],
+    };
+    const mark = sketchCornerMarks(profile).find((entry) => entry.pointId === "a");
+    expect(mark?.degrees).toBeCloseTo(90);
+    expect(mark?.straight).toBe(false);
+  });
+
+  it("finds a corner from the point or from the two lines that meet there", () => {
+    const profile = square();
+    expect(filletChamferTargets(profile, ["a"], [])).toEqual(["a"]);
+    expect(filletChamferTargets(profile, [], ["ab", "bc"])).toEqual(["b"]);
+    expect(filletChamferTargets(profile, ["missing"], ["ab"])).toEqual([]);
   });
 
   it("fillets and chamfers several corners", () => {

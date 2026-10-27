@@ -1,9 +1,18 @@
 import type { SketchPoint, SketchProfile, SketchSegment } from "@/types/sketchforge";
 import { createLocalId } from "@/lib/localIds";
+import { curveStandInOwner } from "./migrate";
 import type { SketchClosedProfile, SketchDoc, SketchEntity, SketchPointEntity, SketchVec2 } from "./types";
 
 export type OrderedSketchStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
 export type OrderedSketchPath = { points: SketchPoint[]; steps: OrderedSketchStep[]; closed: boolean };
+
+/** Region an offset copy belongs to. Loops nest into holes only when this matches. */
+export function sketchLoopRegion(steps: ReadonlyArray<{ segment: { regionId?: string } }>): string | null {
+  for (const step of steps) {
+    if (step.segment.regionId) return step.segment.regionId;
+  }
+  return null;
+}
 
 /**
  * A loop of straight segments whose corners are collinear (drawn out and back
@@ -286,6 +295,7 @@ export function closedProfilesFromLegacy(profile: SketchProfile): SketchClosedPr
     const outline = sampledPathOutline(path);
     return {
       id: `profile-${index}`,
+      regionId: sketchLoopRegion(path.steps),
       pointIds: path.points.map((p) => p.id),
       holePointIdLoops: [] as string[][],
       area: polygonArea(outline),
@@ -302,10 +312,12 @@ export function closedProfilesFromLegacy(profile: SketchProfile): SketchClosedPr
   type Loop = (typeof loops)[number];
   const parentById = new Map<string, Loop | null>();
   const depthById = new Map<string, number>();
-  loops.forEach((loop, index) => {
+    loops.forEach((loop, index) => {
     let parent: Loop | null = null;
     for (let j = 0; j < index; j += 1) {
       const candidate = loops[j];
+      // An offset copy has its own region, so sitting inside another outline does not make it a hole.
+      if (candidate.regionId !== loop.regionId) continue;
       if (!pointInPolygon(loop.centroid, candidate.points)) continue;
       // Loops are sorted largest first, so the smallest enclosing one is the immediate parent.
       if (!parent || candidate.area < parent.area) parent = candidate;
@@ -333,6 +345,238 @@ export function closedProfilesFromLegacy(profile: SketchProfile): SketchClosedPr
       area: loop.area,
       centroid: loop.centroid,
     }));
+}
+
+/**
+ * Points that translate together when a closed shape is dragged.
+ * A circle's fill is a sampled loop (`${circleId}-pN`); the circle itself is
+ * drawn from its center. Both have to move, or the circle snaps back on commit.
+ */
+export function shapeMovePointIds(profile: SketchClosedProfile, entities: readonly SketchEntity[]): string[] {
+  const ids = [...profile.pointIds, ...profile.holePointIdLoops.flat()];
+  const extra: string[] = [];
+  for (const entity of entities) {
+    if (entity.kind !== "circle") continue;
+    const prefix = `${entity.id}-p`;
+    if (ids.some((id) => id.startsWith(prefix)) && !ids.includes(entity.centerId)) extra.push(entity.centerId);
+  }
+  return extra.length ? [...ids, ...extra] : ids;
+}
+
+/**
+ * Every edge of one closed shape, including a hole.
+ * A click inside the shape uses this. A click on a line does not: that line is patterned alone.
+ */
+export function closedShapeSelection(
+  profile: SketchProfile,
+  entities: readonly SketchEntity[],
+  hit: { segmentId?: string; profileId?: string },
+): { profileId: string; pointIds: string[]; segmentIds: string[] } | null {
+  const profiles = closedProfilesFromLegacy(profile);
+  let match: SketchClosedProfile | null = null;
+  if (hit.profileId) {
+    match = profiles.find((entry) => entry.id === hit.profileId) ?? null;
+  } else if (hit.segmentId) {
+    const segment = profile.segments.find((entry) => entry.id === hit.segmentId);
+    const owner = curveStandInOwner(hit.segmentId);
+    const candidates = profiles.filter((closed) => {
+      const ids = new Set(shapeMovePointIds(closed, entities));
+      if (segment && ids.has(segment.startId) && ids.has(segment.endId)) return true;
+      if (owner && closed.pointIds.some((id) => curveStandInOwner(id) === owner)) return true;
+      if (!segment && closed.pointIds.some((id) => curveStandInOwner(id) === hit.segmentId)) return true;
+      return false;
+    });
+    match = candidates.reduce<SketchClosedProfile | null>((best, closed) => (
+      !best || closed.area < best.area ? closed : best
+    ), null);
+  }
+  if (!match) return null;
+  const pointIds = shapeMovePointIds(match, entities);
+  const wanted = new Set(pointIds);
+  const segmentIds = profile.segments
+    .filter((segment) => wanted.has(segment.startId) && wanted.has(segment.endId))
+    .map((segment) => segment.id);
+  const curves = new Set<string>();
+  for (const id of segmentIds) {
+    const owner = curveStandInOwner(id);
+    if (owner) curves.add(owner);
+  }
+  if (hit.segmentId && entities.some((entity) => entity.id === hit.segmentId && (entity.kind === "circle" || entity.kind === "arc"))) {
+    curves.add(hit.segmentId);
+  }
+  for (const id of curves) segmentIds.push(id);
+  return { profileId: match.id, pointIds, segmentIds };
+}
+
+export type WholeEraseTarget = { pointIds: string[]; segmentIds: string[] };
+
+/**
+ * One click of armed Erase removes the closed loop or open line that was touched,
+ * including the points that belong only to it. A corner shared with something else stays.
+ */
+export function wholeEraseTarget(
+  profile: SketchProfile,
+  hit: { segmentId?: string; pointId?: string; at?: SketchVec2 },
+  entities: readonly SketchEntity[] = [],
+): WholeEraseTarget | null {
+  const loops = orderedSketchPaths({
+    ...profile,
+    segments: profile.segments.filter((segment) => !segment.construction),
+  }).filter((path) => path.closed);
+  const loopSegmentIds = new Set(loops.flatMap((path) => path.steps.map((step) => step.segment.id)));
+
+  const smallest = (paths: OrderedSketchPath[]) => {
+    let best: OrderedSketchPath | null = null;
+    let bestArea = Number.POSITIVE_INFINITY;
+    for (const path of paths) {
+      const area = polygonArea(sampledPathOutline(path));
+      if (area < bestArea) {
+        best = path;
+        bestArea = area;
+      }
+    }
+    return best;
+  };
+
+  const fromLoop = (path: OrderedSketchPath): WholeEraseTarget => {
+    const segmentIds = path.steps.map((step) => step.segment.id);
+    const circleIds = circleEraseIds([...segmentIds, ...path.points.map((point) => point.id)], entities);
+    if (circleIds) return { pointIds: [], segmentIds: circleIds };
+    return {
+      segmentIds,
+      pointIds: pointsOnlyUsedBy(profile, new Set(segmentIds), path.points.map((point) => point.id)),
+    };
+  };
+
+  if (hit.segmentId) {
+    const circleId = circleEntityId(hit.segmentId, entities);
+    if (circleId) return { pointIds: [], segmentIds: [circleId] };
+    const segment = profile.segments.find((entry) => entry.id === hit.segmentId);
+    if (!segment) return null;
+    if (segment.construction) {
+      return connectedChain(profile, segment, profile.segments.filter((entry) => entry.construction));
+    }
+    const loop = smallest(loops.filter((path) => path.steps.some((step) => step.segment.id === segment.id)));
+    if (loop) return fromLoop(loop);
+    return connectedChain(
+      profile,
+      segment,
+      profile.segments.filter((entry) => !entry.construction && !curveStandInOwner(entry.id) && !loopSegmentIds.has(entry.id)),
+    );
+  }
+
+  if (hit.pointId) {
+    const standIn = curveStandInOwner(hit.pointId);
+    const standInCircle = standIn ? circleEntityId(standIn, entities) : null;
+    if (standInCircle) return { pointIds: [], segmentIds: [standInCircle] };
+    const circles = entities.filter((entity) => entity.kind === "circle" && !entity.construction && entity.centerId === hit.pointId);
+    const touching = profile.segments.filter(
+      (segment) => !segment.construction && !curveStandInOwner(segment.id) && (segment.startId === hit.pointId || segment.endId === hit.pointId),
+    );
+    if (circles.length > 0 && touching.length === 0) return { pointIds: [], segmentIds: circles.map((circle) => circle.id) };
+    const loop = smallest(loops.filter((path) => path.points.some((point) => point.id === hit.pointId)));
+    if (loop) return fromLoop(loop);
+    const open = touching.find((segment) => !loopSegmentIds.has(segment.id));
+    if (open) {
+      return connectedChain(
+        profile,
+        open,
+        profile.segments.filter((entry) => !entry.construction && !curveStandInOwner(entry.id) && !loopSegmentIds.has(entry.id)),
+      );
+    }
+    if (!curveStandInOwner(hit.pointId)) return { pointIds: [hit.pointId], segmentIds: [] };
+    return null;
+  }
+
+  if (hit.at) {
+    const loop = smallest(loops.filter((path) => {
+      const outline = sampledPathOutline(path);
+      return outline.length >= 3 && pointInPolygon(hit.at!, outline);
+    }));
+    const circle = smallestCircleAt(profile, hit.at, entities);
+    if (loop && circle) {
+      const area = polygonArea(sampledPathOutline(loop));
+      if (circle.area + 0.01 < area) return { pointIds: [], segmentIds: [circle.id] };
+      return fromLoop(loop);
+    }
+    if (loop) return fromLoop(loop);
+    if (circle) return { pointIds: [], segmentIds: [circle.id] };
+  }
+  return null;
+}
+
+function circleEntityId(id: string, entities: readonly SketchEntity[]) {
+  const owner = curveStandInOwner(id) ?? id;
+  return entities.some((entity) => entity.kind === "circle" && entity.id === owner) ? owner : null;
+}
+
+/** Stand-in chords of an analytic circle erase as that circle, not as loose lines. */
+function circleEraseIds(ids: string[], entities: readonly SketchEntity[]) {
+  if (ids.length === 0) return null;
+  const owners = new Set<string>();
+  for (const id of ids) {
+    const owner = circleEntityId(id, entities);
+    if (!owner) return null;
+    owners.add(owner);
+  }
+  return [...owners];
+}
+
+function pointsOnlyUsedBy(profile: SketchProfile, segmentIds: Set<string>, pointIds: Iterable<string>) {
+  const usedElsewhere = new Set<string>();
+  for (const segment of profile.segments) {
+    if (segmentIds.has(segment.id)) continue;
+    const owner = curveStandInOwner(segment.id);
+    if (owner && segmentIds.has(owner)) continue;
+    usedElsewhere.add(segment.startId);
+    usedElsewhere.add(segment.endId);
+  }
+  return [...new Set(pointIds)].filter((id) => !usedElsewhere.has(id) && !curveStandInOwner(id));
+}
+
+function connectedChain(profile: SketchProfile, seed: SketchSegment, pool: SketchSegment[]): WholeEraseTarget | null {
+  if (!pool.some((segment) => segment.id === seed.id)) return null;
+  const byPoint = new Map<string, SketchSegment[]>();
+  for (const segment of pool) {
+    for (const id of [segment.startId, segment.endId]) {
+      const list = byPoint.get(id) ?? [];
+      list.push(segment);
+      byPoint.set(id, list);
+    }
+  }
+  const segmentIds = new Set<string>();
+  const pointIds = new Set<string>();
+  const queue = [seed];
+  while (queue.length > 0) {
+    const segment = queue.pop();
+    if (!segment || segmentIds.has(segment.id)) continue;
+    segmentIds.add(segment.id);
+    pointIds.add(segment.startId);
+    pointIds.add(segment.endId);
+    for (const id of [segment.startId, segment.endId]) {
+      for (const next of byPoint.get(id) ?? []) {
+        if (!segmentIds.has(next.id)) queue.push(next);
+      }
+    }
+  }
+  return {
+    segmentIds: [...segmentIds],
+    pointIds: pointsOnlyUsedBy(profile, segmentIds, pointIds),
+  };
+}
+
+function smallestCircleAt(profile: SketchProfile, at: SketchVec2, entities: readonly SketchEntity[]) {
+  let best: { id: string; area: number } | null = null;
+  for (const entity of entities) {
+    if (entity.kind !== "circle" || entity.construction) continue;
+    const center = profile.points.find((point) => point.id === entity.centerId)
+      ?? entities.find((entry): entry is SketchPointEntity => entry.kind === "point" && entry.id === entity.centerId);
+    if (!center) continue;
+    if (Math.hypot(at.x - center.x, at.z - center.z) > entity.radius) continue;
+    const area = Math.PI * entity.radius * entity.radius;
+    if (!best || area < best.area) best = { id: entity.id, area };
+  }
+  return best;
 }
 
 function pointEntities(doc: SketchDoc): SketchPointEntity[] {

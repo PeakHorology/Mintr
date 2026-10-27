@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { closedProfilesFromLegacy, materialOutlines, orderedSketchPaths } from "@/lib/sketch/profiles";
+import { closedProfilesFromLegacy, materialOutlines, orderedSketchPaths, shapeMovePointIds, wholeEraseTarget } from "@/lib/sketch/profiles";
+import type { SketchEntity } from "@/lib/sketch/types";
 import type { SketchProfile } from "@/types/sketchforge";
 
 type Pt = SketchProfile["points"][number];
@@ -230,6 +231,26 @@ describe("closedProfilesFromLegacy", () => {
     expect(profiles[0].holePointIdLoops).toHaveLength(1);
   });
 
+  it("keeps an offset outline as its own shape", () => {
+    const source = ring("o", 20);
+    const copy = ring("h", 8);
+    const drawn = profile(
+      [...source.points, ...copy.points],
+      [...source.segments, ...copy.segments],
+    );
+    drawn.segments = drawn.segments.map((segment) =>
+      segment.id.startsWith("hs") ? { ...segment, regionId: "offset-1" } : segment,
+    );
+    const profiles = closedProfilesFromLegacy(drawn);
+    expect(profiles).toHaveLength(2);
+    expect(profiles.every((entry) => entry.holePointIdLoops.length === 0)).toBe(true);
+    const ids = profiles.map((entry) => [...entry.pointIds].sort().join(",")).sort();
+    expect(ids).toEqual([
+      source.points.map((point) => point.id).sort().join(","),
+      copy.points.map((point) => point.id).sort().join(","),
+    ].sort());
+  });
+
   it("keeps a solid island inside a hole as its own profile", () => {
     // A post standing in a bore. Claiming every smaller contained loop as a hole of the outermost
     // one recorded the island as a second hole, and cutting already-void space erased it.
@@ -339,5 +360,96 @@ describe("closedProfilesFromLegacy", () => {
     expect(profiles).toHaveLength(2);
     expect(profiles[0].holePointIdLoops[0]).toEqual(middle.points.map((p) => p.id));
     expect(profiles[1].holePointIdLoops[0]).toEqual(deepest.points.map((p) => p.id));
+  });
+});
+
+describe("shapeMovePointIds", () => {
+  it("drags a closed shape and the hole inside it together", () => {
+    const outer = ring("o", 40);
+    const hole = ring("h", 10);
+    const profiles = closedProfilesFromLegacy(
+      profile([...outer.points, ...hole.points], [...outer.segments, ...hole.segments]),
+    );
+    expect(shapeMovePointIds(profiles[0], [])).toEqual([
+      ...profiles[0].pointIds,
+      ...profiles[0].holePointIdLoops.flat(),
+    ]);
+  });
+
+  it("includes the circle center so a sampled circle fill does not snap back", () => {
+    const circle: SketchEntity = { kind: "circle", id: "c1", centerId: "center", radius: 5 };
+    const ids = shapeMovePointIds(
+      { id: "profile-0", pointIds: ["c1-p0", "c1-p1", "c1-p2"], holePointIdLoops: [], area: 1, centroid: { x: 0, z: 0 } },
+      [circle],
+    );
+    expect(ids).toEqual(["c1-p0", "c1-p1", "c1-p2", "center"]);
+  });
+});
+
+describe("wholeEraseTarget", () => {
+  it("clears every side and corner of a closed shape from one side", () => {
+    const box = ring("o", 10);
+    const target = wholeEraseTarget(profile(box.points, box.segments), { segmentId: "os2" });
+    expect(target?.segmentIds.sort()).toEqual(["os1", "os2", "os3", "os4"]);
+    expect(target?.pointIds.sort()).toEqual(["o1", "o2", "o3", "o4"]);
+  });
+
+  it("clears the inside of a hole without the shape around it", () => {
+    const outer = ring("o", 20);
+    const hole = ring("h", 8);
+    const sketch = profile([...outer.points, ...hole.points], [...outer.segments, ...hole.segments]);
+    const inner = wholeEraseTarget(sketch, { at: { x: 0, z: 0 } });
+    expect(inner?.segmentIds.sort()).toEqual(["hs1", "hs2", "hs3", "hs4"]);
+    expect(inner?.pointIds.sort()).toEqual(["h1", "h2", "h3", "h4"]);
+    const around = wholeEraseTarget(sketch, { at: { x: 15, z: 0 } });
+    expect(around?.segmentIds.sort()).toEqual(["os1", "os2", "os3", "os4"]);
+  });
+
+  it("clears an open line and its points, and leaves a corner the line shares with a shape", () => {
+    const box = ring("o", 10);
+    const sketch = profile(
+      [...box.points, { id: "tail", x: -30, z: -10 }],
+      [...box.segments, ["tail-s", "o1", "tail"]],
+    );
+    const shape = wholeEraseTarget(sketch, { segmentId: "os2" });
+    expect(shape?.segmentIds.sort()).toEqual(["os1", "os2", "os3", "os4"]);
+    expect(shape?.pointIds.sort()).toEqual(["o2", "o3", "o4"]);
+    const line = wholeEraseTarget(sketch, { segmentId: "tail-s" });
+    expect(line).toEqual({ segmentIds: ["tail-s"], pointIds: ["tail"] });
+  });
+
+  it("clears a whole open polyline from one of its lines", () => {
+    const sketch = profile(
+      [{ id: "a", x: 0, z: 0 }, { id: "b", x: 10, z: 0 }, { id: "c", x: 10, z: 8 }],
+      [["ab", "a", "b"], ["bc", "b", "c"]],
+    );
+    const target = wholeEraseTarget(sketch, { segmentId: "ab" });
+    expect(target?.segmentIds.sort()).toEqual(["ab", "bc"]);
+    expect(target?.pointIds.sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("clears a circle, including one drawn as stand-in lines", () => {
+    const circle: SketchEntity = { kind: "circle", id: "c1", centerId: "center", radius: 5 };
+    const direct = wholeEraseTarget(
+      profile([{ id: "center", x: 0, z: 0 }], []),
+      { at: { x: 1, z: 1 } },
+      [circle],
+    );
+    expect(direct).toEqual({ pointIds: [], segmentIds: ["c1"] });
+    const standIn = wholeEraseTarget(
+      profile(
+        [
+          { id: "center", x: 0, z: 0 },
+          { id: "c1-p0", x: 5, z: 0 },
+          { id: "c1-p1", x: 0, z: 5 },
+          { id: "c1-p2", x: -5, z: 0 },
+          { id: "c1-p3", x: 0, z: -5 },
+        ],
+        [["c1-s0", "c1-p0", "c1-p1"], ["c1-s1", "c1-p1", "c1-p2"], ["c1-s2", "c1-p2", "c1-p3"], ["c1-s3", "c1-p3", "c1-p0"]],
+      ),
+      { segmentId: "c1-s1" },
+      [circle],
+    );
+    expect(standIn).toEqual({ pointIds: [], segmentIds: ["c1"] });
   });
 });

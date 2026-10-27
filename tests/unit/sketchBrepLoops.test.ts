@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pathArea, pathContains, type ClosedPath } from "@/lib/sketchBrep";
+import { closedPathNestingDepth, pathArea, pathContains, type ClosedPath } from "@/lib/sketchBrep";
 
 function rect(x: number, z: number, w: number, d: number): ClosedPath {
   return {
@@ -15,13 +15,7 @@ function rect(x: number, z: number, w: number, d: number): ClosedPath {
 /** The nesting rule drawingFromClosedPaths applies, without needing the OCCT kernel. */
 function loopRoles(paths: ClosedPath[]): ("material" | "void")[] {
   const sorted = [...paths].sort((a, b) => pathArea(b) - pathArea(a));
-  return sorted.map((path, i) => {
-    let depth = 0;
-    for (let j = 0; j < i; j += 1) {
-      if (pathContains(sorted[j], path)) depth += 1;
-    }
-    return depth % 2 === 1 ? "void" : "material";
-  });
+  return sorted.map((_, index) => (closedPathNestingDepth(sorted, index) % 2 === 1 ? "void" : "material"));
 }
 
 describe("sketch B-Rep loop nesting", () => {
@@ -40,6 +34,12 @@ describe("sketch B-Rep loop nesting", () => {
 
   it("keeps a single plate with a hole working", () => {
     expect(loopRoles([rect(0, 0, 20, 20), rect(5, 5, 5, 5)])).toEqual(["material", "void"]);
+  });
+
+  it("leaves an offset copy as material even when it sits inside the source", () => {
+    const copy = rect(5, 5, 5, 5);
+    copy.regionId = "offset-1";
+    expect(loopRoles([rect(0, 0, 20, 20), copy])).toEqual(["material", "material"]);
   });
 
   it("treats an island inside a hole as material again", () => {

@@ -47,6 +47,8 @@ export function applyUiTheme(theme: UiTheme) {
     delete root.dataset.theme;
   }
   root.style.colorScheme = theme;
+  const desktop = (window as Window & { peakcadWindow?: { setTheme?: (theme: UiTheme) => void } }).peakcadWindow;
+  desktop?.setTheme?.(theme);
 }
 
 export function setUiTheme(theme: UiTheme) {
@@ -143,6 +145,7 @@ export function resolveViewportBackground(storedBackground: string, theme: UiThe
   return storedBackground || DEFAULT_LIGHT_VIEWPORT_BACKGROUND;
 }
 
+/** Sheet colour for the 3D workplane and the sketch plane (`--sketch-plane`). */
 export function resolveWorkplaneBaseColor(theme: UiTheme = readAppliedUiTheme()): string {
   return theme === "dark" ? "#243640" : "#ddf8ff";
 }

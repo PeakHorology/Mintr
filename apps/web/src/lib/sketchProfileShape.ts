@@ -9,7 +9,7 @@ import { cloneSketchPlane, isFaceHostedSketch, resolveSketchPlane, sketchBasisMa
 import { isCylinderSketchPlane, wrapCircleRadialCylinder, wrapUvLoopRadialPrism } from "@/lib/sketchCylinder";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
 import { promoteWorkplaneSketchToPrimitive } from "@/lib/sketchPrimitivePromote";
-import { closeOpenPathGaps, closedProfilesFromLegacy, materialOutlines, orderedSketchPaths as sharedOrderedSketchPaths, sketchProfileToDoc } from "@/lib/sketch";
+import { closeOpenPathGaps, closedProfilesFromLegacy, materialOutlines, orderedSketchPaths as sharedOrderedSketchPaths, sketchLoopRegion, sketchProfileToDoc } from "@/lib/sketch";
 
 export function emptySketchProfile(): SketchProfile {
   return { points: [], segments: [], images: [] };
@@ -292,32 +292,12 @@ function bowStraightPoint(point: SketchPoint, path: OrderedSketchPath, index: nu
   point.handleOut = swing(point.handleOut);
 }
 
-function clampHandleTo(anchor: { x: number; z: number }, handle: { x: number; z: number }, maxLength: number) {
-  const dx = handle.x - anchor.x;
-  const dz = handle.z - anchor.z;
-  const length = Math.hypot(dx, dz);
-  if (length <= maxLength || length < 1e-9) return handle;
-  const scale = maxLength / length;
-  return { x: anchor.x + dx * scale, z: anchor.z + dz * scale };
-}
-
 /**
- * A pen drag can leave a handle longer than the segment it belongs to. The
- * control then sits past the other point and the new curve loops on itself.
- * Shorten only the two handles of this segment. The new point's outgoing
- * handle stays put for the next segment.
+ * Keep the handles the pen drag set. A longer pull is a stronger curve, so
+ * nothing here shortens a handle back toward the chord.
  */
-export function settleBezierSegment(profile: SketchProfile, startId: string, endId: string) {
-  const next = cloneSketchProfile(profile);
-  const start = next.points.find((point) => point.id === startId);
-  const end = next.points.find((point) => point.id === endId);
-  if (!start || !end) return next;
-  const chord = Math.hypot(end.x - start.x, end.z - start.z);
-  if (chord < 1e-6) return next;
-  const maxLength = chord * 0.5;
-  if (start.handleOut) start.handleOut = clampHandleTo(start, start.handleOut, maxLength);
-  if (end.handleIn) end.handleIn = clampHandleTo(end, end.handleIn, maxLength);
-  return next;
+export function settleBezierSegment(profile: SketchProfile, _startId: string, _endId: string) {
+  return profile;
 }
 
 function lerpUv(a: { x: number; z: number }, b: { x: number; z: number }, t: number) {
@@ -387,11 +367,13 @@ export function splitSketchSegmentAt(
     const atPoint = lerpUv(d, e, t);
     nextStart.handleOut = a;
     nextEnd.handleIn = c;
+    // The new point sits on the curve with both handles on that tangent.
+    // "smooth" keeps the two sides locked, so the line does not crease here.
     point = {
       id: pointId,
       x: atPoint.x,
       z: atPoint.z,
-      mode: "split",
+      mode: "smooth",
       handleIn: d,
       handleOut: e,
     };
@@ -764,7 +746,7 @@ export function shapeFromSketchProfile(
       });
       outline.closePath();
       const polygon = outline.extractPoints(16).shape;
-      return { outline, polygon, area: Math.abs(THREE.ShapeUtils.area(polygon)) };
+      return { outline, polygon, area: Math.abs(THREE.ShapeUtils.area(polygon)), regionId: sketchLoopRegion(path.steps) };
     });
     const sortedOutlines = [...outlineRecords].sort((a, b) => b.area - a.area);
     const outlines: THREE.Shape[] = [];
@@ -772,7 +754,7 @@ export function shapeFromSketchProfile(
       const sample = record.polygon[0];
       const parent = sample
         ? sortedOutlines
-            .filter((candidate) => candidate !== record && candidate.area > record.area && pointInSketchPolygon(sample, candidate.polygon))
+            .filter((candidate) => candidate !== record && candidate.regionId === record.regionId && candidate.area > record.area && pointInSketchPolygon(sample, candidate.polygon))
             .sort((a, b) => a.area - b.area)[0]
         : undefined;
       if (parent) parent.outline.holes.push(record.outline);

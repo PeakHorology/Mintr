@@ -59,9 +59,10 @@
 }
 
 .sketch-finish-toolbar .sketch-finish-action {
-  gap: 4px;
-  height: 26px;
-  padding: 0 8px;
+  gap: 5px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
 }
 
 .sketch-finish-toolbar .sketch-finish-action.primary,
@@ -74,6 +75,352 @@
 
 .sketch-finish-toolbar .sketch-finish-action.cancel {
   color: var(--danger-text);
+}
+
+.sketch-finish-more {
+  position: relative;
+}
+
+.sketch-finish-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: calc(var(--z-overlay) + 8);
+  display: grid;
+  gap: 2px;
+  min-width: 148px;
+  padding: 6px;
+  background: var(--glass-surface-strong);
+  border: 1px solid #d2c4a8;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-lg);
+}
+
+.sketch-finish-more-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  color: var(--ink-strong);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+}
+
+.sketch-finish-more-menu button:hover:not(:disabled) {
+  background: #655447;
+  color: #EFEBE8;
+}
+
+.sketch-tool-menu {
+  display: grid;
+  gap: 1px;
+  margin: 4px 2px 0;
+  padding: 4px;
+  background: rgba(239, 235, 232, 0.9);
+  border: 1px solid #d2c4a8;
+  border-radius: var(--radius-md);
+}
+
+.sketch-selection-bar {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+  padding: 4px;
+  background: var(--glass-surface-strong);
+  border: 1px solid #d2c4a8;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-lg);
+}
+
+.sketch-selection-bar button {
+  height: 28px;
+  padding: 0 10px;
+  color: var(--ink-strong);
+  background: transparent;
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.sketch-selection-bar button.active,
+.sketch-selection-bar button:hover {
+  color: #EFEBE8;
+  background: #655447;
+  border-color: #655447;
+}
+
+.sketch-ribbon {
+  position: absolute;
+  top: calc(var(--editor-mode-notch-height) + 6px);
+  left: 50%;
+  z-index: calc(var(--z-overlay) + 6);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px 2px;
+  width: max-content;
+  max-width: calc(100% - 16px);
+  padding: 6px 6px 8px;
+  color: #040404;
+  background: rgba(239, 235, 232, 0.96);
+  border: 1px solid #d2c4a8;
+  border-radius: 16px;
+  box-shadow: var(--elevation-lg);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.sketch-ribbon-group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+}
+
+.sketch-ribbon-group + .sketch-ribbon-group {
+  border-left: 1px solid #d2c4a8;
+}
+
+.sketch-ribbon-group > span {
+  position: relative;
+  color: #655447;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.sketch-ribbon-group > span::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 18px;
+  height: 2px;
+  border-radius: 1px;
+  background: #2aa77e;
+  transform: translateX(-50%);
+}
+
+.sketch-ribbon-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sketch-ribbon-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 6px;
+  color: #040404;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sketch-ribbon-tool svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.sketch-ribbon-tool.is-ready:not(.active) {
+  color: #655447;
+  background: #efebe8;
+  border-color: #655447;
+}
+
+.sketch-ribbon-tool.active,
+.sketch-ribbon-tool:hover:not(:disabled) {
+  color: #EFEBE8;
+  background: #655447;
+  border-color: #655447;
+}
+
+.sketch-ribbon-tool.is-erase-all,
+.sketch-ribbon-tool.is-erase-all:hover,
+.sketch-ribbon-tool.active.is-erase-all {
+  color: #EFEBE8;
+  background: #c23b3b;
+  border-color: #c23b3b;
+}
+
+.sketch-ribbon-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sketch-ribbon-finish .sketch-ribbon-tool.primary {
+  color: #EFEBE8;
+  background: #655447;
+  border-color: #655447;
+}
+
+.sketch-ribbon-finish .sketch-ribbon-tool.cancel {
+  color: var(--danger-text);
+  background: var(--wash-danger);
+  border-color: var(--control-border-danger);
+}
+
+.sketch-ribbon-finish .sketch-ribbon-tool.cancel:hover {
+  color: #EFEBE8;
+  background: #655447;
+  border-color: #655447;
+}
+
+.sketch-ribbon-sides {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 0 4px;
+  color: #655447;
+  background: #efebe8;
+  border: 1px solid #d2c4a8;
+  border-radius: 8px;
+}
+
+.sketch-ribbon-sides button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: #655447;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.sketch-ribbon-sides button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.sketch-ribbon-sides span {
+  min-width: 1.2em;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.sketch-ribbon-shapes {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 8px;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  min-width: 220px;
+  padding: 8px;
+  background: #efebe8;
+  border: 1px solid #d2c4a8;
+  border-radius: 12px;
+  box-shadow: var(--elevation-lg);
+}
+
+.sketch-ribbon-shapes button {
+  height: 34px;
+  padding: 0 10px;
+  color: #040404;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.sketch-ribbon-shapes button.active,
+.sketch-ribbon-shapes button:hover {
+  color: #EFEBE8;
+  background: #655447;
+  border-color: #655447;
+}
+
+[data-theme="dark"] .sketch-ribbon {
+  color: var(--ink);
+  background: var(--glass-surface-strong);
+  border-color: var(--control-border-strong);
+}
+
+[data-theme="dark"] .sketch-ribbon-group + .sketch-ribbon-group {
+  border-left-color: var(--control-border);
+}
+
+[data-theme="dark"] .sketch-ribbon-group > span {
+  color: var(--ink-muted);
+}
+
+[data-theme="dark"] .sketch-ribbon-tool {
+  color: var(--ink);
+}
+
+[data-theme="dark"] .sketch-ribbon-tool.is-ready:not(.active) {
+  color: var(--accent-text);
+  background: var(--control-surface-sunken);
+  border-color: var(--control-border-accent);
+}
+
+[data-theme="dark"] .sketch-ribbon-tool.active,
+[data-theme="dark"] .sketch-ribbon-tool:hover:not(:disabled) {
+  color: var(--selected-text);
+  background: var(--selected-surface);
+  border-color: var(--selected-surface);
+}
+
+[data-theme="dark"] .sketch-ribbon-tool.is-erase-all,
+[data-theme="dark"] .sketch-ribbon-tool.is-erase-all.active,
+[data-theme="dark"] .sketch-ribbon-tool.is-erase-all:hover:not(:disabled) {
+  color: #EFEBE8;
+  background: #c23b3b;
+  border-color: #c23b3b;
+}
+
+[data-theme="dark"] .sketch-ribbon-sides {
+  color: var(--ink);
+  background: var(--control-surface-sunken);
+  border-color: var(--control-border);
+}
+
+[data-theme="dark"] .sketch-ribbon-sides button {
+  color: var(--ink-muted);
+}
+
+[data-theme="dark"] .sketch-ribbon-shapes {
+  background: var(--glass-surface-strong);
+  border-color: var(--control-border-strong);
+}
+
+[data-theme="dark"] .sketch-ribbon-shapes button {
+  color: var(--ink);
+}
+
+[data-theme="dark"] .sketch-ribbon-shapes button.active,
+[data-theme="dark"] .sketch-ribbon-shapes button:hover {
+  color: var(--selected-text);
+  background: var(--selected-surface);
+  border-color: var(--selected-surface);
+}
+
+.editor-body:has(.sketch-ribbon) .view-cube {
+  top: 96px;
 }
 
 .sketch-finish-toolbar .sketch-finish-action.disabled {
@@ -1139,8 +1486,8 @@
 
 .toolbar-overflow .toolbar-icon,
 .editor-top-bar-tools .toolbar-icon {
-  width: 32px;
-  height: 32px;
+  width: 42px;
+  height: 42px;
 }
 
 .toolbar-overflow .toolbar-icon svg,
@@ -1153,8 +1500,8 @@
 .editor-top-bar-tools .toolbar-icon .vector-toolbar-sprite-icon,
 .editor-top-bar-tools .toolbar-icon .toolbar-command-icon,
 .editor-top-bar-tools .toolbar-icon .toolbar-user-art-icon {
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
 }
 
 .toolbar-overflow-more {
@@ -1356,6 +1703,272 @@
   font-size: var(--text-xs);
   font-weight: 650;
   line-height: 1.45;
+}
+
+.sage-card {
+  position: fixed;
+  z-index: calc(var(--z-tooltip) + 2);
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  color: var(--peak-charcoal);
+  background: var(--tile-hover);
+  border: 1px solid var(--peak-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-lg);
+  font-family: var(--font-ui);
+  pointer-events: none;
+}
+
+.sage-card.has-art {
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+}
+
+.sage-card-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sage-card-copy strong {
+  font-size: var(--text-xs);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--ink-strong);
+}
+
+.sage-card-shortcut {
+  justify-self: start;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.sage-card-copy p,
+.sage-card-copy li {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-xs);
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.sage-card-copy ol {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 1.15em;
+}
+
+.sage-card-art {
+  width: 72px;
+  height: 56px;
+  color: var(--ink-strong);
+  background: var(--control-surface-sunken);
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+}
+
+.sage-card-art line,
+.sage-card-art circle,
+.sage-card-art path,
+.sage-card-art rect,
+.sage-card-art ellipse {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sage-card-art .sage-point {
+  fill: var(--action-surface);
+  stroke: var(--action-surface);
+}
+
+/* Construction line, like a radius while dragging. */
+.sage-card-art .sage-guide {
+  stroke: var(--ink-muted);
+}
+
+/* Selected in Mintr: the brown selection colour. */
+.sage-card-art .sage-sel {
+  stroke: var(--action-surface);
+}
+
+.sage-card-art .sage-pick {
+  stroke: var(--action-surface);
+  stroke-width: 3;
+}
+
+.sage-card-art .sage-face-pick {
+  fill: var(--action-surface);
+  fill-opacity: 0.4;
+  stroke: none;
+}
+
+/* Mint is reserved for curve handles and for "lined up". */
+.sage-card-art .sage-handle,
+.sage-card-art .sage-ok {
+  stroke: var(--mintr);
+}
+
+.sage-card-art .sage-dash {
+  stroke-dasharray: 2.5 3.5;
+}
+
+.sage-card-art .sage-brush {
+  stroke: var(--ink-muted);
+}
+
+/* Faces of a solid, and covers that hide the lines inside a fused outline. */
+.sage-card-art .sage-solid {
+  fill: var(--control-surface-sunken);
+}
+
+.sage-card-art .sage-cover {
+  fill: var(--control-surface-sunken);
+  stroke: none;
+}
+
+.sage-card-art .sage-thick {
+  stroke-width: 4;
+}
+
+.sage-card-art .sage-knob {
+  fill: var(--mintr);
+  stroke: var(--mintr);
+}
+
+/* Pointer: solid in the card colour so it reads as a cursor, not a hole. */
+.sage-card-art .sage-pointer {
+  fill: var(--control-surface-sunken);
+}
+
+/*
+ * Gestures play once, then hold. Each piece sets --at (start) and --dur (length) inline,
+ * and --from / --grow-from for where it starts.
+ */
+.sage-pop {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: sage-pop 0.3s ease-out var(--at, 0s) both;
+}
+
+.sage-fade {
+  animation: sage-fade 0.3s ease-out var(--at, 0s) both;
+}
+
+/* The 2-long gap keeps the undrawn end's round cap hidden under the start point. */
+.sage-draw {
+  stroke-dasharray: 1 2;
+  animation: sage-draw var(--dur) ease-in-out var(--at) both;
+}
+
+.sage-grow {
+  transform-box: fill-box;
+  animation: sage-grow var(--dur) ease-in-out var(--at) both;
+}
+
+.sage-move {
+  animation: sage-move var(--dur) ease-in-out var(--at) both;
+}
+
+.sage-press {
+  transform-box: fill-box;
+  transform-origin: 0 0;
+  animation: sage-press 0.28s ease-out var(--at) both;
+}
+
+/* Scaled pieces keep their 2-unit line. */
+.sage-card-art .sage-grow,
+.sage-card-art .sage-grow * {
+  vector-effect: non-scaling-stroke;
+}
+
+.sage-vanish {
+  animation: sage-vanish 0.3s ease-in var(--at) both;
+}
+
+.sage-erase {
+  stroke-dasharray: 1 2;
+  animation: sage-erase var(--dur) linear var(--at) both;
+}
+
+/* Reshapes a path from --d-from to its own d. Both must use the same commands. */
+.sage-morph {
+  animation: sage-morph var(--dur) ease-in-out var(--at) both;
+}
+
+.sage-weight {
+  animation: sage-weight var(--dur) ease-in-out var(--at) both;
+}
+
+@keyframes sage-pop {
+  0% { transform: scale(0); }
+  70% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+@keyframes sage-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes sage-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes sage-grow {
+  from { transform: var(--grow-from); }
+}
+
+@keyframes sage-move {
+  from { transform: var(--from); }
+}
+
+@keyframes sage-press {
+  0%, 100% { transform: none; }
+  40% { transform: scale(0.82); }
+}
+
+@keyframes sage-vanish {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes sage-erase {
+  to { stroke-dashoffset: -1.1; }
+}
+
+@keyframes sage-morph {
+  from { d: var(--d-from); }
+}
+
+@keyframes sage-weight {
+  from { stroke-width: var(--w-from); }
+}
+
+/* Still pictures show the finished gesture, so anything that goes away is already gone. */
+@media (prefers-reduced-motion: reduce) {
+  .sage-card-art * {
+    animation: none !important;
+  }
+
+  .sage-card-art .sage-vanish,
+  .sage-card-art .sage-erase {
+    opacity: 0;
+  }
+}
+
+.sage-card-art text {
+  fill: var(--ink-muted);
+  stroke: none;
+  font-size: 9px;
+  font-weight: 750;
+  font-family: var(--font-ui);
 }
 
 .toolbar-icon:not(.disabled):hover {
@@ -2751,6 +3364,66 @@
   font-weight: 800;
 }
 
+.editor-body:has(.editor-sketch-bar) {
+  --editor-sketch-bar-height: 34px;
+}
+
+.editor-body:has(.editor-sketch-bar) .workplane-wrap {
+  bottom: var(--editor-sketch-bar-height);
+}
+
+.editor-sketch-bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: calc(var(--z-overlay) + 5);
+  height: var(--editor-sketch-bar-height);
+  background: linear-gradient(180deg, var(--peak-cream-light), var(--peak-cream));
+  border-top: 1px solid var(--control-border-strong);
+  box-shadow: inset 0 1px 0 var(--chrome-inset-highlight);
+  pointer-events: none;
+}
+
+.editor-sketch-notch {
+  position: absolute;
+  bottom: calc(100% - 1px);
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  padding: 6px 6px 0;
+  background: linear-gradient(0deg, var(--peak-cream), var(--peak-cream-panel));
+  border: 1px solid var(--control-border-strong);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -6px 12px rgba(4, 4, 4, 0.06);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.editor-sketch-notch .editor-mode-tabs {
+  min-width: 0;
+  padding: 1px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.editor-sketch-notch .editor-mode-tabs-pill {
+  top: 1px;
+  bottom: 1px;
+  left: 1px;
+  width: calc(50% - 2px);
+}
+
+.editor-sketch-notch .editor-mode-tabs button {
+  height: 18px;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: 0.04em;
+}
+
 .editor-body {
   position: fixed;
   inset: var(--editor-toolbar-height) 0 0 0;
@@ -3209,7 +3882,7 @@
 }
 
 .sketch-profile-fills path.selected-profile {
-  fill: rgba(64, 140, 220, 0.45);
+  fill: rgba(101, 84, 71, 0.28);
 }
 
 .sketch-snap-glyph .sketch-snap-mark {
@@ -3239,6 +3912,22 @@
   stroke-dasharray: 5 4;
   stroke-linecap: round;
   opacity: 0.92;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-align-line {
+  fill: none;
+  stroke: #2aa77e;
+  stroke-width: 1.35;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-align-point {
+  fill: #fff;
+  stroke: #2aa77e;
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 
