@@ -276,7 +276,7 @@ describe("mintr guide", () => {
       extrudeOpen: true,
       sketchPoints: square.points,
     });
-    expect(cutting?.body).toBe("Type 20 mm, then click Cut into part.");
+    expect(cutting?.body).toBe("Type 20 mm, click Preview in 3D, then Cut into part.");
   });
 
   it("writes a changed height into the prompt", () => {

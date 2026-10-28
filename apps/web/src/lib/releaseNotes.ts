@@ -31,6 +31,16 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.7.2",
+    items: [
+      "3D sketch is now called View in 3D.",
+      "Extrude lets you check the solid first. Set the height, click Preview in 3D, look around it, then finish it or go back to the sketch. The Extrude button finishes it too.",
+      "Finishing a sketch eases back to the part, with no flicker.",
+      "The view cube and the workplane size bar stay in the same place in View in 3D as on the workplane.",
+      "View in 3D no longer shows the hint bar, or the message to drag a shape onto an empty workplane.",
+    ],
+  },
+  {
     version: "1.1.7.1",
     items: [
       "Sketch sizes are easy to read again in dark mode. The labels behind the numbers now match the dark sheet.",

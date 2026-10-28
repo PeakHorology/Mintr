@@ -28,7 +28,7 @@ import {
   ToolbarExportIcon,
   ToolbarImportIcon,
 } from "./icons";
-import { WorkplaneViewport } from "./WorkplaneViewport";
+import { SKETCH_EXTRUDE_PREVIEW_ID, WorkplaneViewport } from "./WorkplaneViewport";
 import { SketchWorkspace, type SketchMeasurement, type SketchSelection, type SketchTool } from "./SketchWorkspace";
 import { HistoryPanel } from "./workplane/HistoryPanel";
 import { ToolbarFlow } from "./workplane/ToolbarFlow";
@@ -681,6 +681,8 @@ const MAX_SKETCH_HISTORY_ENTRIES = hardwareProfile().sketchHistoryEntries;
 const MIN_EDGE_MODIFIER_AMOUNT = 0.001;
 /** Tallest sketch extrusion we will ask the kernel for; a stray "100000" is a typo, not a part. */
 const SKETCH_EXTRUDE_MAX_MM = 10000;
+/** How long the sketch tools take to fade out after a finish, before the geometry view takes over. */
+const SKETCH_LEAVE_MS = 260;
 
 
 
@@ -1525,6 +1527,24 @@ export function SketchForgeEditor({
   const [polygonSidesPrompt, setPolygonSidesPrompt] = useState<number | null>(null);
   const [extrudeHeightPrompt, setExtrudeHeightPrompt] = useState<number | null>(null);
   const [extrudeAsHole, setExtrudeAsHole] = useState(false);
+  /** Set while an extrude is previewed in View in 3D: the view to go back to. */
+  const [extrudeLook, setExtrudeLook] = useState<SketchFocusMode | null>(null);
+  /** The preview waits for the camera to swing round, then rises out of the sketch. */
+  const [extrudePreviewReady, setExtrudePreviewReady] = useState(false);
+  /** Finishing from the preview: the preview stays up until the real part replaces it. */
+  const [extrudeBuilding, setExtrudeBuilding] = useState(false);
+  /** True for the moment the sketch tools fade out after a finish. */
+  const [sketchLeaving, setSketchLeaving] = useState(false);
+  const extrudeLookRef = useRef(extrudeLook);
+  extrudeLookRef.current = extrudeLook;
+  useEffect(() => {
+    if (extrudeLook === null) {
+      setExtrudePreviewReady(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setExtrudePreviewReady(true), prefersReducedMotion() ? 0 : 420);
+    return () => window.clearTimeout(timer);
+  }, [extrudeLook]);
   const [revolvePrompt, setRevolvePrompt] = useState<null | { phase: "pick" } | { phase: "confirm"; axis: SketchRevolveAxis }>(null);
   const [sweepPrompt, setSweepPrompt] = useState<
     null
@@ -2461,6 +2481,33 @@ export function SketchForgeEditor({
     }
     return [];
   }, [sketchDoc, sketchProfile, sweepPrompt]);
+  // The extrude as it will come out, shown in View in 3D before it is made. It follows the height
+  // and Solid / Hole choice live; joining or cutting into a part happens only on finish.
+  const extrudePreviewShape = useMemo(() => {
+    if (extrudeLook === null || !extrudePreviewReady || sketchLeaving || extrudeHeightPrompt === null || !Number.isFinite(extrudeHeightPrompt)) return null;
+    const plane = mergeSketchPlanes(sketchProfile.sketchPlane, sketchDoc.plane);
+    const faceLoops = sketchProfile.faceReferenceLoops ?? sketchDoc.faceReferenceLoops;
+    const faceSketch = isFaceHostedSketch(plane, faceLoops);
+    const host = plane.hostShapeId
+      ? shapes.find((shape) => shape.id === plane.hostShapeId && !shape.hole && !shape.hidden)
+      : null;
+    const throughDepth = isCylinderSketchPlane(plane)
+      ? barrelThroughDepthMm(plane.surface)
+      : host ? shapeThicknessInwardFromFace(host, plane.origin, plane.normal) : null;
+    let height = Math.min(SKETCH_EXTRUDE_MAX_MM, Math.max(0.5, extrudeHeightPrompt));
+    if (extrudeAsHole && faceSketch && throughDepth) height = faceSketchHoleCutterMm(height, throughDepth);
+    const base = shapeFromSketchProfile(
+      closeOpenPathGaps({ ...sketchProfile, sketchPlane: plane, faceReferenceLoops: faceLoops }),
+      height,
+      null,
+      { cutIntoFace: Boolean(extrudeAsHole && faceSketch) },
+    );
+    if (!base) return null;
+    const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
+    const shaped = extrudeAsHole ? withHoleMode(base, true) : withHoleMode(base, false, existing?.color ?? base.color);
+    return { ...shaped, id: SKETCH_EXTRUDE_PREVIEW_ID, name: "Extrude preview" };
+  }, [editingSketchShapeId, extrudeAsHole, extrudeHeightPrompt, extrudeLook, extrudePreviewReady, shapes, sketchLeaving, sketchDoc.faceReferenceLoops, sketchDoc.plane, sketchProfile]);
+
   const viewportShapes = useMemo(
     () => {
       if (guidePreview) return expandHistoryShapes(guidePreview.entry.shapes, guidePreview.entry.meshVault).map(canonicalizeShape);
@@ -2489,9 +2536,12 @@ export function SketchForgeEditor({
       if (sweepPreview) {
         return shapes.filter((shape) => shape.id !== sweepPreview.id).concat(sweepPreview);
       }
+      if (extrudePreviewShape) {
+        return shapes.filter((shape) => shape.id !== editingSketchShapeId).concat(extrudePreviewShape);
+      }
       return shapes;
     },
-    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, effectiveAlignAnchorId, guidePreview, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
+    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, editingSketchShapeId, effectiveAlignAnchorId, extrudePreviewShape, guidePreview, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
   );
   const faceOperationIds = useMemo(() => {
     if (!faceSession?.prepared) return [] as number[];
@@ -5181,6 +5231,24 @@ export function SketchForgeEditor({
     setToolbarMode("geometry");
   }, []);
 
+  /**
+   * Finishing a sketch: the new part takes over at once, the sketch tools fade away together, and
+   * only then does the geometry view take over, so the change reads as one movement.
+   */
+  const leaveSketchSoftly = useCallback(() => {
+    if (prefersReducedMotion()) {
+      exitSketchMode();
+      setExtrudeAsHole(false);
+      return;
+    }
+    setSketchLeaving(true);
+    window.setTimeout(() => {
+      exitSketchMode();
+      setExtrudeAsHole(false);
+      setSketchLeaving(false);
+    }, SKETCH_LEAVE_MS);
+  }, [exitSketchMode]);
+
   const noteSketchFinish = useCallback(() => {
     const before = historyIndexRef.current;
     const beforeLength = historyRef.current.length;
@@ -5200,8 +5268,8 @@ export function SketchForgeEditor({
     const keep = noteSketchFinish();
     commitShapes(next, selection, message);
     keep();
-    exitSketchMode();
-  }, [commitShapes, exitSketchMode, noteSketchFinish]);
+    leaveSketchSoftly();
+  }, [commitShapes, leaveSketchSoftly, noteSketchFinish]);
 
   const startSketchExtrude = useCallback(() => {
     if (sweepStepsRef.current) {
@@ -5255,12 +5323,42 @@ export function SketchForgeEditor({
   const cancelExtrudeHeightPrompt = useCallback(() => {
     setExtrudeHeightPrompt(null);
     setExtrudeAsHole(false);
+    setExtrudeLook((returnTo) => {
+      if (returnTo !== null) setSketchFocusMode(returnTo);
+      return null;
+    });
     setNotice("Extrude cancelled");
+  }, []);
+
+  /** Step two of Extrude: look at the solid in View in 3D before it is made. */
+  const previewSketchExtrude = useCallback(() => {
+    if (typeof extrudeHeightPrompt === "number" && !Number.isFinite(extrudeHeightPrompt)) {
+      setNotice(guidePlayback ? "Type the height from the tutorial." : "Type an extrude height.");
+      return;
+    }
+    setExtrudeLook(sketchFocusMode);
+    setSketchFocusMode("3d");
+    setNotice("Orbit to check it, then finish, or go back to change the sketch");
+  }, [extrudeHeightPrompt, guidePlayback, sketchFocusMode]);
+
+  // Finishing, leaving the sketch, or anything else that closes the extrude ends the preview too.
+  useEffect(() => {
+    if (extrudeHeightPrompt === null && extrudeLook !== null) setExtrudeLook(null);
+  }, [extrudeHeightPrompt, extrudeLook]);
+
+  const backFromExtrudePreview = useCallback(() => {
+    setExtrudeLook((returnTo) => {
+      if (returnTo !== null) setSketchFocusMode(returnTo);
+      return null;
+    });
+    setExtrudeHeightPrompt(null);
+    setNotice("Back to the sketch");
   }, []);
 
   const finishSketchExtrudeInner = useCallback(async (heightMm: number | undefined, asHole: boolean) => {
     setRevolvePrompt(null);
-    setExtrudeHeightPrompt(null);
+    // From the preview, the solid stays on screen while the part builds; finishing closes the prompt.
+    if (extrudeLookRef.current === null) setExtrudeHeightPrompt(null);
     const existing = editingSketchShapeId
       ? findShapeInTree(shapesRef.current, editingSketchShapeId)
       : null;
@@ -5390,8 +5488,7 @@ export function SketchForgeEditor({
         if (!remeshed) {
           setNotice("Could not remesh CSG body after sketch edit — last good mesh kept. Ungroup then Group to retry.");
         }
-        exitSketchMode();
-        setExtrudeAsHole(false);
+        leaveSketchSoftly();
         return;
       }
     }
@@ -5413,13 +5510,11 @@ export function SketchForgeEditor({
             linkedGroup.id,
             asHole ? `Sketch hole cut into ${host.name}` : `Sketch solid joined to ${host.name}`,
           );
-          setExtrudeAsHole(false);
           return;
         }
         if (result.consumed) {
           const remaining = shapesRef.current.filter((shape) => shape.id !== host.id && shape.id !== existing?.id);
           commitFinishedSketch(remaining, null, "Sketch feature consumed the host solid");
-          setExtrudeAsHole(false);
           return;
         }
         setNotice(
@@ -5445,8 +5540,7 @@ export function SketchForgeEditor({
           ? `Sketch solid ready — join to ${host.name} failed; select the solid and Group to retry`
           : (existing ? "Sketch updated in 3D" : `Sketch extruded at ${height.toFixed(1)} mm`)),
     );
-    setExtrudeAsHole(false);
-  }, [commitFinishedSketch, commitShapes, editingSketchShapeId, exitSketchMode, noteSketchFinish, sketchDoc, sketchProfile]);
+  }, [commitFinishedSketch, commitShapes, editingSketchShapeId, leaveSketchSoftly, noteSketchFinish, sketchDoc, sketchProfile]);
 
   const finishSketchExtrude = useCallback(async (heightMm?: number, asHole = extrudeAsHole) => {
     // A second click on Create solid (or Enter twice) while the kernel is still
@@ -5458,14 +5552,25 @@ export function SketchForgeEditor({
       return;
     }
     sketchExtrudeBusyRef.current = true;
+    setExtrudeBuilding(true);
     try {
       await finishSketchExtrudeInner(heightMm, asHole);
     } catch (error) {
       setNotice(error instanceof Error && error.message ? error.message : "Could not build the sketch solid");
     } finally {
       sketchExtrudeBusyRef.current = false;
+      setExtrudeBuilding(false);
     }
   }, [extrudeAsHole, finishSketchExtrudeInner, guidePlayback, setNotice]);
+
+  /** The Extrude button (and E) opens the extrude, and while it is being previewed, finishes it. */
+  const pressSketchExtrude = useCallback(() => {
+    if (extrudeLook !== null && extrudeHeightPrompt !== null) {
+      void finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole);
+      return;
+    }
+    startSketchExtrude();
+  }, [extrudeAsHole, extrudeHeightPrompt, extrudeLook, finishSketchExtrude, startSketchExtrude]);
 
   const completeSketchRevolve = useCallback((axis: SketchRevolveAxis) => {
     const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
@@ -10958,7 +11063,7 @@ export function SketchForgeEditor({
         }
         if (action === "sketchExtrude") {
           event.preventDefault();
-          startSketchExtrude();
+          pressSketchExtrude();
           return;
         }
         if (action === "sketchFocusToggle") {
@@ -11218,7 +11323,7 @@ export function SketchForgeEditor({
     showHidden,
     snapGrid,
     startEdgeModifier,
-    startSketchExtrude,
+    pressSketchExtrude,
     toggleAlignMode,
     toggleCircularPattern,
     toggleLinearPattern,
@@ -11692,7 +11797,7 @@ export function SketchForgeEditor({
             <EditorViewportToolbar cluster="modify" {...geometryToolbarProps} />
           ) : sketchActive ? (
             <SketchFinishToolbar
-              onSketchExtrude={startSketchExtrude}
+              onSketchExtrude={pressSketchExtrude}
               onSketchRevolve={startSketchRevolve}
               onSketchSweep={startSketchSweep}
               onSketchCancel={cancelSketch}
@@ -11791,7 +11896,7 @@ export function SketchForgeEditor({
           }}
         />
       ) : null}
-      <div className={`editor-body${modeTransitioning ? " mode-transitioning" : ""}`}>
+      <div className={`editor-body${modeTransitioning ? " mode-transitioning" : ""}${sketchLeaving ? " is-sketch-leaving" : ""}`}>
         {sketchActive ? (
           <SketchRibbon
             sketchTool={sketchTool}
@@ -12203,11 +12308,6 @@ export function SketchForgeEditor({
                     setNotice("Constraint removed");
                   }}
                 />
-                <div className="sketch-stage-footer">
-                  <div className="sketch-3d-hint">
-                    <span>Orbit to check the sketch on the part. Draw when the face is toward you. On a line, type the length and press Enter.</span>
-                  </div>
-                </div>
               </>
             ) : null}
           <WorkplaneViewport
@@ -12220,6 +12320,9 @@ export function SketchForgeEditor({
             onChange: patchSketchGuideSettings,
           } : undefined}
           sketchFrameRequest={sketchFrameRequest}
+          sketchExtrudePreview={extrudeLook !== null && extrudeHeightPrompt !== null && Number.isFinite(extrudeHeightPrompt)
+            ? { height: extrudeHeightPrompt, cut: extrudeAsHole }
+            : null}
           sketchOnModel={sketchActive && sketchFocusMode === "3d" ? {
             plane: sketchProfile.sketchPlane ?? sketchDoc.plane,
             profile: sketchProfile,
@@ -12736,11 +12839,19 @@ export function SketchForgeEditor({
           </>
         )}
         {sketchActive && extrudeHeightPrompt !== null ? (
-          <div className="sketch-extrude-prompt-layer">
-            <div className="sketch-tool-prompt-backdrop" aria-hidden onPointerDown={(event) => event.preventDefault()} />
-            <div className="sketch-revolve-prompt phase-confirm" role="dialog" aria-modal="true" aria-label="Extrude height">
+          <div className={`sketch-extrude-prompt-layer${extrudeLook !== null ? " is-previewing" : ""}`}>
+            {extrudeLook === null ? (
+              <div className="sketch-tool-prompt-backdrop" aria-hidden onPointerDown={(event) => event.preventDefault()} />
+            ) : null}
+            <div
+              key={extrudeLook !== null ? "preview" : "set"}
+              className="sketch-revolve-prompt phase-confirm"
+              role="dialog"
+              aria-modal={extrudeLook === null}
+              aria-label="Extrude height"
+            >
               <div className="sketch-revolve-prompt-copy">
-                <strong>Extrude to 3D</strong>
+                <strong>{extrudeLook !== null ? "Check the extrude" : "Extrude to 3D"}</strong>
                 <span>
                   {extrudeAsHole
                     ? (isDefaultSketchPlane(sketchProfile.sketchPlane)
@@ -12825,12 +12936,26 @@ export function SketchForgeEditor({
                 </button>
               </div>
               <div className="sketch-revolve-prompt-actions">
-                <button type="button" className="primary" data-lesson-target="cut" onClick={() => finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole)}>
-                  {extrudeAsHole
-                    ? (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create hole" : "Cut into part")
-                    : (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create solid" : "Join to part")}
-                </button>
-                <button type="button" className="cancel" onClick={cancelExtrudeHeightPrompt}>Cancel</button>
+                {extrudeLook === null ? (
+                  <>
+                    <button type="button" className="primary" data-lesson-target="cut" onClick={previewSketchExtrude}>
+                      Preview in 3D
+                    </button>
+                    <button type="button" className="cancel" onClick={cancelExtrudeHeightPrompt}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="primary" data-lesson-target="cut" disabled={extrudeBuilding} onClick={() => finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole)}>
+                      {extrudeBuilding ? <LoaderCircle className="edge-modifier-spinner" size={16} aria-hidden="true" /> : null}
+                      {extrudeBuilding
+                        ? "Building…"
+                        : extrudeAsHole
+                          ? (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create hole" : "Cut into part")
+                          : (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create solid" : "Join to part")}
+                    </button>
+                    <button type="button" disabled={extrudeBuilding} onClick={backFromExtrudePreview}>Back to sketch</button>
+                  </>
+                )}
               </div>
             </div>
           </div>

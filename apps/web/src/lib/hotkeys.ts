@@ -113,7 +113,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyActionMeta[] = [
   { id: "sketchRectangle", label: "Sketch rectangle", description: "Activate the sketch rectangle tool.", category: "Sketch" },
   { id: "sketchDimension", label: "Sketch dimension", description: "Dimension tool while sketching. In geometry, D drops to the workplane.", category: "Sketch" },
   { id: "sketchExtrude", label: "Sketch extrude", description: "Finish the sketch with Extrude.", category: "Sketch" },
-  { id: "sketchFocusToggle", label: "Toggle sketch focus", description: "Switch between Flat sketch and 3D sketch.", category: "Sketch" },
+  { id: "sketchFocusToggle", label: "Toggle sketch focus", description: "Switch between Flat sketch and View in 3D.", category: "Sketch" },
 ] as const;
 
 export const HOTKEY_CATEGORIES: readonly HotkeyCategory[] = [

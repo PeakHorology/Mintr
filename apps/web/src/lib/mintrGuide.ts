@@ -995,7 +995,7 @@ export function describeGuideStep(
     const how = distance == null ? "" : cuts ? `, cut ${formatMm(distance)} into the part` : `, extruded ${formatMm(distance)}`;
     return {
       title: `Sketch ${shape}${onPart ? " on the part" : ""}${how}`,
-      body: `${onPart ? "Click New sketch, then the face. " : "Click Sketch. "}${ghost ? outlineSentence(ghost, tool) : "Draw the outline."}${distance == null ? "" : cuts ? ` Then Extrude, type ${formatMm(distance)}, and Cut into part.` : ` Then Extrude and type ${formatMm(distance)}.`}`,
+      body: `${onPart ? "Click New sketch, then the face. " : "Click Sketch. "}${ghost ? outlineSentence(ghost, tool) : "Draw the outline."}${distance == null ? "" : cuts ? ` Then Extrude, type ${formatMm(distance)}, click Preview in 3D, and Cut into part.` : ` Then Extrude, type ${formatMm(distance)}, and click Preview in 3D.`}`,
     };
   }
   if (step.cue === "chamfer" || step.cue === "fillet") {
@@ -1324,8 +1324,8 @@ export function guidePrompt(input: {
       cue: "cut",
       title: cuts ? "Cut into the part" : "Finish the solid",
       body: distanceText
-        ? (cuts ? `Type ${distanceText}, then click Cut into part.` : `Type ${distanceText}, then click the green button.`)
-        : (cuts ? "Click Cut into part." : "Click the green button to finish this solid."),
+        ? (cuts ? `Type ${distanceText}, click Preview in 3D, then Cut into part.` : `Type ${distanceText}, click Preview in 3D, then the green button.`)
+        : (cuts ? "Click Preview in 3D, then Cut into part." : "Click Preview in 3D, then the green button to finish this solid."),
       showGhost: false,
     };
   }

@@ -88,7 +88,7 @@ export function SketchFocusTabs({
   onReframe3d?: () => void;
 }) {
   const flatHelp = usePeakContextHelp("Flat sketch", TOOL_DESCRIPTIONS.flatSketch);
-  const sketch3dHelp = usePeakContextHelp("3D sketch", TOOL_DESCRIPTIONS.sketch3dView);
+  const sketch3dHelp = usePeakContextHelp("View in 3D", TOOL_DESCRIPTIONS.sketch3dView);
 
   return (
     <div className="editor-mode-tabs editor-mode-tabs--focus" data-mode={focusMode} role="tablist" aria-label="Sketch view">
@@ -117,10 +117,10 @@ export function SketchFocusTabs({
           }
           onFocusModeChange("3d");
         }}
-        data-sage-label="3D sketch"
+        data-sage-label="View in 3D"
         onContextMenu={sketch3dHelp.onContextMenu}
       >
-        3D sketch
+        View in 3D
         {sketch3dHelp.helpPortal}
       </button>
     </div>

@@ -724,7 +724,7 @@ export function sketch3DPointerDown(
   }
   if (!drawingAngleOk(host, session.plane, uv)) {
     pointer.hover = null;
-    session.onNotice?.("That angle is too shallow to draw. Orbit until the face is toward you, or click 3D sketch again.");
+    session.onNotice?.("That angle is too shallow to draw. Orbit until the face is toward you, or click View in 3D again.");
     syncSketchOnModel(host, session, pointer);
     return;
   }
@@ -1309,6 +1309,38 @@ export function sketchFramingPose(session: Pick<SketchOnModelSession, "plane" | 
   // rolls lookAt while orbit/pan/zoom still use world Y, so the view feels stuck
   // after the enter tween and after Extrude. Keep world up; the tilt is enough.
   return { target: vec3(focus.x, focus.y, focus.z), position, up: vec3(0, 1, 0) };
+}
+
+/**
+ * A three-quarter view of the sketch from above and to one side, so an extrude preview shows its
+ * height. `height` lifts the target to the middle of the solid; a cut goes the other way.
+ */
+export function sketchExtrudePreviewPose(
+  session: Pick<SketchOnModelSession, "plane" | "profile">,
+  height: number,
+  cut: boolean,
+): SketchCameraPose {
+  const resolved = resolveSketchPlane(session.plane);
+  const bounds = sketchBounds(session.profile);
+  const centerUV = { x: (bounds.minX + bounds.maxX) / 2, z: (bounds.minZ + bounds.maxZ) / 2 };
+  const base = uvWorld(resolved, centerUV.x, centerUV.z);
+  const normal = resolved.surface?.kind === "cylinder"
+    ? cylinderOutwardNormalAtUV(resolved.surface, centerUV.x)
+    : resolved.normal;
+  const lift = (cut ? -0.5 : 0.5) * height;
+  const focus = vec3(base.x + normal.x * lift, base.y + normal.y * lift, base.z + normal.z * lift);
+  const u = resolved.uAxis;
+  // Lying flat: come in from the front and the right. Standing up: from the right and above.
+  const side = Math.abs(normal.y) > 0.5
+    ? (() => {
+      const v = sketchPlaneVAxis(resolved);
+      return { x: u.x * 0.4 - v.x * 0.6, y: u.y * 0.4 - v.y * 0.6, z: u.z * 0.4 - v.z * 0.6 };
+    })()
+    : { x: u.x * 0.45, y: 0.55, z: u.z * 0.45 };
+  const dir = new THREE.Vector3(normal.x * 0.72 + side.x, normal.y * 0.72 + side.y, normal.z * 0.72 + side.z).normalize();
+  const distance = THREE.MathUtils.clamp(Math.max(bounds.span, height) * 2.8, 60, 1000);
+  const position = vec3(focus.x + dir.x * distance, focus.y + dir.y * distance, focus.z + dir.z * distance);
+  return { target: focus, position, up: vec3(0, 1, 0) };
 }
 
 export function captureSketchCameraPose(host: Sketch3DHost): SketchCameraPose {

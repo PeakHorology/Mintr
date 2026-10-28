@@ -388,7 +388,7 @@ export function lessonPrompt(input: {
     return { cue: "done", step: LESSON_TOTAL, total: LESSON_TOTAL, title: "You made a part with a hole", body: "The box has a hole through it. Close this when you want to keep modeling.", complete: true };
   }
   if (input.extrudeOpen) {
-    return { cue: "cut", step: 3, total: LESSON_TOTAL, title: "Cut the hole", body: "Leave the number. It matches the box, so the cut goes all the way through. Click Cut into part.", complete: false };
+    return { cue: "cut", step: 3, total: LESSON_TOTAL, title: "Cut the hole", body: "Leave the number. It matches the box, so the cut goes all the way through. Click Preview in 3D, then Cut into part.", complete: false };
   }
   if (input.sketchingOnPart && input.sketchClosed) {
     return { cue: "extrude", step: 3, total: LESSON_TOTAL, title: "Turn the circle into a hole", body: "Click Extrude.", complete: false };

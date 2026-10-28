@@ -73,6 +73,7 @@ import {
   sketchCameraEase,
   sketchCameraNearlyFramed,
   sketchCameraTweenMs,
+  sketchExtrudePreviewPose,
   sketchFramingPose,
   syncSketchOnModel,
   type Sketch3DPointerState,
@@ -318,6 +319,8 @@ export type WorkplaneViewportProps = {
   sketchOnModel?: SketchOnModelSession | null;
   /** Increment to square the camera on the sketch face. */
   sketchFrameRequest?: number;
+  /** While an extrude is previewed, the camera swings to a three-quarter view to show its height. */
+  sketchExtrudePreview?: { height: number; cut: boolean } | null;
   onSelectShape: (id: string | string[] | null, mode?: "replace" | "toggle") => void;
   onActivatePlacementRuler?: () => void;
   onDeactivatePlacementRuler?: () => void;
@@ -2584,6 +2587,7 @@ export function WorkplaneViewport({
   sketchFacePickMode = false,
   sketchOnModel = null,
   sketchFrameRequest = 0,
+  sketchExtrudePreview = null,
   onSketchPlanePicked,
   onSketchFacePickRejected,
   onSketchFacePickCancel,
@@ -3754,6 +3758,10 @@ export function WorkplaneViewport({
     if (!state) return;
     if (!session || !sketchDrawKey) {
       cancelSketchCameraTween(state);
+      if (extrudePreviewSeenRef.current) {
+        extrudePreviewSeenRef.current = false;
+        if (!prefersReducedMotion()) startCameraTween(state, settledPartPose(state), PART_SETTLE_MS);
+      }
       if (sketch3DPlaneKeyRef.current) rememberedSketchCamera = null;
       clearSketchOnModel(state.scene);
       sketch3DPointerRef.current = emptySketch3DPointer();
@@ -3801,6 +3809,23 @@ export function WorkplaneViewport({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  const sketchExtrudePreviewRef = useRef(sketchExtrudePreview);
+  /** Set once an extrude was previewed, so leaving the sketch eases back to show the new part. */
+  const extrudePreviewSeenRef = useRef(false);
+  sketchExtrudePreviewRef.current = sketchExtrudePreview;
+  const extrudePreviewOn = Boolean(sketchExtrudePreview);
+  useEffect(() => {
+    const preview = sketchExtrudePreviewRef.current;
+    const state = threeRef.current;
+    const session = sketchOnModelRef.current;
+    // Back to the sketch: no settle later. Finishing ends the sketch first, so its settle still runs.
+    if (!preview) extrudePreviewSeenRef.current = false;
+    if (!preview || !state || !session) return;
+    extrudePreviewSeenRef.current = true;
+    startCameraTween(state, sketchExtrudePreviewPose(session, preview.height, preview.cut));
+    state.needsRender = true;
+  }, [extrudePreviewOn]);
 
   useEffect(() => {
     if (skipSketchFrameOnMountRef.current) {
@@ -6570,6 +6595,7 @@ export function WorkplaneViewport({
               !shapes.some((shape) => !shape.hidden)
               && !assetDragOver
               && !sketchFacePickMode
+              && !sketchOnModel
               && !alignMode
               && !mirrorMode
               && !modifierActive
@@ -6908,6 +6934,13 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     renderer.setSize(next.width, next.height, false);
     camera.aspect = next.width / next.height;
     camera.updateProjectionMatrix();
+    // Resizing wipes the canvas. Draw again right away, before the browser paints, or the
+    // workplane shows blank for a frame (a flicker whenever a panel or bar comes and goes).
+    try {
+      renderer.render(scene, camera);
+    } catch {
+      // The render loop reports failures; this is only the instant redraw.
+    }
     // First time the host gets a real layout, snap home so a zero-size init
     // cannot leave the camera/frustum looking past an invisible workplane.
     if (!hadValidSize) {
@@ -7065,7 +7098,7 @@ function startSketchCameraTween(state: ThreeState, session: SketchOnModelSession
  * Glide the camera to `to`, orbiting around the target rather than sliding through the model.
  * Used for sketch framing, Home, and view-cube clicks; reduced motion jumps straight there.
  */
-function startCameraTween(state: ThreeState, to: SketchCameraPose) {
+function startCameraTween(state: ThreeState, to: SketchCameraPose, durationMs?: number) {
   const host = sketch3dHost(state);
   const from = captureSketchCameraPose(host);
   cancelSketchCameraTween(state);
@@ -7083,7 +7116,7 @@ function startCameraTween(state: ThreeState, to: SketchCameraPose) {
   const tween = {
     handle: 0,
     started: performance.now(),
-    duration: sketchCameraTweenMs(from, to),
+    duration: durationMs ?? sketchCameraTweenMs(from, to),
     from,
     to,
   };
@@ -7102,6 +7135,21 @@ function startCameraTween(state: ThreeState, to: SketchCameraPose) {
   };
   tween.handle = requestAnimationFrame(tick);
   state.needsRender = true;
+}
+
+const PART_SETTLE_MS = 900;
+
+/** A step back and a touch higher than now, around the same point: the new part comes into view. */
+function settledPartPose(state: ThreeState): SketchCameraPose {
+  const target = state.controls.target;
+  const offset = state.camera.position.clone().sub(target);
+  offset.multiplyScalar(1.14);
+  offset.y += offset.length() * 0.04;
+  return {
+    target: { x: target.x, y: target.y, z: target.z },
+    position: { x: target.x + offset.x, y: target.y + offset.y, z: target.z + offset.z },
+    up: { x: 0, y: 1, z: 0 },
+  };
 }
 
 function resetCamera(state: ThreeState) {
@@ -8324,6 +8372,9 @@ function startShapeSettle(state: ThreeState, object: THREE.Object3D) {
   state.needsRender = true;
 }
 
+/** The extrude shown before it is made. Even as a hole it rises out of the sketch. */
+export const SKETCH_EXTRUDE_PREVIEW_ID = "sketch-extrude-preview";
+
 function startSketchExtrudeRise(state: ThreeState, object: THREE.Object3D) {
   if (prefersReducedMotion()) {
     clearShapeSettle(object);
@@ -8714,6 +8765,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
     }
   }
 
+  const previewWasShown = existingById.has(SKETCH_EXTRUDE_PREVIEW_ID);
   const keepIds = new Set<string>();
   const newSolids: THREE.Object3D[] = [];
   const riseSolids: THREE.Object3D[] = [];
@@ -8797,7 +8849,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
     keepIds.add(shape.id);
     if (outgoing && wipe) {
       startEdgeWipe(state, outgoing, object, wipe.polylines);
-    } else if (!existing && !held && !shape.hole && !shape.construction) {
+    } else if (!existing && !held && !shape.construction && (!shape.hole || shape.id === SKETCH_EXTRUDE_PREVIEW_ID)) {
       if (pendingScaleIntro?.ids.has(shape.id)) combineSolids.push(object);
       else if (shape.sketchFinish === "extrude" || shape.sketchFinish === "revolve") riseSolids.push(object);
       else newSolids.push(object);
@@ -8836,7 +8888,9 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
       startShapeSettle(state, object);
     });
   }
-  if (!initialSync) {
+  // When the finished part replaces the extrude preview, it is already standing: no second rise.
+  const previewHandoff = previewWasShown && !visibleShapes.some((shape) => shape.id === SKETCH_EXTRUDE_PREVIEW_ID);
+  if (!initialSync && !previewHandoff) {
     riseSolids.forEach((object) => startSketchExtrudeRise(state, object));
   }
   const introScale = pendingScaleIntro?.startScale ?? COMBINE_START_SCALE;

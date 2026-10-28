@@ -468,6 +468,28 @@
   z-index: calc(var(--z-overlay) + 8);
 }
 
+/* Previewing in View in 3D: the view stays free to orbit, and the card waits at the bottom. */
+.sketch-extrude-prompt-layer.is-previewing {
+  pointer-events: none;
+}
+
+.sketch-extrude-prompt-layer.is-previewing .sketch-revolve-prompt {
+  top: auto;
+  bottom: calc(var(--editor-sketch-bar-height, 0px) + 40px);
+  /* Waits a beat for the view to swing round, then rises into place from below. */
+  animation: sketch-preview-card-in 320ms cubic-bezier(0.16, 1, 0.3, 1) 180ms backwards;
+}
+
+@keyframes sketch-preview-card-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(14px) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketch-extrude-prompt-layer.is-previewing .sketch-revolve-prompt {
+    animation: none;
+  }
+}
+
 .sketch-tool-prompt-backdrop {
   position: absolute;
   inset: 0;
@@ -3076,3 +3098,81 @@ button.push-pull-chip {
   display: block;
 }
 
+
+/*
+ * Sketching in 3D: the sketch bar covers the bottom edge, so the workplane sizer and snap size
+ * sit above it. The view cube and camera buttons stay where they are in Geometry.
+ */
+
+.editor-body:has(.editor-sketch-bar) .workplane-canvas-host:has(.workplane-wrap.sketch-on-model) .workplane-viewport-bar {
+  bottom: calc(var(--editor-sketch-bar-height) + 12px);
+}
+
+.editor-body:has(.editor-sketch-bar) .workplane-canvas-host:has(.workplane-wrap.sketch-on-model) .grid-settings {
+  bottom: calc(var(--editor-sketch-bar-height) + 54px);
+}
+
+/*
+ * Leaving a sketch for the geometry view, in one movement:
+ * 1. the sketch tools fade, lift and soften together (SKETCH_LEAVE_MS in the editor),
+ * 2. the camera eases back to show the new part (PART_SETTLE_MS in the viewport),
+ * 3. the sizer glides back down and the shapes panel slides in just after.
+ * One easing throughout, quick to start and long to settle.
+ */
+.editor-body {
+  --ease-settle: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.editor-body.is-sketch-leaving {
+  pointer-events: none;
+}
+
+.editor-body.is-sketch-leaving :is(
+  .sketch-ribbon,
+  .sketch-palette,
+  .sketch-extrude-prompt-layer,
+  .sketch-revolve-prompt,
+  .active-tool-chip,
+  .sketch-size-layer
+) {
+  opacity: 0;
+  translate: 0 -6px;
+  scale: 0.985;
+  filter: blur(2px);
+  transition:
+    opacity 240ms var(--ease-settle),
+    translate 260ms var(--ease-settle),
+    scale 260ms var(--ease-settle),
+    filter 240ms var(--ease-settle);
+}
+
+.editor-body.is-sketch-leaving .editor-sketch-bar {
+  opacity: 0;
+  translate: 0 10px;
+  transition: opacity 240ms var(--ease-settle), translate 260ms var(--ease-settle);
+}
+
+.workplane-viewport-bar,
+.grid-settings {
+  transition: bottom 520ms var(--ease-settle) 60ms;
+}
+
+.shape-rail:not(.collapsed) {
+  animation: shape-rail-in 560ms var(--ease-settle) 90ms backwards;
+}
+
+@keyframes shape-rail-in {
+  from { opacity: 0; transform: translateX(18px); filter: blur(2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workplane-viewport-bar,
+  .grid-settings,
+  .editor-body.is-sketch-leaving :is(.sketch-ribbon, .sketch-palette, .sketch-extrude-prompt-layer, .sketch-revolve-prompt, .active-tool-chip, .sketch-size-layer, .editor-sketch-bar) {
+    transition: none;
+  }
+
+  .shape-rail:not(.collapsed) {
+    animation: none;
+  }
+}

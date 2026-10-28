@@ -443,10 +443,6 @@
   border-color: var(--selected-surface);
 }
 
-.editor-body:has(.sketch-ribbon) .view-cube {
-  top: 96px;
-}
-
 .sketch-finish-toolbar .sketch-finish-action.disabled {
   opacity: 0.45;
   cursor: default;
@@ -3404,9 +3400,7 @@
   --editor-sketch-bar-height: 34px;
 }
 
-.editor-body:has(.editor-sketch-bar) .workplane-wrap {
-  bottom: var(--editor-sketch-bar-height);
-}
+/* The workplane keeps its full size under the sketch bar, so entering or leaving a sketch never resizes (and flashes) it. */
 
 .editor-sketch-bar {
   position: absolute;
@@ -3736,25 +3730,6 @@
   font-size: var(--text-sm);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-}
-
-.sketch-3d-hint {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  max-width: min(640px, 100%);
-  padding: 8px 12px;
-  pointer-events: none;
-  color: var(--ink-strong);
-  background: var(--glass-surface-strong);
-  border: 1px solid #d2c4a8;
-  border-radius: var(--radius-md);
-  box-shadow: var(--elevation-md);
-  font-size: var(--text-xs);
-  font-weight: 650;
-  text-align: center;
 }
 
 .workplane-wrap.sketch-on-model,

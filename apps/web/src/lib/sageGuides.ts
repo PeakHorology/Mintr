@@ -107,7 +107,7 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["sketch-circular"], title: "Circular", what: "Spins sketch copies around the middle.", steps: ["Click Circular.", "Click a line to spin that line, or click inside a shape to spin the whole shape.", "Set how many copies."], picture: "sketch-circular" },
   { keys: ["lineweight"], title: "Lineweight", what: "Sets how thick a line is drawn. The shape does not move.", steps: ["Click Lineweight.", "Click a line, or click inside a shape.", "Type a thickness. 1 is a hairline, 2.5 is standard, 8 is heavy.", "Lineweight stays on so you can set the next line too."], picture: "lineweight" },
   { keys: ["image"], title: "Image", what: "Lays a picture on the sheet to trace.", steps: ["Choose Select.", "Click Image and pick a picture."] },
-  { keys: ["extrude"], title: "Extrude", what: "Turns a closed sketch into a solid.", steps: ["Close the outline.", "Click Extrude and set the height."], hotkey: "sketchExtrude", picture: "extrude" },
+  { keys: ["extrude"], title: "Extrude", what: "Turns a closed sketch into a solid.", steps: ["Close the outline.", "Click Extrude and set the height.", "Click Preview in 3D to check it, then finish, or go back to the sketch."], hotkey: "sketchExtrude", picture: "extrude" },
   { keys: ["revolve"], title: "Revolve", what: "Spins a sketch around a straight line.", steps: ["Click Revolve.", "Click the straight line to spin around.", "The profile becomes a solid. Revolve is only on the default workplane."], picture: "revolve" },
   { keys: ["sweep"], title: "Sweep", what: "Slides a profile along a path, like a circle along a bend to make a pipe.", steps: ["Click Sweep and draw the profile: the shape of a slice through the part, like a circle for a rod. Click Next.", "Draw the path the profile should follow, then click Sweep.", "The part is placed on the sheet. A profile you already drew counts as step 1."], picture: "sweep" },
   { keys: ["cancel"], title: "Cancel", what: "Leaves the sketch and drops unfinished geometry.", steps: ["Click Cancel.", "The sketch closes without making a solid."] },
@@ -143,7 +143,7 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["geometry"], title: "Geometry", what: "Switches the bar to solid tools.", steps: ["Click Geometry.", "The sketch sheet closes its tools and the solid tools come back."] },
   { keys: ["sketch"], title: "Sketch", what: "Opens sketch tools. A new sketch starts on the flat sheet.", steps: ["Click Sketch.", "Draw, then use Finish to make a solid."] },
   { keys: ["flat sketch"], title: "Flat sketch", what: "Draws on the flat sheet.", steps: ["Click Flat sketch.", "The sheet fills the view."] },
-  { keys: ["3d sketch"], title: "3D sketch", what: "Draws on the part in the 3D view.", steps: ["Click 3D sketch.", "Click it again to look straight at the face."] },
+  { keys: ["view in 3d", "3d sketch"], title: "View in 3D", what: "Draws on the part in the 3D view.", steps: ["Click View in 3D.", "Click it again to look straight at the face."] },
   { keys: ["box", "cylinder", "sphere", "cone", "pyramid", "triangle", "text", "torus", "tube", "tube / ring", "gear", "thread"], title: "Shape", what: "Adds that solid to the workplane.", steps: ["Click the shape.", "It lands on the bed.", "Use the inspector or the handles to change its size."] },
 ];
 
@@ -200,7 +200,7 @@ const SKETCH_GUIDE_KEYS = new Set([
   "sketch-chamfer", "trim", "sketch-mirror", "erase", "bend", "smooth", "sketch-linear", "sketch-circular",
   "lineweight", "image", "extrude", "revolve", "sweep", "cancel", "dimension", "coincident", "horizontal",
   "vertical", "equal", "parallel", "right angle", "tangent", "midpoint", "concentric", "fix", "symmetry",
-  "flat sketch", "3d sketch",
+  "flat sketch", "view in 3d", "3d sketch",
 ]);
 const ANYWHERE_GUIDE_KEYS = new Set([
   "sage", "undo", "redo", "history", "exit full screen", "import", "save", "save as", "make a guide", "save as guide", "export",

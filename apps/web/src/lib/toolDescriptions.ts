@@ -173,7 +173,7 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   { key: "geometryMode", label: "Geometry mode", category: "Modes" },
   { key: "sketchMode", label: "Sketch mode", category: "Modes" },
   { key: "flatSketch", label: "Flat sketch", category: "Modes" },
-  { key: "sketch3dView", label: "3D sketch", category: "Modes" },
+  { key: "sketch3dView", label: "View in 3D", category: "Modes" },
   // Sketch
   { key: "line", label: "Line", category: "Sketch" },
   { key: "bezier", label: "Bezier", category: "Sketch" },
