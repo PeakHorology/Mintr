@@ -1,5 +1,6 @@
 import type { EditorHistoryEntry } from "@/lib/editorHistory";
 import { buildPeakcadDocument, serializePeakcadDocument, type PeakcadProjectMeta } from "@/lib/peakcadDocument";
+import type { DesignFont } from "@/lib/customFontStore";
 import {
   PROJECT_RECORD_FORMAT,
   hydrateStoredProjectRecord,
@@ -78,7 +79,7 @@ export type ProjectStoreRequest =
   | ProjectStoreSaveRequest
   | { type: "load"; requestId: number; projectId: string }
   | { type: "delete"; requestId: number; projectId: string }
-  | { type: "serialize"; requestId: number; projectId: string; project: PeakcadProjectMeta };
+  | { type: "serialize"; requestId: number; projectId: string; project: PeakcadProjectMeta; fonts?: DesignFont[] };
 
 export type ProjectStoreSnapshotPayload = {
   revision: number;
@@ -295,7 +296,13 @@ export async function collectUnreferencedBlobsOp(database: IDBDatabase) {
   return deleted;
 }
 
-export async function serializeProjectDocumentOp(database: IDBDatabase, projectId: string, project: PeakcadProjectMeta) {
+/** `fonts` come from the page: the worker cannot see the fonts this computer keeps. */
+export async function serializeProjectDocumentOp(
+  database: IDBDatabase,
+  projectId: string,
+  project: PeakcadProjectMeta,
+  fonts?: DesignFont[],
+) {
   const { record, blobs } = await readStoredRecordWithBlobs(database, projectId);
   if (!record) return null;
   const snapshot = isStoredProjectRecord(record)
@@ -306,6 +313,7 @@ export async function serializeProjectDocumentOp(database: IDBDatabase, projectI
     shapes: snapshot.shapes,
     history: snapshot.history,
     historyIndex: snapshot.historyIndex,
+    fonts,
   });
   return serializePeakcadDocument(document);
 }
@@ -377,7 +385,7 @@ export class ProjectStoreHost {
             this.scheduleCollection();
             return { requestId, type: "deleted" };
           case "serialize":
-            return { requestId, type: "serialized", text: await serializeProjectDocumentOp(database, request.projectId, request.project) };
+            return { requestId, type: "serialized", text: await serializeProjectDocumentOp(database, request.projectId, request.project, request.fonts) };
         }
       } catch (error) {
         return { requestId, type: "error", message: error instanceof Error ? error.message : "Project storage failed" };

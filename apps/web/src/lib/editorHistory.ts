@@ -111,6 +111,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     groupedBaseDepth: shape.groupedBaseDepth,
     groupedBaseHeight: shape.groupedBaseHeight,
     edgeTreatments: shape.edgeTreatments,
+    surfaceTexture: shape.surfaceTexture,
     cadDisplayEdgesVersion: shape.cadDisplayEdgesVersion,
     edgeResizeMode: shape.edgeResizeMode,
     cadBrepLength: shape.cadBrep?.length ?? 0,

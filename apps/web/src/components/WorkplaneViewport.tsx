@@ -176,6 +176,18 @@ import {
 import { prefersReducedMotion } from "@/lib/chromePresence";
 import { hardwareProfile, resolvePixelRatio } from "@/lib/desktopHardware";
 import { projectShapesFingerprint } from "@/lib/editorHistory";
+import {
+  onSurfaceTextureReady,
+  surfaceTexturePreviewFor,
+  surfaceTextureRiseStart,
+  surfaceTextureState,
+  surfaceTextureVersion,
+} from "@/lib/texture/texturedShape";
+import { texturePreviewGeometry, texturePreviewMaterial, textureRiseMaterial, tickTextureRise } from "@/lib/texture/texturePreviewMaterial";
+import { splitCreasesForShading } from "@/lib/texture/textureMesh";
+import { textureChosenFacesMesh, textureHoverFace, texturePictureGhost } from "@/lib/texture/textureGuides";
+import { pointOnStamp } from "@/lib/texture/texturedShape";
+import { normalizeSurfaceTexture } from "@/lib/texture/surfaceTexture";
 import { endShapeAssetDrag, getShapeAssetDrag } from "@/lib/shapeAssetDrag";
 import { makeShapeFromAsset } from "@/lib/shapeCatalog";
 import { createThreadShape } from "@/lib/threadShape";
@@ -395,6 +407,14 @@ export type WorkplaneViewportProps = {
   faceSnapSource?: { shapeId: string; point: [number, number, number]; normal: [number, number, number] } | null;
   onFaceSnapPick?: (pick: { shapeId: string; point: [number, number, number]; normal: [number, number, number] }) => void;
   faceSnapMotionRef?: MutableRefObject<((shapeId: string, pose: FaceMatePose, done: () => void) => void) | null>;
+  /**
+   * While texturing: the part as it looks with the texture being set up, and what a click on it
+   * does. Faces shows the chosen faces and the one under the mouse; place shows a faint copy of
+   * the picture where a click would put it, and a drag moves it.
+   */
+  textureGuide?: { shape: WorkplaneShape; mode: "faces" | "place" } | null;
+  /** Scroll over the part while placing a picture. True when it changed the picture, so the view does not zoom. */
+  onTextureWheel?: (pick: { shapeId: string; point: [number, number, number]; normal: [number, number, number] }, deltaY: number) => boolean;
   /** Gold plane showing where Split will cut. */
   splitPlane?: {
     origin: [number, number, number];
@@ -1244,6 +1264,15 @@ function preciseMeshHits(state: ThreeState, targets: THREE.Object3D[]) {
       // Overlays opt out with an empty raycast. Dense imports otherwise answer with
       // their bounding box, which selects the larger shape and blocks empty clicks.
       if (child.raycast.length === 0) return;
+      // A textured part answers from its smooth body: quicker, and a click reads the face, not a bump.
+      const pickGeometry = child.userData.pickGeometry as THREE.BufferGeometry | undefined;
+      if (pickGeometry) {
+        const shown = child.geometry;
+        child.geometry = pickGeometry;
+        raycastMesh.call(child, state.raycaster, hits);
+        child.geometry = shown;
+        return;
+      }
       if (geometryTriangleCount(child.geometry) >= PICK_INDEX_TRIANGLE_MIN) {
         raycastIndexedMesh(child, state.raycaster, hits);
         return;
@@ -2650,6 +2679,8 @@ export function WorkplaneViewport({
   faceSnapActive = false,
   faceSnapSource = null,
   onFaceSnapPick,
+  textureGuide = null,
+  onTextureWheel,
   splitPlane = null,
   faceSnapMotionRef,
   inspectorDock,
@@ -2742,6 +2773,14 @@ export function WorkplaneViewport({
   onDropSurfacePickRef.current = onDropSurfacePick;
   const faceSnapSourceRef = useRef(faceSnapSource);
   faceSnapSourceRef.current = faceSnapSource;
+  const textureGuideRef = useRef(textureGuide);
+  textureGuideRef.current = textureGuide;
+  const onTextureWheelRef = useRef(onTextureWheel);
+  onTextureWheelRef.current = onTextureWheel;
+  /** The pointer dragging a placed picture, and the last place the mouse was over the view. */
+  const textureDragRef = useRef<number | null>(null);
+  const textureDragFrameRef = useRef<number | null>(null);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const alignReferenceShapesRef = useRef(alignReferenceShapes);
   const mirrorReferenceShapesRef = useRef(mirrorReferenceShapes);
   const selectedIdsRef = useRef(selectedIds);
@@ -3350,6 +3389,12 @@ export function WorkplaneViewport({
     startApplyFlash(threeRef.current, applyFlash.ids);
   }, [applyFlash]);
 
+  // A texture finishes building in the background; show it as soon as it is ready.
+  useEffect(() => onSurfaceTextureReady(() => {
+    rebuildShapes(threeRef.current, shapesRef.current, renderSelectionIds(), !transformRef.current && !dragRef.current);
+    if (threeRef.current) threeRef.current.needsRender = true;
+  }), [renderSelectionIds]);
+
   useEffect(() => {
     modifierActiveRef.current = modifierActive;
     modifierPreserveSelectionRef.current = modifierPreserveSelection;
@@ -3596,6 +3641,7 @@ export function WorkplaneViewport({
       // The sketch tween owns the camera. OrbitControls.update() would apply leftover
       // spherical delta / damping and yank the pose back toward the pre-sketch orbit.
       const controlsChanged = state.cameraTween ? false : state.controls.update();
+      if (tickTextureRise(now)) state.needsRender = true;
       // Stay in the loop for the still frame that republishes the overlays.
       // That frame has no controls change, but the camera move has not been cleared yet.
       if (!controlsChanged && !state.needsRender && !state.wasCameraMoving) {
@@ -5060,6 +5106,30 @@ export function WorkplaneViewport({
     const state = threeRef.current;
     if (!state) return;
     const face = pickShapeFaceAt(clientX, clientY);
+    const guide = textureGuideRef.current;
+    if (guide) {
+      // Texturing shows its own guides on the part, and nothing on other parts.
+      syncFaceSnapHighlight(state, FACE_SNAP_HOVER_NAME, null, null, 0);
+      const onPart = face && face.shapeId === guide.shape.id ? face : null;
+      if (!onPart) {
+        syncTextureHelper(state, TEXTURE_HOVER_NAME, null, null);
+        return;
+      }
+      if (guide.mode === "faces") {
+        const hover = textureHoverFace(guide.shape, onPart.point, onPart.normal);
+        syncTextureHelper(state, TEXTURE_HOVER_NAME, hover?.key ?? null, hover?.build ?? null);
+        return;
+      }
+      const texture = normalizeSurfaceTexture(guide.shape.surfaceTexture);
+      // Over the picture already placed, the picture itself shows; a scroll there resizes it.
+      if (textureDragRef.current === null && pointOnStamp(guide.shape, texture, onPart.point)) {
+        syncTextureHelper(state, TEXTURE_HOVER_NAME, null, null);
+        return;
+      }
+      const key = `ghost|${onPart.point.map((value) => value.toFixed(3)).join(",")}|${onPart.normal.map((value) => value.toFixed(3)).join(",")}|${texture.spacing}|${texture.angle}|${texture.depth}|${texture.image?.data.length ?? 0}`;
+      syncTextureHelper(state, TEXTURE_HOVER_NAME, key, () => texturePictureGhost(guide.shape, texture, onPart.point, onPart.normal));
+      return;
+    }
     const locked = faceSnapSourceRef.current;
     const sameSide = Boolean(face && locked && face.shapeId === locked.shapeId && face.normal.every((value, index) => value === locked.normal[index]));
     const dropBlocked = Boolean(dropSurfaceActiveRef.current && face && selectedIdsRef.current.includes(face.shapeId));
@@ -5072,7 +5142,41 @@ export function WorkplaneViewport({
     const state = threeRef.current;
     if (!state) return;
     syncFaceSnapHighlight(state, FACE_SNAP_HOVER_NAME, null, null, 0);
+    syncTextureHelper(state, TEXTURE_HOVER_NAME, null, null);
   }, []);
+
+  // The faces chosen so far stay tinted, and the guide under the mouse follows each change.
+  useEffect(() => {
+    const state = threeRef.current;
+    if (!state) return;
+    const shape = textureGuide?.mode === "faces" ? textureGuide.shape : null;
+    const texture = shape ? normalizeSurfaceTexture(shape.surfaceTexture) : null;
+    const key = shape && texture
+      ? `chosen|${shape.id}|${JSON.stringify(texture.picks)}|${texture.depth}|${texture.direction}|${shape.x},${shape.z},${shape.elevation ?? 0},${shape.rotation},${shape.rotationX ?? 0},${shape.rotationZ ?? 0}`
+      : null;
+    syncTextureHelper(state, TEXTURE_CHOSEN_NAME, key, shape ? () => textureChosenFacesMesh(shape) : null);
+    const pointer = lastPointerRef.current;
+    if (textureGuide && pointer) updateFaceSnapHover(pointer.x, pointer.y);
+    else syncTextureHelper(state, TEXTURE_HOVER_NAME, null, null);
+    state.needsRender = true;
+  }, [textureGuide, updateFaceSnapHover]);
+
+  // Scrolling over a placed picture resizes it; anywhere else the view zooms as usual.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onWheel = (event: WheelEvent) => {
+      const guide = textureGuideRef.current;
+      if (guide?.mode !== "place" || !onTextureWheelRef.current) return;
+      const face = pickShapeFaceAt(event.clientX, event.clientY);
+      if (!face || face.shapeId !== guide.shape.id) return;
+      if (!onTextureWheelRef.current(face, event.deltaY)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    host.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => host.removeEventListener("wheel", onWheel, { capture: true });
+  }, [pickShapeFaceAt]);
 
   useEffect(() => {
     const state = threeRef.current;
@@ -5222,6 +5326,13 @@ export function WorkplaneViewport({
         event.preventDefault();
         const face = pickShapeFaceAt(event.clientX, event.clientY);
         if (face) onFaceSnapPickRef.current?.(face);
+        // Pressing on the part while placing a picture puts it there, and dragging moves it.
+        const guide = textureGuideRef.current;
+        if (face && guide?.mode === "place" && face.shapeId === guide.shape.id) {
+          textureDragRef.current = event.pointerId;
+          host.setPointerCapture(event.pointerId);
+          state.controls.enabled = false;
+        }
         return;
       }
       const rect = (threeRef.current ?? state).renderer.domElement.getBoundingClientRect();
@@ -5605,6 +5716,20 @@ export function WorkplaneViewport({
         publishSketchMeasure(sketchSession);
         return;
       }
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
+      if (textureDragRef.current === event.pointerId) {
+        // Once a frame is plenty: each move rebuilds the picture's preview.
+        if (textureDragFrameRef.current === null) {
+          const x = event.clientX;
+          const y = event.clientY;
+          textureDragFrameRef.current = window.requestAnimationFrame(() => {
+            textureDragFrameRef.current = null;
+            const guide = textureGuideRef.current;
+            const face = pickShapeFaceAt(x, y);
+            if (guide && face && face.shapeId === guide.shape.id) onFaceSnapPickRef.current?.(face);
+          });
+        }
+      }
       if (faceSnapActiveRef.current) {
         updateFaceSnapHover(event.clientX, event.clientY);
       }
@@ -5768,6 +5893,7 @@ export function WorkplaneViewport({
   );
 
   const handlePointerLeave = useCallback(() => {
+    lastPointerRef.current = null;
     clearFaceSnapHover();
     if (shapeHoverFrameRef.current !== null) {
       window.cancelAnimationFrame(shapeHoverFrameRef.current);
@@ -5783,6 +5909,10 @@ export function WorkplaneViewport({
   }, [clearModifierEdgeHover, clearSketchFaceHover]);
 
   const handleLostPointerCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (textureDragRef.current === event.pointerId) {
+      textureDragRef.current = null;
+      if (threeRef.current) threeRef.current.controls.enabled = true;
+    }
     const marquee = marqueeRef.current;
     if (marquee) {
       let hostStillCapturing = false;
@@ -5806,6 +5936,12 @@ export function WorkplaneViewport({
 
   const finishDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (textureDragRef.current === event.pointerId) {
+        textureDragRef.current = null;
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        if (threeRef.current) threeRef.current.controls.enabled = true;
+        return;
+      }
       const pushPullDrag = pushPullDragRef.current;
       if (pushPullDrag && event.pointerId === pushPullDrag.pointerId) {
         const live = threeRef.current;
@@ -7258,6 +7394,37 @@ function stopCameraCoast(controls: OrbitControls) {
 
 const FACE_SNAP_HOVER_NAME = "FaceSnapHover";
 const FACE_SNAP_LOCK_NAME = "FaceSnapLock";
+const TEXTURE_HOVER_NAME = "TextureHover";
+const TEXTURE_CHOSEN_NAME = "TextureChosen";
+
+/** Shows one texture guide by name, rebuilding it only when its key changes. Null clears it. */
+function syncTextureHelper(
+  state: ThreeState,
+  name: string,
+  key: string | null,
+  build: (() => THREE.Object3D | null) | null,
+) {
+  const existing = state.helperLayer.getObjectByName(name);
+  if (existing && key !== null && existing.userData.guideKey === key) return;
+  if (existing) {
+    state.helperLayer.remove(existing);
+    existing.traverse((child) => {
+      if (!(child instanceof THREE.Mesh || child instanceof THREE.Line)) return;
+      child.geometry.dispose();
+      // The picture on a ghost is shared, so only the material goes.
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((material) => material.dispose());
+    });
+    state.needsRender = true;
+  }
+  if (key === null || !build) return;
+  const object = build();
+  if (!object) return;
+  object.name = name;
+  object.userData.guideKey = key;
+  state.helperLayer.add(object);
+  state.needsRender = true;
+}
 
 function clearNamedHelper(state: ThreeState, name: string) {
   const existing = state.helperLayer.getObjectByName(name);
@@ -8231,7 +8398,8 @@ function scheduleCutPreviewOverlays(state: ThreeState, shapes: WorkplaneShape[])
 
 function shapeRenderFingerprint(shape: WorkplaneShape, showEdges: boolean) {
   const quality = getActiveDisplayQuality();
-  return `${projectShapesFingerprint([shape])}|edges:${showEdges ? 1 : 0}${shapeTessellationFingerprint(shape, quality)}`;
+  const texture = shape.surfaceTexture ? `|tex:${surfaceTextureVersion()}` : "";
+  return `${projectShapesFingerprint([shape])}|edges:${showEdges ? 1 : 0}${shapeTessellationFingerprint(shape, quality)}${texture}`;
 }
 
 /** Pose lives on the Object3D. Selection only changes the outline, not the mesh. */
@@ -11082,6 +11250,30 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
   const size = Math.min(width, depth);
   const height = shape.height;
 
+  // A textured part shows its textured triangles once they are built. Until then the plain body
+  // is shaded with the pattern, so a change shows the moment it is made.
+  if (!shape.hole && !shape.construction && shape.surfaceTexture) {
+    const texture = surfaceTextureState(shape);
+    const preview = surfaceTexturePreviewFor(shape);
+    if (texture.status === "ready" || preview) {
+      group.userData.surfaceTextured = true;
+      const body = preview ? texturePreviewDisplayGeometry(group, shape, preview) : null;
+      if (texture.status === "ready") {
+        // A texture that has just finished rises out of the surface instead of popping in.
+        const riseStart = surfaceTextureRiseStart(texture.key);
+        addMesh(group, texturedDisplayGeometry(group, shape, texture.key, texture.result), riseStart === null ? material : textureRiseMaterial(material, riseStart), shape);
+        const shown = group.children[group.children.length - 1];
+        if (body && shown) shown.userData.pickGeometry = body;
+      } else if (body && preview) {
+        addMesh(group, body, texturePreviewMaterial(material, preview.texture, preview.layout), shape);
+      }
+      group.traverse((child) => {
+        child.userData.shapeId = shape.id;
+      });
+      return group;
+    }
+  }
+
   switch (shape.kind) {
     case "box":
       addMesh(
@@ -11209,6 +11401,126 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
   return group;
 }
 
+const texturedGeometryCache = new Map<string, THREE.BufferGeometry>();
+const TEXTURED_GEOMETRY_CACHE_SIZE = 16;
+
+/**
+ * Textured triangles come in the part's posed frame (world turn, centred on the part).
+ * The group turns and mirrors them again, so undo that here; addMesh then lowers the mesh by
+ * half the height, so lift it by the same.
+ */
+function texturedDisplayGeometry(
+  group: THREE.Group,
+  shape: WorkplaneShape,
+  key: string,
+  result: { positions: Float32Array; indices: Uint32Array; basePositions: Float32Array },
+) {
+  const cacheKey = `${key}|${group.rotation.x},${group.rotation.y},${group.rotation.z}|${group.scale.x},${group.scale.y},${group.scale.z}|${shape.height}`;
+  const cached = texturedGeometryCache.get(cacheKey);
+  if (cached) return cached;
+  const quaternion = new THREE.Quaternion().setFromEuler(group.rotation);
+  const toLocal = new THREE.Matrix4().compose(new THREE.Vector3(), quaternion, group.scale).invert();
+  const unturn = quaternion.clone().invert();
+  // Sharp edges keep their own facing on each side, so shading does not smear across them.
+  const shaded = splitCreasesForShading(result);
+  const positions = new Float32Array(shaded.positions.length);
+  const normals = new Float32Array(shaded.normals.length);
+  const bases = new Float32Array(shaded.positions.length);
+  const point = new THREE.Vector3();
+  const base = result.basePositions;
+  for (let i = 0; i < positions.length; i += 3) {
+    point.set(shaded.positions[i], shaded.positions[i + 1], shaded.positions[i + 2]).applyMatrix4(toLocal);
+    positions[i] = point.x;
+    positions[i + 1] = point.y + shape.height / 2;
+    positions[i + 2] = point.z;
+    const source = shaded.sources[i / 3] * 3;
+    point.set(base[source], base[source + 1], base[source + 2]).applyMatrix4(toLocal);
+    bases[i] = point.x;
+    bases[i + 1] = point.y + shape.height / 2;
+    bases[i + 2] = point.z;
+    point.set(shaded.normals[i], shaded.normals[i + 1], shaded.normals[i + 2]).applyQuaternion(unturn).multiply(group.scale);
+    normals[i] = point.x;
+    normals[i + 1] = point.y;
+    normals[i + 2] = point.z;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  // Where each point sat before the texture moved it, for the texture rising into place.
+  geometry.setAttribute("texBase", new THREE.BufferAttribute(bases, 3));
+  // A mirror flips the triangles inside out; turn them back so the outside faces out.
+  const flipped = group.scale.x * group.scale.y * group.scale.z < 0;
+  const indices = shaded.indices;
+  if (flipped) {
+    for (let i = 0; i < indices.length; i += 3) {
+      const second = indices[i + 1];
+      indices[i + 1] = indices[i + 2];
+      indices[i + 2] = second;
+    }
+  }
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.userData.keepNormals = true;
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  geometry.userData.cached = true;
+  texturedGeometryCache.set(cacheKey, geometry);
+  while (texturedGeometryCache.size > TEXTURED_GEOMETRY_CACHE_SIZE) {
+    const oldest = texturedGeometryCache.keys().next().value;
+    if (oldest === undefined) break;
+    texturedGeometryCache.get(oldest)?.dispose();
+    texturedGeometryCache.delete(oldest);
+  }
+  return geometry;
+}
+
+/** The plain body for the quick texture preview, in the group's own frame. */
+function texturePreviewDisplayGeometry(
+  group: THREE.Group,
+  shape: WorkplaneShape,
+  preview: { key: string; positions: Float32Array; normals: Float32Array; smooth: Float32Array },
+) {
+  const cacheKey = `preview|${preview.key}|${group.rotation.x},${group.rotation.y},${group.rotation.z}|${group.scale.x},${group.scale.y},${group.scale.z}|${shape.height}`;
+  const cached = texturedGeometryCache.get(cacheKey);
+  if (cached) return cached;
+  const quaternion = new THREE.Quaternion().setFromEuler(group.rotation);
+  const toLocal = new THREE.Matrix4().compose(new THREE.Vector3(), quaternion, group.scale).invert();
+  const unturn = quaternion.clone().invert();
+  const flipped = group.scale.x * group.scale.y * group.scale.z < 0;
+  const count = preview.positions.length / 3;
+  const positions = new Float32Array(count * 3);
+  const normals = new Float32Array(count * 3);
+  const posed = { positions: new Float32Array(count * 3), normals: new Float32Array(count * 3), smooth: new Float32Array(count) };
+  const point = new THREE.Vector3();
+  for (let corner = 0; corner < count; corner += 1) {
+    // A mirror flips the triangles inside out; swapping two corners turns them back.
+    const k = corner % 3;
+    const from = flipped && k > 0 ? corner - k + (3 - k) : corner;
+    point.set(preview.positions[from * 3], preview.positions[from * 3 + 1], preview.positions[from * 3 + 2]).applyMatrix4(toLocal);
+    positions[corner * 3] = point.x;
+    positions[corner * 3 + 1] = point.y + shape.height / 2;
+    positions[corner * 3 + 2] = point.z;
+    point.set(preview.normals[from * 3], preview.normals[from * 3 + 1], preview.normals[from * 3 + 2]).applyQuaternion(unturn).multiply(group.scale);
+    normals[corner * 3] = point.x;
+    normals[corner * 3 + 1] = point.y;
+    normals[corner * 3 + 2] = point.z;
+    for (let axis = 0; axis < 3; axis += 1) {
+      posed.positions[corner * 3 + axis] = preview.positions[from * 3 + axis];
+      posed.normals[corner * 3 + axis] = preview.normals[from * 3 + axis];
+    }
+    posed.smooth[corner] = preview.smooth[from];
+  }
+  const geometry = texturePreviewGeometry(positions, normals, posed);
+  geometry.userData.cached = true;
+  texturedGeometryCache.set(cacheKey, geometry);
+  while (texturedGeometryCache.size > TEXTURED_GEOMETRY_CACHE_SIZE) {
+    const oldest = texturedGeometryCache.keys().next().value;
+    if (oldest === undefined) break;
+    texturedGeometryCache.get(oldest)?.dispose();
+    texturedGeometryCache.delete(oldest);
+  }
+  return geometry;
+}
+
 function createImagePlateMaterials(shape: WorkplaneShape, sideMaterial: THREE.MeshStandardMaterial, onTextureReady?: () => void) {
   const sideMaterials = Array.from({ length: 5 }, (_, index) => (index === 0 ? sideMaterial : sideMaterial.clone()));
   const topMaterial = new THREE.MeshStandardMaterial({
@@ -11303,7 +11615,8 @@ function addMesh(
   const displayTriangles = displayTriangleCount(shape);
   mesh.castShadow = !shape.hole && !shape.construction && displayTriangles <= hardwareProfile().shadowCasterTriangleLimit;
   mesh.receiveShadow = false;
-  if (importedTriangles > LARGE_PICK_TRIANGLE_CAP) {
+  const texturedTriangles = group.userData.surfaceTextured ? (prepared.index?.count ?? 0) / 3 : 0;
+  if (importedTriangles > LARGE_PICK_TRIANGLE_CAP || texturedTriangles > LARGE_PICK_TRIANGLE_CAP) {
     mesh.raycast = raycastImportedBounds;
   }
   if (position) {
@@ -11317,6 +11630,8 @@ function addMesh(
     mesh.scale.copy(scale);
   }
   group.add(mesh);
+  // Crease lines on a texture would be every bump; the texture shows its own shape.
+  if (group.userData.surfaceTextured) return;
 
   // Sharp solids keep idle edge accents; curved solids only outline when selected so facets stay quiet.
   const curvedSurface =
@@ -11466,7 +11781,8 @@ const patternPrimitiveCache = new Map<string, THREE.BufferGeometry>();
 
 function patternGeometryKey(shape: WorkplaneShape) {
   const feature = shape.patternFeature;
-  if (!feature) return null;
+  // A textured copy has its own triangles, posed where it stands.
+  if (!feature || shape.surfaceTexture) return null;
   const mesh = shape.importedMesh;
   return [
     feature.sourceId,

@@ -67,7 +67,7 @@ import {
   shapeExportQualityTitle,
 } from "@/lib/stepQuality";
 import { resolveEditableSketchShape } from "@/lib/sketch";
-import { DEFAULT_TEXT_FONT, TEXT_FONT_OPTIONS } from "@/lib/textFonts";
+import { DEFAULT_TEXT_FONT, textFontOptions } from "@/lib/textFonts";
 import { measureWorkplaneShape, type ShapeMeasure } from "@/lib/shapeMeasure";
 import type {
   GridfinityBaseplateSpec,
@@ -374,6 +374,12 @@ function gridfinityBaseplateProperties(shape: WorkplaneShape, onUpdate: ShapeIns
     connector("front"),
     connector("back"),
   ];
+}
+
+/** Mintr's fonts and the ones added in Settings; a font this computer lacks still shows, so it is not changed by accident. */
+function fontChoices(current: string): string[] {
+  const options = textFontOptions();
+  return options.includes(current) ? options : [...options, current];
 }
 
 function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate, sceneShapes: readonly WorkplaneShape[] = []): ShapePropertyConfig[] {
@@ -823,7 +829,7 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
           onUpdate({ text: nextText, width: nextWidth, size: nextWidth });
         },
       },
-      { type: "select", label: "Font", value: shape.font ?? DEFAULT_TEXT_FONT, options: [...TEXT_FONT_OPTIONS], onChange: (font) => onUpdate({ font }) },
+      { type: "select", label: "Font", value: shape.font ?? DEFAULT_TEXT_FONT, options: fontChoices(shape.font ?? DEFAULT_TEXT_FONT), onChange: (font) => onUpdate({ font }) },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 40, onChange: setHeight },
       {
         label: "Up/Down",

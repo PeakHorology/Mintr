@@ -1,6 +1,7 @@
 import type { EditorHistoryEntry } from "@/lib/editorHistory";
 import { bakedImportedBrepStep } from "@/lib/importedBrepSource";
 import { meshGeometryKey, sampledArraySignature, textContentKey } from "@/lib/meshContentHash";
+import type { DesignFont } from "@/lib/customFontStore";
 import type { PeakcadProjectMeta } from "@/lib/peakcadDocument";
 import {
   dehydrateHistoryEntry,
@@ -429,8 +430,12 @@ export async function deleteStoredProject(projectId: string) {
 }
 
 /** `.peakcad` text for the stored project, built off the main thread. Null when nothing is stored. */
-export async function serializeStoredProject(projectId: string, project: PeakcadProjectMeta): Promise<string | null> {
-  const response = await withWorkerRetry(() => send({ type: "serialize", projectId, project }));
+export async function serializeStoredProject(
+  projectId: string,
+  project: PeakcadProjectMeta,
+  fonts?: DesignFont[],
+): Promise<string | null> {
+  const response = await withWorkerRetry(() => send({ type: "serialize", projectId, project, ...(fonts?.length ? { fonts } : {}) }));
   if (response.type !== "serialized") unwrapError(response);
   return response.text;
 }

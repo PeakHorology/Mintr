@@ -2,6 +2,7 @@ import { hydrateClipboardShape, hydrateHistoryMeshBlob, jsonSafeShape } from "@/
 import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import type { EditorHistoryEntry, EditorHistoryMeshBlob, EditorHistoryMeshVault } from "@/lib/editorHistory";
 import { isGuideAuthorColor, type MintrGuide } from "@/lib/mintrGuide";
+import { designFontsFor, normalizeDesignFonts, type DesignFont } from "@/lib/customFontStore";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 /** Inside the file this stays "peakcad". Renaming it would reject every saved project. */
@@ -43,6 +44,8 @@ export type PeakcadDocument = {
   historyIndex?: number;
   /** Present on a .mintrguide. Older Mintr opens the finished part and drops this on save. */
   guide?: MintrGuide;
+  /** The added fonts its text uses, so it looks the same on a computer without them. Mintr's own fonts are not written. */
+  fonts?: DesignFont[];
 };
 
 const ACCENTS = new Set<PeakcadAccent>(["cyan", "green", "gold", "red"]);
@@ -186,8 +189,13 @@ export function buildPeakcadDocument(input: {
   historyIndex?: number;
   savedAt?: number;
   guide?: MintrGuide;
+  /** The fonts this computer has added; only the ones the design uses are written. */
+  fonts?: readonly DesignFont[];
 }): PeakcadDocument {
   const shapes = input.shapes.map(jsonSafeShape);
+  const fonts = input.fonts?.length
+    ? designFontsFor([...input.shapes, ...(input.history ?? []).flatMap((entry) => entry.shapes)], input.fonts)
+    : [];
   return {
     format: PEAKCAD_FORMAT,
     version: PEAKCAD_DOCUMENT_VERSION,
@@ -203,6 +211,7 @@ export function buildPeakcadDocument(input: {
     history: input.history ? dedupeHistoryMeshVaults(input.history).map(jsonSafeHistoryEntry) : undefined,
     historyIndex: input.historyIndex,
     guide: input.guide,
+    ...(fonts.length ? { fonts } : {}),
   };
 }
 
@@ -440,6 +449,7 @@ export function parsePeakcadDocument(raw: string): PeakcadDocument {
   const accent = ACCENTS.has(project.accent as PeakcadAccent) ? (project.accent as PeakcadAccent) : "cyan";
   const now = Date.now();
   const shapes = (record.shapes as WorkplaneShape[]).map((shape) => hydrateClipboardShape(shape));
+  const fonts = normalizeDesignFonts(record.fonts);
   const history = Array.isArray(record.history)
     ? resolveHistoryMeshVaults((record.history as EditorHistoryEntry[]).map((entry) => hydrateHistoryEntry(entry)))
     : undefined;
@@ -465,6 +475,7 @@ export function parsePeakcadDocument(raw: string): PeakcadDocument {
     history,
     historyIndex: typeof record.historyIndex === "number" ? record.historyIndex : undefined,
     guide: parseMintrGuide(record.guide),
+    ...(fonts.length ? { fonts } : {}),
   };
 }
 

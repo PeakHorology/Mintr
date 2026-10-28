@@ -88,6 +88,7 @@ import {
 } from "@/lib/folderLock";
 import { decryptPeakcadText, encryptPeakcadText, isEncryptedPeakcadText } from "@/lib/peakcadFileLock";
 import { deleteStoredProject, loadStoredProject, saveStoredProject, serializeStoredProject } from "@/lib/projectStoreClient";
+import { designFontsFor, installDesignFonts, readCustomFonts } from "@/lib/customFontStore";
 import { SageHomePanel } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
 
@@ -863,7 +864,13 @@ function buildDocumentForProject(project: DashboardProject, entry: ProjectShapeC
     shapes: entry.shapes,
     history: entry.history,
     historyIndex: entry.historyIndex,
+    fonts: readCustomFonts(),
   });
+}
+
+/** The added fonts a project uses, handed to the store worker, which cannot read them itself. */
+function projectDesignFonts(entry: ProjectShapeCacheEntry) {
+  return designFontsFor([...entry.shapes, ...(entry.history ?? []).flatMap((step) => step.shapes)], readCustomFonts());
 }
 
 /**
@@ -878,7 +885,7 @@ async function serializeProjectForDisk(project: DashboardProject, entry: Project
   // notice. Serialize the in-memory entry ourselves in that case.
   const stored = await saveProjectShapes(project.id, entry, { fullHistory: true }).then(() => true, () => false);
   if (!stored) return serializePeakcadDocument(buildDocumentForProject(project, entry));
-  const text = await serializeStoredProject(project.id, peakcadProjectMeta(project, entry.shapes.length)).catch(() => null);
+  const text = await serializeStoredProject(project.id, peakcadProjectMeta(project, entry.shapes.length), projectDesignFonts(entry)).catch(() => null);
   return text ?? serializePeakcadDocument(buildDocumentForProject(project, entry));
 }
 
@@ -1616,6 +1623,8 @@ export default function Home() {
   const applyOpenedDocument = useCallback(
     (opened: { document: PeakcadDocument; path: string | null }, shouldOpen: boolean) => {
       const { document, path } = opened;
+      // Fonts the design brought with it join this computer's fonts, so its text looks as it was made.
+      if (document.fonts?.length) installDesignFonts(document.fonts, document.project.name);
       if (document.guide && document.history?.length) {
         const id = playbackProjectId(document.project.id);
         const end = Math.min(document.history.length - 1, Math.max(0, document.historyIndex ?? document.history.length - 1));
@@ -2061,7 +2070,7 @@ export default function Home() {
       const project = projectsRef.current.find((item) => item.id === snapshot.projectId);
       if (project?.filePath && hasDesktopProjectFiles()) {
         const meta = peakcadProjectMeta({ ...project, updatedAt: revision, revision }, snapshot.shapes.length);
-        const plain = (stored ? await serializeStoredProject(snapshot.projectId, meta).catch(() => null) : null)
+        const plain = (stored ? await serializeStoredProject(snapshot.projectId, meta, projectDesignFonts(entry)).catch(() => null) : null)
           ?? serializePeakcadDocument(buildDocumentForProject({ ...project, updatedAt: revision, revision }, entry));
         const text = await sealPeakcadText({ ...project, updatedAt: revision, revision }, plain, false);
         if (text) {
@@ -2192,6 +2201,7 @@ export default function Home() {
         history: session.history,
         historyIndex: end,
         guide: session.guide,
+        fonts: readCustomFonts(),
       }),
       path: null,
     }, true);

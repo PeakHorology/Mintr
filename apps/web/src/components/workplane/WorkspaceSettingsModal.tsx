@@ -1,6 +1,7 @@
 "use client";
 
-import { Bot, Check, FolderDown, GraduationCap, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, SlidersHorizontal, X } from "lucide-react";
+import { Bot, Check, FolderDown, GraduationCap, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, SlidersHorizontal, Type, X } from "lucide-react";
+import { FontSettings } from "./FontSettings";
 import { Printer3dIcon, ToolbarSageIcon } from "@/components/icons";
 import { SageHomePanel, SageSettingsSearch } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
@@ -486,6 +487,10 @@ export function WorkspaceSettingsModal({
             <button className={activeSection === "files" ? "active" : ""} aria-current={activeSection === "files" ? "page" : undefined} onClick={() => setActiveSection("files")}>
               <FolderDown size={18} />
               <span>Files</span>
+            </button>
+            <button className={activeSection === "fonts" ? "active" : ""} aria-current={activeSection === "fonts" ? "page" : undefined} onClick={() => setActiveSection("fonts")}>
+              <Type size={18} />
+              <span>Fonts</span>
             </button>
             <button className={activeSection === "hotkeys" ? "active" : ""} aria-current={activeSection === "hotkeys" ? "page" : undefined} onClick={() => setActiveSection("hotkeys")}>
               <Keyboard size={18} />
@@ -1130,6 +1135,8 @@ export function WorkspaceSettingsModal({
                 </>
               ) : null}
 
+              {activeSection === "fonts" ? <FontSettings /> : null}
+
               {activeSection === "tools" ? (
                 <>
                   <div className="workspace-section-heading">
@@ -1338,12 +1345,14 @@ export function WorkspaceSettingsModal({
             <div className="workspace-modal-footer">
               {activeSection === "hotkeys" ? (
                 <span>Hotkeys save as you change them. L is Align in geometry and Line in a sketch; D is Drop vs Dimension.</span>
-              ) : activeSection === "tools" || activeSection === "files" || activeSection === "about" || activeSection === "help" ? (
+              ) : activeSection === "tools" || activeSection === "files" || activeSection === "fonts" || activeSection === "about" || activeSection === "help" ? (
                 <span>
                   {activeSection === "tools"
                     ? "Tool help is a reference only — it does not change project defaults."
                     : activeSection === "help"
                       ? "Your design is not included. A problem report can add a saved crash note."
+                    : activeSection === "fonts"
+                      ? "Fonts are kept on this computer and saved inside the designs that use them."
                     : activeSection === "about"
                       ? "The desktop app also ships LICENSE.txt, THIRD-PARTY-NOTICES.txt, and SOURCE-OFFER.txt in its install folder, and under Help in the menu bar."
                       : "Download folder is remembered on this computer."}

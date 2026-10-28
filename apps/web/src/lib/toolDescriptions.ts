@@ -25,6 +25,7 @@ export const TOOL_DESCRIPTIONS = {
   hole: "Turn the selected shape into a hole. Group it with a solid to cut. Click again to make it a solid.",
   pushPull: "Drag a flat face to grow or shrink the solid. Click Apply to keep it.",
   face: "Click a flat face. Out grows a pad from that face. In cuts a pocket into the body. Inset pulls the outline in from the edges, corner radius rounds it, and depth sets how far the pad or pocket goes.",
+  texture: "Give a part a printable surface texture, from knurl to leather, your own picture or words. Click Texture, then the part. Holes and faces touching other parts stay smooth, and the part stays exact underneath.",
   split: "Cut the selected object in two. A dovetail, plug, snap, or thread can join the pieces, then both sit on the bed.",
   hide: "Hide or show the selected shapes.",
   more: "Open extra tips and selection actions.",
@@ -148,6 +149,7 @@ export const TOOL_INDEX: readonly ToolIndexEntry[] = [
   { key: "hole", label: "Hole", category: "Modify" },
   { key: "pushPull", label: "Push Pull", category: "Modify" },
   { key: "face", label: "Pad/Pocket", category: "Modify" },
+  { key: "texture", label: "Texture", category: "Modify" },
   // File & project
   { key: "import", label: "Import", category: "File & project" },
   { key: "export", label: "Export", category: "File & project" },

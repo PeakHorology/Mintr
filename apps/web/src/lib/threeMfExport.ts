@@ -1,5 +1,5 @@
 import { zipSync, strToU8 } from "fflate";
-import { meshForShape } from "@/lib/editorShapeMesh";
+import { printMeshForShape } from "@/lib/texture/texturedShape";
 import { rewrite3mf } from "@/lib/threeMfPackage";
 import { lookup3mfPackage } from "@/lib/threeMfSource";
 import type { WorkplaneShape } from "@/types/sketchforge";
@@ -138,13 +138,14 @@ function sourceCarrier(shape: WorkplaneShape): WorkplaneShape | null {
  * package so print settings, materials, and other files stay put.
  */
 export function to3mfForShapes(shapes: WorkplaneShape[]): { bytes: Uint8Array; preserved: boolean } {
-  const carrier = shapes.length === 1 ? sourceCarrier(shapes[0]) : null;
+  // A textured part has new triangles, so the imported package no longer matches it.
+  const carrier = shapes.length === 1 && !shapes[0].surfaceTexture ? sourceCarrier(shapes[0]) : null;
   if (carrier) {
     const bytes = rewrite3mf(carrier);
     if (bytes) return { bytes, preserved: true };
   }
   return {
-    bytes: to3mf(shapes.map((shape) => ({ ...meshForShape(shape), color: shape.hole ? undefined : shape.color }))),
+    bytes: to3mf(shapes.map((shape) => ({ ...printMeshForShape(shape), color: shape.hole ? undefined : shape.color }))),
     preserved: false,
   };
 }

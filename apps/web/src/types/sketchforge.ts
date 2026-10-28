@@ -1,3 +1,4 @@
+import type { SurfaceTexture } from "@/lib/texture/surfaceTexture";
 import type { SketchDoc } from "@/lib/sketch/types";
 import type { ThreeMfSourcePackage } from "@/lib/threeMfSource";
 
@@ -421,6 +422,8 @@ export type WorkplaneShape = {
     section?: { profile: SketchProfile; doc?: SketchDoc; standing?: boolean };
   };
   edgeTreatments?: EdgeTreatmentFeature[];
+  /** A finish on the part: the body stays exact, and the textured triangles are rebuilt from it. */
+  surfaceTexture?: SurfaceTexture;
   edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];
   /**
    * Involute gear. Size follows the module and tooth count.

@@ -390,6 +390,17 @@ export function ToolbarSplitIcon(props: IconProps) {
   );
 }
 
+/** A block whose front face carries a diamond knurl. */
+export function ToolbarTextureIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4 6h16v13H4z" />
+      <path d="M4 12.5 10.5 6M4 19l13-13M10.5 19 20 9.5M17 19l3-3" />
+      <path d="M10.5 6 20 15.5M4 6l13 13M4 12.5 10.5 19" />
+    </CadGlyph>
+  );
+}
+
 export function ToolbarHollowIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>

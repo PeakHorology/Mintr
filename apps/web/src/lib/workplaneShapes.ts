@@ -552,6 +552,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.imagePlate === b.imagePlate &&
     a.sketchProfile === b.sketchProfile &&
     a.edgeTreatments === b.edgeTreatments &&
+    a.surfaceTexture === b.surfaceTexture &&
     a.edgeTreatmentHistory === b.edgeTreatmentHistory &&
     a.cadDisplayEdges === b.cadDisplayEdges &&
     a.cadDisplayEdgesVersion === b.cadDisplayEdgesVersion &&

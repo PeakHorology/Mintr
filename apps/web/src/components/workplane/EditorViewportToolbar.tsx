@@ -23,6 +23,7 @@ import {
   ToolbarRedoIcon,
   ToolbarLayFlatIcon,
   ToolbarSnapGridIcon,
+  ToolbarTextureIcon,
   ToolbarTrashIcon,
   ToolbarUngroupIcon,
   ToolbarUndoIcon,
@@ -401,6 +402,8 @@ export function EditorViewportToolbar({
   canAlign,
   canEdgeModify,
   canSplit,
+  textureActive,
+  onTexture,
   faceActive,
   pushPullActive,
   splitActive,
@@ -451,6 +454,8 @@ export function EditorViewportToolbar({
   canAlign: boolean;
   canEdgeModify: boolean;
   canSplit: boolean;
+  textureActive: boolean;
+  onTexture: () => void;
   faceActive: boolean;
   pushPullActive: boolean;
   splitActive: boolean;
@@ -525,6 +530,8 @@ export function EditorViewportToolbar({
       { label: "Push Pull", description: TOOL_DESCRIPTIONS.pushPull, icon: ToolbarPushPullIcon, action: onPushPull, enabled: canEdgeModify, active: pushPullActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Pad/Pocket", description: TOOL_DESCRIPTIONS.face, icon: ToolbarHollowIcon, action: onFace, enabled: canEdgeModify, active: faceActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Split", description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canSplit || splitActive, active: splitActive, disabledReason: canEdgeModify ? "Gridfinity bins stay in one piece" : "Select a single unlocked shape first" },
+      // Works with nothing selected: click Texture, then the part.
+      { label: "Texture", description: TOOL_DESCRIPTIONS.texture, icon: ToolbarTextureIcon, action: onTexture, enabled: true, active: textureActive },
     ],
   };
   const arrangeSection: ToolSection = {

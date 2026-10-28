@@ -37,7 +37,7 @@ export const SETTING_TIPS = {
 export type SettingTipKey = keyof typeof SETTING_TIPS;
 
 export type SettingsSectionId =
-  | "general" | "appearance" | "measurement" | "workplane" | "sketch" | "printing" | "files"
+  | "general" | "appearance" | "measurement" | "workplane" | "sketch" | "printing" | "files" | "fonts"
   | "hotkeys" | "tools" | "tutorials" | "models" | "updates" | "help" | "about";
 
 /** Tab names in the Settings window, in their order. */
@@ -49,6 +49,7 @@ export const SETTINGS_SECTION_LABEL: Record<SettingsSectionId, string> = {
   sketch: "Sketch",
   printing: "Printing",
   files: "Files",
+  fonts: "Fonts",
   hotkeys: "Keyboard shortcuts",
   tools: "Sage",
   tutorials: "Tutorials",

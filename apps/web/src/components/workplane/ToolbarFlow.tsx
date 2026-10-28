@@ -12,6 +12,7 @@ const TOOL_SECTION: Record<string, string> = {
   "Pad/Pocket": "Modify",
   "Push Pull": "Modify",
   Split: "Modify",
+  Texture: "Modify",
   Align: "Arrange",
   Snap: "Arrange",
   "Lay flat": "Arrange",
@@ -81,6 +82,7 @@ export function ToolbarFlow({
         left: anchor.left,
         width: anchor.width,
         ["--toolbar-caret" as string]: `${anchor.caret}px`,
+        ["--toolbar-flow-top" as string]: `${anchor.top}px`,
       } : { visibility: "hidden" }}
     >
       {children}

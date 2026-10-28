@@ -23,12 +23,30 @@ import {
 } from "@/lib/displayTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { sphereTessellation } from "@/lib/sphereTessellation";
-import { DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
+import { addCustomFont, DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
 import {
   ToolbarExportIcon,
   ToolbarImportIcon,
 } from "./icons";
 import { SKETCH_EXTRUDE_PREVIEW_ID, WorkplaneViewport } from "./WorkplaneViewport";
+import {
+  canTextureShape,
+  ensureSurfaceTextures,
+  printMeshForShape,
+  setSurfaceTextureScene,
+  surfaceTexturesReady,
+  textureFaceOf,
+  centredStamp,
+  pointOnStamp,
+} from "@/lib/texture/texturedShape";
+import {
+  defaultSurfaceTexture,
+  MAX_TEXTURE_FACE_PICKS,
+  normalizeSurfaceTexture,
+  SURFACE_TEXTURE_LIMITS,
+  type SurfaceTexture,
+} from "@/lib/texture/surfaceTexture";
+import { facePickFromWorld } from "@/lib/texture/textureFrame";
 import { SketchWorkspace, type SketchMeasurement, type SketchSelection, type SketchTool } from "./SketchWorkspace";
 import { HistoryPanel } from "./workplane/HistoryPanel";
 import { ToolbarFlow } from "./workplane/ToolbarFlow";
@@ -39,6 +57,7 @@ import { PushPullPanel } from "./workplane/PushPullPanel";
 import { ShellPanel } from "./workplane/ShellPanel";
 import { FacePanel } from "./workplane/FacePanel";
 import { SplitPanel } from "./workplane/SplitPanel";
+import { TextureExportNote, TexturePanel } from "./workplane/TexturePanel";
 import { CircularPatternPanel } from "./workplane/CircularPatternPanel";
 import { LinearPatternPanel } from "./workplane/LinearPatternPanel";
 import { PlacementRulerPanel } from "./workplane/PlacementRulerPanel";
@@ -397,6 +416,7 @@ import {
 import { guideMinutes, guidePrompt, guideStartIndex, proposeGuideSteps, type GuideSession, type MintrGuide } from "@/lib/mintrGuide";
 import { applyGuideDraft, readGuideAuthor, readGuideDraft, shrinkPicture, writeGuideAuthor, writeGuideDraft } from "@/lib/guideAuthoring";
 import { buildPeakcadDocument, packMintrGuideText, serializeMintrGuide } from "@/lib/peakcadDocument";
+import { readCustomFonts } from "@/lib/customFontStore";
 import { EMPTY_GUIDE_LOG, compactGuideForFile, syncGuideLog, type GuideLog } from "@/lib/guideLog";
 import { loadGuideLog, saveGuideLogSoon } from "@/lib/guideLogStore";
 import { revealPeakcadFile, saveGuideTextAs } from "@/lib/peakcadFile";
@@ -1633,6 +1653,13 @@ export function SketchForgeEditor({
     joint: CutJoint;
     clearance: number;
   } | null>(null);
+  /** The texture being tried on one part. It shows at once; nothing is saved until Apply. */
+  const [textureSession, setTextureSession] = useState<{
+    shapeId: string;
+    draft: SurfaceTexture;
+    hadTexture: boolean;
+  } | null>(null);
+  const [texturePicking, setTexturePicking] = useState(false);
   const edgeModifierRef = useRef<EdgeModifierSession | null>(null);
   const [circularPattern, setCircularPattern] = useState<CircularPatternSession | null>(null);
   const circularPatternRef = useRef<CircularPatternSession | null>(null);
@@ -2107,6 +2134,8 @@ export function SketchForgeEditor({
     setFaceSnap(null);
     setLayFlat(false);
     setDropSurface(false);
+    setTextureSession(null);
+    setTexturePicking(false);
   }, [invalidateCadModifierSession]);
 
   useEffect(() => {
@@ -2636,6 +2665,15 @@ export function SketchForgeEditor({
     });
     return pads.length > 0 ? next.concat(pads) : next;
   }, [faceBuilds, faceCutPreview, faceSession, viewportShapes]);
+  // Tries the texture on in the view only; nothing is saved until Apply.
+  const textureViewportShapes = useMemo(() => {
+    if (!textureSession) return faceViewportShapes;
+    return faceViewportShapes.map((shape) => shape.id === textureSession.shapeId
+      ? { ...shape, surfaceTexture: textureSession.draft }
+      : shape);
+  }, [faceViewportShapes, textureSession]);
+  // Before the viewport builds a texture, so a face pressed against another part is known to stay smooth.
+  useMemo(() => setSurfaceTextureScene(textureViewportShapes), [textureViewportShapes]);
   const debugState = useMemo(
     () =>
       JSON.stringify({
@@ -8374,6 +8412,73 @@ export function SketchForgeEditor({
     };
   }, [shapes, splitSession]);
 
+  const openTextureSession = useCallback((shape: WorkplaneShape) => {
+    const draft = shape.surfaceTexture ? normalizeSurfaceTexture(shape.surfaceTexture) : defaultSurfaceTexture("knurl");
+    setTexturePicking(false);
+    setTextureSession({ shapeId: shape.id, draft, hadTexture: Boolean(shape.surfaceTexture) });
+    setNotice(shape.surfaceTexture ? "Change the texture, then apply" : "Pick a pattern, then apply");
+  }, []);
+
+  const finishTexture = useCallback((texture: SurfaceTexture | undefined) => {
+    const session = textureSession;
+    if (!session) return;
+    const shape = shapesRef.current.find((entry) => entry.id === session.shapeId);
+    setTextureSession(null);
+    if (!shape || shape.locked) return;
+    commitShapes(
+      shapesRef.current.map((entry) => entry.id === shape.id ? { ...entry, surfaceTexture: texture } : entry),
+      [shape.id],
+      texture ? "Texture" : "Removed texture",
+    );
+    setNotice(texture ? "Texture applied" : "Texture removed");
+  }, [commitShapes, textureSession]);
+
+  const cancelTexture = useCallback(() => {
+    setTextureSession(null);
+    setTexturePicking(false);
+    setNotice("Texture cancelled");
+  }, []);
+
+  useEffect(() => {
+    if (!textureSession && !texturePicking) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelTexture();
+      } else if (event.key === "Enter" && textureSession) {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        if (target?.closest("input, select, textarea, button, [contenteditable='true']")) return;
+        event.preventDefault();
+        finishTexture(textureSession.draft);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cancelTexture, finishTexture, textureSession, texturePicking]);
+
+  const textureTarget = textureSession ? shapes.find((shape) => shape.id === textureSession.shapeId) ?? null : null;
+
+  // What the view helps with while texturing: placing a picture, or choosing faces.
+  const textureGuide = useMemo(() => {
+    if (!textureSession || !textureTarget) return null;
+    const draft = textureSession.draft;
+    const mode: "place" | "faces" | null = draft.pattern === "image" && draft.placement === "once"
+      ? "place"
+      : draft.faces === "picked" ? "faces" : null;
+    return mode ? { shape: { ...textureTarget, surfaceTexture: draft }, mode } : null;
+  }, [textureSession, textureTarget]);
+
+  // Scrolling over a placed picture makes it bigger or smaller instead of zooming.
+  const resizeTextureOnWheel = useCallback((pick: { point: [number, number, number] }, deltaY: number) => {
+    if (textureGuide?.mode !== "place") return false;
+    const draft = normalizeSurfaceTexture(textureGuide.shape.surfaceTexture);
+    if (!pointOnStamp(textureGuide.shape, draft, pick.point)) return false;
+    const factor = Math.min(1.2, Math.max(1 / 1.2, Math.exp(-deltaY * 0.0015)));
+    const spacing = Number(Math.min(SURFACE_TEXTURE_LIMITS.spacing.max, Math.max(SURFACE_TEXTURE_LIMITS.spacing.min, draft.spacing * factor)).toFixed(2));
+    setTextureSession((current) => current ? { ...current, draft: normalizeSurfaceTexture({ ...current.draft, spacing }) } : current);
+    return true;
+  }, [textureGuide]);
+
   useEffect(() => {
     if (!shellSession?.prepared) return;
     const openings = shellSession.openings;
@@ -8423,6 +8528,47 @@ export function SketchForgeEditor({
   }, [clearEditorToolSessions, layFlat]);
 
   const pickFaceSnap = useCallback((pick: { shapeId: string; point: [number, number, number]; normal: [number, number, number] }) => {
+    if (texturePicking) {
+      const shape = shapesRef.current.find((item) => item.id === pick.shapeId);
+      if (!shape || shape.locked) {
+        setNotice(shape?.locked ? "That part is locked" : "Click the part to texture");
+        return;
+      }
+      if (!canTextureShape(shape)) {
+        setNotice("That can't take a texture. Click a solid part.");
+        return;
+      }
+      setSelectedIds([shape.id]);
+      openTextureSession(shape);
+      return;
+    }
+    if (textureSession?.draft.pattern === "image" && textureSession.draft.placement === "once") {
+      const shape = shapesRef.current.find((item) => item.id === textureSession.shapeId);
+      if (!shape) return;
+      if (pick.shapeId !== shape.id) {
+        setNotice(`Click on ${shape.name} to place the ${textureSession.draft.image?.text ? "text" : "picture"}`);
+        return;
+      }
+      const stamp = facePickFromWorld(shape, pick.point, pick.normal);
+      setTextureSession((current) => current ? { ...current, draft: normalizeSurfaceTexture({ ...current.draft, stamp }) } : current);
+      return;
+    }
+    if (textureSession?.draft.faces === "picked") {
+      const shape = shapesRef.current.find((item) => item.id === textureSession.shapeId);
+      if (!shape) return;
+      if (pick.shapeId !== shape.id) {
+        setNotice(`Click a face on ${shape.name}`);
+        return;
+      }
+      const draft = textureSession.draft;
+      const facePick = facePickFromWorld(shape, pick.point, pick.normal);
+      const face = textureFaceOf(shape, facePick);
+      // A second click on a picked face takes it off.
+      const kept = face === null ? draft.picks : draft.picks.filter((entry) => textureFaceOf(shape, entry) !== face);
+      const picks = kept.length < draft.picks.length ? kept : [...draft.picks, facePick].slice(0, MAX_TEXTURE_FACE_PICKS);
+      setTextureSession((current) => current ? { ...current, draft: normalizeSurfaceTexture({ ...current.draft, picks }) } : current);
+      return;
+    }
     if (layFlat) {
       const shape = shapesRef.current.find((item) => item.id === pick.shapeId);
       if (!shape || shape.locked) {
@@ -8490,7 +8636,7 @@ export function SketchForgeEditor({
     const motion = faceSnapMotionRef.current;
     if (motion) motion(sourceId, pose, finish);
     else finish();
-  }, [commitShapes, faceSnap, layFlat]);
+  }, [commitShapes, faceSnap, layFlat, openTextureSession, texturePicking, textureSession]);
 
   const toggleHidden = useCallback(() => {
     if (!hasSelection) {
@@ -9641,11 +9787,13 @@ export function SketchForgeEditor({
         if (source.length === 0) throw new Error("Nothing to export");
         const fileName = projectExportFileName(projectInfoRef.current.projectName, format);
         if (format === "3mf") {
+          await ensureSurfaceTextures(source);
           const exported = to3mfForShapes(source);
           await downloadBlobFile(fileName, exported.bytes, "model/3mf");
           return { fileName, format, count: source.length };
         }
-        const meshes = source.map(meshForShape);
+        await ensureSurfaceTextures(source);
+        const meshes = source.map(printMeshForShape);
         if (format === "obj") {
           await downloadTextFile(fileName, toObj(meshes), "text/plain");
         } else {
@@ -10378,6 +10526,11 @@ export function SketchForgeEditor({
       setNotice(`${invalidSvg}. Re-import the source SVG after fixing its contours`);
       return;
     }
+    if (!surfaceTexturesReady(exportable)) {
+      setNotice("Finishing the texture, then exporting");
+      void ensureSurfaceTextures(exportable).then(() => exportDesign(format));
+      return;
+    }
     const selectedNotice = `Exported ${exportable.length} selected shape${exportable.length === 1 ? "" : "s"}`;
     const finishNotice = (label: string, result: DownloadResult) => {
       celebrateExport(label, `${exportable.length} solid${exportable.length === 1 ? "" : "s"}`);
@@ -10394,7 +10547,7 @@ export function SketchForgeEditor({
       // Mesh building runs synchronously; a degenerate imported mesh or an
       // allocation failure on a very dense model throws here, not in the promise.
       try {
-        const meshes = exportable.map(meshForShape);
+        const meshes = exportable.map(printMeshForShape);
         void downloadBlobFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
           .then((result) => {
             finishNotice("STL", result);
@@ -10424,7 +10577,7 @@ export function SketchForgeEditor({
       return;
     }
     try {
-      const meshes = exportable.map(meshForShape);
+      const meshes = exportable.map(printMeshForShape);
       void downloadTextFile(projectExportFileName(projectName, "obj"), toObj(meshes), "text/plain")
         .then((result) => finishNotice("OBJ", result))
         .catch((error: unknown) => failNotice("OBJ", error));
@@ -10450,11 +10603,16 @@ export function SketchForgeEditor({
       exportDesign("3mf");
       return;
     }
+    if (!surfaceTexturesReady(exportable)) {
+      setNotice("Finishing the texture, then opening the slicer");
+      void ensureSurfaceTextures(exportable).then(() => openInSlicer());
+      return;
+    }
     const format = slicer.choice.format;
     const filename = projectExportFileName(projectName, format);
     let bytes: Uint8Array;
     try {
-      bytes = format === "stl" ? toStl(exportable.map(meshForShape)) : to3mfForShapes(exportable).bytes;
+      bytes = format === "stl" ? toStl(exportable.map(printMeshForShape)) : to3mfForShapes(exportable).bytes;
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : "Could not open the slicer");
       return;
@@ -10688,11 +10846,17 @@ export function SketchForgeEditor({
   }, []);
 
   const selectFile = useCallback(async (file: File) => {
+    // A font file joins this computer's fonts, for Text shapes and text textures.
+    if (/\.(ttf|otf|woff)$/i.test(file.name)) {
+      const result = await addCustomFont(file);
+      setNotice("error" in result ? result.error : `Added the font ${result.name}. Choose it for a Text shape or a text texture.`);
+      return;
+    }
     const isStep = /\.(step|stp)$/i.test(file.name);
     const isSvg = /\.svg$/i.test(file.name) || file.type === "image/svg+xml";
     const is3mf = /\.3mf$/i.test(file.name);
     if (!isStep && !isSvg && !importExtensionSupported(file.name)) {
-      setNotice("Unsupported file type. Use STL, STEP, SVG, or 3MF.");
+      setNotice("Unsupported file type. Use STL, STEP, SVG, 3MF, or a font file.");
       return;
     }
 
@@ -11396,6 +11560,21 @@ export function SketchForgeEditor({
       setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0, joint: "none", clearance: 0.2 });
     },
     splitActive: Boolean(splitSession),
+    onTexture: () => {
+      if (textureSession || texturePicking) {
+        cancelTexture();
+        return;
+      }
+      clearEditorToolSessions();
+      setSplitSession(null);
+      if (selectedShapes.length === 1 && selectedShape && !selectedShape.locked && canTextureShape(selectedShape)) {
+        openTextureSession(selectedShape);
+        return;
+      }
+      setTexturePicking(true);
+      setNotice("Click the part to texture");
+    },
+    textureActive: Boolean(textureSession) || texturePicking,
   };
 
   const sweepStepsDialog = sweepSteps ? (
@@ -11717,6 +11896,7 @@ export function SketchForgeEditor({
         history: kept,
         historyIndex: kept.length - 1,
         guide,
+        fonts: readCustomFonts(),
       })));
       const path = await saveGuideTextAs(text, guide.title);
       onGuidePublished?.({ id: `guide:${guideDraft.guideId}`, guide, history: kept }, path);
@@ -12370,7 +12550,7 @@ export function SketchForgeEditor({
             shapes: shapes.filter((shape) => shape.id !== editingSketchShapeId),
             guideGhost: guideLesson?.showGhost ? guideLesson.ghost : null,
           } : null}
-          shapes={faceViewportShapes}
+          shapes={textureViewportShapes}
           selectedIds={historyBrowse !== null && historyBrowse !== historyIndex ? (history[historyBrowse]?.selectedIds ?? []) : selectedIds}
           alignMode={alignMode}
           alignAnchorId={effectiveAlignAnchorId}
@@ -12543,13 +12723,39 @@ export function SketchForgeEditor({
           onDropToWorkplane={dropSelectedToWorkplane}
           dropSurfaceActive={dropSurface}
           onDropSurfacePick={pickDropSurface}
-          faceSnapActive={faceSnap !== null || layFlat || dropSurface}
+          faceSnapActive={faceSnap !== null || layFlat || dropSurface || texturePicking || textureSession?.draft.faces === "picked"
+            || (textureSession?.draft.pattern === "image" && textureSession.draft.placement === "once")}
           faceSnapSource={faceSnap?.source ?? null}
           faceSnapMotionRef={faceSnapMotionRef}
           onFaceSnapPick={pickFaceSnap}
+          textureGuide={textureGuide}
+          onTextureWheel={resizeTextureOnWheel}
           splitPlane={splitPlane}
           inspectorDockTop={
-            splitSession && selectedShape && selectedShape.id === splitSession.shapeId ? (
+            textureSession && textureTarget ? (
+              <ToolbarFlow tool="Texture" label="Texture">
+                <TexturePanel
+                  targetName={textureTarget.name}
+                  texture={textureSession.draft}
+                  previewShape={{ ...textureTarget, surfaceTexture: textureSession.draft }}
+                  hadTexture={textureSession.hadTexture}
+                  workspace={workspaceSettings}
+                  onChange={(draft) => setTextureSession((current) => current ? { ...current, draft } : current)}
+                  onCentreStamp={() => {
+                    const stamp = textureSession.draft.stamp;
+                    const centred = stamp ? centredStamp(textureTarget, stamp, textureSession.draft.angle) : null;
+                    if (!centred) {
+                      setNotice("Could not find the middle of that face");
+                      return;
+                    }
+                    setTextureSession((current) => current ? { ...current, draft: normalizeSurfaceTexture({ ...current.draft, stamp: centred }) } : current);
+                  }}
+                  onApply={() => finishTexture(textureSession.draft)}
+                  onRemove={() => finishTexture(undefined)}
+                  onCancel={cancelTexture}
+                />
+              </ToolbarFlow>
+            ) : splitSession && selectedShape && selectedShape.id === splitSession.shapeId ? (
               <ToolbarFlow tool="Split" label="Split">
                 <SplitPanel
                   targetName={selectedShape.name}
@@ -12967,6 +13173,7 @@ export function SketchForgeEditor({
           closing={topPanelClosing}
           shapeCount={exportableShapeCount}
           scopeLabel={exportScopeLabel}
+          exportShapes={hasSelection ? selectedShapes : shapes}
           stepPreflight={exportPreflight}
           onClose={() => {
             setStlSeatPrompt(null);
@@ -13016,7 +13223,7 @@ export function SketchForgeEditor({
         ref={fileInputRef}
         className="hidden-file-input"
         type="file"
-        accept=".stl,.step,.stp,.svg,.3mf,image/svg+xml"
+        accept=".stl,.step,.stp,.svg,.3mf,image/svg+xml,.ttf,.otf,.woff"
         onChange={(event) => {
           if (event.currentTarget.files) {
             selectFiles(event.currentTarget.files);
@@ -13193,6 +13400,7 @@ function TopActionPanel({
   closing = false,
   shapeCount,
   scopeLabel,
+  exportShapes,
   stepPreflight,
   onClose,
   onExport,
@@ -13221,6 +13429,8 @@ function TopActionPanel({
   closing?: boolean;
   shapeCount: number;
   scopeLabel: "selected" | "total";
+  /** The shapes an export would write, for how much their textures add. */
+  exportShapes: readonly WorkplaneShape[];
   stepPreflight: StepPreflightRow[];
   onClose: () => void;
   onExport: (format: ExportFormat) => void;
@@ -13348,6 +13558,7 @@ function TopActionPanel({
       {panel === "export" ? (
         <div className="top-action-body export-panel-body">
           <p>{shapeCount} {scopeLabel} solid shape{shapeCount === 1 ? "" : "s"} ready to print.</p>
+          <TextureExportNote shapes={exportShapes} />
           <button className="export-primary" type="button" onClick={onOpenSlicer} disabled={slicerBusy}>
             <ToolbarExportIcon />
             {slicerBusy ? "Opening…" : slicerLabel}
