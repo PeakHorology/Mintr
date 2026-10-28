@@ -100,7 +100,8 @@ export type ProjectStoreResponse =
   | { requestId: number; type: "deleted" }
   | { requestId: number; type: "serialized"; text: string | null }
   | { requestId: number; type: "error"; message: string }
-  | { requestId: 0; type: "collected"; deleted: string[] };
+  | { requestId: 0; type: "collected"; deleted: string[] }
+  | { requestId: 0; type: "ready" };
 
 function requestResult<T>(request: IDBRequest<T>) {
   return new Promise<T>((resolve, reject) => {

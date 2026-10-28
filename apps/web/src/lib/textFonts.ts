@@ -75,8 +75,11 @@ export {
 } from "./customFontStore";
 
 const customFontCache = new Map<string, Font>();
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener(CUSTOM_FONTS_EVENT, () => customFontCache.clear());
+// This file also runs inside workers, where there is no window. The build rewrites
+// `typeof window` as if a window always exists, so look it up on globalThis instead.
+const fontWindow = (globalThis as { window?: Window }).window;
+if (fontWindow && typeof fontWindow.addEventListener === "function") {
+  fontWindow.addEventListener(CUSTOM_FONTS_EVENT, () => customFontCache.clear());
 }
 
 /** Every font name a Text shape or text texture can use: Mintr's own, then the ones added. */

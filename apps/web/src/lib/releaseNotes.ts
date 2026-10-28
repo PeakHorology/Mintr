@@ -31,6 +31,14 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.9.1",
+    items: [
+      "The first design you open after starting Mintr opens in a moment again, instead of after a two-minute wait.",
+      "Trace photo has Draw, Line and Erase tools to clean up the outline by hand: paint in what it missed, square up an edge with a straight line, or rub out a ragged shadow. Change the brush size with the slider or the [ and ] keys, and Undo steps back through clicks and strokes.",
+      "Trace photo in Sizes mode finds the sheet of paper in the photo, so the table around it is no longer mistaken for the background, and the distance boxes have room for numbers like 24.63.",
+    ],
+  },
+  {
     version: "1.1.9",
     items: [
       "Trace photo in Sketch turns a photo of a real object into an outline at its true size. Size it from the sheet of paper it lies on, from distances you type (made for small parts like watch parts), or from a scan. Black paper works best for shiny metal, an optional AI tracer handles tricky objects, and Draw, Line and Erase tools clean up the outline by hand.",

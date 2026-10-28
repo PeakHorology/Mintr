@@ -40,6 +40,8 @@ export type ProjectStoreEntry = {
 /** Full undo history is written this long after the last autosave; autosaves carry only the cursor entry. */
 const HISTORY_CHECKPOINT_DELAY_MS = 1500;
 const REQUEST_TIMEOUT_MS = 120_000;
+/** A worker that hasn't said it started by now failed while loading; the page stores projects itself. */
+const STARTUP_TIMEOUT_MS = 8_000;
 
 type RequestBody = ProjectStoreRequest extends infer R ? (R extends ProjectStoreRequest ? Omit<R, "requestId"> : never) : never;
 
@@ -55,6 +57,7 @@ type Pending = {
 class ProjectStoreWorkerError extends Error {}
 
 let worker: Worker | null = null;
+let startupTimer: ReturnType<typeof setTimeout> | null = null;
 /** Set once a worker has answered; a worker that dies before that is treated as unsupported. */
 let workerAnswered = false;
 let workerUnavailable = false;
@@ -71,6 +74,8 @@ function rejectAll(error: Error) {
 }
 
 function recycleWorker(error: Error) {
+  if (startupTimer) clearTimeout(startupTimer);
+  startupTimer = null;
   worker?.terminate();
   worker = null;
   if (!workerAnswered) workerUnavailable = true;
@@ -92,9 +97,17 @@ function ensureWorker(): Worker | null {
     workerUnavailable = true;
     return null;
   }
+  // An error while a module worker loads doesn't reach onerror, so wait for its "ready" instead.
+  startupTimer = setTimeout(() => {
+    startupTimer = null;
+    if (!workerAnswered) recycleWorker(new ProjectStoreWorkerError("Project storage worker didn't start"));
+  }, STARTUP_TIMEOUT_MS);
   worker.onmessage = (event: MessageEvent<ProjectStoreResponse>) => {
     const response = event.data;
     workerAnswered = true;
+    if (startupTimer) clearTimeout(startupTimer);
+    startupTimer = null;
+    if (response.type === "ready") return;
     if (response.type === "collected") {
       onCollected(response.deleted);
       return;
