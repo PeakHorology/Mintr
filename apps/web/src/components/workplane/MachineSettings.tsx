@@ -6,7 +6,6 @@ import { PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import { WorkspaceSelect, WorkspaceToggle } from "@/components/workplane/SettingsControls";
 import {
   CUT_FILE_STYLES,
-  LASER_MATERIALS,
   LASER_TYPE_LABEL,
   laserBrands,
   laserPresetById,
@@ -15,6 +14,7 @@ import {
   loadMachineChoice,
   MACHINES_EVENT,
   machineHasLaser,
+  LASER_MATERIALS,
   materialById,
   MAX_KERF_MM,
   MAX_SHEET_MM,
@@ -24,6 +24,21 @@ import {
   type LaserType,
   type MachineChoice,
 } from "@/lib/laserMachine";
+import {
+  COMMON_CRYSTAL_SIZES,
+  CRYSTAL_MATERIAL_ID,
+  CRYSTAL_SIZES_EVENT,
+  crystalSizeLabel,
+  DEFAULT_CRYSTAL,
+  forgetCrystalSize,
+  loadSavedCrystalSizes,
+  MAX_CRYSTAL_MARGIN,
+  MAX_CRYSTAL_MM,
+  MIN_CRYSTAL_MM,
+  sameCrystalSize,
+  saveCrystalSize,
+  type CrystalSize,
+} from "@/lib/laser/crystal";
 import { SETTING_TIPS } from "@/lib/settingGuides";
 import type { WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -53,7 +68,89 @@ const LASER_TYPES: readonly LaserType[] = ["diode", "co2", "infrared", "uv"];
 
 function materialOptionLabel(id: string) {
   const material = materialById(id);
+  if (material.id === CRYSTAL_MATERIAL_ID) return material.label;
   return material.id === "custom" ? "Other" : `${material.label} ${material.thickness} mm`;
+}
+
+/** The sizes this person saved, kept up to date when they save or forget one. */
+function useSavedCrystalSizes() {
+  const [sizes, setSizes] = useState<CrystalSize[]>([]);
+  useEffect(() => {
+    const sync = () => setSizes(loadSavedCrystalSizes());
+    sync();
+    window.addEventListener(CRYSTAL_SIZES_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(CRYSTAL_SIZES_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return sizes;
+}
+
+const CUSTOM_SIZE = "Type a size";
+
+/** The crystal blank: a block or ball, picked from saved and common sizes or typed in. */
+function CrystalSettings({
+  workspace,
+  patchWorkspace,
+}: {
+  workspace: WorkplaneWorkspaceSettings;
+  patchWorkspace: (patch: Partial<WorkplaneWorkspaceSettings>) => void;
+}) {
+  const saved = useSavedCrystalSizes();
+  const crystal = workspace.crystal ?? DEFAULT_CRYSTAL;
+  const patchCrystal = (patch: Partial<WorkplaneWorkspaceSettings["crystal"]>) => patchWorkspace({ crystal: { ...crystal, ...patch } });
+  const choices = [
+    ...saved.map((size) => ({ size, label: `${crystalSizeLabel(size)} (saved)` })),
+    ...COMMON_CRYSTAL_SIZES.map((size) => ({ size, label: crystalSizeLabel(size) })),
+  ];
+  const current = choices.find((choice) => sameCrystalSize(choice.size, crystal));
+  const isSaved = saved.some((size) => sameCrystalSize(size, crystal));
+  const isCommon = COMMON_CRYSTAL_SIZES.some((size) => sameCrystalSize(size, crystal));
+  const { margin: _margin, ...size } = crystal;
+  return (
+    <>
+      <div className="workspace-section-heading">
+        <strong>Crystal</strong>
+        <span>The blank the model is engraved inside. It shows on the workplane as frosted glass.</span>
+      </div>
+      <WorkspaceSelect
+        label="Size"
+        tip={SETTING_TIPS.crystalSize}
+        value={current?.label ?? CUSTOM_SIZE}
+        options={[...choices.map((choice) => choice.label), CUSTOM_SIZE]}
+        onChange={(label) => {
+          const choice = choices.find((entry) => entry.label === label);
+          if (choice) patchCrystal(choice.size);
+        }}
+      />
+      <WorkspaceSelect
+        label="Shape"
+        tip={SETTING_TIPS.crystalSize}
+        value={crystal.shape === "ball" ? "Ball" : "Block"}
+        options={["Block", "Ball"]}
+        onChange={(label) => patchCrystal({ shape: label === "Ball" ? "ball" : "block" })}
+      />
+      <div className="workspace-dimensions">
+        {crystal.shape === "ball" ? (
+          <NumberSetting label="Diameter" tip="Across the ball, in millimetres." value={crystal.diameter} min={MIN_CRYSTAL_MM} max={MAX_CRYSTAL_MM} step={0.5} onCommit={(diameter) => patchCrystal({ diameter })} />
+        ) : (
+          <>
+            <NumberSetting label="Width" tip="The block left to right, in millimetres." value={crystal.width} min={MIN_CRYSTAL_MM} max={MAX_CRYSTAL_MM} step={0.5} onCommit={(width) => patchCrystal({ width })} />
+            <NumberSetting label="Depth" tip="The block front to back, in millimetres." value={crystal.depth} min={MIN_CRYSTAL_MM} max={MAX_CRYSTAL_MM} step={0.5} onCommit={(depth) => patchCrystal({ depth })} />
+            <NumberSetting label="Height" tip="The block bottom to top, in millimetres." value={crystal.height} min={MIN_CRYSTAL_MM} max={MAX_CRYSTAL_MM} step={0.5} onCommit={(height) => patchCrystal({ height })} />
+          </>
+        )}
+        <NumberSetting label="Margin" tip={SETTING_TIPS.crystalMargin} value={crystal.margin} min={0} max={MAX_CRYSTAL_MARGIN} step={0.5} onCommit={(margin) => patchCrystal({ margin })} />
+      </div>
+      {isCommon ? null : (
+        <button type="button" className="crystal-size-save" onClick={() => (isSaved ? forgetCrystalSize(size) : saveCrystalSize(size))}>
+          {isSaved ? "Remove from my sizes" : "Save to my sizes"}
+        </button>
+      )}
+    </>
+  );
 }
 
 /** A number box that only changes the setting when you leave it or press Enter. */
@@ -233,11 +330,13 @@ export function MachineSettings({
             onChange={(label) => {
               const next = LASER_MATERIALS.find((entry) => materialOptionLabel(entry.id) === label);
               if (!next) return;
-              patchWorkspace(next.id === "custom"
-                ? { materialPreset: "custom", materialThickness: workspace.materialThickness }
+              // Crystal and Other keep the sheet thickness that was set, for when the design goes back to a sheet.
+              patchWorkspace(next.id === "custom" || next.id === CRYSTAL_MATERIAL_ID
+                ? { materialPreset: next.id, materialThickness: workspace.materialThickness }
                 : { materialPreset: next.id, materialThickness: next.thickness });
             }}
           />
+          {material.id === CRYSTAL_MATERIAL_ID ? <CrystalSettings workspace={workspace} patchWorkspace={patchWorkspace} /> : (
           <div className="workspace-dimensions">
             <NumberSetting
               label="Thickness"
@@ -250,6 +349,7 @@ export function MachineSettings({
               onCommit={(materialThickness) => patchWorkspace({ materialThickness })}
             />
           </div>
+          )}
         </>
       ) : null}
     </>

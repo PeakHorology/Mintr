@@ -31,6 +31,17 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.9",
+    items: [
+      "Trace photo in Sketch turns a photo of a real object into an outline at its true size. Size it from the sheet of paper it lies on, from distances you type (made for small parts like watch parts), or from a scan. Black paper works best for shiny metal, an optional AI tracer handles tricky objects, and Draw, Line and Erase tools clean up the outline by hand.",
+      "K9 crystal is a new laser material for engraving a 3D model inside a glass block or ball. The crystal shows as frosted glass around your model, Fit in crystal scales the model inside with a safe gap from the surface, and sizes you save are there in every design.",
+      "Big 3D models show their triangle count and file size, with a tip to use Reduce File Size before exporting for crystal engraving.",
+      "Cut, Score and Engrave can be changed on any part in a laser design again.",
+      "Concave fillet on every edge of a corner scoops the corner out cleanly, with no point of material left where the grooves meet.",
+      "Sage has a new owl look.",
+    ],
+  },
+  {
     version: "1.1.8",
     items: [
       "Mintr works with laser cutters and engravers. Add your laser in Settings → Machines, and New design asks whether a design is for 3D printing or laser cutting.",

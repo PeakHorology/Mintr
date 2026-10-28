@@ -39,8 +39,10 @@ export const SETTING_TIPS = {
   kerf: "How much material the beam burns away, in millimetres. Mintr allows for it so parts fit as drawn. Measure yours by cutting a 20 mm square and measuring how much smaller it came out.",
   cutFileStyle: "The software that runs your laser. Mintr marks what to cut, score and engrave in the way that software reads best.",
   showLaserBed: "Draw the laser's work area on the workplane of laser designs.",
-  laserMaterial: "The sheet you cut from. New parts in a laser design start at its thickness, and joints are sized to it.",
+  laserMaterial: "The sheet you cut from. New parts in a laser design start at its thickness, and joints are sized to it. K9 crystal engraves a 3D model inside a glass block or ball.",
   sheetThickness: "How thick the sheet is, in millimetres. Measure it: a sheet sold as 3 mm is often a little more or less.",
+  crystalSize: "The crystal blank you engrave inside, a block or a ball. It is drawn on the workplane as frosted glass so you can see the model inside it. Save the sizes you buy so they are a click away in every design.",
+  crystalMargin: "How far in from every surface of the crystal the model stays, in millimetres. Engraving right at the surface can crack the glass.",
 } as const;
 
 export type SettingTipKey = keyof typeof SETTING_TIPS;
@@ -96,6 +98,8 @@ export const SETTING_GUIDES: readonly SettingGuide[] = [
   { key: "showLaserBed", title: "Show laser bed", section: "machines" },
   { key: "laserMaterial", title: "Material", section: "machines" },
   { key: "sheetThickness", title: "Sheet thickness", section: "machines" },
+  { key: "crystalSize", title: "Crystal size", section: "machines" },
+  { key: "crystalMargin", title: "Crystal margin", section: "machines" },
   { key: "printerProcess", title: "Printing process", section: "printing" },
   { key: "printerBrand", title: "Printer brand", section: "printing" },
   { key: "printer", title: "Printer", section: "printing" },

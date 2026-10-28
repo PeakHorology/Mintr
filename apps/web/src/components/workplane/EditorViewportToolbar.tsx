@@ -30,6 +30,7 @@ import {
   ToolbarBoxMakerIcon,
   ToolbarFlatPartsIcon,
   ToolbarTraceLogoIcon,
+  ToolbarFitCrystalIcon,
   ToolbarNestIcon,
 } from "@/components/icons";
 import { useSageActive } from "@/components/workplane/Sage";
@@ -494,7 +495,18 @@ export function EditorViewportToolbar({
   onFace: () => void;
   onSplit: () => void;
   /** Set in a laser design: tools for flat parts cut from a sheet. */
-  laserTools?: { onBoxMaker: () => void; onNest: () => void; canNest: boolean; onFlatParts: () => void; canFlatParts: boolean; onTraceLogo: () => void } | null;
+  laserTools?: {
+    onBoxMaker: () => void;
+    onNest: () => void;
+    canNest: boolean;
+    onFlatParts: () => void;
+    canFlatParts: boolean;
+    onTraceLogo: () => void;
+    /** Engraving inside a K9 crystal: the sheet tools give way to Fit in crystal. */
+    crystal: boolean;
+    onFitCrystal: () => void;
+    canFitCrystal: boolean;
+  } | null;
 }) {
   const hotkeys = useHotkeyBindings();
 
@@ -558,12 +570,17 @@ export function EditorViewportToolbar({
     ? {
       title: "Laser",
       accent: "laser",
-      tools: [
-        { label: "Box maker", description: TOOL_DESCRIPTIONS.boxMaker, icon: ToolbarBoxMakerIcon, action: laserTools.onBoxMaker, enabled: true },
-        { label: "Trace logo", description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
-        { label: "Flat parts", description: TOOL_DESCRIPTIONS.flatParts, icon: ToolbarFlatPartsIcon, action: laserTools.onFlatParts, enabled: laserTools.canFlatParts, disabledReason: "Select one 3D part" },
-        { label: "Nest", description: TOOL_DESCRIPTIONS.nest, icon: ToolbarNestIcon, action: laserTools.onNest, enabled: laserTools.canNest, disabledReason: "Add a part to cut first" },
-      ],
+      tools: laserTools.crystal
+        ? [
+          { label: "Fit in crystal", description: TOOL_DESCRIPTIONS.fitCrystal, icon: ToolbarFitCrystalIcon, action: laserTools.onFitCrystal, enabled: laserTools.canFitCrystal, disabledReason: "Add a model first" },
+          { label: "Trace logo", description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
+        ]
+        : [
+          { label: "Box maker", description: TOOL_DESCRIPTIONS.boxMaker, icon: ToolbarBoxMakerIcon, action: laserTools.onBoxMaker, enabled: true },
+          { label: "Trace logo", description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
+          { label: "Flat parts", description: TOOL_DESCRIPTIONS.flatParts, icon: ToolbarFlatPartsIcon, action: laserTools.onFlatParts, enabled: laserTools.canFlatParts, disabledReason: "Select one 3D part" },
+          { label: "Nest", description: TOOL_DESCRIPTIONS.nest, icon: ToolbarNestIcon, action: laserTools.onNest, enabled: laserTools.canNest, disabledReason: "Add a part to cut first" },
+        ],
     }
     : null;
   const modifyCluster = [combineSection, modifySection, arrangeSection, ...(laserSection ? [laserSection] : [])];

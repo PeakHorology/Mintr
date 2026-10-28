@@ -1422,6 +1422,22 @@ function coveToolForEdge(cad: OcctKernel, edge: ShapeHandle, radius: number) {
   return cad.pipe(disc, cad.makeWire([edge]));
 }
 
+/** The direction an edge leaves `point`, one of its ends, or null when it can't be told. */
+function edgeDirectionAway(cad: OcctKernel, edge: ShapeHandle, point: { x: number; y: number; z: number }) {
+  try {
+    const params = cad.curveParameters(edge);
+    const start = cad.curvePointAtParam(edge, params.first);
+    const end = cad.curvePointAtParam(edge, params.last);
+    const fromStart = Math.hypot(start.x - point.x, start.y - point.y, start.z - point.z);
+    const fromEnd = Math.hypot(end.x - point.x, end.y - point.y, end.z - point.z);
+    const atStart = fromStart <= fromEnd;
+    const tangent = unitVec(cad.curveTangent(edge, atStart ? params.first : params.last));
+    return atStart ? tangent : scaleVec(tangent, -1);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Cut a concave quarter-round groove along each edge. Where two or more coved
  * edges share a vertex a ball of the same radius is removed too, so the grooves
@@ -1430,20 +1446,48 @@ function coveToolForEdge(cad: OcctKernel, edge: ShapeHandle, radius: number) {
 export function coveEdges(cad: OcctKernel, solid: ShapeHandle, edges: ShapeHandle[], radius: number) {
   if (!(radius > 1e-6)) throw new Error("A cove needs a radius above zero.");
   const tools: ShapeHandle[] = [];
-  const vertexUse = new Map<string, { point: { x: number; y: number; z: number }; count: number }>();
+  const keyOf = (point: { x: number; y: number; z: number }) => `${point.x.toFixed(4)},${point.y.toFixed(4)},${point.z.toFixed(4)}`;
+  const vertexUse = new Map<string, { point: { x: number; y: number; z: number }; count: number; away: Array<{ x: number; y: number; z: number }> }>();
   for (const edge of edges) {
     tools.push(coveToolForEdge(cad, edge, radius));
     for (const vertex of cad.getSubShapes(edge, "vertex")) {
       const point = cad.vertexPosition(vertex);
-      const key = `${point.x.toFixed(4)},${point.y.toFixed(4)},${point.z.toFixed(4)}`;
-      const seen = vertexUse.get(key);
-      if (seen) seen.count += 1;
-      else vertexUse.set(key, { point, count: 1 });
+      const key = keyOf(point);
+      const seen = vertexUse.get(key) ?? { point, count: 0, away: [] };
+      seen.count += 1;
+      const direction = edgeDirectionAway(cad, edge, point);
+      if (direction) seen.away.push(direction);
+      vertexUse.set(key, seen);
       try { cad.release(vertex); } catch { /* Only the position is kept. */ }
     }
   }
-  vertexUse.forEach(({ point, count }) => {
-    if (count >= 2) tools.push(cad.translate(cad.makeSphere(radius), point.x, point.y, point.z));
+  // How many of the solid's own edges meet at each corner, coved or not.
+  const solidUse = new Map<string, number>();
+  for (const edge of cad.getSubShapes(solid, "edge")) {
+    for (const vertex of cad.getSubShapes(edge, "vertex")) {
+      const key = keyOf(cad.vertexPosition(vertex));
+      solidUse.set(key, (solidUse.get(key) ?? 0) + 1);
+      try { cad.release(vertex); } catch { /* Only the position is kept. */ }
+    }
+  }
+  vertexUse.forEach(({ point, count, away }, key) => {
+    if (count < 2) return;
+    let ball = radius;
+    // Where every edge at a corner is coved, the grooves alone leave a point of material
+    // standing between them. A ball reaching to where each pair of grooves meets on the
+    // face between them (r / sin(half the angle)) scoops it out cleanly. Where an edge
+    // stays sharp, that ball would dig into it, so the plain ball is kept.
+    if (count >= 3 && count === solidUse.get(key)) {
+      for (let i = 0; i < away.length; i += 1) {
+        for (let j = i + 1; j < away.length; j += 1) {
+          const angle = Math.acos(Math.max(-1, Math.min(1, dotVec(away[i], away[j]))));
+          if (angle > 1e-3) ball = Math.max(ball, radius / Math.sin(angle / 2));
+        }
+      }
+      // A very sharp corner would need a huge ball; cap it so it can't eat the part.
+      ball = Math.min(ball, radius * 2);
+    }
+    tools.push(cad.translate(cad.makeSphere(ball), point.x, point.y, point.z));
   });
   let current = solid;
   try {

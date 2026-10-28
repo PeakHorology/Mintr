@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { preferenceFromPath, resolveSlicerChoice, slicerFromExeName, type DetectedSlicer } from "@/lib/slicerHandoff";
 
@@ -123,14 +124,17 @@ describe("slicer discovery", () => {
 describe("xTool Studio handoff", () => {
   it("sends the cut file as an Open in Studio link that names the file", async () => {
     const { inflateRawSync } = await import("node:zlib");
-    const link = xtoolImportLink(path.join("C:\\", "Users", "Maker", "Downloads", "Box · lid.svg"));
+    // A path native to the machine running the test, so it passes on Windows and on CI.
+    const file = path.join(tmpdir(), "Downloads", "Box · lid.svg");
+    const link = xtoolImportLink(file);
     expect(link.startsWith("xtool://external/?")).toBe(true);
     const packed = link.split("?")[1];
     expect(packed).not.toMatch(/[+/=]/);
     const message = JSON.parse(inflateRawSync(Buffer.from(packed.replace(/-/g, "+").replace(/_/g, "/"), "base64")).toString("utf8"));
     expect(message.action).toBe("OpenInStudio");
     expect(message.data.name).toBe("Box · lid.svg");
-    expect(message.data.url).toBe("file:///C:/Users/Maker/Downloads/Box%20%C2%B7%20lid.svg");
+    expect(message.data.url).toBe(pathToFileURL(file).href);
+    expect(message.data.url.endsWith("/Downloads/Box%20%C2%B7%20lid.svg")).toBe(true);
     expect(message.config.insertMode).toBe("new");
   });
 });

@@ -13,6 +13,7 @@ import {
   Plus,
   RectangleHorizontal,
   RotateCw,
+  ScanLine,
   Shapes,
   Square,
   Star,
@@ -595,6 +596,7 @@ export function SketchRibbon({
   onEraseWholeChange,
   onPolygonSidesChange,
   onSketchImage,
+  onTracePhoto,
   onHoverTool,
 }: {
   sketchTool: SketchTool;
@@ -606,6 +608,7 @@ export function SketchRibbon({
   onEraseWholeChange?: (whole: boolean) => void;
   onPolygonSidesChange: (sides: number) => void;
   onSketchImage: () => void;
+  onTracePhoto?: () => void;
   onHoverTool?: (tool: SketchCoachKey | null) => void;
 }) {
   const [shapesOpen, setShapesOpen] = useState(false);
@@ -752,6 +755,11 @@ export function SketchRibbon({
           <RibbonTool label="Image" description={TOOL_DESCRIPTIONS.image} hoverKey="image" onHoverTool={onHoverTool} onClick={onSketchImage}>
             <Image size={16} strokeWidth={1.75} />
           </RibbonTool>
+          {onTracePhoto ? (
+            <RibbonTool label="Trace photo" sageKey="sketch-trace-photo" description={TOOL_DESCRIPTIONS.tracePhoto} onClick={onTracePhoto}>
+              <ScanLine size={16} strokeWidth={1.75} />
+            </RibbonTool>
+          ) : null}
         </div>
       </section>
       {proEnabled ? (

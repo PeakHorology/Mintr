@@ -251,17 +251,18 @@ export function ToolbarFullscreenIcon({ exit = false, ...props }: IconProps & { 
   );
 }
 
-/** Sage. Perched great horned owl: wide tufts, round eyes, a wing, feet, and a mint beak. */
+/** Sage. Round-bodied owl with wide tufts, big ringed eyes, full folded wings, an outlined mint beak, and little feet. */
 export function ToolbarSageIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
-      <path d="M8.6 5Q12 7 15.4 5L18.4 2Q19.2 5.2 18.4 8C20 11 19.8 15.6 16.4 18.2Q12 19.8 7.6 18.2C4.2 15.6 4 11 5.6 8Q4.8 5.2 5.6 2Z" />
-      <circle cx="9" cy="9.6" r="1.6" />
-      <circle cx="15" cy="9.6" r="1.6" />
-      <path d="M16 12.2Q18 14.8 15.6 17" />
-      <path d="M9.8 19v2.4M14.2 19v2.4" />
-      <path d="M6 21.6H18" />
-      <path d="M10.5 10.8H13.5L12 14.4Z" fill="#2aa77e" stroke="none" />
+      <path d="M7 8.9L7.5 3.6L10.5 6.65Q12 7.2 13.5 6.65L16.5 3.6L17 8.9A6 7.57 0 1 1 7 8.9Z" />
+      <path d="M6.4 10.9C2.6 12.6 2.4 16.9 7 19.4C6.1 17.6 5.9 13.5 6.4 10.9ZM17.6 10.9C21.4 12.6 21.6 16.9 17 19.4C17.9 17.6 18.1 13.5 17.6 10.9Z" />
+      <circle cx="9.5" cy="10.8" r="2.1" strokeWidth="1.2" />
+      <circle cx="14.5" cy="10.8" r="2.1" strokeWidth="1.2" />
+      <circle cx="9.9" cy="11.1" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="14.9" cy="11.1" r="0.6" fill="currentColor" stroke="none" />
+      <path d="M10.2 12.9H13.8L12 16.4Z" fill="#2aa77e" strokeWidth="0.75" />
+      <path d="M9.4 21.8h1.4M13.2 21.8h1.4" />
     </CadGlyph>
   );
 }
@@ -454,6 +455,17 @@ export function ToolbarTraceLogoIcon(props: IconProps) {
       <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" strokeDasharray="2.2 2" />
       <path d="M8 15.5c0-3.5 1.6-6 4-6s4 2.5 4 6" />
       <path d="M7 15.5h10" />
+    </CadGlyph>
+  );
+}
+
+/** A glass block with a small model inside it, and arrows out to its corners. */
+export function ToolbarFitCrystalIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M5 8l7-4 7 4v8l-7 4-7-4z" />
+      <path d="M5 8l7 4 7-4M12 12v8" opacity="0.45" />
+      <path d="M10 13.2l2-1.2 2 1.2v2.3l-2 1.2-2-1.2z" fill="currentColor" stroke="none" />
     </CadGlyph>
   );
 }

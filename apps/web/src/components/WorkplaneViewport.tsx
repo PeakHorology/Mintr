@@ -10,7 +10,7 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { createBooleanTextGeometry } from "@/lib/editorShapeMesh";
+import { createBooleanTextGeometry, meshForShape } from "@/lib/editorShapeMesh";
 import { shapeFromSketchRevolve } from "@/lib/sketchRevolve";
 import { createGearGeometry } from "@/lib/gearMesh";
 import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
@@ -107,7 +107,9 @@ import { CUT_PREVIEW_TRIANGLE_SKIP, displayTriangleCount, isHeavyDisplayScene } 
 import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
 import { shadeDisplayNormals } from "@/lib/meshShade";
 import { appendOverhangBoundaryLines, bedFitForShapes, normalizePrinterBed, type PrinterBed } from "@/lib/printerBed";
-import { isLaserDesign, laserDesignLabel } from "@/lib/laserMachine";
+import { crystalReach, isCrystalDesign, isLaserDesign, laserDesignLabel, sheetThickness } from "@/lib/laserMachine";
+import { checkInsideCrystal } from "@/lib/laser/crystal";
+import { isConstructionShape } from "@/lib/holeFeature";
 import { LASER_JOB_COLOR } from "@/lib/laser/cutFile";
 import type { SettingsSectionId } from "@/lib/settingGuides";
 import { runPrintOverlayInWorker } from "@/lib/printOverlayClient";
@@ -6128,7 +6130,7 @@ export function WorkplaneViewport({
       const x = point?.x ?? 0;
       const z = point?.z ?? 0;
       const elevation = 0;
-      syncAssetPlacementPreview(state, asset, x, z, elevation, isLaserDesign(workspaceRef.current) ? workspaceRef.current.materialThickness : undefined);
+      syncAssetPlacementPreview(state, asset, x, z, elevation, sheetThickness(workspaceRef.current) ?? undefined);
       state.needsRender = true;
     },
     [toPlanePoint],
@@ -6583,7 +6585,28 @@ export function WorkplaneViewport({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [clearSketchFaceHover, hotkeys, resetView, rulerToolsOpen, setRulerActive, xrayControlsOpen, zoomCamera]);
 
+  const crystalCheck = useMemo(() => {
+    if (!isCrystalDesign(workspace)) return null;
+    const parts = shapes.filter((shape) => !shape.hole && !shape.hidden && !isConstructionShape(shape));
+    if (parts.length === 0) return null;
+    function* points() {
+      for (const shape of parts) {
+        try {
+          yield* meshForShape(shape).vertices;
+        } catch {
+          // A part with no mesh yet has nothing to check.
+        }
+      }
+    }
+    return checkInsideCrystal(points(), workspace.crystal, crystalReach(workspace));
+  }, [shapes, workspace]);
+
+  useEffect(() => {
+    setCrystalWarning(threeRef.current, Boolean(crystalCheck && crystalCheck.status !== "inside"));
+  }, [crystalCheck, workspace]);
+
   const printerWarning = useMemo(() => {
+    if (isCrystalDesign(workspace)) return crystalCheck && crystalCheck.status !== "inside" ? crystalCheck.message : null;
     if (!isLaserDesign(workspace)) return bedFitForShapes(shapes, normalizePrinterBed(workspace)).message;
     // Only the footprint matters on a laser, so the bed is given all the height it could need.
     const fit = bedFitForShapes(shapes, { ...normalizePrinterBed(workspace), width: workspace.laserWidth, depth: workspace.laserDepth, height: Number.MAX_VALUE });
@@ -7668,6 +7691,7 @@ function rebuildWorkplane(state: ThreeState | null, workspace: WorkspaceSettings
   state.nozzleMm = bed.nozzleMm;
   if (state.showPrinterBed) state.workplaneLayer.add(createPrinterFrame(bed));
   if (laserDesign && workspace.showLaserBed) state.workplaneLayer.add(createLaserFrame(workspace.laserWidth, workspace.laserDepth));
+  if (isCrystalDesign(workspace)) state.workplaneLayer.add(createCrystalBlank(workspace.crystal));
   rebuildPrintOverlays(state);
 }
 
@@ -7863,6 +7887,67 @@ function inflateAlongNormals(positions: Float32Array | number[], normals: Float3
 }
 
 /** The laser's work area: a flat outline with corner marks, like the frame on the machine's bed. */
+/** Frosted white-grey glass, see-through enough that the model shows inside it. */
+const CRYSTAL_EDGE = "#8f9aa3";
+const CRYSTAL_EDGE_WARNING = "#d83b3b";
+
+/** The K9 crystal blank, sitting on the plate at its middle, frosted so the model shows inside. */
+function createCrystalBlank(blank: WorkplaneWorkspaceSettings["crystal"]) {
+  const group = new THREE.Group();
+  group.name = "CrystalBlank";
+  const glass = new THREE.MeshStandardMaterial({
+    color: "#e4e8eb",
+    roughness: 0.25,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const edge = new THREE.LineBasicMaterial({ color: CRYSTAL_EDGE, transparent: true, opacity: 0.9, depthWrite: false });
+  edge.name = "CrystalEdge";
+  let body: THREE.Mesh;
+  let lines: THREE.LineSegments;
+  if (blank.shape === "ball") {
+    const radius = blank.diameter / 2;
+    body = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 40), glass);
+    body.position.y = radius;
+    // Three rings round the ball, so its size reads from any side.
+    const ring: number[] = [];
+    const steps = 96;
+    for (let index = 0; index < steps; index += 1) {
+      const a = (index / steps) * Math.PI * 2;
+      const b = ((index + 1) / steps) * Math.PI * 2;
+      ring.push(Math.cos(a) * radius, radius, Math.sin(a) * radius, Math.cos(b) * radius, radius, Math.sin(b) * radius);
+      ring.push(Math.cos(a) * radius, radius + Math.sin(a) * radius, 0, Math.cos(b) * radius, radius + Math.sin(b) * radius, 0);
+      ring.push(0, radius + Math.sin(a) * radius, Math.cos(a) * radius, 0, radius + Math.sin(b) * radius, Math.cos(b) * radius);
+    }
+    lines = linesFromPoints(ring, edge);
+  } else {
+    const box = new THREE.BoxGeometry(blank.width, blank.height, blank.depth);
+    body = new THREE.Mesh(box, glass);
+    body.position.y = blank.height / 2;
+    lines = new THREE.LineSegments(new THREE.EdgesGeometry(box), edge);
+    lines.position.y = blank.height / 2;
+  }
+  // Drawn after the parts, so they show through the glass.
+  body.renderOrder = 10;
+  lines.renderOrder = 11;
+  body.raycast = () => undefined;
+  lines.raycast = () => undefined;
+  group.add(body, lines);
+  return group;
+}
+
+/** Turns the crystal's edges red while the model is too close to its surface or outside it. */
+function setCrystalWarning(state: ThreeState | null, warn: boolean) {
+  const blank = state?.workplaneLayer.getObjectByName("CrystalBlank");
+  blank?.traverse((child) => {
+    const material = (child as THREE.LineSegments).material;
+    if (material instanceof THREE.LineBasicMaterial && material.name === "CrystalEdge") material.color.set(warn ? CRYSTAL_EDGE_WARNING : CRYSTAL_EDGE);
+  });
+}
+
 function createLaserFrame(width: number, depth: number) {
   const group = new THREE.Group();
   group.name = "LaserBed";

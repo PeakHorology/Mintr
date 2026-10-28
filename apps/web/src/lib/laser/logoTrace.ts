@@ -450,8 +450,12 @@ export function roundCorners(polygon: TracePoint[], smoothness: number): { start
 
 /** Traces a grey picture into outlines. */
 export function traceLogo(picture: GreyPicture, options: TraceOptions): TraceResult {
-  const { width, height } = picture;
-  const ink = removeSpecks(inkMask(picture, options), width, height, Math.round(options.speckle));
+  return traceMask(inkMask(picture, options), picture.width, picture.height, options);
+}
+
+/** Traces a mask of ink pixels (1) on paper (0) into outlines. */
+export function traceMask(mask: Uint8Array, width: number, height: number, options: Pick<TraceOptions, "speckle" | "smoothness">): TraceResult {
+  const ink = removeSpecks(mask, width, height, Math.round(options.speckle));
   const loops: TraceResult["loops"] = [];
   for (const edge of traceEdges(ink, width, height)) {
     const area = loopArea(edge);
@@ -492,6 +496,274 @@ export function flattenLoop(loop: { start: TracePoint; pieces: TracePiece[] }, t
   // The last piece ends back at the start.
   points.pop();
   return points;
+}
+
+function cubicAt(a: TracePoint, b: TracePoint, c: TracePoint, d: TracePoint, t: number): TracePoint {
+  const u = 1 - t;
+  return {
+    x: u * u * u * a.x + 3 * u * u * t * b.x + 3 * u * t * t * c.x + t * t * t * d.x,
+    y: u * u * u * a.y + 3 * u * u * t * b.y + 3 * u * t * t * c.y + t * t * t * d.y,
+  };
+}
+
+type Curve = Extract<TracePiece, { kind: "curve" }>;
+
+/**
+ * The cubic through `points[first..last]` that leaves and arrives along the given
+ * directions, by least squares (Schneider, "An Algorithm for Automatically Fitting
+ * Digitized Curves", Graphics Gems 1990), with where it strays furthest from them.
+ */
+function fitCubic(points: readonly TracePoint[], first: number, last: number, leave: TracePoint, arrive: TracePoint) {
+  const a = points[first];
+  const d = points[last];
+  const chord = [0];
+  for (let index = first + 1; index <= last; index += 1) {
+    chord.push(chord[chord.length - 1] + Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y));
+  }
+  const total = chord[chord.length - 1] || 1;
+  let params = chord.map((length) => length / total);
+  let best = { c1: a, c2: d, worst: Infinity, at: Math.floor((first + last) / 2) };
+  for (let round = 0; round < 4; round += 1) {
+    let c00 = 0;
+    let c01 = 0;
+    let c11 = 0;
+    let x0 = 0;
+    let x1 = 0;
+    params.forEach((t, offset) => {
+      const point = points[first + offset];
+      const u = 1 - t;
+      const b1 = 3 * u * u * t;
+      const b2 = 3 * u * t * t;
+      const base = cubicAt(a, a, d, d, t);
+      const rest = { x: point.x - base.x, y: point.y - base.y };
+      c00 += b1 * b1;
+      c01 += b1 * b2 * (leave.x * arrive.x + leave.y * arrive.y);
+      c11 += b2 * b2;
+      x0 += b1 * (leave.x * rest.x + leave.y * rest.y);
+      x1 += b2 * (arrive.x * rest.x + arrive.y * rest.y);
+    });
+    const det = c00 * c11 - c01 * c01;
+    let alpha = Math.abs(det) > 1e-12 ? (x0 * c11 - c01 * x1) / det : 0;
+    let beta = Math.abs(det) > 1e-12 ? (c00 * x1 - c01 * x0) / det : 0;
+    // A handle pointing backwards or reaching past the whole run is a bad fit; use thirds.
+    const span = Math.hypot(d.x - a.x, d.y - a.y);
+    if (!(alpha > span * 1e-3) || !(beta > span * 1e-3) || alpha > total || beta > total) alpha = beta = span / 3;
+    const c1 = { x: a.x + leave.x * alpha, y: a.y + leave.y * alpha };
+    const c2 = { x: d.x + arrive.x * beta, y: d.y + arrive.y * beta };
+    // The true gap from each point to the curve, not to the curve at the point's guessed spot.
+    const curve = Array.from({ length: 65 }, (_, step) => cubicAt(a, c1, c2, d, step / 64));
+    let worst = 0;
+    let at = best.at;
+    for (let index = first + 1; index < last; index += 1) {
+      const gap = distanceToLine(points[index], curve);
+      if (gap > worst) {
+        worst = gap;
+        at = index;
+      }
+    }
+    if (worst < best.worst) best = { c1, c2, worst, at };
+    // Newton step: move each point's parameter to its nearest spot on the curve, then refit.
+    params = params.map((t, offset) => {
+      const point = points[first + offset];
+      const u = 1 - t;
+      const on = cubicAt(a, c1, c2, d, t);
+      const d1 = {
+        x: 3 * (u * u * (c1.x - a.x) + 2 * u * t * (c2.x - c1.x) + t * t * (d.x - c2.x)),
+        y: 3 * (u * u * (c1.y - a.y) + 2 * u * t * (c2.y - c1.y) + t * t * (d.y - c2.y)),
+      };
+      const d2 = {
+        x: 6 * (u * (c2.x - 2 * c1.x + a.x) + t * (d.x - 2 * c2.x + c1.x)),
+        y: 6 * (u * (c2.y - 2 * c1.y + a.y) + t * (d.y - 2 * c2.y + c1.y)),
+      };
+      const off = { x: on.x - point.x, y: on.y - point.y };
+      const denominator = d1.x * d1.x + d1.y * d1.y + off.x * d2.x + off.y * d2.y;
+      return denominator === 0 ? t : Math.min(1, Math.max(0, t - (off.x * d1.x + off.y * d1.y) / denominator));
+    });
+  }
+  return best;
+}
+
+/** A bend tighter than this within a few pixels is a corner, even where the trace rounded it. */
+const CORNER_TURN = Math.PI / 4;
+
+/** How far a point lies from a polyline. */
+function distanceToLine(point: TracePoint, line: readonly TracePoint[]) {
+  let nearest = Infinity;
+  for (let index = 1; index < line.length; index += 1) {
+    const a = line[index - 1];
+    const b = line[index];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const length = dx * dx + dy * dy;
+    const t = length > 0 ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length)) : 0;
+    nearest = Math.min(nearest, Math.hypot(point.x - a.x - dx * t, point.y - a.y - dy * t));
+  }
+  return nearest;
+}
+
+function unit(x: number, y: number) {
+  const length = Math.hypot(x, y);
+  return length > 0 ? { x: x / length, y: y / length } : { x: 1, y: 0 };
+}
+
+/**
+ * The direction of travel through `points[index]`, looking `reach` along the outline
+ * each way so a pixel's wobble doesn't swing it. `closed` lets it look past the ends.
+ */
+function directionAt(points: readonly TracePoint[], index: number, reach: number, closed: boolean, side: "both" | "ahead" | "behind") {
+  const count = points.length;
+  const walk = (step: 1 | -1) => {
+    let at = index;
+    let travelled = 0;
+    for (let moves = 0; moves < count - 1; moves += 1) {
+      const next = at + step;
+      if (!closed && (next < 0 || next >= count)) break;
+      const wrapped = (next + count) % count;
+      travelled += Math.hypot(points[wrapped].x - points[at].x, points[wrapped].y - points[at].y);
+      at = wrapped;
+      if (travelled >= reach) break;
+    }
+    return points[at];
+  };
+  const ahead = side === "behind" ? points[index] : walk(1);
+  const behind = side === "ahead" ? points[index] : walk(-1);
+  return unit(ahead.x - behind.x, ahead.y - behind.y);
+}
+
+/**
+ * Redraws an outline with as few curves as stay within `tolerance` of it, the way a
+ * designer would draw it: a circle comes out as a handful of curves instead of one at every
+ * bend, straight sides as single lines, and sharp corners stay sharp.
+ */
+export function joinCurves(loop: { start: TracePoint; pieces: TracePiece[] }, tolerance: number): { start: TracePoint; pieces: TracePiece[] } {
+  if (loop.pieces.length < 3) return loop;
+  // Dense points along the outline, noting which were sharp corners in the trace.
+  const points: TracePoint[] = [];
+  // How hard the outline turns at each point: 0 for none, up to 2 for a full turn back.
+  const sharp: number[] = [];
+  let from = loop.start;
+  loop.pieces.forEach((piece, index) => {
+    const next = loop.pieces[(index + 1) % loop.pieces.length];
+    const steps = piece.kind === "curve" ? 8 : Math.max(1, Math.ceil(Math.hypot(piece.to.x - from.x, piece.to.y - from.y) / Math.max(tolerance, 0.5)));
+    for (let step = 1; step <= steps; step += 1) {
+      const t = step / steps;
+      points.push(piece.kind === "curve" ? cubicAt(from, piece.c1, piece.c2, piece.to, t) : { x: from.x + (piece.to.x - from.x) * t, y: from.y + (piece.to.y - from.y) * t });
+      sharp.push(0);
+    }
+    // Where a straight piece meets anything at an angle, the trace kept a corner.
+    if (piece.kind === "line" || next.kind === "line") {
+      const outgoing = next.kind === "curve" ? next.c1 : next.to;
+      const into = unit(piece.to.x - (piece.kind === "curve" ? piece.c2.x : from.x), piece.to.y - (piece.kind === "curve" ? piece.c2.y : from.y));
+      const out = unit(outgoing.x - piece.to.x, outgoing.y - piece.to.y);
+      const along = into.x * out.x + into.y * out.y;
+      if (along < Math.cos(Math.PI / 9)) sharp[sharp.length - 1] = 1 - along;
+    }
+    from = piece.to;
+  });
+  const count = points.length;
+  const reach = Math.max(3, tolerance * 4);
+  // A corner a photo has softened traces as tight curves, not a sharp point: find it by how
+  // far the outline turns within a few pixels either side.
+  for (let index = 0; index < count; index += 1) {
+    if (sharp[index] > 0) continue;
+    const behind = directionAt(points, index, reach, true, "behind");
+    const ahead = directionAt(points, index, reach, true, "ahead");
+    const along = behind.x * ahead.x + behind.y * ahead.y;
+    if (along < Math.cos(CORNER_TURN)) sharp[index] = 1 - along;
+  }
+  // Corners split the outline into runs; a loop with none is split in four to start.
+  // A corner traced as several bends a pixel apart is one corner: keep its sharpest bend.
+  const corners = sharp.flatMap((turn, index) => (turn > 0 ? [index] : []));
+  const gapAlong = (from: number, to: number) => {
+    let length = 0;
+    for (let index = from; index < to; index += 1) length += Math.hypot(points[(index + 1) % count].x - points[index % count].x, points[(index + 1) % count].y - points[index % count].y);
+    return length;
+  };
+  const together = Math.max(3, tolerance * 3);
+  let breaks: number[] = [];
+  for (const corner of corners) {
+    const previous = breaks[breaks.length - 1];
+    if (previous !== undefined && gapAlong(previous, corner) < together) {
+      if (sharp[corner] > sharp[previous]) breaks[breaks.length - 1] = corner;
+    } else {
+      breaks.push(corner);
+    }
+  }
+  if (breaks.length > 1 && gapAlong(breaks[breaks.length - 1], breaks[0] + count) < together) {
+    const last = breaks.pop()!;
+    if (sharp[last] > sharp[breaks[0]]) breaks[0] = last;
+    breaks.sort((a, b) => a - b);
+  }
+  const smoothLoop = breaks.length === 0;
+  if (smoothLoop) breaks = [0, 1, 2, 3].map((quarter) => Math.floor((quarter * count) / 4));
+  const pieces: TracePiece[] = [];
+  const run = (first: number, last: number, leave: TracePoint, arrive: TracePoint, depth: number, corners: { start: boolean; end: boolean }) => {
+    const length = last - first;
+    const slice = Array.from({ length: length + 1 }, (_, offset) => points[(first + offset) % count]);
+    const a = slice[0];
+    const d = slice[length];
+    // Straight enough for a line? The few pixels by each end are left out: that is where a
+    // photo softens a corner, and the line should run right into the corner instead.
+    let straight = Math.hypot(d.x - a.x, d.y - a.y) > reach * 6;
+    for (let offset = 1; offset < length && straight; offset += 1) {
+      const point = slice[offset];
+      if ((corners.start && Math.hypot(point.x - a.x, point.y - a.y) < reach * 2) || (corners.end && Math.hypot(point.x - d.x, point.y - d.y) < reach * 2)) continue;
+      if (distanceToLine(point, [a, d]) > tolerance) straight = false;
+    }
+    if (!straight && length > 1) {
+      straight = slice.every((point) => distanceToLine(point, [a, d]) <= tolerance);
+    }
+    if (straight) {
+      pieces.push({ kind: "line", to: d });
+      return;
+    }
+    const fit = fitCubic(slice, 0, length, leave, arrive);
+    if (fit.worst <= tolerance || length < 4 || depth > 12) {
+      pieces.push({ kind: "curve", c1: fit.c1, c2: fit.c2, to: d } satisfies Curve);
+      return;
+    }
+    // Split where it fits worst, smoothly: both halves share the direction there.
+    const split = Math.min(length - 2, Math.max(2, fit.at));
+    const through = directionAt(points, (first + split) % count, reach, true, "both");
+    run(first, first + split, leave, { x: -through.x, y: -through.y }, depth + 1, { start: corners.start, end: false });
+    run(first + split, last, through, arrive, depth + 1, { start: false, end: corners.end });
+  };
+  for (let index = 0; index < breaks.length; index += 1) {
+    const first = breaks[index];
+    const last = index + 1 < breaks.length ? breaks[index + 1] : breaks[0] + count;
+    if (last - first < 1) continue;
+    // At a corner each run looks only along itself; between quarters of a smooth loop, both ways.
+    const leave = directionAt(points, first % count, reach, true, smoothLoop ? "both" : "ahead");
+    const into = directionAt(points, last % count, reach, true, smoothLoop ? "both" : "behind");
+    run(first, last, leave, { x: -into.x, y: -into.y }, 0, { start: !smoothLoop, end: !smoothLoop });
+  }
+  // Straight pieces that carry on in line, such as either side of where a smooth loop was
+  // first split, become one.
+  const start = points[breaks[0] % count];
+  const merged: TracePiece[] = [];
+  let at = start;
+  let lineStart: TracePoint | null = null;
+  for (const piece of pieces) {
+    const previous = merged[merged.length - 1];
+    if (piece.kind === "line" && previous?.kind === "line" && lineStart && distanceToLine(previous.to, [lineStart, piece.to]) <= tolerance) {
+      merged[merged.length - 1] = piece;
+    } else {
+      lineStart = at;
+      merged.push(piece);
+    }
+    at = piece.to;
+  }
+  // And across the start, when the loop's first and last pieces are both straight and in line.
+  const first = merged[0];
+  const last = merged[merged.length - 1];
+  if (merged.length > 3 && first.kind === "line" && last.kind === "line") {
+    const before = merged.length > 1 ? merged[merged.length - 2].to : start;
+    if (distanceToLine(start, [before, first.to]) <= tolerance) {
+      merged.pop();
+      return { start: before, pieces: merged };
+    }
+  }
+  return { start, pieces: merged };
 }
 
 /** Whether a point is inside a polygon. */

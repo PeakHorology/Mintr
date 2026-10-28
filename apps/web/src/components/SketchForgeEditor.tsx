@@ -417,7 +417,7 @@ import { guideMinutes, guidePrompt, guideStartIndex, proposeGuideSteps, type Gui
 import { applyGuideDraft, readGuideAuthor, readGuideDraft, shrinkPicture, writeGuideAuthor, writeGuideDraft } from "@/lib/guideAuthoring";
 import { buildPeakcadDocument, packMintrGuideText, serializeMintrGuide } from "@/lib/peakcadDocument";
 import { readCustomFonts } from "@/lib/customFontStore";
-import { CUT_FILE_STYLES, isLaserDesign, laserMachineName, materialById, materialLabel } from "@/lib/laserMachine";
+import { crystalReach, CUT_FILE_STYLES, isCrystalDesign, isLaserDesign, laserMachineName, materialById, materialLabel, sheetThickness } from "@/lib/laserMachine";
 import { buildCutLayout, cutLayoutDxf, cutLayoutSvg, lengthLabel } from "@/lib/laser/cutFile";
 import { detectLaserApps, laserAppFor, openInLaserApp, type LaserApp } from "@/lib/laser/laserAppHandoff";
 import { boxPanels, layOutPanels, placedOutline, type BoxSpec } from "@/lib/laser/boxMaker";
@@ -425,6 +425,11 @@ import { nestParts } from "@/lib/laser/nest";
 import { BoxMakerDialog } from "@/components/workplane/BoxMakerDialog";
 import { FlatPartsDialog, type FlatPartsChoice } from "@/components/workplane/FlatPartsDialog";
 import { TraceLogoDialog, type TracedLogo } from "@/components/workplane/TraceLogoDialog";
+import { TracePhotoDialog, type TracedPhoto } from "@/components/workplane/TracePhotoDialog";
+import { tracedLoopToSketch } from "@/lib/photoTrace/toSketch";
+import { crystalSizeNote } from "@/lib/laser/crystalFile";
+import { crystalSizeLabel, fitInsideCrystal } from "@/lib/laser/crystal";
+import { uniformScalePatch } from "@/lib/uniformScale";
 import { flatParts } from "@/lib/laser/flatParts";
 import type { SettingsSectionId } from "@/lib/settingGuides";
 import { EMPTY_GUIDE_LOG, compactGuideForFile, syncGuideLog, type GuideLog } from "@/lib/guideLog";
@@ -5355,7 +5360,7 @@ export function SketchForgeEditor({
         ? shapeThicknessInwardFromFace(host, plane.origin, plane.normal)
         : null;
     // A laser design's parts are as thick as its sheet.
-    const sheet = isLaserDesign(workspaceSettingsRef.current) ? workspaceSettingsRef.current.materialThickness : null;
+    const sheet = sheetThickness(workspaceSettingsRef.current);
     const defaultHeight = existing?.sketchFinish === "revolve"
       ? 10
       : existing?.height
@@ -6102,7 +6107,7 @@ export function SketchForgeEditor({
         return;
       }
       const settings = workspaceSettingsRef.current;
-      const nextShape = makeShapeFromAsset(asset, place, settings.displayQuality, isLaserDesign(settings) ? settings.materialThickness : undefined);
+      const nextShape = makeShapeFromAsset(asset, place, settings.displayQuality, sheetThickness(settings) ?? undefined);
       commitShapes([...shapesRef.current, nextShape], nextShape.id, `${asset.name} added`);
     },
     [commitShapes],
@@ -10554,13 +10559,21 @@ export function SketchForgeEditor({
       return;
     }
     const selectedNotice = `Exported ${exportable.length} selected shape${exportable.length === 1 ? "" : "s"}`;
+    // Near xTool Studio's 100 MB model limit, say so, for anyone engraving it inside crystal.
+    const trianglesOf = (shape: WorkplaneShape): number => {
+      if (shape.groupedShapes?.length) return shape.groupedShapes.reduce((total, child) => total + trianglesOf(child), 0);
+      if (shape.importedMesh?.triangleCount) return shape.importedMesh.triangleCount;
+      try {
+        return meshForShape(shape).faces.length;
+      } catch {
+        return 0;
+      }
+    };
+    const sizeNote = crystalSizeNote(exportable.reduce((total, shape) => total + trianglesOf(shape), 0));
     const finishNotice = (label: string, result: DownloadResult) => {
       celebrateExport(label, `${exportable.length} solid${exportable.length === 1 ? "" : "s"}`);
-      if (result.mode === "folder") {
-        setNotice(`Saved ${label} to ${result.path}`);
-        return;
-      }
-      setNotice(hasSelection ? `${selectedNotice} as ${label}` : `Exported ${label}`);
+      const done = result.mode === "folder" ? `Saved ${label} to ${result.path}` : hasSelection ? `${selectedNotice} as ${label}` : `Exported ${label}`;
+      setNotice(sizeNote ? `${done}. ${sizeNote}` : done);
     };
     const failNotice = (label: string, error: unknown) => {
       setNotice(error instanceof Error ? error.message : `Could not export ${label}`);
@@ -10625,6 +10638,7 @@ export function SketchForgeEditor({
   const laserApp = laserDesignOpen && laserApps ? laserAppFor(workspaceSettings.cutFileStyle, laserApps) : null;
   const [boxMakerOpen, setBoxMakerOpen] = useState(false);
   const [traceLogoOpen, setTraceLogoOpen] = useState(false);
+  const [tracePhotoOpen, setTracePhotoOpen] = useState(false);
   const [flatPartsTarget, setFlatPartsTarget] = useState<{ id: string; name: string; size: { width: number; depth: number; height: number } } | null>(null);
 
   /** Box maker: every panel as a flat sketch part, laid out apart on the workplane and selected together. */
@@ -10712,6 +10726,94 @@ export function SketchForgeEditor({
     const job = logo.job === "engrave" ? "engrave" : logo.job === "cut" ? "cut out" : "score";
     setNotice(`Made ${logo.name}, ${Number(logo.width.toFixed(1))} × ${Number(logo.height.toFixed(1))} mm, set to ${job}.`);
   }, [clearOfOtherParts, commitShapes]);
+
+  /** Trace from photo: the object's outline joins the open sketch at true size, centred on its middle. */
+  const addTracedPhoto = useCallback((traced: TracedPhoto) => {
+    const current = sketchProfileRef.current;
+    const points = [...current.points];
+    const segments = [...current.segments];
+    let count = 0;
+    // Centred, the photo's top toward the back; a sketch's z runs the other way to the picture's y.
+    const place = (point: { x: number; y: number }) => ({ x: point.x - traced.width / 2, z: -(point.y - traced.height / 2) });
+    const makeId = (kind: "point" | "edge") => createLocalId(kind === "point" ? "trace-point" : "trace-edge");
+    for (const piece of traced.pieces) {
+      // A region each, so a part lying inside another's hole stays solid instead of becoming a hole.
+      const regionId = createLocalId("trace-region");
+      for (const loop of [piece.outer, ...piece.holes]) {
+        const made = tracedLoopToSketch(loop, place, makeId, regionId);
+        if (made.points.length < 3) continue;
+        points.push(...made.points);
+        segments.push(...made.segments);
+        count += 1;
+      }
+    }
+    if (count === 0) {
+      setNotice("Nothing was traced");
+      return;
+    }
+    const size = (value: number) => Number(value.toFixed(value < 20 ? 2 : 1));
+    commitSketchProfile(
+      { ...current, points, segments },
+      `Traced ${traced.name}, ${size(traced.width)} × ${size(traced.height)} mm. Extrude it, or cut it from a part as a pocket.`,
+    );
+  }, [commitSketchProfile]);
+
+  /**
+   * Fit in crystal: scales the selected parts (or every part) together and centres them in
+   * the crystal blank, a margin in from every surface.
+   */
+  const fitInCrystal = useCallback(() => {
+    const settings = workspaceSettingsRef.current;
+    if (!isCrystalDesign(settings)) return;
+    const pool = selectedShapes.length > 0 ? selectedShapes : shapesRef.current;
+    const chosen = pool.filter((shape) => !shape.hidden && !isConstructionShape(shape));
+    if (chosen.length === 0) {
+      setNotice("Add a model to fit in the crystal");
+      return;
+    }
+    if (chosen.some((shape) => shape.locked)) {
+      setNotice("Unlock the parts before fitting them in the crystal");
+      return;
+    }
+    const reach = crystalReach(settings);
+    const pointsOf = (list: WorkplaneShape[]) => list.flatMap((shape) => {
+      try {
+        return meshForShape(shape).vertices;
+      } catch {
+        return [];
+      }
+    });
+    let next = chosen;
+    // Scaling, then measuring again, settles in a pass or two even for rotated parts.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const fit = fitInsideCrystal(pointsOf(next), settings.crystal, reach);
+      if (!fit) {
+        setNotice("This model has no shape to fit yet");
+        return;
+      }
+      const [mx, my, mz] = fit.middle;
+      const scaled = Math.abs(fit.ratio - 1) < 1e-4 ? next : next.map((shape) => ({
+        ...shape,
+        ...(uniformScalePatch(shape, fit.ratio) ?? {}),
+        x: mx + (shape.x - mx) * fit.ratio,
+        z: mz + (shape.z - mz) * fit.ratio,
+        elevation: my + ((shape.elevation ?? 0) - my) * fit.ratio,
+      }));
+      // Then move them together so their middle is the crystal's middle.
+      const placed = fitInsideCrystal(pointsOf(scaled), settings.crystal, reach);
+      if (!placed) return;
+      const [dx, dy, dz] = [placed.target[0] - placed.middle[0], placed.target[1] - placed.middle[1], placed.target[2] - placed.middle[2]];
+      next = scaled.map((shape) => ({ ...shape, x: shape.x + dx, z: shape.z + dz, elevation: (shape.elevation ?? 0) + dy }));
+      if (Math.abs(fit.ratio - 1) < 1e-3) break;
+    }
+    const byId = new Map(next.map((shape) => [shape.id, canonicalizeShape(shape)]));
+    commitShapes(shapesRef.current.map((shape) => byId.get(shape.id) ?? shape), [...byId.keys()], "Fit in crystal");
+    const final = fitInsideCrystal(pointsOf(next), settings.crystal, reach);
+    const label = crystalSizeLabel(settings.crystal);
+    setNotice(final
+      ? `Fitted ${chosen.length === 1 ? chosen[0].name : `${chosen.length} parts`} inside the ${label}, ${settings.crystal.margin} mm in from the surface.`
+      : `Fitted inside the ${label}.`);
+  }, [commitShapes, selectedShapes]);
 
   /** Opens Make flat parts for the one selected part. */
   const openFlatParts = useCallback(() => {
@@ -11814,6 +11916,9 @@ export function SketchForgeEditor({
         onFlatParts: openFlatParts,
         canFlatParts: selectedShapes.length === 1 && !selectedShapes[0].hole,
         onTraceLogo: () => setTraceLogoOpen(true),
+        crystal: isCrystalDesign(workspaceSettings),
+        onFitCrystal: fitInCrystal,
+        canFitCrystal: shapes.some((shape) => !shape.hidden && !isConstructionShape(shape)),
       }
       : null,
     canUndo: historyIndex > 0 || Boolean(sketchCancelUndo) || Boolean(edgeModifier) || Boolean(pushPullSession) || Boolean(faceSession) || Boolean(circularPattern) || Boolean(linearPattern),
@@ -12416,6 +12521,13 @@ export function SketchForgeEditor({
                 return;
               }
               sketchImageInputRef.current?.click();
+            }}
+            onTracePhoto={() => {
+              if (sketchFocusMode !== "2d") {
+                setSketchFocusMode("2d");
+                setSketchFrameRequest(0);
+              }
+              setTracePhotoOpen(true);
             }}
           />
         ) : null}
@@ -13532,6 +13644,7 @@ export function SketchForgeEditor({
             onSaveCutFile: (format) => void saveCutFile(format),
             appName: laserApp?.name ?? null,
             onOpenInApp: () => void saveCutFile("svg", laserApp),
+            crystal: isCrystalDesign(workspaceSettings) ? crystalSizeLabel(workspaceSettings.crystal) : null,
           } : null}
         />
       ) : null}
@@ -13649,6 +13762,15 @@ export function SketchForgeEditor({
           onMake={(logo) => {
             setTraceLogoOpen(false);
             makeTracedLogo(logo);
+          }}
+        />
+      ) : null}
+      {tracePhotoOpen ? (
+        <TracePhotoDialog
+          onCancel={() => setTracePhotoOpen(false)}
+          onMake={(traced) => {
+            setTracePhotoOpen(false);
+            addTracedPhoto(traced);
           }}
         />
       ) : null}
@@ -13828,6 +13950,8 @@ function TopActionPanel({
     /** A laser program found here that opens the cut file, or null to only save it. */
     appName: string | null;
     onOpenInApp: () => void;
+    /** The crystal blank, such as "50 × 50 × 80 mm block", when engraving inside crystal. */
+    crystal: string | null;
   } | null;
 }) {
   const title =
@@ -13930,7 +14054,27 @@ function TopActionPanel({
           ) : null}
         </div>
       ) : null}
-      {panel === "export" && laser ? (
+      {panel === "export" && laser?.crystal ? (
+        <div className="top-action-body export-panel-body">
+          <p>{shapeCount} {scopeLabel} part{shapeCount === 1 ? "" : "s"} ready to engrave inside a {laser.crystal} of K9 crystal on {laser.machine}.</p>
+          <button className="export-primary" type="button" onClick={() => onExport("stl")}>
+            <Download size={18} />
+            Download STL
+          </button>
+          <p className="export-step-note">Open the STL in your laser&apos;s software and choose inner engraving. It is saved at the size it is here, ready for the same blank.</p>
+          <div className="export-mesh-actions export-mesh-actions--pair">
+            <button type="button" onClick={() => onExport("3mf")}>
+              <Download size={18} />
+              Download 3MF
+            </button>
+            <button type="button" onClick={() => onExport("obj")}>
+              <ToolbarExportIcon />
+              Download OBJ
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {panel === "export" && laser && !laser.crystal ? (
         <div className="top-action-body export-panel-body">
           <p>{shapeCount} {scopeLabel} part{shapeCount === 1 ? "" : "s"} ready to cut from {laser.sheet} on {laser.machine}.</p>
           <button

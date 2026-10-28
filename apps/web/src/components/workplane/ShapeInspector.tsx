@@ -1,5 +1,6 @@
 "use client";
 
+import { stlMegabytes } from "@/lib/laser/crystalFile";
 import { ChevronDown, ChevronUp, Split, X } from "lucide-react";
 import { isLaserDesign } from "@/lib/laserMachine";
 import { LASER_JOB_LABEL, type LaserJob } from "@/lib/laser/cutFile";
@@ -1297,7 +1298,10 @@ export function ShapeInspector({
 
       {inspectTarget.importedMesh && !feature && onReduceTriangles ? (
         <div className="mesh-reduce">
-          <p className="mesh-reduce-count">Triangles: {(inspectTarget.importedMesh.triangleCount || sourceTriangleCount).toLocaleString()}</p>
+          <p className="mesh-reduce-count">
+            Triangles: {(inspectTarget.importedMesh.triangleCount || sourceTriangleCount).toLocaleString()}
+            <span className="mesh-reduce-size"> · about {Math.max(0.1, Number(stlMegabytes(inspectTarget.importedMesh.triangleCount || sourceTriangleCount).toFixed(1)))} MB as an STL</span>
+          </p>
           {reduceOpen ? (
             <>
               <label className="mesh-reduce-slider">

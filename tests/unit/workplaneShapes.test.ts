@@ -126,6 +126,11 @@ describe("workplane shape helpers", () => {
     expect(workplaneShapesEqual(first, sameValues)).toBe(false);
   });
 
+  it("counts a new laser job as a change", () => {
+    expect(workplaneShapesEqual(shape({}), shape({ laserJob: "engrave" }))).toBe(false);
+    expect(workplaneShapesEqual(shape({ laserJob: "score" }), shape({ laserJob: "score" }))).toBe(true);
+  });
+
   it("serializes canonical shapes for sync", () => {
     expect(JSON.parse(serializeShapesForSync([shape({ rotation: 359.9, mirrorX: false })]))).toEqual([
       expect.objectContaining({

@@ -4,6 +4,8 @@
  * print design is everything else Mintr makes.
  */
 
+import { CRYSTAL_MATERIAL_ID, crystalSizeLabel, DEFAULT_CRYSTAL, F2_ULTRA_UV_REACH, normalizeCrystal, type CrystalBlank } from "@/lib/laser/crystal";
+
 /** What this person makes with. It follows the person, not the design. */
 export type MachineChoice = "printer" | "laser" | "both";
 /** A design is made for a 3D printer or cut on a laser. */
@@ -97,6 +99,8 @@ export const LASER_MATERIALS: readonly LaserMaterial[] = [
   { id: "cardboard-2", label: "Cardboard", thickness: 2 },
   { id: "leather-2", label: "Leather", thickness: 2 },
   { id: "card-0.3", label: "Card stock", thickness: 0.3 },
+  // A block or ball engraved inside, not a sheet: its sizes are the crystal blank's.
+  { id: CRYSTAL_MATERIAL_ID, label: "K9 crystal", thickness: 3 },
   { id: "custom", label: "Other", thickness: 3 },
 ];
 
@@ -106,6 +110,7 @@ export const MAX_SHEET_MM = 30;
 
 /** "3 mm plywood", or "4 mm sheet" for a material with no name. */
 export function materialLabel(material: Pick<LaserMaterial, "id" | "label">, thickness: number) {
+  if (material.id === CRYSTAL_MATERIAL_ID) return "K9 crystal";
   const size = `${Number(thickness.toFixed(2))} mm`;
   return material.id === "custom" ? `${size} sheet` : `${size} ${material.label.toLowerCase()}`;
 }
@@ -121,6 +126,8 @@ export type LaserSettings = {
   materialThickness: number;
   cutFileStyle: CutFileStyle;
   showLaserBed: boolean;
+  /** The crystal blank, when the material is K9 crystal. */
+  crystal: CrystalBlank;
 };
 
 export const LASER_SETTING_KEYS = [
@@ -134,6 +141,7 @@ export const LASER_SETTING_KEYS = [
   "materialThickness",
   "cutFileStyle",
   "showLaserBed",
+  "crystal",
 ] as const satisfies readonly (keyof LaserSettings)[];
 
 export const DEFAULT_LASER_SETTINGS: LaserSettings = {
@@ -147,6 +155,7 @@ export const DEFAULT_LASER_SETTINGS: LaserSettings = {
   materialThickness: 3,
   cutFileStyle: "xtool",
   showLaserBed: true,
+  crystal: DEFAULT_CRYSTAL,
 };
 
 const MIN_LASER_BED = 40;
@@ -201,7 +210,23 @@ export function normalizeLaserSettings(value: Partial<Record<keyof LaserSettings
     materialThickness: Number(clamp(finite(input.materialThickness, material.thickness), MIN_SHEET_MM, MAX_SHEET_MM).toFixed(2)),
     cutFileStyle: styleInput === "lightburn" || styleInput === "glowforge" || styleInput === "xtool" ? styleInput : fallback.cutFileStyle,
     showLaserBed: typeof input.showLaserBed === "boolean" ? input.showLaserBed : fallback.showLaserBed,
+    crystal: normalizeCrystal(input.crystal, fallback.crystal ?? DEFAULT_CRYSTAL),
   };
+}
+
+/** A laser design engraved inside a K9 crystal blank. */
+export function isCrystalDesign(settings: Pick<LaserSettings, "designKind" | "materialPreset"> | null | undefined) {
+  return settings?.designKind === "laser" && settings.materialPreset === CRYSTAL_MATERIAL_ID;
+}
+
+/** How wide a laser reaches inside glass, where that is known: the F2 Ultra UV's 70 × 70 mm. */
+export function crystalReach(settings: Pick<LaserSettings, "laserPreset">) {
+  return settings.laserPreset.startsWith("xtool-f2-ultra-uv") ? F2_ULTRA_UV_REACH : null;
+}
+
+/** The thickness new parts start at: the sheet's in a laser design, none inside crystal. */
+export function sheetThickness(settings: Pick<LaserSettings, "designKind" | "materialPreset" | "laserType" | "materialThickness">) {
+  return settings.designKind === "laser" && !isCrystalDesign(settings) ? settings.materialThickness : null;
 }
 
 /** Choosing a machine also picks its usual software and a kerf for its kind of laser. */
@@ -242,7 +267,8 @@ export function isLaserDesign(settings: Pick<LaserSettings, "designKind"> | null
 }
 
 /** The label in the corner of a laser design, e.g. "Laser · 3 mm plywood". */
-export function laserDesignLabel(settings: Pick<LaserSettings, "materialPreset" | "materialThickness">) {
+export function laserDesignLabel(settings: Pick<LaserSettings, "designKind" | "materialPreset" | "materialThickness" | "laserType" | "crystal">) {
+  if (isCrystalDesign(settings)) return `Laser · ${crystalSizeLabel(settings.crystal)} of K9 crystal`;
   return `Laser · ${materialLabel(materialById(settings.materialPreset), settings.materialThickness)}`;
 }
 

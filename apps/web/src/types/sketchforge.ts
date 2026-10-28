@@ -150,6 +150,15 @@ export type WorkplaneWorkspaceSettings = {
   cutFileStyle: "lightburn" | "xtool" | "glowforge";
   /** Draw the laser's work area on the workplane. */
   showLaserBed: boolean;
+  /** The K9 crystal blank a crystal design is engraved inside. */
+  crystal: {
+    shape: "block" | "ball";
+    width: number;
+    depth: number;
+    height: number;
+    diameter: number;
+    margin: number;
+  };
 };
 
 export type AlignAxis = "x" | "y" | "z";

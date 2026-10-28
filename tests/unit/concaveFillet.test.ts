@@ -221,3 +221,28 @@ describe("cove (concave) fillet", () => {
     expect(removed).toBeLessThan(fullTorus * 0.3);
   });
 });
+
+describe("concave fillet corners", () => {
+  it("leaves no point of material where three grooves meet at a corner", () => {
+    const box = kernel.makeBoxFromCorners({ x: 0, y: 0, z: 0 }, { x: 20, y: 20, z: 20 });
+    const result = coveEdges(kernel, box, kernel.getSubShapes(box, "edge"), 4);
+    expect(kernel.isValid(result)).toBe(true);
+    expect(kernel.isSolid(result)).toBe(true);
+    // The grooves alone would leave material out to here along the corner's diagonal.
+    const t = 4 / Math.SQRT2 + 0.05;
+    const probe = kernel.translate(kernel.makeSphere(0.02), t, t, t);
+    expect(volume(kernel.common(result, probe))).toBeLessThan(1e-7);
+  });
+
+  it("keeps the plain ball where an edge at the corner stays sharp", () => {
+    const box = kernel.makeBoxFromCorners({ x: 0, y: 0, z: 0 }, { x: 20, y: 20, z: 20 });
+    const top = kernel.getSubShapes(box, "edge").filter((edge) => {
+      const params = kernel.curveParameters(edge);
+      return Math.abs(kernel.curvePointAtParam(edge, (params.first + params.last) / 2).z - 20) < 1e-6;
+    });
+    const result = coveEdges(kernel, box, top, 4);
+    // Just below the groove on the sharp vertical edge, the part is untouched.
+    const probe = kernel.translate(kernel.makeSphere(0.05), 0.3, 0.3, 20 - 4 - 0.5);
+    expect(volume(kernel.common(result, probe))).toBeGreaterThan(1e-6);
+  });
+});
