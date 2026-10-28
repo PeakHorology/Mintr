@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { preferenceFromPath, resolveSlicerChoice, slicerFromExeName, type DetectedSlicer } from "@/lib/slicerHandoff";
 
 const require = createRequire(import.meta.url);
-const { detectSlicersIn, identifyExe } = require("../../electron/slicerCatalog.cjs") as {
+const { detectSlicersIn, identifyExe, xtoolImportLink } = require("../../electron/slicerCatalog.cjs") as {
   detectSlicersIn: (roots: string[]) => DetectedSlicer[];
   identifyExe: (filePath: string) => DetectedSlicer;
+  xtoolImportLink: (filePath: string) => string;
 };
 
 const orca: DetectedSlicer = {
@@ -116,5 +117,20 @@ describe("slicer discovery", () => {
     expect(found.find((slicer: DetectedSlicer) => slicer.id === "formlabs")?.format).toBe("stl");
     expect(identifyExe(path.join(prusaDir, "prusa-slicer.exe")).name).toBe("PrusaSlicer");
     expect(identifyExe(path.join(preformDir, "PreForm.exe")).name).toBe("Formlabs PreForm");
+  });
+});
+
+describe("xTool Studio handoff", () => {
+  it("sends the cut file as an Open in Studio link that names the file", async () => {
+    const { inflateRawSync } = await import("node:zlib");
+    const link = xtoolImportLink(path.join("C:\\", "Users", "Maker", "Downloads", "Box · lid.svg"));
+    expect(link.startsWith("xtool://external/?")).toBe(true);
+    const packed = link.split("?")[1];
+    expect(packed).not.toMatch(/[+/=]/);
+    const message = JSON.parse(inflateRawSync(Buffer.from(packed.replace(/-/g, "+").replace(/_/g, "/"), "base64")).toString("utf8"));
+    expect(message.action).toBe("OpenInStudio");
+    expect(message.data.name).toBe("Box · lid.svg");
+    expect(message.data.url).toBe("file:///C:/Users/Maker/Downloads/Box%20%C2%B7%20lid.svg");
+    expect(message.config.insertMode).toBe("new");
   });
 });

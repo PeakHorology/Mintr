@@ -2,7 +2,9 @@
 
 import { Bot, Check, FolderDown, GraduationCap, Grid3X3, Info, Keyboard, LifeBuoy, Palette, Pencil, Ruler, ScrollText, SlidersHorizontal, Type, X } from "lucide-react";
 import { FontSettings } from "./FontSettings";
-import { Printer3dIcon, ToolbarSageIcon } from "@/components/icons";
+import { MachineSettings, useMachineChoice } from "./MachineSettings";
+import { WorkspaceSelect, WorkspaceToggle } from "./SettingsControls";
+import { LaserIcon, Printer3dIcon, ToolbarSageIcon } from "@/components/icons";
 import { SageHomePanel, SageSettingsSearch } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
 import { useSageEnabled, writeSageEnabled } from "@/lib/sagePreference";
@@ -136,6 +138,7 @@ export function WorkspaceSettingsModal({
   tutorialsHidden,
   onTutorialsHiddenChange,
   onOpenTutorial,
+  initialSection,
 }: {
   workspace: WorkspaceSettings;
   snap: GridSize;
@@ -154,6 +157,8 @@ export function WorkspaceSettingsModal({
   tutorialsHidden?: boolean;
   onTutorialsHiddenChange?: (hidden: boolean) => void;
   onOpenTutorial?: (tutorialId: string) => void;
+  /** The tab to open on, such as Machines from a laser design's label. */
+  initialSection?: WorkspaceSettingsSection;
 }) {
   const [leaving, setLeaving] = useState(false);
   const leaveTimerRef = useRef<number | null>(null);
@@ -171,8 +176,11 @@ export function WorkspaceSettingsModal({
     if (leaveTimerRef.current !== null) window.clearTimeout(leaveTimerRef.current);
   }, []);
   const [defaultSaved, setDefaultSaved] = useState(false);
-  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(sketchGuides ? "sketch" : "general");
+  const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(initialSection ?? (sketchGuides ? "sketch" : "general"));
   const sageEnabled = useSageEnabled();
+  const machines = useMachineChoice();
+  // Someone with only a laser has no printer to set up, unless this design is a 3D print.
+  const showPrinting = machines !== "laser" || (context === "project" && workspace.designKind === "print");
   const cardRef = useRef<HTMLDivElement | null>(null);
   // A tool picked from Sage's search opens in the Sage tab; the nonce reopens it even if picked twice.
   const [sageFocus, setSageFocus] = useState<{ id: string; nonce: number } | null>(null);
@@ -480,10 +488,16 @@ export function WorkspaceSettingsModal({
                 <span>Sketch</span>
               </button>
             ) : null}
-            <button className={activeSection === "printing" ? "active" : ""} aria-current={activeSection === "printing" ? "page" : undefined} onClick={() => setActiveSection("printing")}>
-              <Printer3dIcon size={18} />
-              <span>Printing</span>
+            <button className={activeSection === "machines" ? "active" : ""} aria-current={activeSection === "machines" ? "page" : undefined} onClick={() => setActiveSection("machines")}>
+              <LaserIcon size={18} />
+              <span>Machines</span>
             </button>
+            {showPrinting ? (
+              <button className={activeSection === "printing" ? "active" : ""} aria-current={activeSection === "printing" ? "page" : undefined} onClick={() => setActiveSection("printing")}>
+                <Printer3dIcon size={18} />
+                <span>Printing</span>
+              </button>
+            ) : null}
             <button className={activeSection === "files" ? "active" : ""} aria-current={activeSection === "files" ? "page" : undefined} onClick={() => setActiveSection("files")}>
               <FolderDown size={18} />
               <span>Files</span>
@@ -808,6 +822,8 @@ export function WorkspaceSettingsModal({
                   ) : null}
                 </>
               ) : null}
+
+              {activeSection === "machines" ? <MachineSettings workspace={workspace} patchWorkspace={patchWorkspace} context={context} /> : null}
 
               {activeSection === "printing" ? (
                 <>
@@ -1419,51 +1435,5 @@ function ConstructionConeIcon() {
       <path d="M8.3 9h3.4M7.5 12.3h5" />
       <path d="M4 17.5h12" />
     </svg>
-  );
-}
-
-function WorkspaceToggle({
-  label,
-  tip,
-  checked,
-  onChange,
-}: {
-  label: string;
-  tip: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <PeakTipLabel data-sage-key={settingSageKey(tip)} label={tip} helpTitle={label} description={tip} className="workspace-toggle">
-      <span>{label}</span>
-      <input type="checkbox" aria-label={label} checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
-    </PeakTipLabel>
-  );
-}
-
-function WorkspaceSelect({
-  label,
-  tip,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  tip: string;
-  value: string;
-  options: readonly string[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <PeakTipLabel data-sage-key={settingSageKey(tip)} label={tip} helpTitle={label} description={tip} className="workspace-select">
-      <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.currentTarget.value)}>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </PeakTipLabel>
   );
 }

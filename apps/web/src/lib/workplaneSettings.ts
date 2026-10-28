@@ -3,6 +3,7 @@ import { DEFAULT_DISPLAY_QUALITY, normalizeDisplayQuality } from "@/lib/displayT
 import { normalizeScaleForUnits } from "@/lib/measurementUnits";
 import { DEFAULT_OVERHANG_ANGLE, DEFAULT_PRINTER_ID, normalizePrinterBed } from "@/lib/printerBed";
 import { DEFAULT_NOZZLE_MM } from "@/lib/thinWalls";
+import { DEFAULT_LASER_SETTINGS, normalizeLaserSettings } from "@/lib/laserMachine";
 import { DEFAULT_LIGHT_VIEWPORT_BACKGROUND } from "@/lib/uiTheme";
 
 export const DEFAULT_SNAP_GRID: GridSize = "1.0 mm";
@@ -44,6 +45,7 @@ export const DEFAULT_WORKPLANE_WORKSPACE: WorkplaneWorkspaceSettings = {
   showSmallHoles: false,
   showTrappedResin: false,
   failureNoticesOnly: false,
+  ...DEFAULT_LASER_SETTINGS,
 };
 
 const snapGridOptions: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm"];
@@ -118,6 +120,7 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
     showSmallHoles: printer.showSmallHoles,
     showTrappedResin: printer.showTrappedResin,
     failureNoticesOnly: booleanOrDefault(candidate.failureNoticesOnly, fallback.failureNoticesOnly),
+    ...normalizeLaserSettings(candidate, fallback),
   };
 }
 
@@ -201,7 +204,8 @@ export function saveGlobalWorkspaceDefaults(workspace: WorkplaneWorkspaceSetting
   try {
     if (typeof workspace.peakcadPro === "boolean") savePeakcadPro(workspace.peakcadPro);
     const bundle: WorkspaceDefaultsBundle = {
-      workspace: normalizeWorkspaceSettings(workspace),
+      // Each design chooses print or laser when it is made, so the default never carries one.
+      workspace: { ...normalizeWorkspaceSettings(workspace), designKind: "print" },
       snap: normalizeSnapGrid(snap, DEFAULT_SNAP_GRID),
     };
     window.localStorage.setItem(GLOBAL_WORKSPACE_DEFAULT_STORAGE_KEY, JSON.stringify(bundle));

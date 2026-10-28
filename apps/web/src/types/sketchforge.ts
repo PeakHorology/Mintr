@@ -133,6 +133,23 @@ export type WorkplaneWorkspaceSettings = {
   showTrappedResin: boolean;
   /** Hide coaching and refusal toasts. A command that fails still shows. */
   failureNoticesOnly: boolean;
+  /** Made for a 3D printer, or flat parts cut on a laser. Older files are print designs. */
+  designKind: "print" | "laser";
+  /** Laser preset id. "custom" keeps the two sizes below. */
+  laserPreset: string;
+  laserType: "diode" | "co2" | "infrared" | "uv";
+  /** Laser work area along X and Z, in millimetres. */
+  laserWidth: number;
+  laserDepth: number;
+  /** Width the beam burns away, in millimetres. */
+  kerfMm: number;
+  /** Sheet material id. "custom" keeps the thickness below. */
+  materialPreset: string;
+  materialThickness: number;
+  /** The software the cut files are made for. */
+  cutFileStyle: "lightburn" | "xtool" | "glowforge";
+  /** Draw the laser's work area on the workplane. */
+  showLaserBed: boolean;
 };
 
 export type AlignAxis = "x" | "y" | "z";
@@ -424,6 +441,8 @@ export type WorkplaneShape = {
   edgeTreatments?: EdgeTreatmentFeature[];
   /** A finish on the part: the body stays exact, and the textured triangles are rebuilt from it. */
   surfaceTexture?: SurfaceTexture;
+  /** In a laser design, what the laser does along this part: cut through (the default), score a line, or engrave its area. */
+  laserJob?: "cut" | "score" | "engrave";
   edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];
   /**
    * Involute gear. Size follows the module and tooth count.

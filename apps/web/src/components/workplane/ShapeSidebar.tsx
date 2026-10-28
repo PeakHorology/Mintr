@@ -122,6 +122,7 @@ export function ShapeSidebar({
   collapsed = false,
   onExpand,
   onCollapse,
+  laserDesign = false,
 }: {
   onAddShape: (shape: ShapeAsset) => void;
   shapes: WorkplaneShape[];
@@ -130,6 +131,8 @@ export function ShapeSidebar({
   collapsed?: boolean;
   onExpand?: () => void;
   onCollapse?: () => void;
+  /** A laser design leaves out the print-only parts. */
+  laserDesign?: boolean;
 }) {
   const [objectListOpen, setObjectListOpen] = useState(false);
   const [shapeGroup, setShapeGroup] = useState<"solid" | "part">("solid");
@@ -273,7 +276,7 @@ export function ShapeSidebar({
       ) : (
         <aside className="shape-sidebar" aria-label={shapeGroup === "solid" ? "Solids" : "Parts"}>
           <div className="shape-sidebar-list">
-            {toolbarShapeAssets.filter((shape) => shape.group === shapeGroup).map((shape) => (
+            {toolbarShapeAssets.filter((shape) => shape.group === shapeGroup && !(laserDesign && shape.printOnly)).map((shape) => (
               <ShapeToolButton
                 key={shape.id}
                 shape={shape}

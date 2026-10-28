@@ -10,7 +10,12 @@ import type { DisplayQuality, ShapeAsset, WorkplaneShape } from "@/types/sketchf
 /** Solids are plain modeling bodies. Parts are generated pieces such as text, gears, and Gridfinity. */
 export type ShapeCatalogGroup = "solid" | "part";
 
-export type ToolbarShapeAsset = ShapeAsset & { menuIcon: string; group: ShapeCatalogGroup };
+export type ToolbarShapeAsset = ShapeAsset & {
+  menuIcon: string;
+  group: ShapeCatalogGroup;
+  /** Only for 3D printing, so laser designs leave it out of the shapes list. */
+  printOnly?: boolean;
+};
 
 export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "box", name: "Box", src: "assets/peakcad/shape-icons/box.png", menuIcon: "assets/peakcad/shape-icons/box.png", kind: "box", color: "#d41721", group: "solid" },
@@ -25,10 +30,10 @@ export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "torus", name: "Torus", src: "assets/peakcad/shape-icons/torus.png", menuIcon: "assets/peakcad/shape-icons/torus.png", kind: "torus", color: "#0098c7", group: "solid" },
   { id: "tube", name: "Ring", src: "assets/peakcad/shape-icons/tube.png", menuIcon: "assets/peakcad/shape-icons/tube.png", kind: "tube", color: "#ce7013", group: "solid" },
   { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b", group: "part" },
-  { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813", group: "part" },
+  { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813", group: "part", printOnly: true },
   { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#2aa77e", group: "part" },
-  { id: "gridfinity-bin", name: "Gridfinity Bin", src: "assets/peakcad/shape-icons/gridfinity-bin.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-bin.png", kind: "gridfinityBin", color: GRIDFINITY_BIN_COLOR, group: "part" },
-  { id: "gridfinity-baseplate", name: "Gridfinity Baseplate", src: "assets/peakcad/shape-icons/gridfinity-baseplate.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-baseplate.png", kind: "gridfinityBaseplate", color: GRIDFINITY_BASEPLATE_COLOR, group: "part" },
+  { id: "gridfinity-bin", name: "Gridfinity Bin", src: "assets/peakcad/shape-icons/gridfinity-bin.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-bin.png", kind: "gridfinityBin", color: GRIDFINITY_BIN_COLOR, group: "part", printOnly: true },
+  { id: "gridfinity-baseplate", name: "Gridfinity Baseplate", src: "assets/peakcad/shape-icons/gridfinity-baseplate.png", menuIcon: "assets/peakcad/shape-icons/gridfinity-baseplate.png", kind: "gridfinityBaseplate", color: GRIDFINITY_BASEPLATE_COLOR, group: "part", printOnly: true },
 ];
 
 export function sceneShape(shape: Partial<WorkplaneShape> & Pick<WorkplaneShape, "name" | "kind" | "color">): WorkplaneShape {
@@ -64,6 +69,8 @@ export function makeShapeFromAsset(
   asset: ShapeAsset,
   point?: { x: number; z: number; elevation?: number },
   displayQuality: DisplayQuality = getActiveDisplayQuality(),
+  /** In a laser design, a new part is as thick as the sheet it is cut from. */
+  sheetThickness?: number,
 ): WorkplaneShape {
   if (isGridfinityKind(asset.kind)) {
     return createGridfinityShape(asset.kind, point, { id: createLocalId(asset.id), color: asset.color });
@@ -73,7 +80,9 @@ export function makeShapeFromAsset(
   const roundProfile = asset.kind === "sphere" || asset.kind === "torus" || asset.kind === "ring" || asset.kind === "halfSphere" || asset.kind === "icosahedron";
   const flatProfile = asset.kind === "torus" || asset.kind === "ring" || asset.kind === "text";
   const size = gearSize ? gearSize.width : roundProfile ? 22 : 20;
-  const height = asset.kind === "gear" ? 8 : asset.kind === "text" ? 10 : asset.kind === "roundRoof" ? 10 : asset.kind === "halfSphere" ? 11 : flatProfile ? 5 : 20;
+  const height = sheetThickness && sheetThickness > 0
+    ? sheetThickness
+    : asset.kind === "gear" ? 8 : asset.kind === "text" ? 10 : asset.kind === "roundRoof" ? 10 : asset.kind === "halfSphere" ? 11 : flatProfile ? 5 : 20;
   const width = asset.kind === "text" ? 86 : gearSize ? gearSize.width : size;
   const depth = asset.kind === "text" ? 28 : gearSize ? gearSize.depth : size;
   const steps = catalogStepsForKind(asset.kind, displayQuality);

@@ -417,6 +417,16 @@ import { guideMinutes, guidePrompt, guideStartIndex, proposeGuideSteps, type Gui
 import { applyGuideDraft, readGuideAuthor, readGuideDraft, shrinkPicture, writeGuideAuthor, writeGuideDraft } from "@/lib/guideAuthoring";
 import { buildPeakcadDocument, packMintrGuideText, serializeMintrGuide } from "@/lib/peakcadDocument";
 import { readCustomFonts } from "@/lib/customFontStore";
+import { CUT_FILE_STYLES, isLaserDesign, laserMachineName, materialById, materialLabel } from "@/lib/laserMachine";
+import { buildCutLayout, cutLayoutDxf, cutLayoutSvg, lengthLabel } from "@/lib/laser/cutFile";
+import { detectLaserApps, laserAppFor, openInLaserApp, type LaserApp } from "@/lib/laser/laserAppHandoff";
+import { boxPanels, layOutPanels, placedOutline, type BoxSpec } from "@/lib/laser/boxMaker";
+import { nestParts } from "@/lib/laser/nest";
+import { BoxMakerDialog } from "@/components/workplane/BoxMakerDialog";
+import { FlatPartsDialog, type FlatPartsChoice } from "@/components/workplane/FlatPartsDialog";
+import { TraceLogoDialog, type TracedLogo } from "@/components/workplane/TraceLogoDialog";
+import { flatParts } from "@/lib/laser/flatParts";
+import type { SettingsSectionId } from "@/lib/settingGuides";
 import { EMPTY_GUIDE_LOG, compactGuideForFile, syncGuideLog, type GuideLog } from "@/lib/guideLog";
 import { loadGuideLog, saveGuideLogSoon } from "@/lib/guideLogStore";
 import { revealPeakcadFile, saveGuideTextAs } from "@/lib/peakcadFile";
@@ -1244,6 +1254,9 @@ function withOwnRegion<T extends { segments: Array<{ regionId?: string }> }>(geo
     segments: geometry.segments.map((segment) => ({ ...segment, regionId })),
   };
 }
+
+/** Box maker panels start a plywood colour, so they read as wood on the bed. */
+const BOX_PANEL_COLOR = "#c79a62";
 
 function defaultMcpSketchProfile(width: number, depth: number): SketchProfile {
   const halfWidth = Math.max(0.01, width) / 2;
@@ -2974,6 +2987,7 @@ export function SketchForgeEditor({
   );
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId | undefined>(undefined);
   const [cadApplyFlash, setCadApplyFlash] = useState<{
     nonce: number;
     ids: string[];
@@ -3002,7 +3016,11 @@ export function SketchForgeEditor({
     updateProjectWorkspaceSettings({ workspace: normalizedWorkspace, snap: normalizedSnap });
   }, [projectId, snapGrid, updateProjectWorkspaceSettings, workspaceSettings]);
   useEffect(() => {
-    const open = () => setSettingsOpen(true);
+    const open = (event: Event) => {
+      const section = (event as CustomEvent<{ section?: SettingsSectionId } | undefined>).detail?.section;
+      setSettingsSection(section);
+      setSettingsOpen(true);
+    };
     window.addEventListener("sketchforge:open-workspace-settings", open);
     return () => window.removeEventListener("sketchforge:open-workspace-settings", open);
   }, []);
@@ -5336,10 +5354,13 @@ export function SketchForgeEditor({
       : host
         ? shapeThicknessInwardFromFace(host, plane.origin, plane.normal)
         : null;
+    // A laser design's parts are as thick as its sheet.
+    const sheet = isLaserDesign(workspaceSettingsRef.current) ? workspaceSettingsRef.current.materialThickness : null;
     const defaultHeight = existing?.sketchFinish === "revolve"
       ? 10
       : existing?.height
         ?? throughDepth
+        ?? sheet
         ?? 10;
     setExtrudeAsHole(faceSketch || Boolean(existing?.hole));
     // A guide writes the depth in the prompt. The field stays empty so that number is typed, not filled in.
@@ -5348,7 +5369,7 @@ export function SketchForgeEditor({
       setNotice("Type the height from the tutorial.");
       return;
     }
-    setExtrudeHeightPrompt(Math.max(0.5, Number(defaultHeight.toFixed(2))));
+    setExtrudeHeightPrompt(Math.max(sheet !== null ? 0.1 : 0.5, Number(defaultHeight.toFixed(2))));
     setNotice(faceSketch
       ? (barrel && throughDepth
         ? `Barrel sketch on ${host?.name ?? "cylinder"} — ${throughDepth.toFixed(1)} mm goes through. A shorter number is a pocket that deep`
@@ -6080,7 +6101,8 @@ export function SketchForgeEditor({
         }
         return;
       }
-      const nextShape = makeShapeFromAsset(asset, place, workspaceSettingsRef.current.displayQuality);
+      const settings = workspaceSettingsRef.current;
+      const nextShape = makeShapeFromAsset(asset, place, settings.displayQuality, isLaserDesign(settings) ? settings.materialThickness : undefined);
       commitShapes([...shapesRef.current, nextShape], nextShape.id, `${asset.name} added`);
     },
     [commitShapes],
@@ -10586,6 +10608,290 @@ export function SketchForgeEditor({
     }
   }, [celebrateExport, hasSelection, projectName, selectedShapes, shapes]);
 
+  const [cutFileBusy, setCutFileBusy] = useState(false);
+  // The laser programs here, looked for once a laser design is open.
+  const [laserApps, setLaserApps] = useState<LaserApp[] | null>(null);
+  const laserDesignOpen = isLaserDesign(workspaceSettings);
+  useEffect(() => {
+    if (!laserDesignOpen || laserApps) return;
+    let cancelled = false;
+    void detectLaserApps().then((apps) => {
+      if (!cancelled) setLaserApps(apps);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [laserApps, laserDesignOpen]);
+  const laserApp = laserDesignOpen && laserApps ? laserAppFor(workspaceSettings.cutFileStyle, laserApps) : null;
+  const [boxMakerOpen, setBoxMakerOpen] = useState(false);
+  const [traceLogoOpen, setTraceLogoOpen] = useState(false);
+  const [flatPartsTarget, setFlatPartsTarget] = useState<{ id: string; name: string; size: { width: number; depth: number; height: number } } | null>(null);
+
+  /** Box maker: every panel as a flat sketch part, laid out apart on the workplane and selected together. */
+  /** New flat parts moved, all together, to just in front of the parts already laid out, so none land on another. */
+  const clearOfOtherParts = useCallback((made: WorkplaneShape[], skipId?: string) => {
+    const bounds = (list: WorkplaneShape[]) => {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (const shape of list) {
+        try {
+          for (const [x, , z] of meshForShape(shape).vertices) {
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minZ = Math.min(minZ, z);
+            maxZ = Math.max(maxZ, z);
+          }
+        } catch {
+          // A part with no mesh yet takes no room.
+        }
+      }
+      return Number.isFinite(minX) ? { minX, maxX, minZ, maxZ } : null;
+    };
+    const others = bounds(shapesRef.current.filter((shape) => shape.id !== skipId && !shape.hidden && !shape.hole && !isConstructionShape(shape)));
+    const mine = bounds(made);
+    if (!others || !mine) return made;
+    const gap = 10;
+    const overlaps = mine.minX < others.maxX + gap && others.minX < mine.maxX + gap && mine.minZ < others.maxZ + gap && others.minZ < mine.maxZ + gap;
+    if (!overlaps) return made;
+    const dz = others.maxZ + gap - mine.minZ;
+    const dx = others.minX - mine.minX;
+    return made.map((shape) => ({ ...shape, x: shape.x + dx, z: shape.z + dz }));
+  }, []);
+
+  const makeBox = useCallback((spec: BoxSpec) => {
+    const placed = layOutPanels(boxPanels(spec), { gap: 5 });
+    const made: WorkplaneShape[] = [];
+    for (const panel of placed) {
+      const outline = placedOutline(panel);
+      const ids = outline.map(() => createLocalId("box-point"));
+      const profile: SketchProfile = {
+        points: outline.map(([x, z], index) => ({ id: ids[index], x, z, mode: "corner" })),
+        segments: ids.map((id, index) => ({ id: createLocalId("box-edge"), startId: id, endId: ids[(index + 1) % ids.length], kind: "line" })),
+        images: [],
+      };
+      const part = shapeFromSketchProfile(profile, spec.thickness);
+      if (part) made.push(canonicalizeShape({ ...part, id: createLocalId("box-panel"), name: `Box ${panel.name.toLowerCase()}`, color: BOX_PANEL_COLOR }));
+    }
+    if (made.length === 0) {
+      setNotice("Could not make the box panels");
+      return;
+    }
+    const clear = clearOfOtherParts(made);
+    commitShapes([...shapesRef.current, ...clear], clear.map((shape) => shape.id), `Made a box: ${clear.length} panels`);
+    setNotice(`Made ${made.length} panels. Save the cut file to cut them, or use Nest to pack them on the bed.`);
+  }, [clearOfOtherParts, commitShapes]);
+
+  /** Trace logo: the traced outlines become one sheet-thick part, each piece with its own holes. */
+  const makeTracedLogo = useCallback((logo: TracedLogo) => {
+    const points: SketchProfile["points"] = [];
+    const segments: SketchProfile["segments"] = [];
+    const addLoop = (loop: Array<{ x: number; y: number }>, regionId: string) => {
+      if (loop.length < 3) return;
+      const ids = loop.map(() => createLocalId("logo-point"));
+      loop.forEach((point, index) => {
+        // Centred, the picture's top toward the back; a sketch's z runs the other way to the workplane's.
+        points.push({ id: ids[index], x: point.x - logo.width / 2, z: -(point.y - logo.height / 2), mode: "corner" });
+      });
+      ids.forEach((id, index) => segments.push({ id: createLocalId("logo-edge"), startId: id, endId: ids[(index + 1) % ids.length], kind: "line", regionId }));
+    };
+    for (const piece of logo.pieces) {
+      // A region each, so a dot inside a letter's hole stays solid instead of becoming a hole.
+      const regionId = createLocalId("logo-region");
+      addLoop(piece.outer, regionId);
+      for (const hole of piece.holes) addLoop(hole, regionId);
+    }
+    const shape = segments.length > 0 ? shapeFromSketchProfile({ points, segments, images: [] }, workspaceSettingsRef.current.materialThickness) : null;
+    if (!shape) {
+      setNotice("Could not make a part from that logo");
+      return;
+    }
+    const made = clearOfOtherParts([canonicalizeShape({ ...shape, id: createLocalId("logo"), name: logo.name, color: BOX_PANEL_COLOR, laserJob: logo.job })]);
+    commitShapes([...shapesRef.current, ...made], made.map((part) => part.id), `Traced ${logo.name}`);
+    const job = logo.job === "engrave" ? "engrave" : logo.job === "cut" ? "cut out" : "score";
+    setNotice(`Made ${logo.name}, ${Number(logo.width.toFixed(1))} × ${Number(logo.height.toFixed(1))} mm, set to ${job}.`);
+  }, [clearOfOtherParts, commitShapes]);
+
+  /** Opens Make flat parts for the one selected part. */
+  const openFlatParts = useCallback(() => {
+    const target = selectedShapes.length === 1 ? selectedShapes[0] : null;
+    if (!target || target.hole || isConstructionShape(target)) {
+      setNotice("Select one 3D part to make into flat parts");
+      return;
+    }
+    let mesh;
+    try {
+      mesh = meshForShape(target);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "That part has no shape to slice");
+      return;
+    }
+    const low = [Infinity, Infinity, Infinity];
+    const high = [-Infinity, -Infinity, -Infinity];
+    for (const vertex of mesh.vertices) {
+      for (let axis = 0; axis < 3; axis += 1) {
+        low[axis] = Math.min(low[axis], vertex[axis]);
+        high[axis] = Math.max(high[axis], vertex[axis]);
+      }
+    }
+    setFlatPartsTarget({ id: target.id, name: target.name, size: { width: high[0] - low[0], depth: high[2] - low[2], height: high[1] - low[1] } });
+  }, [selectedShapes]);
+
+  /** Make flat parts: slices the part into sheet-thick parts, laid out on the bed, and hides the 3D part. */
+  const makeFlatParts = useCallback(async (targetId: string, choice: FlatPartsChoice) => {
+    const source = shapesRef.current.find((shape) => shape.id === targetId);
+    if (!source) return;
+    setNotice("Making flat parts…");
+    try {
+      const runtime = await getManifoldRuntime();
+      const settings = workspaceSettingsRef.current;
+      const thickness = settings.materialThickness;
+      const parts = flatParts(runtime, meshForShape(source), choice.style, { thickness, across: choice.across, along: choice.along });
+      if (parts.length === 0) {
+        setNotice(`${source.name} left nothing to cut. It may be thinner than the sheet.`);
+        return;
+      }
+      const result = nestParts(
+        parts.map((part, index) => ({ id: String(index), width: part.width, depth: part.height })),
+        { width: settings.laserWidth, depth: settings.laserDepth },
+        Math.max(2, settings.kerfMm * 10),
+      );
+      const made: WorkplaneShape[] = [];
+      for (const placement of result.placements) {
+        const part = parts[Number(placement.id)];
+        // Each part lies with its top toward the back, or turned a quarter where the bed fits it better.
+        const toBed = ([u, v]: readonly [number, number]): [number, number] => placement.turned
+          ? [placement.minX + v, placement.minZ + u]
+          : [placement.minX + u, placement.minZ + (part.height - v)];
+        const points: SketchProfile["points"] = [];
+        const segments: SketchProfile["segments"] = [];
+        for (const polygon of part.polygons) {
+          const ids = polygon.map(() => createLocalId("flat-point"));
+          polygon.forEach((point, index) => {
+            const [x, z] = toBed(point);
+            // A sketch's z runs the other way to the workplane's.
+            points.push({ id: ids[index], x, z: -z, mode: "corner" });
+          });
+          ids.forEach((id, index) => segments.push({ id: createLocalId("flat-edge"), startId: id, endId: ids[(index + 1) % ids.length], kind: "line" }));
+        }
+        const shape = shapeFromSketchProfile({ points, segments, images: [] }, thickness);
+        if (shape) made.push(canonicalizeShape({ ...shape, id: createLocalId("flat-part"), name: `${source.name} · ${part.name}`, color: BOX_PANEL_COLOR }));
+      }
+      if (made.length === 0) {
+        setNotice("Could not make the flat parts");
+        return;
+      }
+      const placed = clearOfOtherParts(made, source.id);
+      const next = [...shapesRef.current.map((shape) => (shape.id === source.id ? { ...shape, hidden: true } : shape)), ...placed];
+      commitShapes(next, placed.map((shape) => shape.id), `Made ${placed.length} flat parts from ${source.name}`);
+      const sheets = result.sheets > 1 ? ` They need ${result.sheets} sheets; the rest are laid out beside the bed.` : "";
+      const how = choice.style === "stack" ? "Glue them in order, Layer 1 at the bottom." : "Push each across slice down onto the along slices.";
+      const packed = placed === made ? "" : " Use Nest to pack everything on the bed.";
+      setNotice(`Made ${made.length} flat parts and hid ${source.name}. ${how}${sheets}${packed}`);
+    } catch {
+      setNotice(`Could not slice ${source.name}. It needs to be one closed solid; try Combine first.`);
+    }
+  }, [clearOfOtherParts, commitShapes]);
+
+  /** Nest: packs the parts on the laser bed, turning them a quarter where that fits better. */
+  const nestLaserParts = useCallback(() => {
+    const source = (hasSelection ? selectedShapes : shapes).filter((shape) => !shape.hole && !shape.hidden && !shape.locked && !isConstructionShape(shape));
+    if (source.length === 0) {
+      setNotice(hasSelection ? "Select unlocked parts to nest" : "Add a part to nest first");
+      return;
+    }
+    const footprint = (shape: WorkplaneShape) => {
+      const { vertices } = meshForShape(shape);
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (const [x, , z] of vertices) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+      }
+      return { minX, maxX, minZ, maxZ };
+    };
+    const settings = workspaceSettingsRef.current;
+    const boxes = new Map(source.map((shape) => [shape.id, footprint(shape)]));
+    const result = nestParts(
+      source.map((shape) => {
+        const box = boxes.get(shape.id)!;
+        return { id: shape.id, width: box.maxX - box.minX, depth: box.maxZ - box.minZ };
+      }),
+      { width: settings.laserWidth, depth: settings.laserDepth },
+      Math.max(2, settings.kerfMm * 10),
+    );
+    const placements = new Map(result.placements.map((placement) => [placement.id, placement]));
+    const moved = new Set<string>();
+    const next = shapesRef.current.map((shape) => {
+      const placement = placements.get(shape.id);
+      if (!placement) return shape;
+      // Turn first, then move by where the turned part's footprint lands.
+      const turned = placement.turned ? { ...shape, rotation: cleanRotationDegrees((shape.rotation ?? 0) + 90) } : shape;
+      const box = placement.turned ? footprint(turned) : boxes.get(shape.id)!;
+      moved.add(shape.id);
+      return { ...turned, x: turned.x + (placement.minX - box.minX), z: turned.z + (placement.minZ - box.minZ) };
+    });
+    commitShapes(next, [...moved], `Nested ${moved.size} part${moved.size === 1 ? "" : "s"}`);
+    const extra = result.sheets > 1 ? ` They need ${result.sheets} sheets; the rest are laid out beside the bed.` : "";
+    const big = result.tooBig.length > 0 ? ` ${result.tooBig.length === 1 ? "One part is" : `${result.tooBig.length} parts are`} bigger than the bed.` : "";
+    setNotice(`Packed ${moved.size} part${moved.size === 1 ? "" : "s"} on the bed.${extra}${big}`);
+  }, [commitShapes, hasSelection, selectedShapes, shapes]);
+  /** A laser design's cut file: every part's outline, marked cut, score or engrave, at true size. */
+  const saveCutFile = useCallback(async (format: "svg" | "dxf", openIn?: LaserApp | null) => {
+    const source = (hasSelection ? selectedShapes : shapes).filter((shape) => !shape.hole && !shape.hidden && !isConstructionShape(shape));
+    if (source.length === 0) {
+      setNotice(hasSelection ? "Select a part to cut first" : "Add a part to cut first");
+      return;
+    }
+    setCutFileBusy(true);
+    try {
+      const runtime = await getManifoldRuntime();
+      const settings = workspaceSettingsRef.current;
+      const parts = source.map((shape) => ({ name: shape.name, job: shape.laserJob ?? "cut", mesh: meshForShape(shape) }));
+      const layout = buildCutLayout(runtime, parts, { kerfMm: settings.kerfMm });
+      if (!layout.bounds) {
+        setNotice("Nothing to cut: the parts have no outline seen from above. Lay them flat on the workplane.");
+        return;
+      }
+      const label = format === "svg" ? "cut file" : "DXF";
+      const fileName = projectExportFileName(projectName, format);
+      const svg = format === "svg" ? cutLayoutSvg(layout, { title: projectName, style: settings.cutFileStyle }) : "";
+      const opened = openIn && format === "svg" ? await openInLaserApp(openIn, fileName, svg) : null;
+      const result = opened
+        ? { mode: "folder" as const, path: opened.path }
+        : format === "svg"
+          ? await downloadTextFile(fileName, svg, "image/svg+xml")
+          : await downloadTextFile(fileName, cutLayoutDxf(layout), "application/dxf");
+      const lengths = [
+        layout.cutLength > 0 ? `${lengthLabel(layout.cutLength)} of cutting` : null,
+        layout.scoreLength > 0 ? `${lengthLabel(layout.scoreLength)} of scoring` : null,
+        layout.engrave.length > 0 ? "engraving" : null,
+      ].filter(Boolean).join(", ");
+      celebrateExport(format === "svg" ? "SVG" : "DXF", lengths);
+      const skipped = layout.skipped.length > 0 ? ` ${layout.skipped.join(", ")} had nothing to cut.` : "";
+      // A laser cuts the sheet it is given, so a part drawn thicker or thinner comes out the sheet's thickness.
+      const offSheet = source.filter((shape) => (shape.laserJob ?? "cut") === "cut" && Math.abs(shape.height - settings.materialThickness) > 0.05);
+      const thickness = offSheet.length === 1
+        ? ` ${offSheet[0].name} is ${Number(offSheet[0].height.toFixed(2))} mm thick; it will come out ${settings.materialThickness} mm, the sheet's thickness.`
+        : offSheet.length > 1 ? ` ${offSheet.length} parts are not ${settings.materialThickness} mm thick; they will come out the sheet's thickness.` : "";
+      // xTool Studio only takes the file when it is already running; it doesn't start up for it.
+      const xtoolHint = opened?.name === "xTool Studio" ? " If it didn't appear, open xTool Studio and try again." : "";
+      const saved = opened
+        ? `Sent the ${label} to ${opened.name}.${xtoolHint} It is saved at ${opened.path}`
+        : result.mode === "folder" ? `Saved the ${label} to ${result.path}` : `Saved the ${label}`;
+      setNotice(`${saved}: ${lengths}.${skipped}${thickness}`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not make the cut file");
+    } finally {
+      setCutFileBusy(false);
+    }
+  }, [celebrateExport, hasSelection, projectName, selectedShapes, shapes]);
+
   const openInSlicer = useCallback(() => {
     if (slicer.busy) return;
     const sourceShapes = hasSelection ? selectedShapes : shapes;
@@ -11500,6 +11806,16 @@ export function SketchForgeEditor({
   ]);
 
   const geometryToolbarProps = {
+    laserTools: isLaserDesign(workspaceSettings)
+      ? {
+        onBoxMaker: () => setBoxMakerOpen(true),
+        onNest: nestLaserParts,
+        canNest: shapes.some((shape) => !shape.hole && !shape.hidden && !isConstructionShape(shape)),
+        onFlatParts: openFlatParts,
+        canFlatParts: selectedShapes.length === 1 && !selectedShapes[0].hole,
+        onTraceLogo: () => setTraceLogoOpen(true),
+      }
+      : null,
     canUndo: historyIndex > 0 || Boolean(sketchCancelUndo) || Boolean(edgeModifier) || Boolean(pushPullSession) || Boolean(faceSession) || Boolean(circularPattern) || Boolean(linearPattern),
     canRedo: historyIndex < history.length - 1 || sketchParkRef.current.has(historyIndex + 1),
     hasClipboard: clipboard.length > 0 || systemClipboardSupported,
@@ -12492,6 +12808,7 @@ export function SketchForgeEditor({
             ) : null}
           <WorkplaneViewport
           settingsOpen={settingsOpen && !(toolbarMode === "sketch" && sketchActive && sketchFocusMode === "2d")}
+          settingsSection={settingsSection}
           onSettingsClose={() => setSettingsOpen(false)}
           applyFlash={cadApplyFlash}
           sketchGuides={sketchActive ? {
@@ -13034,6 +13351,7 @@ export function SketchForgeEditor({
               collapsed={hasSelection && !shapeRailPinned}
               onExpand={() => setShapeRailPinned(true)}
               onCollapse={hasSelection ? () => setShapeRailPinned(false) : undefined}
+              laserDesign={laserDesignOpen}
               onSelectShape={historyBrowse !== null && historyBrowse !== historyIndex ? () => setHistoryBrowse(null) : selectShape}
               onAddShape={(shape) => {
                 addShape(shape);
@@ -13206,6 +13524,15 @@ export function SketchForgeEditor({
           stlSeatUnitLabel={lengthDisplayUnit(workspaceSettings).label}
           onLayStlFlat={() => void placeStlImport("lay-flat")}
           onKeepStlOrientation={() => void placeStlImport("keep-orientation")}
+          laser={isLaserDesign(workspaceSettings) ? {
+            machine: laserMachineName(workspaceSettings),
+            sheet: materialLabel(materialById(workspaceSettings.materialPreset), workspaceSettings.materialThickness),
+            style: CUT_FILE_STYLES.find((style) => style.id === workspaceSettings.cutFileStyle)?.label ?? "LightBurn",
+            busy: cutFileBusy,
+            onSaveCutFile: (format) => void saveCutFile(format),
+            appName: laserApp?.name ?? null,
+            onOpenInApp: () => void saveCutFile("svg", laserApp),
+          } : null}
         />
       ) : null}
       <input
@@ -13295,10 +13622,46 @@ export function SketchForgeEditor({
           onSnapChange={(snap) => updateProjectWorkspaceSettings({ workspace: workspaceSettings, snap })}
           onMakeDefault={makeSketchWorkspaceDefault}
           onClose={() => setSettingsOpen(false)}
+          initialSection={settingsSection}
           sketchGuides={{
             showGuides: sketchDoc.settings.showConstruction,
             drawAsGuides: sketchDoc.settings.constructionMode,
             onChange: patchSketchGuideSettings,
+          }}
+        />
+      ) : null}
+      {boxMakerOpen ? (
+        <BoxMakerDialog
+          thickness={workspaceSettings.materialThickness}
+          sheetLabel={materialLabel(materialById(workspaceSettings.materialPreset), workspaceSettings.materialThickness)}
+          onCancel={() => setBoxMakerOpen(false)}
+          onMake={(spec) => {
+            setBoxMakerOpen(false);
+            makeBox(spec);
+          }}
+        />
+      ) : null}
+      {traceLogoOpen ? (
+        <TraceLogoDialog
+          sheetLabel={materialLabel(materialById(workspaceSettings.materialPreset), workspaceSettings.materialThickness)}
+          bedWidth={workspaceSettings.laserWidth}
+          onCancel={() => setTraceLogoOpen(false)}
+          onMake={(logo) => {
+            setTraceLogoOpen(false);
+            makeTracedLogo(logo);
+          }}
+        />
+      ) : null}
+      {flatPartsTarget ? (
+        <FlatPartsDialog
+          partName={flatPartsTarget.name}
+          size={flatPartsTarget.size}
+          thickness={workspaceSettings.materialThickness}
+          sheetLabel={materialLabel(materialById(workspaceSettings.materialPreset), workspaceSettings.materialThickness)}
+          onCancel={() => setFlatPartsTarget(null)}
+          onMake={(choice) => {
+            setFlatPartsTarget(null);
+            void makeFlatParts(flatPartsTarget.id, choice);
           }}
         />
       ) : null}
@@ -13424,6 +13787,7 @@ function TopActionPanel({
   stlSeatUnitLabel = "mm",
   onLayStlFlat,
   onKeepStlOrientation,
+  laser = null,
 }: {
   panel: Exclude<TopPanel, null>;
   closing?: boolean;
@@ -13454,6 +13818,17 @@ function TopActionPanel({
   stlSeatUnitLabel?: string;
   onLayStlFlat?: () => void;
   onKeepStlOrientation?: () => void;
+  /** Set in a laser design: the export panel saves cut files instead of print files. */
+  laser?: {
+    machine: string;
+    sheet: string;
+    style: string;
+    busy: boolean;
+    onSaveCutFile: (format: "svg" | "dxf") => void;
+    /** A laser program found here that opens the cut file, or null to only save it. */
+    appName: string | null;
+    onOpenInApp: () => void;
+  } | null;
 }) {
   const title =
     panel === "tips"
@@ -13555,7 +13930,48 @@ function TopActionPanel({
           ) : null}
         </div>
       ) : null}
-      {panel === "export" ? (
+      {panel === "export" && laser ? (
+        <div className="top-action-body export-panel-body">
+          <p>{shapeCount} {scopeLabel} part{shapeCount === 1 ? "" : "s"} ready to cut from {laser.sheet} on {laser.machine}.</p>
+          <button
+            className="export-primary"
+            type="button"
+            onClick={() => (laser.appName ? laser.onOpenInApp() : laser.onSaveCutFile("svg"))}
+            disabled={laser.busy}
+          >
+            <ToolbarExportIcon />
+            {laser.busy ? "Making the cut file…" : laser.appName ? `Open in ${laser.appName}` : "Save cut file"}
+          </button>
+          <p className="export-step-note">
+            {laser.appName
+              ? laser.appName === "xTool Studio"
+                ? "Open xTool Studio first: it won't start on its own for this. Then this saves an SVG to Downloads at true size and opens it in xTool Studio with cut, score and engrave already set. Pick your material there."
+                : `Saves an SVG to Downloads at true size and opens it in ${laser.appName}: red cuts, blue scores, black engraves.`
+              : `An SVG for ${laser.style}, at true size: red cuts, blue scores, black engraves.`}
+          </p>
+          <div className="export-mesh-actions">
+            {laser.appName ? (
+              <button type="button" onClick={() => laser.onSaveCutFile("svg")} disabled={laser.busy}>
+                <Download size={18} />
+                Save cut file
+              </button>
+            ) : null}
+            <button type="button" onClick={() => laser.onSaveCutFile("dxf")} disabled={laser.busy}>
+              <Download size={18} />
+              Save as DXF
+            </button>
+            <button type="button" onClick={onExportStep} disabled={stepExporting}>
+              <ToolbarExportIcon />
+              {stepExporting ? "Building STEP…" : "Download STEP"}
+            </button>
+            <button type="button" onClick={() => onExport("stl")}>
+              <Download size={18} />
+              Download STL
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {panel === "export" && !laser ? (
         <div className="top-action-body export-panel-body">
           <p>{shapeCount} {scopeLabel} solid shape{shapeCount === 1 ? "" : "s"} ready to print.</p>
           <TextureExportNote shapes={exportShapes} />

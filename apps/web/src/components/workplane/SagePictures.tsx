@@ -892,6 +892,79 @@ function RulerPicture() {
   );
 }
 
+/* ---------- Laser ---------- */
+
+/** A finger edge along x from x0 to x1 at y, notches `depth` deep. */
+function fingerEdge(x0: number, x1: number, y: number, count: number, depth: number) {
+  const step = (x1 - x0) / count;
+  let d = `M${n(x0)} ${n(y)}`;
+  for (let index = 0; index < count; index += 1) {
+    const out = index % 2 === 1 ? depth : 0;
+    d += `V${n(y - out)}H${n(x0 + step * (index + 1))}V${n(y)}`;
+  }
+  return d;
+}
+
+/** Flat panels with finger edges fold up into a box. */
+function BoxMakerPicture() {
+  return (
+    <>
+      <Vanish at={1.4}>
+        {[6, 28, 50].map((x, index) => (
+          <Appear key={x} at={0.2 + index * 0.25}>
+            <rect x={x} y={26} width="16" height="16" />
+            <path d={fingerEdge(x, x + 16, 26, 5, 3)} />
+          </Appear>
+        ))}
+      </Vanish>
+      <Appear at={1.4}>
+        <Slide from="translate(0, 6px)" at={1.4} dur={0.5}>
+          <Box x={20} y={24} w={26} h={18} dx={10} dy={-8} />
+          <path d={fingerEdge(20, 46, 24, 5, 2)} />
+        </Slide>
+      </Appear>
+    </>
+  );
+}
+
+/** A solid splits into thin layers that spread apart. */
+function FlatPartsPicture() {
+  const layers = [0, 1, 2, 3];
+  return (
+    <>
+      <Vanish at={0.9}><Box x={18} y={22} w={26} h={20} dx={10} dy={-8} /></Vanish>
+      <Appear at={0.9}>
+        {layers.map((layer) => (
+          <Slide key={layer} from={`translate(0, ${(layer - 1.5) * -7}px)`} at={1} dur={0.6}>
+            <Box x={18} y={10 + layer * 11} w={26} h={3} dx={10} dy={-8} />
+          </Slide>
+        ))}
+      </Appear>
+    </>
+  );
+}
+
+/** Scattered parts slide into tidy rows on the bed. */
+function NestPicture() {
+  const parts = [
+    { x: 9, y: 9, w: 18, h: 12, from: "translate(14px, 18px) rotate(20deg)" },
+    { x: 30, y: 9, w: 12, h: 12, from: "translate(16px, 22px)" },
+    { x: 45, y: 9, w: 18, h: 12, from: "translate(-30px, 26px) rotate(-15deg)" },
+    { x: 9, y: 24, w: 24, h: 10, from: "translate(22px, 10px)" },
+    { x: 36, y: 24, w: 14, h: 10, from: "translate(-18px, 14px) rotate(30deg)" },
+  ];
+  return (
+    <>
+      <rect className="sage-guide" x="5" y="5" width="62" height="46" />
+      {parts.map((part) => (
+        <Slide key={`${part.x}-${part.y}`} from={part.from} at={0.6} dur={0.8} origin={`${part.x + part.w / 2}px ${part.y + part.h / 2}px`}>
+          <rect className="sage-solid" x={part.x} y={part.y} width={part.w} height={part.h} />
+        </Slide>
+      ))}
+    </>
+  );
+}
+
 const PICTURES: Record<SagePicture, () => ReactNode> = {
   line: LinePicture,
   arc: ArcPicture,
@@ -943,6 +1016,9 @@ const PICTURES: Record<SagePicture, () => ReactNode> = {
   "circular-pattern": CircularPatternPicture,
   "linear-pattern": LinearPatternPicture,
   ruler: RulerPicture,
+  "box-maker": BoxMakerPicture,
+  "flat-parts": FlatPartsPicture,
+  nest: NestPicture,
 };
 
 /** The gesture diagram in a Sage card. Plays once each time the card opens. */

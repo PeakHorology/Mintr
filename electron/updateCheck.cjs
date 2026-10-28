@@ -6,9 +6,9 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { acceptedSetupAsset, compareVersions, parseLatestYml, plainNotes } = require("./updateFeed.cjs");
 
-const FEED_URL = "https://github.com/PeakHorology/peakcad/releases/latest/download/latest.yml";
-const RELEASE_API = "https://api.github.com/repos/PeakHorology/peakcad/releases/latest";
-const RELEASE_PAGE = "https://github.com/PeakHorology/peakcad/releases/latest";
+const FEED_URL = "https://github.com/PeakHorology/Mintr/releases/latest/download/latest.yml";
+const RELEASE_API = "https://api.github.com/repos/PeakHorology/Mintr/releases/latest";
+const RELEASE_PAGE = "https://github.com/PeakHorology/Mintr/releases/latest";
 const MAX_SETUP_BYTES = 400 * 1024 * 1024;
 
 let offered = null;
@@ -45,7 +45,7 @@ async function readRelease() {
 
 function offerFrom(version, fileName, sha512, notes) {
   if (compareVersions(version, app.getVersion()) <= 0) return null;
-  const downloadUrl = `https://github.com/PeakHorology/peakcad/releases/download/v${version}/${fileName}`;
+  const downloadUrl = `https://github.com/PeakHorology/Mintr/releases/download/v${version}/${fileName}`;
   if (!acceptedSetupAsset(version, downloadUrl)) return null;
   const portable = isPortableBuild();
   return {

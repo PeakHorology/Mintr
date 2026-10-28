@@ -16,7 +16,7 @@ import { createGearGeometry } from "@/lib/gearMesh";
 import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
 import { ShapeInspector, SnapGridControl, TYPED_DIMENSION_MAX_MM, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
-import { ToolbarDropToWorkplaneIcon, ToolbarEraserIcon } from "@/components/icons";
+import { LaserIcon, ToolbarDropToWorkplaneIcon, ToolbarEraserIcon } from "@/components/icons";
 import { objectSnapTolerance, snapAabbFromShape, snapMovingAabb, unionSnapAabbs, type FaceMatePose, type ObjectSnapResult } from "@/lib/objectSnap";
 import { buildPickBvh, raycastPickBvh, type PickBvh } from "@/lib/meshPickBvh";
 import { rotateHandleRect, separateDimensionLabels } from "@/lib/overlayLabelSeparation";
@@ -107,6 +107,9 @@ import { CUT_PREVIEW_TRIANGLE_SKIP, displayTriangleCount, isHeavyDisplayScene } 
 import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
 import { shadeDisplayNormals } from "@/lib/meshShade";
 import { appendOverhangBoundaryLines, bedFitForShapes, normalizePrinterBed, type PrinterBed } from "@/lib/printerBed";
+import { isLaserDesign, laserDesignLabel } from "@/lib/laserMachine";
+import { LASER_JOB_COLOR } from "@/lib/laser/cutFile";
+import type { SettingsSectionId } from "@/lib/settingGuides";
 import { runPrintOverlayInWorker } from "@/lib/printOverlayClient";
 import type { PrintOverlayMarks } from "@/lib/printOverlayCollect";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
@@ -361,6 +364,8 @@ export type WorkplaneViewportProps = {
   onUpdateShape: (id: string, patch: ShapeUpdatePatch) => void;
   onWorkspaceSettingsChange?: (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
   settingsOpen?: boolean;
+  /** The Settings tab to open on. */
+  settingsSection?: SettingsSectionId;
   onSettingsClose?: () => void;
   modifierActive?: boolean;
   /** When true, keep the object selection outline visible while a modifier tool is active. */
@@ -502,6 +507,8 @@ export type ThreeState = {
   showThinWalls: boolean;
   showSmallHoles: boolean;
   showTrappedResin: boolean;
+  /** A laser design: parts show their job, cut, score or engrave, on top. */
+  laserDesign: boolean;
   printerAngle: number;
   nozzleMm: number;
   overhangKey: string;
@@ -2646,6 +2653,7 @@ export function WorkplaneViewport({
   onUpdateShape,
   onWorkspaceSettingsChange,
   settingsOpen = false,
+  settingsSection,
   onSettingsClose,
   modifierActive = false,
   modifierPreserveSelection = false,
@@ -3513,7 +3521,12 @@ export function WorkplaneViewport({
 
   useEffect(() => {
     workspaceRef.current = workspace;
+    const wasLaserDesign = threeRef.current?.laserDesign;
     rebuildWorkplane(threeRef.current, workspace);
+    // The job marks belong to each part, so parts redraw when a design becomes laser or print.
+    if (threeRef.current && wasLaserDesign !== threeRef.current.laserDesign) {
+      rebuildShapes(threeRef.current, shapesRef.current, renderSelectionIds());
+    }
     if (threeRef.current) {
       syncTransformOverlay(
         threeRef.current,
@@ -6115,7 +6128,7 @@ export function WorkplaneViewport({
       const x = point?.x ?? 0;
       const z = point?.z ?? 0;
       const elevation = 0;
-      syncAssetPlacementPreview(state, asset, x, z, elevation);
+      syncAssetPlacementPreview(state, asset, x, z, elevation, isLaserDesign(workspaceRef.current) ? workspaceRef.current.materialThickness : undefined);
       state.needsRender = true;
     },
     [toPlanePoint],
@@ -6570,15 +6583,28 @@ export function WorkplaneViewport({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [clearSketchFaceHover, hotkeys, resetView, rulerToolsOpen, setRulerActive, xrayControlsOpen, zoomCamera]);
 
-  const printerWarning = useMemo(
-    () => bedFitForShapes(shapes, normalizePrinterBed(workspace)).message,
-    [shapes, workspace],
-  );
+  const printerWarning = useMemo(() => {
+    if (!isLaserDesign(workspace)) return bedFitForShapes(shapes, normalizePrinterBed(workspace)).message;
+    // Only the footprint matters on a laser, so the bed is given all the height it could need.
+    const fit = bedFitForShapes(shapes, { ...normalizePrinterBed(workspace), width: workspace.laserWidth, depth: workspace.laserDepth, height: Number.MAX_VALUE });
+    return fit.pastFootprint ? `Past the ${Math.round(workspace.laserWidth)} × ${Math.round(workspace.laserDepth)} mm laser bed.` : null;
+  }, [shapes, workspace]);
 
   return (
     <main className="workplane-stage">
       <div className="workplane-canvas-host">
       {printerWarning ? <div className="printer-bed-warning" role="status">{printerWarning}</div> : null}
+      {isLaserDesign(workspace) ? (
+        <button
+          type="button"
+          className="laser-design-chip"
+          title="Change the laser or the sheet"
+          onClick={() => window.dispatchEvent(new CustomEvent("sketchforge:open-workspace-settings", { detail: { section: "machines" } }))}
+        >
+          <LaserIcon size={15} />
+          <span>{laserDesignLabel(workspace)}</span>
+        </button>
+      ) : null}
       <div
         className="view-cube"
         aria-label="View orientation cube — drag to orbit, click a face to snap"
@@ -6907,6 +6933,7 @@ export function WorkplaneViewport({
           onMakeDefault={makeWorkspaceDefault}
           onClose={() => onSettingsClose?.()}
           sketchGuides={sketchGuides}
+          initialSection={settingsSection}
         />
       ) : null}
       </div>
@@ -7104,6 +7131,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     showThinWalls: false,
     showSmallHoles: false,
     showTrappedResin: false,
+    laserDesign: false,
     printerAngle: 45,
     nozzleMm: 0.4,
     overhangKey: "",
@@ -7628,14 +7656,18 @@ function rebuildWorkplane(state: ThreeState | null, workspace: WorkspaceSettings
     state.workplaneLayer.add(createGridLines(workspace.width, workspace.depth, workspace.gridBlockSize));
   }
   const bed = normalizePrinterBed(workspace);
-  state.showPrinterBed = bed.showBed;
-  state.showOverhangStripes = bed.showStripes;
-  state.showThinWalls = bed.showThinWalls;
-  state.showSmallHoles = bed.showSmallHoles;
-  state.showTrappedResin = bed.showTrappedResin;
+  // A laser design has a flat work area and no print checks: overhangs and thin walls mean nothing on a sheet.
+  const laserDesign = isLaserDesign(workspace);
+  state.showPrinterBed = !laserDesign && bed.showBed;
+  state.showOverhangStripes = !laserDesign && bed.showStripes;
+  state.showThinWalls = !laserDesign && bed.showThinWalls;
+  state.showSmallHoles = !laserDesign && bed.showSmallHoles;
+  state.showTrappedResin = !laserDesign && bed.showTrappedResin;
+  state.laserDesign = laserDesign;
   state.printerAngle = bed.overhangAngle;
   state.nozzleMm = bed.nozzleMm;
-  if (bed.showBed) state.workplaneLayer.add(createPrinterFrame(bed));
+  if (state.showPrinterBed) state.workplaneLayer.add(createPrinterFrame(bed));
+  if (laserDesign && workspace.showLaserBed) state.workplaneLayer.add(createLaserFrame(workspace.laserWidth, workspace.laserDepth));
   rebuildPrintOverlays(state);
 }
 
@@ -7828,6 +7860,39 @@ function inflateAlongNormals(positions: Float32Array | number[], normals: Float3
     positions[index + 1] += normals[index + 1] * lift;
     positions[index + 2] += normals[index + 2] * lift;
   }
+}
+
+/** The laser's work area: a flat outline with corner marks, like the frame on the machine's bed. */
+function createLaserFrame(width: number, depth: number) {
+  const group = new THREE.Group();
+  group.name = "LaserBed";
+  const y = 0.2;
+  const halfWidth = width / 2;
+  const halfDepth = depth / 2;
+  const outline = new THREE.LineBasicMaterial({ color: "#c8553d", transparent: true, opacity: 0.85, depthWrite: false });
+  const marks = new THREE.LineBasicMaterial({ color: "#c8553d", transparent: true, opacity: 1, depthWrite: false });
+  const edge: number[] = [];
+  const corners: [number, number][] = [[-halfWidth, -halfDepth], [halfWidth, -halfDepth], [halfWidth, halfDepth], [-halfWidth, halfDepth]];
+  for (let index = 0; index < 4; index += 1) {
+    const [ax, az] = corners[index];
+    const [bx, bz] = corners[(index + 1) % 4];
+    edge.push(ax, y, az, bx, y, bz);
+  }
+  group.add(linesFromPoints(edge, outline));
+  // Short L marks just outside each corner, so the area reads even with the grid off.
+  const reach = Math.min(12, Math.min(width, depth) * 0.06);
+  const gap = 1.5;
+  const corner: number[] = [];
+  for (const [x, z] of corners) {
+    const sx = Math.sign(x);
+    const sz = Math.sign(z);
+    const cx = x + sx * gap;
+    const cz = z + sz * gap;
+    corner.push(cx, y, cz, cx - sx * reach, y, cz);
+    corner.push(cx, y, cz, cx, y, cz - sz * reach);
+  }
+  group.add(linesFromPoints(corner, marks));
+  return group;
 }
 
 function createPrinterFrame(bed: PrinterBed) {
@@ -8941,7 +9006,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   const previewActive = state.modifierPreviewActive;
   visibleShapes.forEach((shape) => {
     const showEdges = selected.has(shape.id);
-    const fingerprint = shapeGeometryFingerprint(shape);
+    const fingerprint = `${shapeGeometryFingerprint(shape)}${state.laserDesign ? `|laser:${shape.laserJob ?? "cut"}` : ""}`;
     const existing = existingById.get(shape.id);
     const wipe = pendingEdgeWipe && pendingEdgeWipe.ids.has(shape.id) ? pendingEdgeWipe : null;
     const held = state.previewHold.get(shape.id) ?? null;
@@ -9010,6 +9075,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
     const object = createShapeObject(shape, false, () => {
       state.needsRender = true;
     });
+    if (state.laserDesign && !shape.hole && !shape.construction) addLaserJobMarks(object, shape);
     object.userData.renderFingerprint = fingerprint;
     object.userData.showEdges = showEdges;
     syncSelectionOutline(object, showEdges, state.camera);
@@ -11120,10 +11186,12 @@ function syncAssetPlacementPreview(
   x: number,
   z: number,
   elevation: number,
+  sheetThickness?: number,
 ) {
   let preview = state.scene.getObjectByName(ASSET_PLACEMENT_PREVIEW_NAME);
   const needsRebuild =
     !preview
+    || preview.userData.sheetThickness !== sheetThickness
     || preview.userData.assetKind !== asset.kind
     || preview.userData.assetColor !== asset.color
     || preview.userData.assetHole !== Boolean(asset.hole);
@@ -11139,9 +11207,10 @@ function syncAssetPlacementPreview(
             color: asset.color,
           },
         })
-      : makeShapeFromAsset(asset, { x, z, elevation });
+      : makeShapeFromAsset(asset, { x, z, elevation }, undefined, sheetThickness);
     preview = createShapeObject(draft, false);
     preview.name = ASSET_PLACEMENT_PREVIEW_NAME;
+    preview.userData.sheetThickness = sheetThickness;
     preview.userData.assetKind = asset.kind;
     preview.userData.assetColor = asset.color;
     preview.userData.assetHole = Boolean(asset.hole);
@@ -11175,6 +11244,65 @@ function syncAssetPlacementPreview(
     preview.updateMatrixWorld(true);
   }
   markShadowsDirty(state);
+}
+
+/** Parts bigger than this skip the job outline; finding their top edges would stall the view. */
+const LASER_MARK_TRIANGLE_LIMIT = 200_000;
+/** Engraving shows as the sheet burnt dark. */
+const ENGRAVE_BURN_COLOR = new THREE.Color("#2b211b");
+
+/**
+ * Shows a laser part's job as the cut file has it: its top outline in red for cut or
+ * blue for score, and an engraved part darkened as if burnt.
+ */
+function addLaserJobMarks(object: THREE.Object3D, shape: WorkplaneShape) {
+  const job = shape.laserJob ?? "cut";
+  const bodies: THREE.Mesh[] = [];
+  object.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.userData.printBody) bodies.push(child);
+  });
+  for (const body of bodies) {
+    if (job === "engrave") {
+      // A copy, so a material shared with other parts stays as it is.
+      const burn = (material: THREE.Material) => {
+        if (!(material instanceof THREE.MeshStandardMaterial)) return material;
+        const burnt = material.clone();
+        burnt.color.lerp(ENGRAVE_BURN_COLOR, 0.78);
+        return burnt;
+      };
+      body.material = Array.isArray(body.material) ? body.material.map(burn) : burn(body.material);
+      continue;
+    }
+    const geometry = body.geometry;
+    const triangles = (geometry.index?.count ?? geometry.getAttribute("position")?.count ?? 0) / 3;
+    if (triangles === 0 || triangles > LASER_MARK_TRIANGLE_LIMIT) continue;
+    geometry.computeBoundingBox();
+    const top = geometry.boundingBox?.max.y;
+    if (top === undefined) continue;
+    // The top face's edges are the part's outline as the laser sees it, holes and all.
+    const edges = new THREE.EdgesGeometry(geometry, 30);
+    const position = edges.getAttribute("position");
+    const kept: number[] = [];
+    const near = Math.max(1e-3, (top - (geometry.boundingBox?.min.y ?? top)) * 0.02);
+    for (let i = 0; i + 1 < position.count; i += 2) {
+      if (top - position.getY(i) > near || top - position.getY(i + 1) > near) continue;
+      kept.push(position.getX(i), top, position.getZ(i), position.getX(i + 1), top, position.getZ(i + 1));
+    }
+    edges.dispose();
+    if (kept.length === 0) continue;
+    const outline = new THREE.BufferGeometry();
+    outline.setAttribute("position", new THREE.Float32BufferAttribute(kept, 3));
+    const lines = new THREE.LineSegments(
+      outline,
+      new THREE.LineBasicMaterial({ color: LASER_JOB_COLOR[job], transparent: true, opacity: 0.95, depthTest: true }),
+    );
+    lines.name = "laser-job-outline";
+    lines.renderOrder = 2;
+    // A hair above the top face, so the face never hides it.
+    lines.position.y = 0.02;
+    lines.raycast = () => {};
+    body.add(lines);
+  }
 }
 
 function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureReady?: () => void) {

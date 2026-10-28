@@ -32,6 +32,8 @@ sha512: abcdef==
     expect(parseLatestYml("version: 1.0.8\npath: Mintr-Setup-1.0.8.exe\nsha512: abcdef==\n")?.fileName).toBe("Mintr-Setup-1.0.8.exe");
     expect(acceptedSetupAsset("1.0.5", "https://example.com/PeakCAD-Setup-1.0.5.exe")).toBeNull();
     expect(acceptedSetupAsset("1.0.8", "https://github.com/PeakHorology/peakcad/releases/download/v1.0.8/Mintr-Setup-1.0.7.exe")).toBeNull();
+    // The repo's new name is accepted too.
+    expect(acceptedSetupAsset("1.1.8", "https://github.com/PeakHorology/Mintr/releases/download/v1.1.8/PeakCAD-Setup-1.1.8.exe")).not.toBeNull();
     expect(acceptedSetupAsset("1.0.4", url)).toBeNull();
   });
 

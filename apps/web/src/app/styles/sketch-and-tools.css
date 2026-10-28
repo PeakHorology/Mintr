@@ -3176,3 +3176,35 @@ button.push-pull-chip {
     animation: none;
   }
 }
+
+/* The kind of design, beside the view cube in a laser design. Opens Settings → Machines. */
+.laser-design-chip {
+  position: absolute;
+  top: 24px;
+  left: 124px;
+  /* Above the 3D view, level with the view cube. */
+  z-index: calc(var(--z-viewport-ui) + 3);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  color: var(--ink);
+  font-size: var(--text-xs);
+  font-weight: 750;
+  border: 1px solid var(--control-border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tile-hover) 88%, transparent);
+  box-shadow: var(--elevation-popover);
+  backdrop-filter: blur(6px);
+}
+
+.laser-design-chip svg {
+  color: #c8553d;
+}
+
+.laser-design-chip:hover,
+.laser-design-chip:focus-visible {
+  color: var(--ink-strong);
+  background: var(--tile-hover);
+}

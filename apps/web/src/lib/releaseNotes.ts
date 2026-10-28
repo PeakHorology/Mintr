@@ -31,6 +31,25 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.8",
+    items: [
+      "Mintr works with laser cutters and engravers. Add your laser in Settings → Machines, and New design asks whether a design is for 3D printing or laser cutting.",
+      "Each part in a laser design is set to Cut, Score or Engrave, and shows it on the bed: a red outline for cut, blue for score, and a burnt look for engrave.",
+      "Save cut file makes an SVG or DXF at true size, with the laser's kerf allowed for.",
+      "Open in xTool Studio or LightBurn sends the cut file straight over. xTool Studio gets cut, score and engrave already set. Open xTool Studio before you export to it.",
+      "Trace logo turns a PNG or JPG logo into a part to engrave, cut or score, with no other program needed. It is made for logos, text and simple drawings, not photos.",
+      "Box maker makes a box with finger joints sized to your sheet.",
+      "Flat parts turns a 3D part into stacked layers to glue together, or slotted slices that push together.",
+      "Nest packs parts close together on the laser bed, so a sheet goes further.",
+      "xTool lasers are on the machine list, including the F2, F2 Ultra and the conveyor versions, each under its own name.",
+      "Laser designs hide tools that only make sense for 3D printing, like Texture, Threads and Gridfinity.",
+      "Sage explains the laser tools too.",
+      "Texture gives a part a printed surface finish: 11 patterns, your own picture, or text. Choose which faces get it, and see a preview before it builds. The part itself stays exact.",
+      "Add your own fonts in Settings → Fonts. A design carries the fonts it uses, so it opens the same on another computer.",
+      "Updates now come from Mintr's own page on GitHub.",
+    ],
+  },
+  {
     version: "1.1.7.2",
     items: [
       "3D sketch is now called View in 3D.",

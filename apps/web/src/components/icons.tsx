@@ -66,6 +66,31 @@ export function Printer3dIcon({ size = 24, strokeWidth = 2, ...props }: IconProp
   );
 }
 
+/** A laser head over a sheet, its beam cutting a line. */
+export function LaserIcon({ size = 24, strokeWidth = 2, ...props }: IconProps & { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <rect x="8" y="2.5" width="8" height="6" rx="1.25" />
+      <path d="M10.5 8.5 12 11l1.5-2.5" />
+      <path d="M12 11v5.5" />
+      <path d="M2.5 18.5h19" />
+      <path d="M4 21.5h16" />
+      <path d="M8.5 16.5 12 18.5l3.5-2" />
+    </svg>
+  );
+}
+
 export function ToolbarHomeIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
@@ -397,6 +422,48 @@ export function ToolbarTextureIcon(props: IconProps) {
       <path d="M4 6h16v13H4z" />
       <path d="M4 12.5 10.5 6M4 19l13-13M10.5 19 20 9.5M17 19l3-3" />
       <path d="M10.5 6 20 15.5M4 6l13 13M4 12.5 10.5 19" />
+    </CadGlyph>
+  );
+}
+
+/** A box whose edges lock together with fingers. */
+export function ToolbarBoxMakerIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4 8.5 12 4.5l8 4v9l-8 4-8-4z" />
+      <path d="M4 8.5 12 12.5l8-4M12 12.5v9" />
+      <path d="M6.5 13.8v1.8M9.5 15.3v1.8M17.5 13.8v1.8M14.5 15.3v1.8" />
+    </CadGlyph>
+  );
+}
+
+/** Parts packed close together on a sheet. */
+export function ToolbarNestIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
+      <path d="M6.5 7.5h5v5h-5zM13.5 7.5h4v8h-4zM6.5 14.5h5v2h-5z" />
+    </CadGlyph>
+  );
+}
+
+/** A picture with an outline drawn around what's in it. */
+export function ToolbarTraceLogoIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" strokeDasharray="2.2 2" />
+      <path d="M8 15.5c0-3.5 1.6-6 4-6s4 2.5 4 6" />
+      <path d="M7 15.5h10" />
+    </CadGlyph>
+  );
+}
+
+export function ToolbarFlatPartsIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4 16.5l8 3.5 8-3.5" />
+      <path d="M4 12.5l8 3.5 8-3.5" />
+      <path d="M4 8.5l8-3.5 8 3.5-8 3.5z" />
     </CadGlyph>
   );
 }

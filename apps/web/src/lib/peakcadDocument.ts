@@ -3,6 +3,7 @@ import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSe
 import type { EditorHistoryEntry, EditorHistoryMeshBlob, EditorHistoryMeshVault } from "@/lib/editorHistory";
 import { isGuideAuthorColor, type MintrGuide } from "@/lib/mintrGuide";
 import { designFontsFor, normalizeDesignFonts, type DesignFont } from "@/lib/customFontStore";
+import { LASER_SETTING_KEYS } from "@/lib/laserMachine";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 /** Inside the file this stays "peakcad". Renaming it would reject every saved project. */
@@ -182,6 +183,17 @@ export function peakcadNamesMatch(left: string, right: string) {
   return peakcadNormalizedName(left) === peakcadNormalizedName(right);
 }
 
+/**
+ * A print design's file leaves out the laser settings: it never uses them, and it opens
+ * with the standard ones. Its file stays as it was before Mintr knew about lasers.
+ */
+function workspaceForFile(workspace: WorkplaneWorkspaceSettings): WorkplaneWorkspaceSettings {
+  if (workspace.designKind === "laser") return workspace;
+  const printOnly: Partial<WorkplaneWorkspaceSettings> = { ...workspace };
+  for (const key of LASER_SETTING_KEYS) delete printOnly[key];
+  return printOnly as WorkplaneWorkspaceSettings;
+}
+
 export function buildPeakcadDocument(input: {
   project: PeakcadProjectMeta;
   shapes: WorkplaneShape[];
@@ -204,7 +216,7 @@ export function buildPeakcadDocument(input: {
       ...input.project,
       name: input.project.name.trim() || "Untitled design",
       shapes: shapes.length,
-      workspace: normalizeWorkspaceSettings(input.project.workspace),
+      workspace: workspaceForFile(normalizeWorkspaceSettings(input.project.workspace)),
       snapGrid: normalizeSnapGrid(input.project.snapGrid),
     },
     shapes,

@@ -32,12 +32,21 @@ export const SETTING_TIPS = {
   hideTutorials: "Take the tutorial cards off the home page. Finished tutorials leave on their own. This list stays here.",
   downloadFolder: "Local folder used for exported files and downloads on this computer.",
   sageEnabled: "Show the Sage button, its shortcut, and Sage search. Switch it off to hide Sage everywhere.",
+  machines: "What you make with. Mintr shows the tools for your machines and hides the rest. With a laser, each new design asks whether it is printed or laser cut.",
+  laserBrand: "The maker of your laser. The next menu lists that maker's machines.",
+  laser: "The laser you cut on. Its work area is drawn on the workplane of laser designs, and parts past it are marked.",
+  laserType: "Diode and CO2 lasers cut wood and acrylic. Infrared (fiber) lasers mark metal and engrave very finely. UV lasers mark glass, plastic and gems without heat.",
+  kerf: "How much material the beam burns away, in millimetres. Mintr allows for it so parts fit as drawn. Measure yours by cutting a 20 mm square and measuring how much smaller it came out.",
+  cutFileStyle: "The software that runs your laser. Mintr marks what to cut, score and engrave in the way that software reads best.",
+  showLaserBed: "Draw the laser's work area on the workplane of laser designs.",
+  laserMaterial: "The sheet you cut from. New parts in a laser design start at its thickness, and joints are sized to it.",
+  sheetThickness: "How thick the sheet is, in millimetres. Measure it: a sheet sold as 3 mm is often a little more or less.",
 } as const;
 
 export type SettingTipKey = keyof typeof SETTING_TIPS;
 
 export type SettingsSectionId =
-  | "general" | "appearance" | "measurement" | "workplane" | "sketch" | "printing" | "files" | "fonts"
+  | "general" | "appearance" | "measurement" | "workplane" | "sketch" | "machines" | "printing" | "files" | "fonts"
   | "hotkeys" | "tools" | "tutorials" | "models" | "updates" | "help" | "about";
 
 /** Tab names in the Settings window, in their order. */
@@ -47,6 +56,7 @@ export const SETTINGS_SECTION_LABEL: Record<SettingsSectionId, string> = {
   measurement: "Measurement",
   workplane: "Workplane",
   sketch: "Sketch",
+  machines: "Machines",
   printing: "Printing",
   files: "Files",
   fonts: "Fonts",
@@ -77,6 +87,15 @@ export const SETTING_GUIDES: readonly SettingGuide[] = [
   { key: "snapGrid", title: "Snap grid", section: "measurement" },
   { key: "workplaneSize", title: "Workplane size", section: "workplane" },
   { key: "gridBlockSize", title: "Grid block size", section: "workplane" },
+  { key: "machines", title: "What you make with", section: "machines" },
+  { key: "laserBrand", title: "Laser brand", section: "machines" },
+  { key: "laser", title: "Laser", section: "machines" },
+  { key: "laserType", title: "Laser type", section: "machines" },
+  { key: "kerf", title: "Kerf", section: "machines" },
+  { key: "cutFileStyle", title: "Cut files for", section: "machines" },
+  { key: "showLaserBed", title: "Show laser bed", section: "machines" },
+  { key: "laserMaterial", title: "Material", section: "machines" },
+  { key: "sheetThickness", title: "Sheet thickness", section: "machines" },
   { key: "printerProcess", title: "Printing process", section: "printing" },
   { key: "printerBrand", title: "Printer brand", section: "printing" },
   { key: "printer", title: "Printer", section: "printing" },

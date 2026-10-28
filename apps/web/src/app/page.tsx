@@ -89,6 +89,8 @@ import {
 import { decryptPeakcadText, encryptPeakcadText, isEncryptedPeakcadText } from "@/lib/peakcadFileLock";
 import { deleteStoredProject, loadStoredProject, saveStoredProject, serializeStoredProject } from "@/lib/projectStoreClient";
 import { designFontsFor, installDesignFonts, readCustomFonts } from "@/lib/customFontStore";
+import { laserDesignWorkspace, loadMachineChoice, machineHasLaser, type DesignKind, type MachineChoice } from "@/lib/laserMachine";
+import { NewDesignChooser } from "@/components/NewDesignChooser";
 import { SageHomePanel } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
 
@@ -824,7 +826,7 @@ function mergeProjectsForStorage(projects: DashboardProject[]) {
   return projects.map((project) => projectForStorage(mergeProjectForStorage(project, storedById.get(project.id))));
 }
 
-function newProject(name: string, index: number, shapeCount = 0, folderId: string | null = null): DashboardProject {
+function newProject(name: string, index: number, shapeCount = 0, folderId: string | null = null, kind: DesignKind = "print"): DashboardProject {
   const defaults = loadGlobalWorkspaceDefaults();
   const now = Date.now();
   return {
@@ -835,7 +837,7 @@ function newProject(name: string, index: number, shapeCount = 0, folderId: strin
     shapes: shapeCount,
     accent: PROJECT_ACCENTS[index % PROJECT_ACCENTS.length],
     revision: now,
-    workspace: defaults.workspace,
+    workspace: kind === "laser" ? laserDesignWorkspace(defaults.workspace) : { ...defaults.workspace, designKind: "print" },
     snapGrid: defaults.snap,
     folderId,
   };
@@ -1008,7 +1010,10 @@ export default function Home() {
     };
   }, []);
 
-  const createAndOpenProjectRef = useRef<(name?: string) => void>(() => undefined);
+  const createAndOpenProjectRef = useRef<(name?: string, kind?: DesignKind) => void>(() => undefined);
+  const startNewDesignRef = useRef<() => void>(() => undefined);
+  /** Set while asking whether a new design is printed or laser cut. */
+  const [newDesignAsk, setNewDesignAsk] = useState<MachineChoice | null>(null);
   /** Set only while an editor is mounted; asks before leaving a project with unsaved changes. */
   const editorLeaveGuardRef = useRef<EditorLeaveGuard | null>(null);
   const registerEditorLeaveGuard = useCallback((guard: EditorLeaveGuard | null) => {
@@ -2137,8 +2142,8 @@ export default function Home() {
     });
   }, []);
 
-  const createAndOpenProject = (name?: string) => {
-    const project = newProject(name ?? nextDesignName(projects), projects.length);
+  const createAndOpenProject = (name?: string, kind: DesignKind = "print") => {
+    const project = newProject(name ?? nextDesignName(projects), projects.length, 0, null, kind);
     const shapeEntry = projectShapeCacheEntry(project.revision ?? project.updatedAt, []);
     // Seed shapes + project list before switching views so the editor never mounts
     // against a missing cache entry (that unmount/remount cycle was blanking WebGL).
@@ -2173,6 +2178,14 @@ export default function Home() {
     }
   };
   createAndOpenProjectRef.current = createAndOpenProject;
+
+  /** People with a laser choose print or laser; everyone else gets a print design at once. */
+  const startNewDesign = () => {
+    const machines = loadMachineChoice();
+    if (machineHasLaser(machines)) setNewDesignAsk(machines);
+    else createAndOpenProject();
+  };
+  startNewDesignRef.current = startNewDesign;
 
   const openBuiltinGuide = (id: string, restart: boolean) => {
     const session = builtinGuideSession(id);
@@ -2435,7 +2448,7 @@ export default function Home() {
       if (action === "new" || action === "open") {
         void (async () => {
           if (!(await confirmLeaveEditor())) return;
-          if (action === "new") createAndOpenProjectRef.current();
+          if (action === "new") startNewDesignRef.current();
           else await openFromDisk();
         })();
         return;
@@ -2638,6 +2651,16 @@ export default function Home() {
       <pre data-codex-projects hidden>
         {JSON.stringify(projectDebugSummary)}
       </pre>
+      {newDesignAsk ? (
+        <NewDesignChooser
+          machines={newDesignAsk}
+          onCancel={() => setNewDesignAsk(null)}
+          onChoose={(kind) => {
+            setNewDesignAsk(null);
+            createAndOpenProject(undefined, kind);
+          }}
+        />
+      ) : null}
       {view === "dashboard" ? (
         <Dashboard
           dashboardNotice={dashboardNotice}
@@ -2653,7 +2676,7 @@ export default function Home() {
           viewMode={viewMode}
           guideCatalogTick={guideCatalogTick}
           onCloseSettings={() => setSettingsOpen(false)}
-          onCreate={() => createAndOpenProject()}
+          onCreate={startNewDesign}
           onOpenTutorial={(tutorialId) => {
             if (tutorialId === LESSON_PROJECT_ID) openOrCreateIntro();
             else if (isShippedTutorialId(tutorialId)) openBuiltinGuide(tutorialId, isTutorialCompleted(tutorialId));
@@ -3685,6 +3708,7 @@ function Dashboard({
             <span className="project-card-title">
               {isHero ? <Star className="project-hero-star" size={14} strokeWidth={2.4} fill="currentColor" /> : null}
               {isSampleProjectId(project.id) ? <span className="mintr-guide-mark">Mintr guide</span> : null}
+              {project.workspace?.designKind === "laser" ? <span className="laser-design-mark">Laser</span> : null}
               {project.name}
             </span>
             <span className="project-card-meta">

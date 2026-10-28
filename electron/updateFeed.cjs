@@ -13,7 +13,8 @@ const SETUP_PREFIX = "(?:PeakCAD-Setup|Mintr-Setup)";
 const VERSION_NUMBER = "(\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)";
 const SETUP_NAME = new RegExp(`^${SETUP_PREFIX}-${VERSION_NUMBER}\\.exe$`);
 const RELEASE_DOWNLOAD = new RegExp(
-  `^https://github\\.com/PeakHorology/peakcad/releases/download/v?${VERSION_NUMBER}/(${SETUP_PREFIX})-${VERSION_NUMBER}\\.exe$`,
+  // The repo was renamed from peakcad to Mintr; downloads redirected from the old name still count.
+  `^https://github\\.com/PeakHorology/(?:peakcad|Mintr)/releases/download/v?${VERSION_NUMBER}/(${SETUP_PREFIX})-${VERSION_NUMBER}\\.exe$`,
 );
 
 function versionParts(value) {

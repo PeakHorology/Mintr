@@ -2,6 +2,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { pathToFileURL } = require("node:url");
+const zlib = require("node:zlib");
 
 /** Keep in sync with apps/web/src/lib/slicerHandoff.ts */
 const SLICERS = [
@@ -46,6 +48,24 @@ const SLICERS = [
     format: "stl",
     exes: ["preform.exe"],
     dirPrefixes: ["formlabs", "preform"],
+  },
+];
+
+/** Laser programs that open a cut file. Keep in sync with apps/web/src/lib/laser/laserAppHandoff.ts */
+const LASER_APPS = [
+  {
+    id: "xtool",
+    name: "xTool Studio",
+    format: "svg",
+    exes: ["xtool studio.exe", "xtoolstudio.exe"],
+    dirPrefixes: ["xtool studio", "xtoolstudio"],
+  },
+  {
+    id: "lightburn",
+    name: "LightBurn",
+    format: "svg",
+    exes: ["lightburn.exe"],
+    dirPrefixes: ["lightburn"],
   },
 ];
 
@@ -104,9 +124,9 @@ function findInstalled(roots, spec) {
   return null;
 }
 
-function detectSlicersIn(roots) {
+function detectSlicersIn(roots, specs = SLICERS) {
   const found = [];
-  for (const spec of SLICERS) {
+  for (const spec of specs) {
     const installed = findInstalled(roots, spec);
     if (!installed) continue;
     found.push({ id: spec.id, name: spec.name, path: installed, format: spec.format });
@@ -127,6 +147,10 @@ function windowsScanRoots() {
 
 function detectSlicers() {
   return detectSlicersIn(windowsScanRoots());
+}
+
+function detectLaserApps() {
+  return detectSlicersIn(windowsScanRoots(), LASER_APPS);
 }
 
 function identifyExe(filePath) {
@@ -168,7 +192,7 @@ function exportDirectory(folder) {
 }
 
 function safeFileName(filename, format) {
-  const ext = format === "stl" ? ".stl" : ".3mf";
+  const ext = format === "stl" ? ".stl" : format === "svg" ? ".svg" : ".3mf";
   const base = path.basename(typeof filename === "string" ? filename : "")
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
     .trim();
@@ -189,14 +213,56 @@ function uniqueFile(dir, filename) {
 }
 
 async function openInSlicer(payload) {
-  const slicer = identifyExe(payload?.exePath);
+  return openWith(identifyExe(payload?.exePath), payload, "the slicer");
+}
+
+/** A laser program the person picked, checked against the known ones like a slicer is. */
+function identifyLaserApp(filePath) {
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    throw new Error("Choose a laser program.");
+  }
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    throw new Error("That laser program is not on this computer.");
+  }
+  const spec = LASER_APPS.find((app) => app.exes.includes(path.basename(resolved).toLowerCase()));
+  if (!spec) {
+    throw new Error("Choose xTool Studio or LightBurn.");
+  }
+  return { id: spec.id, name: spec.name, path: resolved, format: spec.format };
+}
+
+async function openInLaserApp(payload) {
+  return openWith(identifyLaserApp(payload?.exePath), payload, "the laser program");
+}
+
+/**
+ * xTool Studio only opens its own .xcs projects from the command line and ignores an
+ * SVG. It does take an "Open in Studio" link, the one its website uses: a compressed,
+ * base64url JSON message naming the file, which it imports onto a new canvas.
+ */
+function xtoolImportLink(filePath) {
+  const message = {
+    action: "OpenInStudio",
+    data: { url: pathToFileURL(filePath).href, name: path.basename(filePath) },
+    config: { insertMode: "new" },
+  };
+  const packed = zlib.deflateRawSync(Buffer.from(JSON.stringify(message), "utf8")).toString("base64");
+  return `xtool://external/?${packed.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+function launchArgs(slicer, filePath) {
+  return slicer.id === "xtool" ? [xtoolImportLink(filePath)] : [filePath];
+}
+
+async function openWith(slicer, payload, target) {
   const format = slicer.format;
   const bytes = Buffer.from(typeof payload?.base64 === "string" ? payload.base64 : "", "base64");
   if (bytes.length === 0) {
-    throw new Error("There is nothing to send to the slicer.");
+    throw new Error(`There is nothing to send to ${target}.`);
   }
   if (bytes.length > MAX_BYTES) {
-    throw new Error("This part is too large to send to the slicer.");
+    throw new Error(`This part is too large to send to ${target}.`);
   }
   const dir = exportDirectory(payload?.folder);
   fs.mkdirSync(dir, { recursive: true });
@@ -206,7 +272,7 @@ async function openInSlicer(payload) {
   // last scan, or blocked by policy, would otherwise emit an unhandled "error"
   // event that crashes the main process instead of telling the user.
   await new Promise((resolve, reject) => {
-    const child = spawn(slicer.path, [filePath], { detached: true, stdio: "ignore", windowsHide: false });
+    const child = spawn(slicer.path, launchArgs(slicer, filePath), { detached: true, stdio: "ignore", windowsHide: false });
     child.once("error", (error) => {
       reject(new Error(`Mintr couldn't start ${slicer.name}${error?.message ? ` (${error.message})` : ""}. The file was saved to ${filePath}.`));
     });
@@ -220,8 +286,13 @@ async function openInSlicer(payload) {
 
 module.exports = {
   SLICERS,
+  LASER_APPS,
   detectSlicers,
+  detectLaserApps,
+  identifyLaserApp,
+  openInLaserApp,
   detectSlicersIn,
   identifyExe,
   openInSlicer,
+  xtoolImportLink,
 };

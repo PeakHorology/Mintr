@@ -1,6 +1,8 @@
 "use client";
 
 import { ChevronDown, ChevronUp, Split, X } from "lucide-react";
+import { isLaserDesign } from "@/lib/laserMachine";
+import { LASER_JOB_LABEL, type LaserJob } from "@/lib/laser/cutFile";
 import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { ToolbarHideSelectedIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
@@ -863,6 +865,14 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
   ];
 }
 
+const LASER_JOBS: readonly LaserJob[] = ["cut", "score", "engrave"];
+
+const LASER_JOB_HINT: Record<LaserJob, string> = {
+  cut: "The laser cuts all the way round it, through the sheet.",
+  score: "The laser draws its outline without cutting through, for a fold or a line.",
+  engrave: "The laser fills its shape, marking the surface. Good for text and logos.",
+};
+
 export function ShapeInspector({
   shape,
   workspace,
@@ -1117,6 +1127,32 @@ export function ShapeInspector({
           <span>Hole</span>
         </button>
       </div>
+
+      {isLaserDesign(workspace) && !inspectTarget.hole ? (
+        <div className="laser-job-card">
+          <div className="laser-job-choices" role="radiogroup" aria-label="What the laser does">
+            {LASER_JOBS.map((job) => {
+              const active = (inspectTarget.laserJob ?? "cut") === job;
+              return (
+                <button
+                  key={job}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  className={`laser-job-${job}${active ? " active" : ""}`}
+                  data-sage-key="laser-job"
+                  disabled={locked}
+                  onClick={() => updateInspectTarget({ laserJob: job === "cut" ? undefined : job })}
+                >
+                  <span className="laser-job-swatch" aria-hidden="true" />
+                  {LASER_JOB_LABEL[job]}
+                </button>
+              );
+            })}
+          </div>
+          <p>{LASER_JOB_HINT[inspectTarget.laserJob ?? "cut"]}</p>
+        </div>
+      ) : null}
 
       {colorOpen ? (
         <div className="color-card" aria-label="Shape color">

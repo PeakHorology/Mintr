@@ -1,10 +1,14 @@
 const { dialog } = require("electron");
-const { detectSlicers, identifyExe, openInSlicer } = require("./slicerCatalog.cjs");
+const { detectLaserApps, detectSlicers, identifyExe, openInLaserApp, openInSlicer } = require("./slicerCatalog.cjs");
 
 function registerSlicerIpc(ipcMain, getWindow) {
   ipcMain.handle("peakcad:slicer-detect", () => detectSlicers());
 
   ipcMain.handle("peakcad:slicer-open", (_event, payload) => openInSlicer(payload));
+
+  ipcMain.handle("peakcad:laser-detect", () => detectLaserApps());
+
+  ipcMain.handle("peakcad:laser-open", (_event, payload) => openInLaserApp(payload));
 
   ipcMain.handle("peakcad:slicer-choose", async () => {
     const window = getWindow();

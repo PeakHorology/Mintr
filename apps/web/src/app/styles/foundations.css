@@ -5159,3 +5159,96 @@ button.lesson-target-hot {
   white-space: nowrap;
 }
 
+
+/* New design: 3D print or laser cut. */
+.new-design-dialog {
+  width: min(480px, 100%);
+}
+
+.new-design-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 18px 18px 6px;
+}
+
+.new-design-choice {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 18px 14px 16px;
+  color: var(--ink);
+  text-align: center;
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--tile-hover);
+  transition: border-color var(--motion-quick, 120ms) ease, background var(--motion-quick, 120ms) ease, transform var(--motion-quick, 120ms) ease;
+}
+
+.new-design-choice:hover,
+.new-design-choice:focus-visible {
+  border-color: var(--accent-text);
+  background: var(--wash);
+}
+
+.new-design-choice:active {
+  transform: scale(0.98);
+}
+
+.new-design-choice-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  color: var(--ink-strong);
+  border-radius: 50%;
+  background: var(--wash);
+}
+
+.new-design-choice strong {
+  color: var(--ink-strong);
+  font-size: var(--text-md);
+}
+
+.new-design-choice > span:last-child {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.dashboard-confirm-dialog p.new-design-note {
+  padding: 10px 18px 18px;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 420px) {
+  .new-design-choices {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-design-choice {
+    transition: none;
+  }
+}
+
+/* A laser design on the home page. Its own warm red, so mint stays Mintr's. */
+.laser-design-mark {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #c8553d 16%, transparent);
+  color: #c8553d;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+[data-theme="dark"] .laser-design-mark {
+  color: #e8846f;
+}

@@ -87,6 +87,11 @@ contextBridge.exposeInMainWorld("peakcadSlicer", {
   choose: () => ipcRenderer.invoke("peakcad:slicer-choose"),
 });
 
+contextBridge.exposeInMainWorld("peakcadLaser", {
+  detect: () => ipcRenderer.invoke("peakcad:laser-detect"),
+  open: (payload) => ipcRenderer.invoke("peakcad:laser-open", payload),
+});
+
 contextBridge.exposeInMainWorld("peakcadUpdate", {
   check: () => ipcRenderer.invoke("peakcad:update-check"),
   openDownload: () => ipcRenderer.invoke("peakcad:update-open"),

@@ -54,6 +54,16 @@ describe("sage guides", () => {
     expect(searchSageGuides("save")[0]?.area).toBe("anywhere");
   });
 
+  it("explains the laser tools, with pictures for the ones that make parts", () => {
+    expect(lookupSageGuide("Box maker")?.picture).toBe("box-maker");
+    expect(lookupSageGuide("Flat parts")?.picture).toBe("flat-parts");
+    expect(lookupSageGuide("Nest")?.picture).toBe("nest");
+    expect(lookupSageGuide("laser-job")?.title).toBe("Cut, score or engrave");
+    expect(lookupSageGuide("Open in xTool Studio")?.title).toBe("Open in your laser program");
+    expect(searchSageGuides("pack the parts together")[0]?.guide.title).toBe("Nest");
+    expect(searchSageGuides("finger joint box")[0]?.guide.title).toBe("Box maker");
+  });
+
   it("finds nothing for filler or nonsense", () => {
     expect(searchSageGuides("")).toEqual([]);
     expect(searchSageGuides("how do I")).toEqual([]);

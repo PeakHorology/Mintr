@@ -27,6 +27,10 @@ import {
   ToolbarTrashIcon,
   ToolbarUngroupIcon,
   ToolbarUndoIcon,
+  ToolbarBoxMakerIcon,
+  ToolbarFlatPartsIcon,
+  ToolbarTraceLogoIcon,
+  ToolbarNestIcon,
 } from "@/components/icons";
 import { useSageActive } from "@/components/workplane/Sage";
 import { PeakTooltip, usePeakContextHelp, usePeakTooltip } from "@/components/workplane/ToolNameTooltip";
@@ -51,7 +55,7 @@ type ToolDef = {
 
 type ToolSection = {
   title: string;
-  accent: "history" | "clipboard" | "combine" | "modify" | "arrange";
+  accent: "history" | "clipboard" | "combine" | "modify" | "arrange" | "laser";
   tools: ToolDef[];
 };
 
@@ -436,6 +440,7 @@ export function EditorViewportToolbar({
   onPushPull,
   onFace,
   onSplit,
+  laserTools = null,
 }: {
   cluster?: "all" | "edit" | "modify";
   toolbarMode?: ToolbarMode;
@@ -488,6 +493,8 @@ export function EditorViewportToolbar({
   onPushPull: () => void;
   onFace: () => void;
   onSplit: () => void;
+  /** Set in a laser design: tools for flat parts cut from a sheet. */
+  laserTools?: { onBoxMaker: () => void; onNest: () => void; canNest: boolean; onFlatParts: () => void; canFlatParts: boolean; onTraceLogo: () => void } | null;
 }) {
   const hotkeys = useHotkeyBindings();
 
@@ -530,8 +537,8 @@ export function EditorViewportToolbar({
       { label: "Push Pull", description: TOOL_DESCRIPTIONS.pushPull, icon: ToolbarPushPullIcon, action: onPushPull, enabled: canEdgeModify, active: pushPullActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Pad/Pocket", description: TOOL_DESCRIPTIONS.face, icon: ToolbarHollowIcon, action: onFace, enabled: canEdgeModify, active: faceActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Split", description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canSplit || splitActive, active: splitActive, disabledReason: canEdgeModify ? "Gridfinity bins stay in one piece" : "Select a single unlocked shape first" },
-      // Works with nothing selected: click Texture, then the part.
-      { label: "Texture", description: TOOL_DESCRIPTIONS.texture, icon: ToolbarTextureIcon, action: onTexture, enabled: true, active: textureActive },
+      // Works with nothing selected: click Texture, then the part. A printed finish, so not in laser designs.
+      ...(laserTools ? [] : [{ label: "Texture", description: TOOL_DESCRIPTIONS.texture, icon: ToolbarTextureIcon, action: onTexture, enabled: true, active: textureActive }]),
     ],
   };
   const arrangeSection: ToolSection = {
@@ -547,10 +554,23 @@ export function EditorViewportToolbar({
     ],
   };
 
+  const laserSection: ToolSection | null = laserTools
+    ? {
+      title: "Laser",
+      accent: "laser",
+      tools: [
+        { label: "Box maker", description: TOOL_DESCRIPTIONS.boxMaker, icon: ToolbarBoxMakerIcon, action: laserTools.onBoxMaker, enabled: true },
+        { label: "Trace logo", description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
+        { label: "Flat parts", description: TOOL_DESCRIPTIONS.flatParts, icon: ToolbarFlatPartsIcon, action: laserTools.onFlatParts, enabled: laserTools.canFlatParts, disabledReason: "Select one 3D part" },
+        { label: "Nest", description: TOOL_DESCRIPTIONS.nest, icon: ToolbarNestIcon, action: laserTools.onNest, enabled: laserTools.canNest, disabledReason: "Add a part to cut first" },
+      ],
+    }
+    : null;
+  const modifyCluster = [combineSection, modifySection, arrangeSection, ...(laserSection ? [laserSection] : [])];
   const sections =
     cluster === "edit" ? [historySection, clipboardSection]
-      : cluster === "modify" ? [combineSection, modifySection, arrangeSection]
-        : [historySection, clipboardSection, combineSection, modifySection, arrangeSection];
+      : cluster === "modify" ? modifyCluster
+        : [historySection, clipboardSection, ...modifyCluster];
 
   return <OverflowToolRow sections={sections} align={cluster === "modify" ? "end" : "start"} />;
 }

@@ -51,7 +51,10 @@ export type SagePicture =
   | "mirror"
   | "circular-pattern"
   | "linear-pattern"
-  | "ruler";
+  | "ruler"
+  | "box-maker"
+  | "flat-parts"
+  | "nest";
 
 export type SageGuide = {
   title: string;
@@ -88,6 +91,14 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["mirror"], title: "Mirror", what: "Copies selected shapes across a plane.", steps: ["Select the shapes.", "Click Mirror and choose the plane."] , hotkey: "mirror", picture: "mirror" },
   { keys: ["circular pattern"], title: "Circular pattern", what: "Copies the selection around a center.", steps: ["Select a shape.", "Click Circular pattern, click the center, and set how many copies."], picture: "circular-pattern" },
   { keys: ["linear pattern"], title: "Linear pattern", what: "Copies the selection in rows.", steps: ["Select a shape.", "Click Linear pattern.", "Set the count and spacing along width, length, or height."], picture: "linear-pattern" },
+  { keys: ["box maker", "finger joint"], title: "Box maker", what: "Makes a box that slots together, cut from your sheet. Every panel gets fingers sized to the sheet's thickness.", steps: ["Click Box maker.", "Type the width, depth and height, and choose outside or inside size, with a lid or an open top.", "Click Make box. The panels land on the bed, ready to cut."], picture: "box-maker" },
+  { keys: ["flat parts"], title: "Flat parts", what: "Turns a 3D part into flat parts you can cut: stacked layers to glue together, or slotted slices that push together crosswise.", steps: ["Paste a model in from a 3D print design, or make one here, and select it.", "Click Flat parts and choose Stacked layers or Slotted slices.", "Click Make parts. The 3D part is hidden, not deleted."], picture: "flat-parts" },
+  { keys: ["trace logo", "logo", "png", "picture to outline"], title: "Trace logo", what: "Turns a logo picture into outlines the laser can follow, with no other program needed. Made for logos, text and simple drawings with solid shapes, not photos.", steps: ["Click Trace logo and choose a PNG or JPG.", "Check the preview. Move How dark counts until the logo looks right, and raise Ignore specks to drop dust.", "Type the width, choose Engrave, Cut or Score, and click Make part."] },
+  { keys: ["nest", "pack"], title: "Nest", what: "Packs parts close together on the laser bed, turning them where that fits better, so a sheet goes further.", steps: ["Select the parts to pack, or select nothing to pack them all.", "Click Nest. Parts that need another sheet are laid out beside the bed."], picture: "nest" },
+  { keys: ["laser-job"], title: "Cut, score or engrave", what: "Sets what the laser does with this part. Cut goes right through, score draws a line on the surface, and engrave burns the whole area.", steps: ["Select a part.", "Choose Cut, Score or Engrave in the inspector.", "On the bed, cut parts are outlined red, scored ones blue, and engraved ones look burnt."] },
+  { keys: ["open in xtool studio", "open in lightburn"], title: "Open in your laser program", what: "Saves the cut file to Downloads and opens it in your laser program. xTool Studio gets cut, score and engrave already set.", steps: ["For xTool Studio, open it first. It won't start on its own for this.", "Click Export, then Open in.", "In the laser program, pick your material, then start the job."] },
+  { keys: ["save cut file"], title: "Save cut file", what: "Saves an SVG of every part at true size: red cuts, blue scores, black engraves. LightBurn, xTool Studio and Glowforge all open it.", steps: ["Click Export.", "Click Save cut file. The kerf is allowed for, so parts come out the size drawn."] },
+  { keys: ["save as dxf"], title: "Save as DXF", what: "Saves the cut file as a DXF, with a layer each for cut, score and engrave.", steps: ["Click Export.", "Click Save as DXF, for laser programs that prefer DXF."] },
   { keys: ["select"], title: "Select", what: "Picks sketch points, lines, and whole shapes.", steps: ["Click a line to select that line.", "Click inside a closed shape to select the whole shape, then drag to move it."], picture: "select" },
   { keys: ["line"], title: "Line", what: "Draws straight segments.", steps: ["Click the start.", "Click the next point. Type 50<30 for a length and an angle, or hold Shift for 15° steps.", "Click the first point again to close a shape."], hotkey: "sketchLine", picture: "line" },
   { keys: ["arc"], title: "Arc", what: "Draws an arc through three clicks.", steps: ["Click the start.", "Click the end.", "Click a point the arc should pass through."], picture: "arc" },

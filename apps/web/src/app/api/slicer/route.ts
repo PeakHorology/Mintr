@@ -31,7 +31,9 @@ function catalogPath() {
   return null;
 }
 
-function runCatalog(command: "detect" | "open", payload: Record<string, string>) {
+type CatalogCommand = "detect" | "open" | "detect-laser" | "open-laser";
+
+function runCatalog(command: CatalogCommand, payload: Record<string, string>) {
   const catalog = catalogPath();
   if (!catalog) throw new Error("Could not open the slicer");
   // The dev server bundles this route, so it cannot require the catalog itself.
@@ -42,13 +44,22 @@ function runCatalog(command: "detect" | "open", payload: Record<string, string>)
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => { raw += chunk; });
     process.stdin.on("end", () => {
-      try {
-        const input = raw ? JSON.parse(raw) : {};
-        const result = process.env.PEAKCAD_SLICER_COMMAND === "open" ? catalog.openInSlicer(input) : catalog.detectSlicers();
-        process.stdout.write(JSON.stringify({ ok: true, result }));
-      } catch (error) {
+      const fail = (error) => {
         const message = error && error.message ? error.message : "Could not open the slicer";
         process.stdout.write(JSON.stringify({ ok: false, error: message }));
+      };
+      try {
+        const input = raw ? JSON.parse(raw) : {};
+        const command = process.env.PEAKCAD_SLICER_COMMAND;
+        const run = {
+          "open": () => catalog.openInSlicer(input),
+          "open-laser": () => catalog.openInLaserApp(input),
+          "detect-laser": () => catalog.detectLaserApps(),
+        }[command] ?? (() => catalog.detectSlicers());
+        // Opening waits for the program to start, so its result is a promise.
+        Promise.resolve(run()).then((result) => process.stdout.write(JSON.stringify({ ok: true, result })), fail);
+      } catch (error) {
+        fail(error);
       }
     });
   `;
@@ -90,7 +101,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Slicer handoff is only available on this computer" }, { status: 403 });
   }
   try {
-    const slicers = runCatalog("detect", {});
+    const laser = new URL(request.url).searchParams.get("kind") === "laser";
+    const slicers = runCatalog(laser ? "detect-laser" : "detect", {});
     return NextResponse.json({ slicers });
   } catch {
     return NextResponse.json({ slicers: [] });
@@ -106,6 +118,7 @@ export async function POST(request: Request) {
     base64?: unknown;
     exePath?: unknown;
     folder?: unknown;
+    kind?: unknown;
   }>(request, MAX_REQUEST_BODY_BYTES);
   if (!parsed.ok) {
     return NextResponse.json(
@@ -114,7 +127,7 @@ export async function POST(request: Request) {
     );
   }
   try {
-    const result = runCatalog("open", {
+    const result = runCatalog(parsed.value.kind === "laser" ? "open-laser" : "open", {
       filename: typeof parsed.value.filename === "string" ? parsed.value.filename : "",
       base64: typeof parsed.value.base64 === "string" ? parsed.value.base64 : "",
       exePath: typeof parsed.value.exePath === "string" ? parsed.value.exePath : "",
@@ -123,7 +136,7 @@ export async function POST(request: Request) {
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not open the slicer";
-    const safe = message.startsWith("Choose") || message.startsWith("That") || message.startsWith("This") || message.startsWith("There")
+    const safe = message.startsWith("Choose") || message.startsWith("Mintr") || message.startsWith("That") || message.startsWith("This") || message.startsWith("There")
       ? message
       : "Could not open the slicer";
     return NextResponse.json({ error: safe }, { status: 400 });
