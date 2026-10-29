@@ -1,6 +1,6 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
 import { buildGearIndexedMesh } from "@/lib/gearMesh";
-import { normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
+import { gearMetrics, gearPlanLoops, normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
 import { gridfinityRecipeForShape } from "@/lib/gridfinity";
 import { buildRecipeSolid } from "@/lib/recipeBrep";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
@@ -61,6 +61,16 @@ function xzPlane(brep: Brep, origin: [number, number, number] = [0, 0, 0]) {
     yDir: [0, 0, 1] as [number, number, number],
     zDir: [0, 1, 0] as [number, number, number],
   };
+}
+
+/**
+ * The X-Z sketch plane carries its V axis to -Z, so a regular n-gon drawn on it comes
+ * out mirrored front to back. For a regular n-gon that mirror is a half turn: an odd
+ * pyramid or prism pointed back while the viewport (and the desktop engine) point its
+ * first corner to +Z. Turning it half way round puts it back; even counts look the same.
+ */
+function faceFirstCornerForward(brep: Brep, solid: BrepSolid): BrepSolid {
+  return brep.rotate(solid, 180, { axis: [0, 1, 0] }) as unknown as BrepSolid;
 }
 
 /** Plane spanning X (U) and Y (V) — sketches extrude along +Z. */
@@ -273,7 +283,7 @@ function buildPyramid(
     endPoint: [0, height, 0],
   });
   if (nGonLoft.ok) {
-    return { solid: centerOnY(brep, nGonLoft.value as unknown as BrepSolid, height) };
+    return { solid: centerOnY(brep, faceFirstCornerForward(brep, nGonLoft.value as unknown as BrepSolid), height) };
   }
   // Last resort only: a pyramid has no mesh for the faceted path, so skipping here would
   // drop the body from the file entirely. An approximate cone beats a missing part.
@@ -428,9 +438,9 @@ function buildPolygon(
   const sides = Math.max(3, Math.round(shape.sides ?? 6));
   // Circumscribed radius 1, then scale to width/depth like CylinderGeometry(1).scale(w/2,1,d/2).
   const sketch = brep.sketchPolysides(1, sides, 0, { plane: xzPlane(brep) as never });
-  let solid = brep.sketchExtrude(sketch as never, height, {
+  let solid = faceFirstCornerForward(brep, brep.sketchExtrude(sketch as never, height, {
     extrusionDirection: [0, 1, 0],
-  }) as unknown as BrepSolid;
+  }) as unknown as BrepSolid);
   solid = centerOnY(brep, solid, height);
   const sx = width / 2;
   const sz = depth / 2;
@@ -478,24 +488,30 @@ function buildGear(brep: Brep, shape: WorkplaneShape, height: number): ShapeBrep
     if (extruded) return { solid: centerOnY(brep, extruded, height) };
     return gearFromMesh(brep, shape, height);
   }
-  if (spec.form === "spur" || spec.form === "ring") {
-    const built = spec.form === "ring"
-      ? brep.makeInternalGear({
-        teeth: spec.teeth,
-        moduleSize: spec.module,
-        thickness: height,
-        pressureAngleDeg: spec.pressureAngle,
-        flankThinning: spec.backlash / 2,
-        ringWallThickness: spec.module * 1.25 + spec.rim,
-      })
-      : brep.makeExternalGear({
-        teeth: spec.teeth,
-        moduleSize: spec.module,
-        thickness: height,
-        pressureAngleDeg: spec.pressureAngle,
-        flankThinning: spec.backlash / 2,
-        bore: spec.bore,
-      });
+  if (spec.form === "ring") {
+    // brepjs's ring gear puts its root and tip arcs the wrong way round, so the ring
+    // is cut from the outline the viewport draws: a true cylinder with the toothed
+    // hole through it. The X-Z sketch plane carries V to -Z, hence V = -z.
+    const hole = gearPlanLoops(spec).holes[0];
+    const cavity = hole
+      ? extrudeClosedUv(brep, hole.map((point) => [point.x, -point.z] as [number, number]), xzPlane(brep, [0, -height / 2 - 1, 0]), height + 2, [0, 1, 0])
+      : null;
+    if (cavity) {
+      const disc = brep.cylinder(gearMetrics(spec).outsideDiameter / 2, height, { axis: [0, 1, 0], centered: true });
+      const cut = brep.cut(disc, cavity);
+      if (cut.ok) return { solid: cut.value };
+    }
+    return gearFromMesh(brep, shape, height);
+  }
+  if (spec.form === "spur") {
+    const built = brep.makeExternalGear({
+      teeth: spec.teeth,
+      moduleSize: spec.module,
+      thickness: height,
+      pressureAngleDeg: spec.pressureAngle,
+      flankThinning: spec.backlash / 2,
+      bore: spec.bore,
+    });
     if (built.ok) return { solid: standGearUp(brep, built.value.solid as unknown as BrepSolid, height) };
   }
   return gearFromMesh(brep, shape, height);

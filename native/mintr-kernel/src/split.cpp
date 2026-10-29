@@ -91,13 +91,7 @@ bool cutHalf(const TopoDS_Shape& solid, const gp_Pnt& origin, const gp_Dir& disc
   gp_Trsf trsf;
   trsf.SetDisplacement(gp_Ax3(gp::XOY()), gp_Ax3(origin, discard));
   box = BRepBuilderAPI_Transform(box, trsf, true).Shape();
-  BRepAlgoAPI_Cut cut(solid, box);
-  cut.SetRunParallel(true);
-  cut.SetFuzzyValue(0.04);
-  cut.Build();
-  if (!cut.IsDone()) return false;
-  out = cut.Shape();
-  return !out.IsNull();
+  return kernelBoolean(KernelBooleanOp::Cut, solid, box, out);
 }
 
 TopoDS_Wire rectWire(double u0, double u1, double v0, double v1, double z) {
@@ -120,87 +114,50 @@ bool makeDovetail(double length, double root, double tip, double z0, double z1, 
   return !out.IsNull();
 }
 
-bool makeHelixWire(const gp_Pnt& origin, const gp_Dir& axis, const gp_Dir& u, double radius, double pitch, double length, TopoDS_Wire& wire) {
-  const int turns = std::max(1, static_cast<int>(std::ceil(length / std::max(0.15, pitch))));
-  const int segs = std::max(32, turns * 24);
-  BRepBuilderAPI_MakeWire maker;
-  gp_Vec ax(axis);
-  ax.Normalize();
-  gp_Vec uu(u);
-  uu.Normalize();
-  gp_Vec vv = ax.Crossed(uu);
-  if (vv.Magnitude() < 1e-9) return false;
-  vv.Normalize();
-  uu = vv.Crossed(ax);
-  uu.Normalize();
-  gp_Pnt prev;
-  bool hasPrev = false;
-  for (int i = 0; i <= segs; ++i) {
-    const double t = static_cast<double>(i) / segs;
-    const double z = t * length;
-    const double ang = (z / pitch) * 2.0 * kPi;
-    const gp_Pnt p = origin.Translated(ax * z + uu * (radius * std::cos(ang)) + vv * (radius * std::sin(ang)));
-    if (hasPrev && p.Distance(prev) > 1e-8) maker.Add(BRepBuilderAPI_MakeEdge(prev, p).Edge());
-    prev = p;
-    hasPrev = true;
-  }
-  if (!maker.IsDone()) return false;
-  wire = maker.Wire();
-  return true;
-}
+// ISO metric coarse series: the sizes the browser's split joint picks from (metricThreads.ts).
+struct MetricThread {
+  double major;
+  double pitch;
+};
 
-bool makeThread(double radius, double z0, double length, bool female, double extra, TopoDS_Shape& out) {
-  const double major = std::max(3.0, radius * 2.0 + extra * 2.0);
-  const double pitch = std::max(0.5, std::min(2.5, major * 0.125));
-  const double depth = std::min(std::max(0.12, 0.54 * pitch), major * 0.18);
-  const gp_Ax2 ax(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1));
-  const double coreR = std::max(0.4, major / 2.0 - (female ? 0.0 : depth * 0.55));
-  TopoDS_Shape core = BRepPrimAPI_MakeCylinder(ax, coreR, length).Shape();
-  TopoDS_Wire helix;
-  if (!makeHelixWire(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0), major / 2.0, pitch, length, helix)) {
-    out = core;
-    return true;
+constexpr MetricThread kMetricCoarse[] = {
+  { 2, 0.4 }, { 2.5, 0.45 }, { 3, 0.5 }, { 4, 0.7 }, { 5, 0.8 }, { 6, 1 }, { 8, 1.25 },
+  { 10, 1.5 }, { 12, 1.75 }, { 14, 2 }, { 16, 2 }, { 18, 2.5 }, { 20, 2.5 },
+};
+
+// The browser's screw joint (cutToFit threadSoup with buildMetricThreadedCylinder): the
+// nearest ISO size no wider than the joint, a 60° tooth, the socket opened by the
+// clearance. Here the tooth runs on an exact helix, so screw and socket still mate.
+bool makeThread(double radius, double z0, double length, bool female, double clearance, TopoDS_Shape& out) {
+  const double wanted = std::max(3.0, radius * 2.0);
+  MetricThread fit = kMetricCoarse[0];
+  for (const auto& entry : kMetricCoarse) {
+    if (std::abs(entry.major - wanted) < std::abs(fit.major - wanted)) fit = entry;
   }
-  const double innerR = std::max(0.05, major / 2.0 - depth * 0.55);
-  const double tipR = major / 2.0 + depth;
-  const double half = std::min(pitch * 0.34, length * 0.4);
+  const double nominalR = std::max(0.35, std::min(fit.major, wanted) / 2.0);
+  const double gap = std::min(2.0, std::max(0.0, clearance));
+  const double majorR = female ? nominalR + gap : std::max(0.35, nominalR - gap);
+  const double pitch = std::max(0.15, fit.pitch);
+  const double depth = std::min(0.541266 * pitch, std::max(0.08, majorR * 0.45));
+  const double shaftR = std::max(0.2, majorR - depth);
+  const double shank = std::max(pitch * 2.0, length);
+  const double halfWidth = std::min(pitch * 0.22, shank * 0.45);
+  const double embed = std::min(depth * 0.35, shaftR * 0.2);
+  const double toothRootR = std::max(0.12, shaftR - embed);
+  const TopoDS_Shape core = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)), shaftR, shank).Shape();
   BRepBuilderAPI_MakeWire profile;
-  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(innerR, 0, -half), gp_Pnt(tipR, 0, 0)).Edge());
-  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(tipR, 0, 0), gp_Pnt(innerR, 0, half)).Edge());
-  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(innerR, 0, half), gp_Pnt(innerR, 0, -half)).Edge());
-  if (!profile.IsDone()) {
-    out = core;
-    return true;
-  }
+  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(toothRootR, 0, z0 - halfWidth), gp_Pnt(majorR, 0, z0)).Edge());
+  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(majorR, 0, z0), gp_Pnt(toothRootR, 0, z0 + halfWidth)).Edge());
+  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(toothRootR, 0, z0 + halfWidth), gp_Pnt(toothRootR, 0, z0 - halfWidth)).Edge());
+  TopoDS_Wire helix;
   TopoDS_Shape ridge;
-  BRepOffsetAPI_MakePipeShell shell(helix);
-  shell.SetDiscreteMode();
-  shell.SetTransitionMode(BRepBuilderAPI_Transformed);
-  shell.Add(profile.Wire(), false, true);
-  shell.Build();
-  if (shell.IsDone()) ridge = shell.Shape();
-  else {
-    BRepOffsetAPI_MakePipe pipe(helix, profile.Wire());
-    pipe.Build();
-    if (pipe.IsDone()) ridge = pipe.Shape();
-  }
-  if (ridge.IsNull()) {
+  if (!profile.IsDone()
+    || !kernelHelixWire(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0), majorR, pitch, shank, false, helix)
+    || !kernelSweepAlongHelix(helix, profile.Wire(), gp_Dir(0, 0, 1), ridge)) {
     out = core;
     return true;
   }
-  if (female) {
-    BRepAlgoAPI_Fuse fuse(core, ridge);
-    fuse.SetRunParallel(true);
-    fuse.SetFuzzyValue(0.04);
-    fuse.Build();
-    out = fuse.IsDone() ? fuse.Shape() : core;
-  } else {
-    BRepAlgoAPI_Fuse fuse(core, ridge);
-    fuse.SetRunParallel(true);
-    fuse.SetFuzzyValue(0.04);
-    fuse.Build();
-    out = fuse.IsDone() ? fuse.Shape() : core;
-  }
+  if (!kernelBoolean(KernelBooleanOp::Fuse, core, ridge, out)) out = core;
   return !out.IsNull();
 }
 
@@ -225,13 +182,7 @@ bool makeJointTool(
     const double shaftLen = (z1 - z0) * 0.72;
     TopoDS_Shape shaft = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)), radius + extra, shaftLen).Shape();
     TopoDS_Shape head = BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, z0 + shaftLen * 1.08), radius * 1.45 + extra).Shape();
-    BRepAlgoAPI_Fuse fuse(shaft, head);
-    fuse.SetRunParallel(true);
-    fuse.SetFuzzyValue(0.04);
-    fuse.Build();
-    if (!fuse.IsDone()) return false;
-    out = fuse.Shape();
-    return true;
+    return kernelBoolean(KernelBooleanOp::Fuse, shaft, head, out);
   }
   if (joint == "thread") {
     return makeThread(radius, z0, z1 - z0, !male, extra, out);
@@ -373,19 +324,13 @@ nlohmann::json handleSplit(const nlohmann::json& job) {
   const TopoDS_Shape maleWorldTool = placeLocal(maleTool, origin, tangent, gp_Dir(normal.Reversed()), 0.0);
   const TopoDS_Shape femaleWorldTool = placeLocal(femaleTool, origin, tangent, gp_Dir(normal.Reversed()), 0.35);
 
-  BRepAlgoAPI_Fuse add(positive, maleWorldTool);
-  add.SetRunParallel(true);
-  add.SetFuzzyValue(0.04);
-  add.Build();
-  if (!add.IsDone()) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
-  BRepAlgoAPI_Cut sub(negative, femaleWorldTool);
-  sub.SetRunParallel(true);
-  sub.SetFuzzyValue(0.04);
-  sub.Build();
-  if (!sub.IsDone()) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
+  TopoDS_Shape added;
+  if (!kernelBoolean(KernelBooleanOp::Fuse, positive, maleWorldTool, added)) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
+  TopoDS_Shape subtracted;
+  if (!kernelBoolean(KernelBooleanOp::Cut, negative, femaleWorldTool, subtracted)) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
 
-  const TopoDS_Shape maleFlat = orientCutFaceDown(add.Shape(), gp_Dir(normal.Reversed()));
-  const TopoDS_Shape femaleFlat = orientCutFaceDown(sub.Shape(), normal);
+  const TopoDS_Shape maleFlat = orientCutFaceDown(added, gp_Dir(normal.Reversed()));
+  const TopoDS_Shape femaleFlat = orientCutFaceDown(subtracted, normal);
   const auto labels = jointLabels(joint);
   auto male = packPart(maleFlat, labels.first, angular);
   auto female = packPart(femaleFlat, labels.second, angular);

@@ -31,6 +31,22 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.9.2",
+    items: [
+      "Concave fillet on every edge of a corner now scoops the corner cleanly in the desktop app too, not just in the browser.",
+      "Fillets and chamfers in the desktop app no longer show outline lines along their smooth edges after they are applied.",
+      "When a fillet or chamfer is too big for the edges you picked, Mintr tells you the largest size that fits.",
+      "Rounding every edge of a part with inside corners now works in the desktop app just as it does in the browser, and a size that is too big keeps the tool open with a message instead of closing it.",
+      "Ring gears have proper involute teeth on screen, in prints and in exported files. Before, their teeth were drawn as round bumps.",
+      "Pyramids and polygon prisms with an odd number of sides now export to STEP facing the way they look on screen.",
+      "Groups that are tilted, turned or mirrored, and holes inside a group, now come out right in the desktop app when you combine, split, check for printing or export.",
+      "In the desktop app, a part you filleted after importing it keeps its fillet when combined or exported, and locked parts stay out of Combine.",
+      "Threads, gears and spheres made in the desktop app are true smooth curves, so STEP files are smaller and combining them is faster. Split screw joints use standard metric sizes, as in the browser.",
+      "Desktop previews of fillets, threads and Push/Pull, and imported STEP parts and sweeps, now show the same detail as in the browser, and arrive faster.",
+      "Fillets on an oval cone work the same in the desktop app as in the browser, including on a cone that has been moved or turned.",
+    ],
+  },
+  {
     version: "1.1.9.1",
     items: [
       "The first design you open after starting Mintr opens in a moment again, instead of after a two-minute wait.",

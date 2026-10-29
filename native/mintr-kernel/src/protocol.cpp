@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -42,4 +44,72 @@ bool writeFrame(const std::string& payload) {
   if (std::fwrite(payload.data(), 1, payload.size(), stdout) != payload.size()) return false;
   std::fflush(stdout);
   return true;
+}
+
+namespace {
+
+std::string base64(const unsigned char* data, std::size_t size) {
+  static const char* table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((size + 2) / 3) * 4);
+  std::size_t i = 0;
+  for (; i + 2 < size; i += 3) {
+    const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16) | (static_cast<std::uint32_t>(data[i + 1]) << 8) | data[i + 2];
+    out.push_back(table[(n >> 18) & 63]);
+    out.push_back(table[(n >> 12) & 63]);
+    out.push_back(table[(n >> 6) & 63]);
+    out.push_back(table[n & 63]);
+  }
+  if (i < size) {
+    std::uint32_t n = static_cast<std::uint32_t>(data[i]) << 16;
+    if (i + 1 < size) n |= static_cast<std::uint32_t>(data[i + 1]) << 8;
+    out.push_back(table[(n >> 18) & 63]);
+    out.push_back(table[(n >> 12) & 63]);
+    out.push_back(i + 1 < size ? table[(n >> 6) & 63] : '=');
+    out.push_back('=');
+  }
+  return out;
+}
+
+bool endsWith(const std::string& text, const char* suffix) {
+  const std::size_t n = std::strlen(suffix);
+  return text.size() >= n && text.compare(text.size() - n, n, suffix) == 0;
+}
+
+bool allNumbers(const nlohmann::json& list) {
+  for (const auto& value : list) {
+    if (!value.is_number()) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+void packMeshArrays(nlohmann::json& reply) {
+  if (reply.is_array()) {
+    for (auto& item : reply) packMeshArrays(item);
+    return;
+  }
+  if (!reply.is_object()) return;
+  for (auto it = reply.begin(); it != reply.end(); ++it) {
+    auto& value = it.value();
+    const std::string& key = it.key();
+    const bool floats = endsWith(key, "ositions") || endsWith(key, "ormals");
+    const bool whole = key == "indices";
+    if ((floats || whole) && value.is_array() && !value.empty() && allNumbers(value)) {
+      if (floats) {
+        std::vector<float> packed;
+        packed.reserve(value.size());
+        for (const auto& number : value) packed.push_back(number.get<float>());
+        value = { { "$f32", base64(reinterpret_cast<const unsigned char*>(packed.data()), packed.size() * sizeof(float)) } };
+      } else {
+        std::vector<std::uint32_t> packed;
+        packed.reserve(value.size());
+        for (const auto& number : value) packed.push_back(number.get<std::uint32_t>());
+        value = { { "$u32", base64(reinterpret_cast<const unsigned char*>(packed.data()), packed.size() * sizeof(std::uint32_t)) } };
+      }
+      continue;
+    }
+    if (value.is_object() || value.is_array()) packMeshArrays(value);
+  }
 }

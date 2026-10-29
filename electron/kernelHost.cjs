@@ -6,6 +6,9 @@ let child = null;
 let starting = null;
 let nextWrite = Promise.resolve();
 const pending = new Map();
+// Callers pick their own job ids (some use Date.now()), so each frame gets the host's own
+// id on the wire and the caller's id is put back on the reply.
+let nextFrameId = 1;
 let stdoutBuf = Buffer.alloc(0);
 
 function resolveKernelExe() {
@@ -81,6 +84,23 @@ function pushStdout(chunk) {
   consumeStdout();
 }
 
+// The kernel sends mesh numbers packed as {"$f32": base64} / {"$u32": base64}. They become
+// typed arrays here, which cross to the page as a plain memory copy instead of being parsed.
+function unpackMesh(value) {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) value[index] = unpackMesh(value[index]);
+    return value;
+  }
+  if (!value || typeof value !== "object") return value;
+  if (typeof value.$f32 === "string" || typeof value.$u32 === "string") {
+    const bytes = Buffer.from(value.$f32 ?? value.$u32, "base64");
+    const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    return typeof value.$f32 === "string" ? new Float32Array(copy) : new Uint32Array(copy);
+  }
+  for (const key of Object.keys(value)) value[key] = unpackMesh(value[key]);
+  return value;
+}
+
 function consumeStdout() {
   while (stdoutBuf.length >= 4) {
     const size = stdoutBuf.readUInt32LE(0);
@@ -100,7 +120,7 @@ function consumeStdout() {
       continue;
     }
     const replyId = typeof reply?.id === "number" ? reply.id : reply?.requestId;
-    if (typeof replyId === "number") settle(replyId, reply);
+    if (typeof replyId === "number") settle(replyId, unpackMesh(reply));
   }
 }
 
@@ -154,7 +174,9 @@ function writeFrame(proc, payload) {
 
 async function requestNativeKernel(job, timeoutMs) {
   if (!resolveKernelExe()) return { ok: false, fallback: true, message: "MintrKernel.exe is not built yet" };
-  const id = job.id;
+  const callerId = job.id;
+  const id = nextFrameId;
+  nextFrameId += 1;
   // Resolve the process inside the queued step, not before queueing: an earlier
   // request that timed out has already killed the kernel by the time this one
   // runs, and writing to that dead stdin would wait out a second full timeout.
@@ -168,9 +190,12 @@ async function requestNativeKernel(job, timeoutMs) {
         // serving later requests must not die for an older request's timeout.
         if (child === proc) stopKernel();
       }, timeoutMs);
-      pending.set(id, { resolve, timer });
+      pending.set(id, {
+        resolve: (reply) => resolve(reply && typeof reply === "object" ? { ...reply, id: callerId } : reply),
+        timer,
+      });
       try {
-        writeFrame(proc, JSON.stringify(job));
+        writeFrame(proc, JSON.stringify({ ...job, id, packMesh: true }));
       } catch {
         settle(id, { ok: false, fallback: true, message: "CAD kernel write failed" });
         if (child === proc) stopKernel();
@@ -194,5 +219,5 @@ module.exports = { registerKernelIpc, stopKernel, resolveKernelExe };
 
 // Framing internals for the unit test only; absent in the packaged app.
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  module.exports.__test = { attachChild, pending };
+  module.exports.__test = { attachChild, pending, unpackMesh };
 }

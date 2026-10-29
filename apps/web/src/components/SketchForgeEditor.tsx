@@ -7272,19 +7272,38 @@ export function SketchForgeEditor({
   };
 
   const sendCadModifierRequest = (request: CadModifierWorkerPayload, requestId: number, transfer: Transferable[] = []) => {
+    // Hollow stays on the browser kernel: on some parts (a plate with a hole through
+    // the open face) the desktop build of OCCT refuses the offset the browser accepts.
+    // enginesParity.test.ts compares the two; route Hollow here once they agree.
     const shellActive = Boolean(shellSessionRef.current);
     if (!shellActive && nativeCadModifierCanHandle(request, cadModifierNativeLiveRef.current)) {
+      // The desktop engine could not answer. A prepare simply moves to the browser kernel.
+      // Any later request belonged to the desktop session, which the browser kernel never
+      // saw, so the tool is reset with a plain message instead of a confusing one.
+      const nativeMissed = () => {
+        cadModifierNativeLiveRef.current = false;
+        if (request.type === "dispose") return;
+        if (request.type !== "prepare") {
+          cadModifierDispatchRef.current({
+            type: "error",
+            requestId,
+            message: "Mintr's geometry engine stopped. Open the tool again to carry on.",
+            resetSession: true,
+          });
+          return;
+        }
+        if (!postToCadModifierWorker(request, requestId, transfer)) {
+          cadModifierDispatchRef.current({
+            type: "error",
+            requestId,
+            message: cadModifierWorkerFailureMessage(),
+            resetSession: true,
+          });
+        }
+      };
       void requestNativeCadModifier(request, requestId, cadModifierRequestTimeoutMs()).then((reply) => {
         if (!reply || reply.fallback) {
-          if (request.type === "prepare") cadModifierNativeLiveRef.current = false;
-          if (!postToCadModifierWorker(request, requestId, transfer)) {
-            cadModifierDispatchRef.current({
-              type: "error",
-              requestId,
-              message: cadModifierWorkerFailureMessage(),
-              resetSession: true,
-            });
-          }
+          nativeMissed();
           return;
         }
         if (request.type === "prepare") {
@@ -7303,17 +7322,7 @@ export function SketchForgeEditor({
           requestId,
           request.type === "pushPull" ? "pushPull" : "fillet",
         ));
-      }).catch(() => {
-        cadModifierNativeLiveRef.current = false;
-        if (!postToCadModifierWorker(request, requestId, transfer)) {
-          cadModifierDispatchRef.current({
-            type: "error",
-            requestId,
-            message: cadModifierWorkerFailureMessage(),
-            resetSession: true,
-          });
-        }
-      });
+      }).catch(nativeMissed);
       return true;
     }
     return postToCadModifierWorker(request, requestId, transfer);

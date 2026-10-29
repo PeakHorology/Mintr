@@ -1,6 +1,15 @@
 #include "occtio.hpp"
 
 #include <Bnd_Box.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <Precision.hxx>
+#include <Standard_Failure.hxx>
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <sstream>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
@@ -30,7 +39,16 @@
 #include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepLib.hxx>
+#include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom_CylindricalSurface.hxx>
 #include <gp.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Dir2d.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Dir.hxx>
 #include <gp_GTrsf.hxx>
@@ -75,6 +93,51 @@ gp_Trsf kernelPoseTrsf(const nlohmann::json& solid, double height) {
     trsf = trsf * mz;
   }
   return trsf;
+}
+
+bool kernelHelixWire(const gp_Pnt& origin, const gp_Dir& axis, const gp_Dir& u, double radius, double pitch, double length, bool left, TopoDS_Wire& wire) {
+  if (!(radius > 0.0) || !(pitch > 0.0) || !(length > 0.0) || axis.IsParallel(u, 1e-9)) return false;
+  try {
+    Handle(Geom_CylindricalSurface) surface = new Geom_CylindricalSurface(gp_Ax3(origin, axis, u), radius);
+    // On the unrolled cylinder U is the angle and V the height: one turn climbs one pitch.
+    const gp_Dir2d direction(left ? -2.0 * kKernelPi : 2.0 * kKernelPi, pitch);
+    Handle(Geom2d_Line) line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), direction);
+    const double span = (length / pitch) * std::sqrt(4.0 * kKernelPi * kKernelPi + pitch * pitch);
+    TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(line, surface, 0.0, span).Edge();
+    BRepLib::BuildCurves3d(edge);
+    wire = BRepBuilderAPI_MakeWire(edge).Wire();
+    return !wire.IsNull();
+  } catch (...) {
+    return false;
+  }
+}
+
+bool kernelSweepAlongHelix(const TopoDS_Wire& helix, const TopoDS_Wire& profile, const gp_Dir& axis, TopoDS_Shape& out) {
+  try {
+    BRepOffsetAPI_MakePipe pipe(helix, profile);
+    pipe.Build();
+    if (pipe.IsDone()) {
+      TopoDS_Shape swept = pipe.Shape();
+      if (!swept.IsNull() && swept.ShapeType() == TopAbs_SOLID && kernelShapeIsValid(swept)) {
+        out = swept;
+        return true;
+      }
+    }
+  } catch (...) {
+    // A binormal shell below keeps the tooth upright when the plain pipe twists.
+  }
+  try {
+    BRepOffsetAPI_MakePipeShell shell(helix);
+    shell.SetMode(axis);
+    shell.Add(profile, false, true);
+    shell.Build();
+    if (!shell.IsDone()) return false;
+    shell.MakeSolid();
+    out = shell.Shape();
+    return !out.IsNull() && kernelShapeIsValid(out);
+  } catch (...) {
+    return false;
+  }
 }
 
 TopoDS_Shape kernelPlaced(const TopoDS_Shape& shape, const nlohmann::json& solid, double height) {
@@ -324,18 +387,22 @@ bool kernelTessellateIndexed(
   nlohmann::json& normals,
   nlohmann::json& indices,
   double linear,
-  double angular
+  double angular,
+  const KernelMeshOptions& options
 ) {
   double linearStep = std::max(0.01, linear);
   double angularStep = angular > 0.0 ? std::max(0.02, angular) : 0.32;
-  TopoDS_Shape meshed = BRepBuilderAPI_Copy(shape).Shape();
-  if (meshed.IsNull()) meshed = shape;
+  TopoDS_Shape meshed = shape;
+  if (options.copyFirst) {
+    meshed = BRepBuilderAPI_Copy(shape).Shape();
+    if (meshed.IsNull()) meshed = shape;
+  }
   for (int attempt = 0; attempt < 4; ++attempt) {
     BRepTools::Clean(meshed);
     BRepMesh_IncrementalMesh mesh(meshed, linearStep, false, angularStep, true);
     (void)mesh;
     if (triangulationTriangles(meshed) <= 180000 || attempt == 3) break;
-    angularStep = std::min(0.5, angularStep * 1.75);
+    angularStep = std::min(options.maxAngular, angularStep * 1.75);
     linearStep = std::min(0.25, linearStep * 1.75);
   }
   positions = nlohmann::json::array();
@@ -344,6 +411,8 @@ bool kernelTessellateIndexed(
   int next = 0;
   std::vector<gp_Vec> nodeNormals;
   std::vector<char> nodeReady;
+  // Where each triangulation node already went in the output, for shared corners.
+  std::vector<int> emitted;
   std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
   try {
     classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
@@ -359,6 +428,7 @@ bool kernelTessellateIndexed(
     const bool reverse = face.Orientation() == TopAbs_REVERSED;
     const int nodeCount = tri->NbNodes();
     surfaceNormalsForFace(face, tri, nodeNormals, nodeReady);
+    if (options.shareNodes) emitted.assign(static_cast<size_t>(nodeCount) + 1, -1);
     bool flipFace = false;
     bool flipDecided = false;
     for (int i = 1; i <= tri->NbTriangles(); ++i) {
@@ -380,11 +450,16 @@ bool kernelTessellateIndexed(
       const int nodes[3] = { n1, n2, n3 };
       const gp_Pnt points[3] = { a, b, c };
       for (int corner = 0; corner < 3; ++corner) {
+        const int node = nodes[corner];
+        // Corners are shared within one face only, so faces still meet at a crisp edge.
+        if (options.shareNodes && node >= 1 && node <= nodeCount && emitted[static_cast<size_t>(node)] >= 0) {
+          indices.push_back(emitted[static_cast<size_t>(node)]);
+          continue;
+        }
         const gp_Pnt& point = points[corner];
         positions.push_back(point.X());
         positions.push_back(point.Y());
         positions.push_back(point.Z());
-        const int node = nodes[corner];
         gp_Vec use = facet;
         if (node >= 1 && node <= nodeCount && static_cast<int>(nodeReady.size()) >= node && nodeReady[static_cast<size_t>(node - 1)]) {
           use = nodeNormals[static_cast<size_t>(node - 1)];
@@ -394,10 +469,9 @@ bool kernelTessellateIndexed(
         normals.push_back(use.X());
         normals.push_back(use.Y());
         normals.push_back(use.Z());
+        if (options.shareNodes && node >= 1 && node <= nodeCount) emitted[static_cast<size_t>(node)] = next;
+        indices.push_back(next++);
       }
-      indices.push_back(next++);
-      indices.push_back(next++);
-      indices.push_back(next++);
     }
   }
   return positions.size() >= 9;
@@ -457,6 +531,73 @@ double kernelArea(const TopoDS_Shape& shape) {
   GProp_GProps props;
   BRepGProp::SurfaceProperties(shape, props);
   return std::abs(props.Mass());
+}
+
+namespace {
+
+double booleanSpan(const TopoDS_Shape& base, const TopTools_ListOfShape& tools) {
+  Bnd_Box box;
+  try {
+    BRepBndLib::Add(base, box);
+    for (TopTools_ListOfShape::Iterator it(tools); it.More(); it.Next()) BRepBndLib::Add(it.Value(), box);
+  } catch (...) {
+    return 0.0;
+  }
+  if (box.IsVoid()) return 0.0;
+  return std::sqrt(box.SquareExtent());
+}
+
+bool booleanOnce(KernelBooleanOp op, const TopoDS_Shape& base, const TopTools_ListOfShape& tools, double fuzzy, TopoDS_Shape& out, std::string& why) {
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> algo;
+  if (op == KernelBooleanOp::Fuse) algo = std::make_unique<BRepAlgoAPI_Fuse>();
+  else if (op == KernelBooleanOp::Cut) algo = std::make_unique<BRepAlgoAPI_Cut>();
+  else algo = std::make_unique<BRepAlgoAPI_Common>();
+  TopTools_ListOfShape arguments;
+  arguments.Append(base);
+  algo->SetArguments(arguments);
+  algo->SetTools(tools);
+  algo->SetRunParallel(true);
+  algo->SetNonDestructive(true);
+  algo->SetUseOBB(true);
+  if (fuzzy > 0) algo->SetFuzzyValue(fuzzy);
+  try {
+    algo->Build();
+  } catch (const Standard_Failure& failure) {
+    why = failure.GetMessageString() ? failure.GetMessageString() : "OCCT failed";
+    return false;
+  }
+  if (!algo->IsDone() || algo->HasErrors() || algo->Shape().IsNull()) {
+    std::ostringstream report;
+    algo->DumpErrors(report);
+    why = report.str();
+    return false;
+  }
+  out = algo->Shape();
+  return true;
+}
+
+} // namespace
+
+bool kernelBoolean(KernelBooleanOp op, const TopoDS_Shape& base, const TopTools_ListOfShape& tools, TopoDS_Shape& out, std::string* error) {
+  if (base.IsNull() || tools.IsEmpty()) {
+    if (error) *error = "boolean is missing a shape";
+    return false;
+  }
+  // Exact first, like the browser kernel. Then a tolerance scaled to the parts (FreeCAD's
+  // approach for faces that nearly touch). The old flat 0.04 mm is the last resort only.
+  const double scaled = std::clamp(booleanSpan(base, tools) * 1e-6, Precision::Confusion() * 10.0, 1e-3);
+  std::string why;
+  for (const double fuzzy : { 0.0, scaled, 0.04 }) {
+    if (booleanOnce(op, base, tools, fuzzy, out, why)) return true;
+  }
+  if (error) *error = why.empty() ? "boolean failed" : why;
+  return false;
+}
+
+bool kernelBoolean(KernelBooleanOp op, const TopoDS_Shape& base, const TopoDS_Shape& tool, TopoDS_Shape& out, std::string* error) {
+  TopTools_ListOfShape tools;
+  tools.Append(tool);
+  return kernelBoolean(op, base, tools, out, error);
 }
 
 nlohmann::json kernelFail(const std::string& message, bool fallback) {

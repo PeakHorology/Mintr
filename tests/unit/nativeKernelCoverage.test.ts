@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { afterAll, describe, expect, it } from "vitest";
 import { punchThroughCutter } from "@/lib/editorBoolean";
 import { serializeSketchExtrudeJob } from "@/lib/sketchExtrusionSolid";
@@ -6,6 +7,10 @@ import { toNativeKernelSolid } from "@/lib/nativeKernelProtocol";
 import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
 import type { WorkplaneShape } from "@/types/sketchforge";
 import { hasNativeKernelExe, spawnNativeKernelClient } from "../helpers/nativeKernelChild";
+
+const { __test: kernelHost } = createRequire(import.meta.url)("../../electron/kernelHost.cjs") as {
+  __test: { unpackMesh: <T>(value: T) => T };
+};
 
 function box(id: string, extra: Partial<WorkplaneShape> = {}): WorkplaneShape {
   return {
@@ -442,6 +447,34 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
     }
   }, 120000);
 
+  it("packs a fillet preview as binary with shared corners, matching the plain reply", async () => {
+    const prepared = await client.request({
+      id: 130,
+      requestId: 130,
+      type: "prepare",
+      sharpAngle: 12,
+      parts: [{ hole: false, primitive: { kind: "box", width: 20, depth: 20, height: 20 } }],
+    });
+    expect(prepared.ok, String(prepared.message)).toBe(true);
+    const edgeIds = (prepared.selectableEdgeIds as number[] | undefined) ?? [];
+    const job = { requestId: 131, type: "preview", kind: "fillet", edgeIds, amount: 3, chamferAngle: 45, filletProfile: "round" };
+    const plain = await client.request({ id: 131, ...job });
+    const packed = await client.request({ id: 132, ...job, packMesh: true });
+    expect(plain.ok && packed.ok).toBe(true);
+    expect((packed.positions as unknown as { $f32?: string }).$f32).toEqual(expect.any(String));
+    const plainText = JSON.stringify(plain).length;
+    const packedText = JSON.stringify(packed).length;
+    expect(packedText).toBeLessThan(plainText / 1.8);
+    const unpacked = kernelHost.unpackMesh(packed) as unknown as { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+    expect(unpacked.positions).toBeInstanceOf(Float32Array);
+    expect(unpacked.indices).toBeInstanceOf(Uint32Array);
+    expect(Array.from(unpacked.positions)).toEqual((plain.positions as number[]).map((value) => Math.fround(value)));
+    expect(Array.from(unpacked.indices)).toEqual(plain.indices as number[]);
+    // Corners are shared inside each face, so there are far fewer corners than triangle corners.
+    expect(unpacked.positions.length / 3).toBeLessThan(unpacked.indices.length / 2);
+    await client.request({ id: 133, requestId: 133, type: "dispose" });
+  }, 60000);
+
   it("coves a box edge: concave groove, same outline, less volume than a round fillet keeps", async () => {
     const prepared = await client.request({
       id: 110,
@@ -514,6 +547,30 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
     expect(all.ok, String(all.message)).toBe(true);
     expect((all.skippedEdgeIds as number[] | undefined) ?? []).toEqual([]);
     expect(8000 - meshVolume(all)).toBeGreaterThan(12 * (Math.PI * 1.5 * 1.5 / 4) * 20 * 0.8);
+    // Every edge at each corner coved: the bigger corner ball (r·√2) scoops out the point
+    // the grooves leave, which would sit only r·√1.5 from the corner.
+    const corners = await client.request({
+      id: 115,
+      requestId: 115,
+      type: "preview",
+      kind: "fillet",
+      edgeIds,
+      amount: 4,
+      chamferAngle: 45,
+      filletProfile: "cove",
+    });
+    expect(corners.ok, String(corners.message)).toBe(true);
+    const points = corners.positions as number[];
+    const low = [0, 1, 2].map((axis) => Math.min(...points.filter((_, index) => index % 3 === axis)));
+    const high = [0, 1, 2].map((axis) => Math.max(...points.filter((_, index) => index % 3 === axis)));
+    let nearest = Number.POSITIVE_INFINITY;
+    for (let corner = 0; corner < 8; corner += 1) {
+      const at = [0, 1, 2].map((axis) => (corner >> axis) & 1 ? high[axis] : low[axis]);
+      for (let index = 0; index + 2 < points.length; index += 3) {
+        nearest = Math.min(nearest, Math.hypot(points[index] - at[0], points[index + 1] - at[1], points[index + 2] - at[2]));
+      }
+    }
+    expect(nearest).toBeGreaterThan(4 * Math.SQRT2 - 0.1);
     await client.request({ id: 114, requestId: 114, type: "dispose" });
   }, 60000);
 
@@ -794,6 +851,11 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
       quality: "standard",
     });
     expect(thread.ok, String(thread.message)).toBe(true);
+    // A true helix sweeps into a handful of smooth faces. The old straight-segment
+    // helix made hundreds of small flat ones (slow booleans, a heavy STEP file).
+    const faceCount = (String(thread.brep).match(/\nFa\r?\n/g) ?? []).length;
+    expect(faceCount).toBeGreaterThan(0);
+    expect(faceCount).toBeLessThan(40);
     await client.request({ id: 13, requestId: 13, type: "dispose" });
   }, 60000);
 

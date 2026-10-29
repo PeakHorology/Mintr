@@ -60,9 +60,10 @@ describe("native kernel protocol", () => {
     expect(toNativeKernelSolid({ ...chamfered, width: 50, size: 50 })?.fitScale).toBe(true);
   });
 
-  it("prefers stored STEP over the primitive kind", () => {
+  it("uses a stored STEP for an imported body, and keeps a box exact like the browser", () => {
     const shape = {
       ...box("s"),
+      kind: "mesh" as const,
       importedMesh: {
         positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
         triangleCount: 1,
@@ -72,13 +73,16 @@ describe("native kernel protocol", () => {
     };
     expect(toNativeKernelSolid(shape)?.kind).toBe("step");
     expect(toNativeKernelSolid(shape)?.brepStep).toContain("ISO-10303");
+    expect(toNativeKernelSolid({ ...shape, kind: "box" })?.kind).toBe("box");
+    // A fillet made after the STEP was stored wins over it.
+    expect(toNativeKernelSolid({ ...shape, cadBrep: "DBRep_DrawableShape" })?.kind).toBe("brep");
   });
 
   it("falls back when a body cannot be expressed natively", () => {
     expect(toNativeKernelSolids([{ ...box("t"), kind: "text" }])).toBeNull();
   });
 
-  it("flattens grouped children into world-space native solids", () => {
+  it("sends a group as one node with its children in the group frame", () => {
     const group: WorkplaneShape = {
       ...box("group"),
       kind: "mesh",
@@ -89,8 +93,9 @@ describe("native kernel protocol", () => {
       groupedShapes: [box("a", -10), { ...box("b", 10), hole: true }],
     };
     const solids = toNativeKernelSolids([group]);
-    expect(solids).toHaveLength(2);
-    expect(solids?.[0]).toMatchObject({ kind: "box", hole: false, x: 40, z: 0, elevation: 5 });
-    expect(solids?.[1]).toMatchObject({ kind: "box", hole: true, x: 40, z: 20, elevation: 5 });
+    expect(solids).toHaveLength(1);
+    expect(solids?.[0]).toMatchObject({ kind: "group", op: "subtract", x: 40, z: 10, elevation: 5, rotation: 90 });
+    expect(solids?.[0].children?.[0]).toMatchObject({ kind: "box", hole: false, x: -10, z: 0, elevation: 0 });
+    expect(solids?.[0].children?.[1]).toMatchObject({ kind: "box", hole: true, x: 10, z: 0, elevation: 0 });
   });
 });

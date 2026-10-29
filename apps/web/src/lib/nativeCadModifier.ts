@@ -172,5 +172,7 @@ export async function requestNativeCadModifier(
 ): Promise<NativeKernelReply | null> {
   const api = nativeKernelWindow()?.peakcadKernel;
   if (!api?.request) return null;
+  // Mesh numbers may arrive as typed arrays; mapNativeCadModifierReply copies them
+  // straight into the preview buffers.
   return api.request(serializeNativeCadModifierJob(request, requestId), timeoutMs);
 }

@@ -43,11 +43,9 @@ bool booleanOp(
     if (all.size() < 2) return false;
     acc = all[0];
     for (size_t i = 1; i < all.size(); ++i) {
-      BRepAlgoAPI_Common common(acc, all[i]);
-      common.SetRunParallel(true);
-      common.Build();
-      if (!common.IsDone()) return false;
-      acc = common.Shape();
+      TopoDS_Shape shared;
+      if (!kernelBoolean(KernelBooleanOp::Common, acc, all[i], shared)) return false;
+      acc = shared;
     }
   } else {
     return false;
@@ -126,7 +124,17 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
     if (type == "exportStep") {
       std::vector<TopoDS_Shape> solids;
       std::vector<TopoDS_Shape> holes;
-      if (!collectSolids(job, solids, holes)) return kernelFail("native kernel could not build export solids", true);
+      // An assemble group at the top keeps its bodies apart in the file, as in the browser.
+      nlohmann::json rest = job;
+      rest["solids"] = nlohmann::json::array();
+      for (const auto& item : job.value("solids", nlohmann::json::array())) {
+        if (item.value("kind", "") == "group" && item.value("op", "") == "assemble" && !item.value("hole", false)) {
+          if (!kernelGroupParts(item, solids)) return kernelFail("native kernel could not build export solids", true);
+        } else {
+          rest["solids"].push_back(item);
+        }
+      }
+      if (!rest["solids"].empty() && !collectSolids(rest, solids, holes)) return kernelFail("native kernel could not build export solids", true);
       BRep_Builder builder;
       TopoDS_Compound compound;
       builder.MakeCompound(compound);

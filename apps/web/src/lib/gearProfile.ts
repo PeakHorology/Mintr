@@ -273,19 +273,24 @@ function toothOutline(tm: ToothModel, toothIndex: number, teeth: number, samples
   const invPitch = involute(tm.alphaPitch);
   const thetaLeft = center - tm.halfToothAngle - invPitch;
   const thetaRight = center + tm.halfToothAngle + invPitch;
-  const needsBridge = tm.isInternal ? tm.rb < tm.rRoot - 1e-4 : tm.rb > tm.rRoot + 1e-4;
-  const alphaRoot = !needsBridge && tm.rRoot > tm.rb ? Math.acos(Math.min(1, tm.rb / tm.rRoot)) : 0;
+  // Flanks run from the base circle out to rOut and are closed by arcs at rOut and rIn.
+  // A ring gear's outline is its tooth spaces, so there the outer arc is the root and
+  // the inner arc the tooth tips. Swapping them drew ring teeth as round bumps.
+  const rOut = tm.isInternal ? tm.rRoot : tm.rTip;
+  const rIn = tm.isInternal ? tm.rTip : tm.rRoot;
+  const needsBridge = tm.rb > rIn + 1e-4;
+  const alphaRoot = !needsBridge && rIn > tm.rb ? Math.acos(Math.min(1, tm.rb / rIn)) : 0;
   const leftFlank = flankSamples(tm.rb, alphaRoot, Math.max(alphaRoot + 1e-4, tm.alphaTip), thetaLeft, samples, 1);
   const rightFlank = flankSamples(tm.rb, alphaRoot, Math.max(alphaRoot + 1e-4, tm.alphaTip), thetaRight, samples, -1).reverse();
   const pts: Array<[number, number]> = [];
-  if (needsBridge) pushPoint(pts, [tm.rRoot * Math.cos(thetaLeft), tm.rRoot * Math.sin(thetaLeft)]);
+  if (needsBridge) pushPoint(pts, [rIn * Math.cos(thetaLeft), rIn * Math.sin(thetaLeft)]);
   leftFlank.forEach((point) => pushPoint(pts, point));
   const leftTip = pts[pts.length - 1] ?? leftFlank[leftFlank.length - 1];
   const rightTip = rightFlank[0];
   if (tm.isInternal) {
     arcThrough(
       leftTip,
-      [tm.rTip * Math.cos(center), tm.rTip * Math.sin(center)],
+      [rOut * Math.cos(center), rOut * Math.sin(center)],
       rightTip,
       6,
     ).forEach((point) => pushPoint(pts, point));
@@ -300,13 +305,13 @@ function toothOutline(tm: ToothModel, toothIndex: number, teeth: number, samples
     }
   }
   rightFlank.forEach((point) => pushPoint(pts, point));
-  if (needsBridge) pushPoint(pts, [tm.rRoot * Math.cos(thetaRight), tm.rRoot * Math.sin(thetaRight)]);
+  if (needsBridge) pushPoint(pts, [rIn * Math.cos(thetaRight), rIn * Math.sin(thetaRight)]);
   const rootEnd = nextCenter - tm.halfToothAngle - invPitch;
   let rootSweep = rootEnd - thetaRight;
   if (rootSweep <= 0) rootSweep += Math.PI * 2;
   for (let i = 1; i <= 4; i += 1) {
     const angle = thetaRight + rootSweep * (i / 4);
-    pushPoint(pts, [tm.rRoot * Math.cos(angle), tm.rRoot * Math.sin(angle)]);
+    pushPoint(pts, [rIn * Math.cos(angle), rIn * Math.sin(angle)]);
   }
   return pts;
 }

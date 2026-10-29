@@ -146,12 +146,14 @@ bool pointInXzLoop(const nlohmann::json& loop, double x, double z) {
   return inside;
 }
 
-nlohmann::json okShape(const TopoDS_Shape& shape) {
+// Mesh settings are the browser kernel's for the same job: an extrude meshes at
+// 0.12 / 0.28 (sketchExtrusionSolid), a sweep at brepjs's 0.01 chord (sketchSweep).
+nlohmann::json okShape(const TopoDS_Shape& shape, double linear, double angular) {
   if (!kernelShapeIsValid(shape)) {
     return kernelFail("native sketch solid failed validation", true);
   }
   nlohmann::json positions, normals, indices;
-  if (!kernelTessellateIndexed(shape, positions, normals, indices, 0.12)) {
+  if (!kernelTessellateIndexed(shape, positions, normals, indices, linear, angular, sharedCorners())) {
     return kernelFail("native tessellation failed", true);
   }
   return {
@@ -266,17 +268,13 @@ nlohmann::json handleSketchExtrude(const nlohmann::json& job) {
       continue;
     }
     if (depth % 2 == 1) {
-      BRepAlgoAPI_Cut cut(acc, prism);
-      cut.SetRunParallel(true);
-      cut.Build();
-      if (!cut.IsDone()) return kernelFail("native sketch hole cut failed", true);
-      acc = cut.Shape();
+      TopoDS_Shape next;
+      if (!kernelBoolean(KernelBooleanOp::Cut, acc, prism, next)) return kernelFail("native sketch hole cut failed", true);
+      acc = next;
     } else {
-      BRepAlgoAPI_Fuse fuse(acc, prism);
-      fuse.SetRunParallel(true);
-      fuse.Build();
-      if (!fuse.IsDone()) return kernelFail("native sketch fuse failed", true);
-      acc = fuse.Shape();
+      TopoDS_Shape next;
+      if (!kernelBoolean(KernelBooleanOp::Fuse, acc, prism, next)) return kernelFail("native sketch fuse failed", true);
+      acc = next;
     }
   }
   if (!have) return kernelFail("native sketch extrude built nothing", true);
@@ -287,7 +285,7 @@ nlohmann::json handleSketchExtrude(const nlohmann::json& job) {
     move.SetTranslation(dir * -pull);
     acc = BRepBuilderAPI_Transform(acc, move, true).Shape();
   }
-  return okShape(kernelUnify(acc));
+  return okShape(kernelUnify(acc), 0.12, 0.28);
 }
 
 nlohmann::json handleSketchSweep(const nlohmann::json& job) {
@@ -309,13 +307,11 @@ nlohmann::json handleSketchSweep(const nlohmann::json& job) {
     if (!wireFromPlaced(job["hole"], true, hole) || !pipeSolid(hole, path, inner)) {
       return kernelFail("Sweep could not cut the hole in this outline.", true);
     }
-    BRepAlgoAPI_Cut cut(solid, inner);
-    cut.SetRunParallel(true);
-    cut.Build();
-    if (!cut.IsDone()) return kernelFail("Sweep could not cut the hole in this outline.", true);
-    solid = cut.Shape();
+    TopoDS_Shape hollowed;
+    if (!kernelBoolean(KernelBooleanOp::Cut, solid, inner, hollowed)) return kernelFail("Sweep could not cut the hole in this outline.", true);
+    solid = hollowed;
   }
-  return okShape(kernelUnify(solid));
+  return okShape(kernelUnify(solid), 0.01, 0.1);
 }
 
 nlohmann::json handleImportStep(const nlohmann::json& job) {
@@ -339,7 +335,13 @@ nlohmann::json handleImportStep(const nlohmann::json& job) {
   for (size_t i = 0; i < solids.size(); ++i) {
     const TopoDS_Shape& part = solids.size() > 1 ? solids[i] : imported;
     nlohmann::json positions, normals, indices;
-    if (!kernelTessellateIndexed(part, positions, normals, indices, 0.25)) continue;
+    // Chord scales with the part, as the browser import does (stepMeshTolerance.ts):
+    // a 400 mm part meshes at 1 mm, a 20 mm part near 0.05 mm.
+    double xmin = 0, ymin = 0, zmin = 0, xmax = 0, ymax = 0, zmax = 0;
+    const double span = kernelBounds(part, xmin, ymin, zmin, xmax, ymax, zmax)
+      ? std::max({ xmax - xmin, ymax - ymin, zmax - zmin }) : 10.0;
+    const double chord = std::min(1.0, std::max(0.05, (span > 0.0 ? span : 10.0) / 400.0));
+    if (!kernelTessellateIndexed(part, positions, normals, indices, chord, 0.35, sharedCorners())) continue;
     std::string name = stem;
     if (solids.size() > 1) name += " " + std::to_string(i + 1);
     bodies.push_back({

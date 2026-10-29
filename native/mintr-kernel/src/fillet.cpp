@@ -3,6 +3,12 @@
 #include "primitives.hpp"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BOPAlgo_GlueEnum.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -82,6 +88,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <sstream>
 #include <string>
@@ -109,19 +116,28 @@ struct ModifierSession {
   std::vector<PlanarFaceRecord> planars;
   nlohmann::json planarFaces = nlohmann::json::array();
   TopoDS_Shape accumulated;
+  // An oval cone kept as the round cone it is stretched from, with each edge's
+  // twin on it (same index as edges). Empty when the part is anything else.
+  TopoDS_Shape roundCone;
+  std::vector<TopoDS_Edge> roundConeEdges;
+  std::vector<TopoDS_Face> roundConeFaces;
+  nlohmann::json coneTransform;
+  double coneScale = 1.0;
   bool live = false;
 };
 
 ModifierSession gSession;
 
-nlohmann::json modifierFail(const std::string& message, bool fallback, int requestId) {
+// A failure the user can fix (a size too big, the wrong face) keeps the tool open with the
+// message, as the browser kernel does. Only a session that is gone resets the tool.
+nlohmann::json modifierFail(const std::string& message, bool fallback, int requestId, bool resetSession = false) {
   return {
     { "ok", false },
     { "fallback", fallback },
     { "type", "error" },
     { "message", message },
     { "requestId", requestId },
-    { "resetSession", !fallback },
+    { "resetSession", resetSession },
   };
 }
 
@@ -328,80 +344,13 @@ bool facetPointsIntoSolid(BRepClass3d_SolidClassifier& classifier, const gp_Pnt&
 // together, so a convex round, a cove, and an inside-corner fillet are all
 // lit from outside the solid.
 bool tessellatePreview(const TopoDS_Shape& shape, double linear, nlohmann::json& positions, nlohmann::json& normals, nlohmann::json& indices, double angular = 0.0) {
-  double linearStep = std::max(0.01, linear);
-  double angularStep = angular > 0.0 ? std::max(0.02, angular) : 0.32;
-  TopoDS_Shape meshed = shape;
-  for (int attempt = 0; attempt < 4; ++attempt) {
-    BRepTools::Clean(meshed);
-    BRepMesh_IncrementalMesh mesh(meshed, linearStep, false, angularStep, true);
-    (void)mesh;
-    if (triangulationTriangles(meshed) <= 180000 || attempt == 3) break;
-    angularStep = std::min(0.16, angularStep * 1.75);
-    linearStep = std::min(0.25, linearStep * 1.75);
-  }
-  positions = nlohmann::json::array();
-  normals = nlohmann::json::array();
-  indices = nlohmann::json::array();
-  int next = 0;
-  std::vector<gp_Vec> nodeNormals;
-  std::vector<char> nodeReady;
-  std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
-  try {
-    classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
-  } catch (...) {
-    classifier.reset();
-  }
-  for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next()) {
-    const TopoDS_Face face = TopoDS::Face(exp.Current());
-    TopLoc_Location loc;
-    Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
-    if (tri.IsNull()) continue;
-    const gp_Trsf trsf = loc.Transformation();
-    const bool reverse = face.Orientation() == TopAbs_REVERSED;
-    const int nodeCount = tri->NbNodes();
-    surfaceNormalsForFace(face, tri, nodeNormals, nodeReady);
-    bool flipFace = false;
-    bool flipDecided = false;
-    for (int i = 1; i <= tri->NbTriangles(); ++i) {
-      int n1, n2, n3;
-      tri->Triangle(i).Get(n1, n2, n3);
-      if (reverse) std::swap(n2, n3);
-      const gp_Pnt a = tri->Node(n1).Transformed(trsf);
-      const gp_Pnt b = tri->Node(n2).Transformed(trsf);
-      const gp_Pnt c = tri->Node(n3).Transformed(trsf);
-      gp_Vec ab(a, b);
-      gp_Vec ac(a, c);
-      gp_Vec facet = ab.Crossed(ac);
-      if (facet.Magnitude() < 1e-12) continue;
-      facet.Normalize();
-      if (!flipDecided) {
-        flipFace = classifier && facetPointsIntoSolid(*classifier, a, b, c, facet);
-        flipDecided = true;
-      }
-      const int nodes[3] = { n1, n2, n3 };
-      const gp_Pnt points[3] = { a, b, c };
-      for (int corner = 0; corner < 3; ++corner) {
-        const gp_Pnt& point = points[corner];
-        positions.push_back(point.X());
-        positions.push_back(point.Y());
-        positions.push_back(point.Z());
-        const int node = nodes[corner];
-        gp_Vec use = facet;
-        if (node >= 1 && node <= nodeCount && static_cast<int>(nodeReady.size()) >= node && nodeReady[static_cast<size_t>(node - 1)]) {
-          use = nodeNormals[static_cast<size_t>(node - 1)];
-          if (use.Dot(facet) < 0.0) use.Reverse();
-        }
-        if (flipFace) use.Reverse();
-        normals.push_back(use.X());
-        normals.push_back(use.Y());
-        normals.push_back(use.Z());
-      }
-      indices.push_back(next++);
-      indices.push_back(next++);
-      indices.push_back(next++);
-    }
-  }
-  return positions.size() >= 9;
+  // Meshed in place so a later refine of the same solid starts from it. Corners are
+  // shared within each face, as the browser kernel sends them.
+  KernelMeshOptions options;
+  options.shareNodes = true;
+  options.copyFirst = false;
+  options.maxAngular = 0.16;
+  return kernelTessellateIndexed(shape, positions, normals, indices, linear, angular, options);
 }
 
 std::string toBrep(const TopoDS_Shape& shape) {
@@ -707,6 +656,23 @@ bool coveToolForEdge(const TopoDS_Edge& edge, double radius, TopoDS_Shape& tool)
   return !tool.IsNull();
 }
 
+/** The direction an edge leaves `point`, one of its ends. False when it can't be told. */
+bool edgeDirectionAway(const TopoDS_Edge& edge, const gp_Pnt& point, gp_Vec& away) {
+  try {
+    BRepAdaptor_Curve curve(edge);
+    const double first = curve.FirstParameter();
+    const double last = curve.LastParameter();
+    const bool atStart = curve.Value(first).Distance(point) <= curve.Value(last).Distance(point);
+    gp_Vec tangent = curve.DN(atStart ? first : last, 1);
+    if (tangent.Magnitude() < 1e-9) return false;
+    tangent.Normalize();
+    away = atStart ? tangent : tangent.Reversed();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 /**
  * Cut a concave quarter-round groove along each edge. Where two or more coved
  * edges share a vertex a ball of the same radius is removed too, so the grooves
@@ -717,34 +683,68 @@ bool coveEdges(const TopoDS_Shape& solid, const std::vector<TopoDS_Edge>& edges,
   TopTools_ListOfShape tools;
   TopTools_IndexedMapOfShape vertices;
   std::vector<int> vertexUse;
+  std::vector<std::vector<gp_Vec>> vertexAway;
   for (const auto& edge : edges) {
     TopoDS_Shape tool;
     if (!coveToolForEdge(edge, radius, tool)) return false;
     tools.Append(tool);
     for (TopExp_Explorer exp(edge, TopAbs_VERTEX); exp.More(); exp.Next()) {
       const int index = vertices.Add(exp.Current());
-      if (index > static_cast<int>(vertexUse.size())) vertexUse.push_back(0);
+      if (index > static_cast<int>(vertexUse.size())) {
+        vertexUse.push_back(0);
+        vertexAway.emplace_back();
+      }
       vertexUse[static_cast<size_t>(index - 1)] += 1;
+      gp_Vec away;
+      if (edgeDirectionAway(edge, BRep_Tool::Pnt(TopoDS::Vertex(exp.Current())), away)) {
+        vertexAway[static_cast<size_t>(index - 1)].push_back(away);
+      }
     }
   }
+  // How many of the solid's own edges meet at each corner, coved or not.
+  TopTools_IndexedDataMapOfShapeListOfShape solidUse;
+  TopExp::MapShapesAndUniqueAncestors(solid, TopAbs_VERTEX, TopAbs_EDGE, solidUse);
   for (int index = 1; index <= vertices.Extent(); ++index) {
-    if (vertexUse[static_cast<size_t>(index - 1)] < 2) continue;
-    const gp_Pnt point = BRep_Tool::Pnt(TopoDS::Vertex(vertices.FindKey(index)));
-    tools.Append(BRepPrimAPI_MakeSphere(point, radius).Shape());
+    const int count = vertexUse[static_cast<size_t>(index - 1)];
+    if (count < 2) continue;
+    const TopoDS_Shape& vertex = vertices.FindKey(index);
+    const gp_Pnt point = BRep_Tool::Pnt(TopoDS::Vertex(vertex));
+    double ball = radius;
+    // Where every edge at a corner is coved, the grooves alone leave a point of material
+    // standing between them. A ball reaching to where each pair of grooves meets on the
+    // face between them (r / sin(half the angle)) scoops it out cleanly. Where an edge
+    // stays sharp, that ball would dig into it, so the plain ball is kept.
+    const int solidCount = solidUse.Contains(vertex) ? solidUse.FindFromKey(vertex).Extent() : 0;
+    if (count >= 3 && count == solidCount) {
+      const auto& away = vertexAway[static_cast<size_t>(index - 1)];
+      for (size_t i = 0; i < away.size(); ++i) {
+        for (size_t j = i + 1; j < away.size(); ++j) {
+          const double angle = away[i].Angle(away[j]);
+          if (angle > 1e-3) ball = std::max(ball, radius / std::sin(angle / 2.0));
+        }
+      }
+      // A very sharp corner would need a huge ball; cap it so it can't eat the part.
+      ball = std::min(ball, radius * 2.0);
+    }
+    tools.Append(BRepPrimAPI_MakeSphere(point, ball).Shape());
   }
-  TopTools_ListOfShape arguments;
-  arguments.Append(solid);
-  BRepAlgoAPI_Cut cut;
-  cut.SetArguments(arguments);
-  cut.SetTools(tools);
-  cut.SetRunParallel(true);
-  cut.Build();
-  if (!cut.IsDone()) return false;
+  // All grooves and balls in one cut is fastest. Where they crowd together (a pocket's
+  // corners) that cut can come out broken, so fall back to one tool at a time, the way
+  // the browser kernel always cuts them.
+  TopoDS_Shape coved;
+  if (!kernelBoolean(KernelBooleanOp::Cut, solid, tools, coved) || !kernelShapeIsValid(coved)) {
+    coved = solid;
+    for (TopTools_ListOfShape::Iterator it(tools); it.More(); it.Next()) {
+      TopoDS_Shape next;
+      if (!kernelBoolean(KernelBooleanOp::Cut, coved, it.Value(), next)) return false;
+      coved = next;
+    }
+  }
   const double before = volumeOf(solid);
-  const double after = volumeOf(cut.Shape());
+  const double after = volumeOf(coved);
   // A cove always removes material; anything else means the tool missed the edge.
   if (!(after > 1e-6) || after >= before - 1e-6) return false;
-  out = unify(cut.Shape());
+  out = unify(coved);
   return !out.IsNull();
 }
 
@@ -775,6 +775,244 @@ bool treatEdgesTogether(const std::string& kind, const std::vector<int>& selecte
   return !out.IsNull();
 }
 
+bool containsPoint(const TopoDS_Shape& solid, const gp_Pnt& point);
+bool edgeIsInterior(const TopoDS_Shape& solid, const TopoDS_Edge& edge);
+
+TopoDS_Shape onlySolid(const TopoDS_Shape& shape) {
+  if (shape.IsNull() || shape.ShapeType() == TopAbs_SOLID) return shape;
+  TopoDS_Shape found;
+  int count = 0;
+  for (TopExp_Explorer exp(shape, TopAbs_SOLID); exp.More(); exp.Next()) {
+    found = exp.Current();
+    count += 1;
+  }
+  return count == 1 ? found : shape;
+}
+
+int solidCount(const TopoDS_Shape& shape) {
+  int count = 0;
+  for (TopExp_Explorer exp(shape, TopAbs_SOLID); exp.More(); exp.Next()) count += 1;
+  return count;
+}
+
+/** A face normal at `point` that points out of the material, checked against the solid. */
+gp_Vec reliableOutwardNormal(const TopoDS_Shape& solid, const TopoDS_Face& face, const gp_Pnt& point) {
+  gp_Dir direction;
+  if (!faceNormalAt(face, point, direction)) throw Standard_Failure("no face normal");
+  gp_Vec normal(direction);
+  const bool plusInside = containsPoint(solid, point.Translated(normal * 0.05));
+  const bool minusInside = containsPoint(solid, point.Translated(normal * -0.05));
+  if (plusInside && !minusInside) normal.Reverse();
+  return normal;
+}
+
+/** The edge's start, direction and length, and the directions along each face into the material. */
+struct CornerFrame {
+  gp_Pnt start;
+  gp_Vec tangent;
+  double length = 0;
+  bool line = false;
+  gp_Vec bin1;
+  gp_Vec bin2;
+};
+
+bool materialFrame(const TopoDS_Shape& solid, const TopoDS_Edge& edge, const TopTools_IndexedDataMapOfShapeListOfShape& faceMap, CornerFrame& frame) {
+  try {
+    if (!faceMap.Contains(edge)) return false;
+    const TopTools_ListOfShape& faces = faceMap.FindFromKey(edge);
+    if (faces.Extent() < 2) return false;
+    const TopoDS_Face faceA = TopoDS::Face(faces.First());
+    const TopoDS_Face faceB = TopoDS::Face(faces.Last());
+    BRepAdaptor_Curve curve(edge);
+    const double first = curve.FirstParameter();
+    const double last = curve.LastParameter();
+    const double sampleParam = curve.IsClosed() ? first + (last - first) * 0.37 : first + (last - first) * 0.5;
+    frame.start = curve.Value(first);
+    const gp_Pnt sample = curve.Value(sampleParam);
+    gp_Vec tangent = curve.DN(first, 1);
+    if (tangent.Magnitude() < 1e-9) return false;
+    frame.tangent = tangent.Normalized();
+    frame.length = GCPnts_AbscissaPoint::Length(curve);
+    frame.line = curve.GetType() == GeomAbs_Line;
+    if (!(frame.length > 1e-6)) return false;
+    gp_Vec n1;
+    gp_Vec n2;
+    try {
+      n1 = reliableOutwardNormal(solid, faceA, frame.start);
+      n2 = reliableOutwardNormal(solid, faceB, frame.start);
+    } catch (...) {
+      n1 = reliableOutwardNormal(solid, faceA, sample);
+      n2 = reliableOutwardNormal(solid, faceB, sample);
+    }
+    gp_Vec bin1 = frame.tangent.Crossed(n1);
+    gp_Vec bin2 = frame.tangent.Crossed(n2);
+    if (bin1.Magnitude() < 1e-9 || bin2.Magnitude() < 1e-9) return false;
+    bin1.Normalize();
+    bin2.Normalize();
+    if (bin1.Dot(n2) > 0) bin1.Reverse();
+    if (bin2.Dot(n1) > 0) bin2.Reverse();
+    if (!containsPoint(solid, sample.Translated(bin1 * 0.05 + bin2 * 0.05))) {
+      bin1.Reverse();
+      bin2.Reverse();
+    }
+    frame.bin1 = bin1;
+    frame.bin2 = bin2;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+TopoDS_Face polygonFace(std::initializer_list<gp_Pnt> points) {
+  BRepBuilderAPI_MakePolygon polygon;
+  for (const auto& point : points) polygon.Add(point);
+  polygon.Close();
+  return BRepBuilderAPI_MakeFace(polygon.Wire(), Standard_True).Face();
+}
+
+/** The material a straight inside corner gives up: a square less a round for a fillet, a wedge for a chamfer. */
+bool straightCornerTool(const CornerFrame& frame, const std::string& kind, double amount, double second, TopoDS_Shape& tool) {
+  const gp_Vec extrude = frame.tangent * frame.length;
+  const gp_Pnt& start = frame.start;
+  if (kind == "fillet") {
+    const gp_Pnt q1 = start.Translated(frame.bin1 * amount);
+    const gp_Pnt q2 = q1.Translated(frame.bin2 * amount);
+    const gp_Pnt q3 = start.Translated(frame.bin2 * amount);
+    const TopoDS_Shape square = BRepPrimAPI_MakePrism(polygonFace({ start, q1, q2, q3 }), extrude).Shape();
+    const gp_Pnt center = start.Translated(frame.bin1 * amount + frame.bin2 * amount);
+    const TopoDS_Shape round = BRepPrimAPI_MakeCylinder(gp_Ax2(center, gp_Dir(frame.tangent)), amount, frame.length).Shape();
+    return kernelBoolean(KernelBooleanOp::Cut, square, round, tool);
+  }
+  const gp_Pnt p1 = start.Translated(frame.bin1 * amount);
+  const gp_Pnt p2 = start.Translated(frame.bin2 * second);
+  tool = BRepPrimAPI_MakePrism(polygonFace({ start, p1, p2 }), extrude).Shape();
+  return !tool.IsNull();
+}
+
+/** The same profile swept along a curved edge. */
+bool curvedCornerTool(const TopoDS_Edge& edge, const CornerFrame& frame, const std::string& kind, double amount, double second, TopoDS_Shape& tool) {
+  const gp_Pnt& start = frame.start;
+  TopoDS_Face profile;
+  if (kind == "fillet") {
+    const double phi = frame.bin1.Angle(frame.bin2);
+    if (phi < 0.15 || phi > kPi - 0.15) return false;
+    const double leg = amount / std::tan(phi / 2);
+    const gp_Vec bisector = (frame.bin1 + frame.bin2).Normalized();
+    const gp_Pnt center = start.Translated(bisector * (amount / std::sin(phi / 2)));
+    const gp_Pnt contact1 = start.Translated(frame.bin1 * leg);
+    const gp_Pnt contact2 = start.Translated(frame.bin2 * leg);
+    const gp_Pnt arcMid = center.Translated(gp_Vec(center, start).Normalized() * amount);
+    const Handle(Geom_TrimmedCurve) arc = GC_MakeArcOfCircle(contact1, arcMid, contact2).Value();
+    BRepBuilderAPI_MakeWire wire;
+    wire.Add(BRepBuilderAPI_MakeEdge(start, contact1).Edge());
+    wire.Add(BRepBuilderAPI_MakeEdge(arc).Edge());
+    wire.Add(BRepBuilderAPI_MakeEdge(contact2, start).Edge());
+    if (!wire.IsDone()) return false;
+    profile = BRepBuilderAPI_MakeFace(wire.Wire(), Standard_True).Face();
+  } else {
+    profile = polygonFace({ start, start.Translated(frame.bin1 * amount), start.Translated(frame.bin2 * second) });
+  }
+  BRepOffsetAPI_MakePipe pipe(BRepBuilderAPI_MakeWire(edge).Wire(), profile);
+  pipe.Build();
+  if (!pipe.IsDone()) return false;
+  tool = pipe.Shape();
+  return !tool.IsNull();
+}
+
+/**
+ * Inside corners: an OCCT fillet would fill them with material and can close a hole.
+ * Cut the corner's material away instead, so the hole stays open and the corner is
+ * rounded or bevelled. The browser kernel's cutConcaveCorners, step for step.
+ */
+bool cutConcaveCorners(
+  const TopoDS_Shape& target,
+  const TopoDS_Shape& source,
+  const std::vector<TopoDS_Edge>& edges,
+  const std::string& kind,
+  double amount,
+  double chamferAngle,
+  TopoDS_Shape& out,
+  std::string& message
+) {
+  const double angle = std::max(5.0, std::min(85.0, chamferAngle));
+  const double second = amount * std::tan(angle * kPi / 180.0);
+  TopTools_IndexedDataMapOfShapeListOfShape faceMap;
+  TopExp::MapShapesAndAncestors(source, TopAbs_EDGE, TopAbs_FACE, faceMap);
+  const std::string couldNot = "That edge could not be rounded. Try a smaller radius or select fewer edges.";
+  TopoDS_Shape current = target;
+  for (const auto& edge : edges) {
+    CornerFrame frame;
+    if (!materialFrame(source, edge, faceMap, frame)) {
+      message = "A hole edge could not be beveled";
+      return false;
+    }
+    const double before = volumeOf(current);
+    auto apply = [&](const CornerFrame& use, TopoDS_Shape& shape, int& pieces) {
+      try {
+        TopoDS_Shape tool;
+        const bool built = use.line ? straightCornerTool(use, kind, amount, second, tool) : curvedCornerTool(edge, use, kind, amount, second, tool);
+        if (!built) return false;
+        TopoDS_Shape cut;
+        if (!kernelBoolean(KernelBooleanOp::Cut, onlySolid(current), tool, cut)) return false;
+        shape = onlySolid(unify(cut));
+        pieces = solidCount(shape);
+        return true;
+      } catch (...) {
+        return false;
+      }
+    };
+    const double expectedDrop = 0.02 * amount * amount * std::max(frame.length, 1e-3);
+    auto dropped = [&](const TopoDS_Shape& shape) { return before - volumeOf(shape) > expectedDrop; };
+    TopoDS_Shape shape;
+    int pieces = 0;
+    bool applied = apply(frame, shape, pieces);
+    if (!applied || (pieces == 1 && !dropped(shape))) {
+      CornerFrame flipped = frame;
+      flipped.bin1.Reverse();
+      flipped.bin2.Reverse();
+      TopoDS_Shape retried;
+      int retriedPieces = 0;
+      if (apply(flipped, retried, retriedPieces)) {
+        shape = retried;
+        pieces = retriedPieces;
+        applied = true;
+      }
+    }
+    if (!applied) {
+      message = couldNot;
+      return false;
+    }
+    const double after = volumeOf(shape);
+    const bool brokeThrough = pieces != 1 || after < 1e-3 || after < before * 0.5;
+    if (pieces == 1 && !dropped(shape)) {
+      message = couldNot;
+      return false;
+    }
+    if (brokeThrough || !kernelShapeIsValid(shape)) {
+      message = brokeThrough ? "That size cuts through the hole. Choose a smaller fillet or chamfer." : couldNot;
+      return false;
+    }
+    current = shape;
+  }
+  out = current;
+  return true;
+}
+
+bool treatOneEdge(const std::string& kind, const TopoDS_Shape& acc, const TopoDS_Edge& edge, const TopoDS_Face& face, double amount, double chamferAngle, const std::string& filletProfile, TopoDS_Shape& next) {
+  try {
+    if (kind == "fillet" && filletProfile == "cove") return coveEdges(acc, { edge }, amount, next);
+    if (kind == "fillet") return filletOne(acc, edge, amount, next);
+    return chamferOne(acc, edge, face, amount, chamferAngle, next);
+  } catch (...) {
+    return false;
+  }
+}
+
+/**
+ * One edge at a time, each found again on the solid the last one made. An edge counts only
+ * when it removes material and leaves a sound solid. Inside corners that a fillet would fill
+ * are then cut round instead. Same rules as the browser kernel's applyRemovingTreatment.
+ */
 bool treatEdgesOneByOne(
   const std::string& kind,
   const std::vector<int>& selected,
@@ -786,37 +1024,96 @@ bool treatEdgesOneByOne(
 ) {
   TopoDS_Shape acc = gSession.base;
   bool any = false;
+  std::vector<int> missed;
   for (int id : selected) {
-    TopoDS_Edge edge;
-    TopoDS_Face face;
-    if (!matchEdgeOnShape(acc, gSession.edges[static_cast<size_t>(id)], edge, face)) {
-      skipped.push_back(id);
+    TopoDS_Edge edge = gSession.edges[static_cast<size_t>(id)];
+    TopoDS_Face face = gSession.edgeFaces[static_cast<size_t>(id)];
+    if (any && !matchEdgeOnShape(acc, gSession.edges[static_cast<size_t>(id)], edge, face)) {
+      missed.push_back(id);
       continue;
     }
     TopoDS_Shape next;
-    bool ok = false;
-    try {
-      if (kind == "fillet" && filletProfile == "cove") ok = coveEdges(acc, { edge }, amount, next);
-      else if (kind == "fillet") ok = filletOne(acc, edge, amount, next);
-      else ok = chamferOne(acc, edge, face, amount, chamferAngle, next);
-    } catch (const Standard_Failure&) {
-      ok = false;
-    } catch (...) {
-      ok = false;
-    }
-    // A fillet that "succeeds" with a broken solid is worse than one that is
-    // skipped and reported.
-    if (ok && !kernelShapeIsValid(next)) ok = false;
+    const bool ok = treatOneEdge(kind, acc, edge, face, amount, chamferAngle, filletProfile, next)
+      && volumeOf(next) + 1e-3 < volumeOf(acc)
+      && kernelShapeIsValid(next);
     if (!ok) {
-      skipped.push_back(id);
+      missed.push_back(id);
       continue;
     }
     acc = next;
     any = true;
   }
   if (!any) return false;
+  std::vector<TopoDS_Edge> concave;
+  std::vector<int> concaveIds;
+  for (int id : missed) {
+    const TopoDS_Edge& edge = gSession.edges[static_cast<size_t>(id)];
+    if (edgeIsInterior(gSession.base, edge)) {
+      concave.push_back(edge);
+      concaveIds.push_back(id);
+    }
+  }
+  // One corner at a time, so a corner that clashes with its neighbour does not undo the rest.
+  for (size_t index = 0; index < concave.size(); ++index) {
+    TopoDS_Shape cut;
+    std::string message;
+    if (!cutConcaveCorners(acc, gSession.base, { concave[index] }, kind, amount, chamferAngle, cut, message)) continue;
+    acc = cut;
+    missed.erase(std::remove(missed.begin(), missed.end(), concaveIds[index]), missed.end());
+  }
+  skipped = missed;
   out = unify(acc);
   return !out.IsNull();
+}
+
+/** The browser kernel's last resorts when no edge could be treated one at a time. */
+bool treatEdgesByCornerCut(
+  const std::string& kind,
+  const std::vector<int>& selected,
+  double amount,
+  double chamferAngle,
+  const std::string& filletProfile,
+  TopoDS_Shape& out,
+  std::string& message
+) {
+  const TopoDS_Shape& solid = gSession.base;
+  const double before = volumeOf(solid);
+  if (kind == "chamfer") {
+    // A surface the chamfer refuses (a resized round roof): cut each corner as a wedge.
+    TopoDS_Shape current = solid;
+    bool progressed = false;
+    for (int id : selected) {
+      TopoDS_Shape cut;
+      std::string ignored;
+      if (cutConcaveCorners(current, solid, { gSession.edges[static_cast<size_t>(id)] }, "chamfer", amount, chamferAngle, cut, ignored)
+        && volumeOf(cut) + 1e-3 < volumeOf(current)) {
+        current = cut;
+        progressed = true;
+      }
+    }
+    if (progressed && volumeOf(current) + 1e-3 < before) {
+      out = unify(current);
+      return true;
+    }
+  }
+  std::vector<int> convexIds;
+  std::vector<TopoDS_Edge> concave;
+  for (int id : selected) {
+    const TopoDS_Edge& edge = gSession.edges[static_cast<size_t>(id)];
+    if (edgeIsInterior(solid, edge)) concave.push_back(edge);
+    else convexIds.push_back(id);
+  }
+  TopoDS_Shape component = solid;
+  if (!convexIds.empty() || concave.empty()) {
+    if (!treatEdgesTogether(kind, convexIds.empty() ? selected : convexIds, amount, chamferAngle, filletProfile, component)) return false;
+  }
+  if (!concave.empty()) {
+    TopoDS_Shape cut;
+    if (!cutConcaveCorners(onlySolid(component), solid, concave, kind, amount, chamferAngle, cut, message)) return false;
+    component = cut;
+  }
+  out = unify(onlySolid(component));
+  return !out.IsNull() && kernelShapeIsValid(out);
 }
 
 bool treatEdges(
@@ -836,19 +1133,159 @@ bool treatEdges(
     selected.push_back(id);
   }
   if (selected.empty()) return false;
+  const double before = volumeOf(gSession.base);
   try {
-    if (treatEdgesTogether(kind, selected, amount, chamferAngle, filletProfile, out) && kernelShapeIsValid(out)) return true;
+    // All at once is the common click. A treatment that removes no material filled a
+    // corner instead, which the browser kernel never keeps either.
+    if (treatEdgesTogether(kind, selected, amount, chamferAngle, filletProfile, out)
+      && volumeOf(out) + 1e-3 < before
+      && kernelShapeIsValid(out)) return true;
   } catch (const Standard_Failure&) {
   } catch (...) {
   }
-  if (selected.size() <= 1) return false;
+  if (selected.size() > 1) {
+    try {
+      if (treatEdgesOneByOne(kind, selected, amount, chamferAngle, filletProfile, out, skipped)) return true;
+    } catch (const Standard_Failure&) {
+    } catch (...) {
+    }
+    skipped.clear();
+  }
   try {
-    return treatEdgesOneByOne(kind, selected, amount, chamferAngle, filletProfile, out, skipped);
+    std::string message;
+    return treatEdgesByCornerCut(kind, selected, amount, chamferAngle, filletProfile, out, message);
   } catch (const Standard_Failure&) {
     return false;
   } catch (...) {
     return false;
   }
+}
+
+gp_Pnt stretchedConePoint(const gp_Pnt& point) {
+  const double x = point.X();
+  const double y = point.Y();
+  const double z = point.Z() * gSession.coneScale;
+  const auto& m = gSession.coneTransform;
+  if (!m.is_array() || m.size() < 12) return gp_Pnt(x, y, z);
+  return gp_Pnt(
+    m[0].get<double>() * x + m[1].get<double>() * y + m[2].get<double>() * z + m[3].get<double>(),
+    m[4].get<double>() * x + m[5].get<double>() * y + m[6].get<double>() * z + m[7].get<double>(),
+    m[8].get<double>() * x + m[9].get<double>() * y + m[10].get<double>() * z + m[11].get<double>());
+}
+
+// An oval cone is a round cone stretched. OCCT rounds the round one far more
+// reliably, so the fillet is made there and then stretched, as in the browser.
+// Kept only when every edge on screen has a twin on the round cone.
+void captureStretchedCone(const nlohmann::json& parts) {
+  if (!parts.is_array() || parts.size() != 1 || parts[0].value("hole", false)) return;
+  if (!parts[0].contains("primitive") || !parts[0]["primitive"].is_object()) return;
+  const auto& primitive = parts[0]["primitive"];
+  if (primitive.value("kind", "") != "cone") return;
+  const double scale = primitive.value("sectionScale", 1.0);
+  if (!std::isfinite(scale) || scale <= 1e-6 || std::abs(scale - 1.0) < 1e-4) return;
+  nlohmann::json round = primitive;
+  round.erase("sectionScale");
+  round.erase("transform");
+  TopoDS_Shape host;
+  if (!buildPrimitive(round, host)) return;
+  gSession.coneScale = scale;
+  gSession.coneTransform = primitive.contains("transform") ? primitive["transform"] : nlohmann::json();
+  const double tolerance = std::max(0.75, std::max(primitive.value("baseRadius", 0.0), primitive.value("topRadius", 0.0)) * 0.03);
+  TopTools_IndexedDataMapOfShapeListOfShape faceMap;
+  TopExp::MapShapesAndAncestors(host, TopAbs_EDGE, TopAbs_FACE, faceMap);
+  std::vector<TopoDS_Edge> twins;
+  std::vector<TopoDS_Face> twinFaces;
+  std::vector<int> used;
+  for (const TopoDS_Edge& shown : gSession.edges) {
+    int best = 0;
+    double bestGap = tolerance;
+    for (int index = 1; index <= faceMap.Extent(); ++index) {
+      const TopoDS_Edge edge = TopoDS::Edge(faceMap.FindKey(index));
+      gp_Pnt mid;
+      double length = 0.0;
+      if (BRep_Tool::Degenerated(edge) || !edgeMidAndLength(edge, mid, length)) continue;
+      BRepExtrema_DistShapeShape gap(BRepBuilderAPI_MakeVertex(stretchedConePoint(mid)).Shape(), shown);
+      if (gap.IsDone() && gap.Value() < bestGap) {
+        bestGap = gap.Value();
+        best = index;
+      }
+    }
+    if (best == 0 || std::find(used.begin(), used.end(), best) != used.end()) {
+      gSession.coneScale = 1.0;
+      gSession.coneTransform = nlohmann::json();
+      return;
+    }
+    used.push_back(best);
+    twins.push_back(TopoDS::Edge(faceMap.FindKey(best)));
+    const TopTools_ListOfShape& faces = faceMap.FindFromIndex(best);
+    twinFaces.push_back(faces.Extent() > 0 ? TopoDS::Face(faces.First()) : TopoDS_Face());
+  }
+  gSession.roundCone = host;
+  gSession.roundConeEdges = std::move(twins);
+  gSession.roundConeFaces = std::move(twinFaces);
+}
+
+bool treatStretchedCone(
+  const std::string& kind,
+  const std::vector<int>& selected,
+  double amount,
+  double chamferAngle,
+  const std::string& filletProfile,
+  TopoDS_Shape& out,
+  std::vector<int>& skipped
+) {
+  if (gSession.roundCone.IsNull()) return false;
+  // The edge ladder works on the session's solid, so lend it the round cone.
+  struct Lend {
+    Lend() { swap(); }
+    ~Lend() { swap(); }
+    void swap() {
+      std::swap(gSession.base, gSession.roundCone);
+      std::swap(gSession.edges, gSession.roundConeEdges);
+      std::swap(gSession.edgeFaces, gSession.roundConeFaces);
+    }
+  };
+  TopoDS_Shape round;
+  {
+    Lend lend;
+    if (!treatEdges(kind, selected, amount, chamferAngle, filletProfile, round, skipped)) return false;
+  }
+  out = kernelScale(round, 1.0, 1.0, gSession.coneScale);
+  if (gSession.coneTransform.is_array()) applyRowMajor(out, gSession.coneTransform);
+  return !out.IsNull() && kernelShapeIsValid(out);
+}
+
+// When a fillet or chamfer will not fit, the largest size that does, found by
+// halving between nothing and the size asked for. The browser engine runs the
+// same seven tries and rounds the same way, so both say the same thing.
+// Returns 0 when even a small size fails or the part has several bodies.
+double largestFittingSize(const std::string& kind, const std::vector<int>& selected, double requested, double chamferAngle, const std::string& filletProfile) {
+  if (!(requested > 0.0) || selected.empty() || solidCount(gSession.base) != 1) return 0.0;
+  for (int id : selected) {
+    if (id < 0 || static_cast<size_t>(id) >= gSession.edges.size()) return 0.0;
+  }
+  const double before = volumeOf(gSession.base);
+  double low = 0.0;
+  double high = requested;
+  for (int step = 0; step < 7; ++step) {
+    const double middle = (low + high) / 2.0;
+    TopoDS_Shape treated;
+    const bool fits = treatEdgesTogether(kind, selected, middle, chamferAngle, filletProfile, treated)
+      && volumeOf(treated) + 1e-3 < before && kernelShapeIsValid(treated);
+    if (fits) low = middle;
+    else high = middle;
+  }
+  const double tidy = low >= 1.0 ? std::floor(low * 10.0) / 10.0 : std::floor(low * 100.0) / 100.0;
+  return tidy >= requested * 0.05 && tidy > 0.0 ? tidy : 0.0;
+}
+
+std::string tooBigMessage(const std::string& kind, double largest) {
+  char size[32];
+  std::snprintf(size, sizeof(size), "%.2f", largest);
+  std::string text(size);
+  while (!text.empty() && text.back() == '0') text.pop_back();
+  if (!text.empty() && text.back() == '.') text.pop_back();
+  return std::string("That ") + (kind == "chamfer" ? "size" : "radius") + " is too big for these edges. The largest that fits is about " + text + " mm.";
 }
 
 double volumeOf(const TopoDS_Shape& shape) {
@@ -1247,6 +1684,7 @@ bool pushPullBooleanOnce(
       if (glue) fuse.SetGlue(BOPAlgo_GlueShift);
       if (fuzzy > 0) fuse.SetFuzzyValue(fuzzy);
       fuse.SetRunParallel(true);
+      fuse.SetNonDestructive(true);
       fuse.Build();
       if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) return false;
       out = fuse.Shape();
@@ -1261,6 +1699,7 @@ bool pushPullBooleanOnce(
     cut.SetTools(tools);
     if (fuzzy > 0) cut.SetFuzzyValue(fuzzy);
     cut.SetRunParallel(true);
+    cut.SetNonDestructive(true);
     cut.Build();
     if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()) return false;
     out = cut.Shape();
@@ -1342,12 +1781,22 @@ bool pushPullSolid(int faceId, double distance, TopoDS_Shape& out, std::string& 
   }
 }
 
-double previewLinearForQuality(const std::string& quality, double amount) {
-  if (quality == "draft") return std::max(0.16, std::abs(amount) / 3.0);
-  if (quality == "ultra") return std::max(0.02, std::abs(amount) / 20.0);
-  if (quality == "fine") return std::max(0.04, std::abs(amount) / 12.0);
-  return std::max(0.08, std::abs(amount) / 7.0);
+// The browser kernel's table (cadModifier.worker tessellationOptions and
+// previewTessellationOptions), so a preview looks the same in both.
+struct MeshQuality {
+  double linear;
+  double angular;
+};
+
+MeshQuality meshForQuality(const std::string& quality) {
+  if (quality == "draft") return { 0.12, 0.42 };
+  if (quality == "ultra") return { 0.02, 0.06 };
+  if (quality == "fine") return { 0.04, 0.1 };
+  return { 0.055, 0.2 };
 }
+
+// A quick picture while a slider moves; the resting preview and Apply replace it.
+constexpr MeshQuality kSliderPreview{ 0.16, 0.32 };
 
 bool openingFaces(const TopoDS_Shape& solid, const nlohmann::json& openings, TopTools_ListOfShape& faces, std::string& missing) {
   struct Side {
@@ -1363,18 +1812,20 @@ bool openingFaces(const TopoDS_Shape& solid, const nlohmann::json& openings, Top
     for (const auto& item : openings) wanted[item.get<std::string>()] = false;
   }
   if (wanted.empty()) return true;
-  Bnd_Box box;
-  BRepBndLib::Add(solid, box);
+  // Tight bounds: a cut hole raises face tolerances, and a padded box would no
+  // longer touch the flat faces that are meant to stay open.
   double xmin, ymin, zmin, xmax, ymax, zmax;
-  box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+  if (!kernelBounds(solid, xmin, ymin, zmin, xmax, ymax, zmax)) return false;
   const double extent[3][2] = { { xmin, xmax }, { ymin, ymax }, { zmin, zmax } };
   for (TopExp_Explorer exp(solid, TopAbs_FACE); exp.More(); exp.Next()) {
     const TopoDS_Face face = TopoDS::Face(exp.Current());
     BRepAdaptor_Surface adaptor(face, Standard_True);
     if (adaptor.GetType() != GeomAbs_Plane) continue;
     const gp_Pnt center = faceCenter(face);
-    gp_Dir normal;
-    if (!faceNormalAt(face, center, normal)) continue;
+    // A flat face has one normal. Reading it from the plane, as the browser does,
+    // still works when the face centre falls in a hole through that face.
+    gp_Dir normal = adaptor.Plane().Axis().Direction();
+    if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
     const double n[3] = { normal.X(), normal.Y(), normal.Z() };
     const double c[3] = { center.X(), center.Y(), center.Z() };
     for (const auto& side : sides) {
@@ -1447,7 +1898,7 @@ bool roundInteriorCorners(TopoDS_Shape& shape, double radius) {
   return false;
 }
 
-bool hollowSolid(const TopoDS_Shape& solid, double thickness, const nlohmann::json& openings, const std::string& corners, double cornerRadius, TopoDS_Shape& out, std::string& message) {
+bool hollowOneSolid(const TopoDS_Shape& solid, double thickness, const nlohmann::json& openings, const std::string& corners, double cornerRadius, TopoDS_Shape& out, std::string& message) {
   TopTools_ListOfShape remove;
   std::string missing;
   if (!openingFaces(solid, openings, remove, missing)) {
@@ -1457,7 +1908,7 @@ bool hollowSolid(const TopoDS_Shape& solid, double thickness, const nlohmann::js
   const double original = volumeOf(solid);
   auto accept = [&](const TopoDS_Shape& candidate) {
     if (candidate.IsNull()) return false;
-    const double volume = volumeOf(candidate);
+    const double volume = kernelShapeIsValid(candidate) ? volumeOf(candidate) : 0.0;
     return volume > 0 && volume < original * (1 - 1e-6);
   };
   TopoDS_Shape result;
@@ -1466,7 +1917,9 @@ bool hollowSolid(const TopoDS_Shape& solid, double thickness, const nlohmann::js
     try {
       if (remove.Extent() > 0) {
         BRepOffsetAPI_MakeThickSolid thick;
-        thick.MakeThickSolidByJoin(solid, remove, -thickness, tolerance, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Intersection);
+        // OCCT's default arc join, as the browser kernel's shell uses: the
+        // intersection join gave up on walls around a hole through an open face.
+        thick.MakeThickSolidByJoin(solid, remove, -thickness, tolerance);
         if (thick.IsDone() && accept(thick.Shape())) {
           result = thick.Shape();
           built = true;
@@ -1476,11 +1929,9 @@ bool hollowSolid(const TopoDS_Shape& solid, double thickness, const nlohmann::js
         BRepOffsetAPI_MakeOffsetShape offset;
         offset.PerformByJoin(solid, -thickness, tolerance);
         if (!offset.IsDone()) continue;
-        BRepAlgoAPI_Cut cut(solid, offset.Shape());
-        cut.SetRunParallel(true);
-        cut.Build();
-        if (cut.IsDone() && accept(cut.Shape())) {
-          result = cut.Shape();
+        TopoDS_Shape hollowed;
+        if (kernelBoolean(KernelBooleanOp::Cut, solid, offset.Shape(), hollowed) && accept(hollowed)) {
+          result = hollowed;
           built = true;
           break;
         }
@@ -1504,41 +1955,31 @@ bool hollowSolid(const TopoDS_Shape& solid, double thickness, const nlohmann::js
   return true;
 }
 
+// Each solid of the body is hollowed on its own, with its own open faces, as the
+// browser kernel does (a cut leaves the body wrapped in a compound, which the
+// offset will not take).
+bool hollowSolid(const TopoDS_Shape& body, double thickness, const nlohmann::json& openings, const std::string& corners, double cornerRadius, TopoDS_Shape& out, std::string& message) {
+  std::vector<TopoDS_Shape> solids;
+  for (TopExp_Explorer exp(body, TopAbs_SOLID); exp.More(); exp.Next()) solids.push_back(exp.Current());
+  if (solids.empty()) return hollowOneSolid(body, thickness, openings, corners, cornerRadius, out, message);
+  if (solids.size() == 1) return hollowOneSolid(solids[0], thickness, openings, corners, cornerRadius, out, message);
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (const auto& solid : solids) {
+    TopoDS_Shape hollowed;
+    if (!hollowOneSolid(solid, thickness, openings, corners, cornerRadius, hollowed, message)) return false;
+    builder.Add(compound, hollowed);
+  }
+  out = compound;
+  return true;
+}
+
 gp_Dir orthonormalU(const gp_Dir& axis) {
   gp_Vec helper = std::abs(axis.Y()) < 0.9 ? gp_Vec(0, 1, 0) : gp_Vec(1, 0, 0);
   gp_Vec u = helper.Crossed(gp_Vec(axis));
   if (u.Magnitude() < 1e-9) u = gp_Vec(1, 0, 0);
   return gp_Dir(u);
-}
-
-bool makeHelixWire(const gp_Pnt& origin, const gp_Dir& axis, const gp_Dir& u, double radius, double pitch, double length, bool left, TopoDS_Wire& wire) {
-  const int turns = std::max(1, static_cast<int>(std::ceil(length / std::max(0.15, pitch))));
-  const int segs = std::max(32, turns * 32);
-  BRepBuilderAPI_MakeWire maker;
-  gp_Vec ax(axis);
-  ax.Normalize();
-  gp_Vec uu(u);
-  uu.Normalize();
-  gp_Vec vv = ax.Crossed(uu);
-  if (vv.Magnitude() < 1e-9) return false;
-  vv.Normalize();
-  uu = vv.Crossed(ax);
-  uu.Normalize();
-  const double sign = left ? -1.0 : 1.0;
-  gp_Pnt prev;
-  bool hasPrev = false;
-  for (int i = 0; i <= segs; ++i) {
-    const double t = static_cast<double>(i) / segs;
-    const double z = t * length;
-    const double ang = sign * (z / pitch) * 2.0 * kPi;
-    const gp_Pnt p = origin.Translated(ax * z + uu * (radius * std::cos(ang)) + vv * (radius * std::sin(ang)));
-    if (hasPrev && p.Distance(prev) > 1e-8) maker.Add(BRepBuilderAPI_MakeEdge(prev, p).Edge());
-    prev = p;
-    hasPrev = true;
-  }
-  if (!maker.IsDone()) return false;
-  wire = maker.Wire();
-  return true;
 }
 
 bool threadRidge(const nlohmann::json& face, const nlohmann::json& job, TopoDS_Shape& ridge, std::string& message) {
@@ -1581,33 +2022,17 @@ bool threadRidge(const nlohmann::json& face, const nlohmann::json& job, TopoDS_S
     return false;
   }
   TopoDS_Wire helix;
-  if (!makeHelixWire(origin, axis, u, faceRadius, pitch, length, job.value("handedness", "right") == "left", helix)) {
+  if (!kernelHelixWire(origin, axis, u, faceRadius, pitch, length, job.value("handedness", "right") == "left", helix)
+    || !kernelSweepAlongHelix(helix, profile.Wire(), axis, ridge)) {
     message = "Could not build a solid helical tooth from these thread dimensions";
     return false;
   }
-  BRepOffsetAPI_MakePipeShell shell(helix);
-  shell.SetDiscreteMode();
-  shell.SetTransitionMode(BRepBuilderAPI_Transformed);
-  shell.Add(profile.Wire(), false, true);
-  shell.Build();
-  if (!shell.IsDone()) {
-    BRepOffsetAPI_MakePipe pipe(helix, profile.Wire());
-    pipe.Build();
-    if (!pipe.IsDone()) {
-      message = "Could not build a solid helical tooth from these thread dimensions";
-      return false;
-    }
-    ridge = pipe.Shape();
-  } else {
-    shell.MakeSolid();
-    ridge = shell.Shape();
-  }
-  return !ridge.IsNull();
+  return true;
 }
 
-nlohmann::json previewMesh(const TopoDS_Shape& shape, int requestId, double linear, bool includeBrep) {
+nlohmann::json previewMesh(const TopoDS_Shape& shape, int requestId, MeshQuality quality, bool includeBrep) {
   nlohmann::json positions, normals, indices;
-  if (!tessellatePreview(shape, linear, positions, normals, indices)) {
+  if (!tessellatePreview(shape, quality.linear, positions, normals, indices, quality.angular)) {
     // Callers store the shape as `accumulated` before meshing; an unmeshable
     // result must not be what a later `finalize` hands back.
     if (gSession.accumulated.IsSame(shape)) gSession.accumulated = TopoDS_Shape();
@@ -1658,12 +2083,9 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
     try {
       const auto& rest = solids.empty() ? holes : solids;
       for (size_t i = 1; i < rest.size(); ++i) {
-        BRepAlgoAPI_Fuse fuse(body, rest[i]);
-        fuse.SetRunParallel(true);
-        fuse.SetFuzzyValue(0.04);
-        fuse.Build();
-        if (!fuse.IsDone() || fuse.HasErrors()) return modifierFail("Could not fuse group for fillet", true, requestId);
-        body = fuse.Shape();
+        TopoDS_Shape fused;
+        if (!kernelBoolean(KernelBooleanOp::Fuse, body, rest[i], fused)) return modifierFail("Could not fuse group for fillet", true, requestId);
+        body = fused;
       }
       // Two-body Group keeps the fuse as-is. Unify on a plate-plus-boss was
       // merging offset parallel faces into one warped sheet.
@@ -1671,16 +2093,16 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       if (busy >= 3) body = unifyKeepVolume(body);
       if (!solids.empty()) {
         for (const auto& hole : holes) {
-          BRepAlgoAPI_Cut cut(body, hole);
-          cut.SetRunParallel(true);
-          cut.SetFuzzyValue(0.04);
-          cut.Build();
+          TopoDS_Shape cutBody;
           // A hole that fails to cut must not be dropped quietly: the fillet
           // would then be computed on a body with that hole filled in and the
           // result would silently differ from what the user sees on screen.
-          if (!cut.IsDone() || cut.HasErrors()) return modifierFail("Could not cut group holes for fillet", true, requestId);
-          body = unifyKeepVolume(cut.Shape());
+          if (!kernelBoolean(KernelBooleanOp::Cut, body, hole, cutBody)) return modifierFail("Could not cut group holes for fillet", true, requestId);
+          body = cutBody;
         }
+        // Repaired, then merged, as the browser kernel does after its hole cuts: an
+        // offset (Hollow) gave up on the unrepaired walls around a hole.
+        if (!holes.empty()) body = unifyKeepVolume(healShape(body));
       }
     } catch (...) {
       return modifierFail("Could not rebuild the solid for fillet", true, requestId);
@@ -1689,6 +2111,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
     gSession.base = body;
     gSession.live = true;
     const auto collected = collectEdges(body, job.value("sharpAngle", 20.0), job.value("suppressTreatmentDetailEdges", false));
+    captureStretchedCone(job["parts"]);
     const auto cylinders = collectCylindricalFaces(body);
     const auto planars = collectPlanarFaces(body);
     return {
@@ -1702,7 +2125,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "sourceType", "solid" },
     };
   }
-  if (!gSession.live) return modifierFail("Prepare an object before previewing the modifier", false, requestId);
+  if (!gSession.live) return modifierFail("Prepare an object before previewing the modifier", false, requestId, true);
   if (type == "hollow") {
     TopoDS_Shape result;
     std::string message;
@@ -1718,7 +2141,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       return modifierFail(message, false, requestId);
     }
     gSession.accumulated = result;
-    return previewMesh(result, requestId, std::max(0.16, job.value("thickness", 1.0) / 4.0), true);
+    return previewMesh(result, requestId, kSliderPreview, true);
   }
   if (type == "previewThread") {
     const int faceId = job.value("faceId", -1);
@@ -1734,23 +2157,13 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       const std::string side = job.value("side", "external");
       TopoDS_Shape combined;
       if (side == "external") {
-        BRepAlgoAPI_Fuse fuse(gSession.base, ridge);
-        fuse.SetFuzzyValue(0.04);
-        fuse.SetRunParallel(true);
-        fuse.Build();
-        if (!fuse.IsDone()) return modifierFail("Thread boolean failed. Try Draft quality, a shorter length, or a pitch that fits the face.", false, requestId);
-        combined = fuse.Shape();
+        if (!kernelBoolean(KernelBooleanOp::Fuse, gSession.base, ridge, combined)) return modifierFail("Thread boolean failed. Try Draft quality, a shorter length, or a pitch that fits the face.", false, requestId);
       } else {
-        BRepAlgoAPI_Cut cut(gSession.base, ridge);
-        cut.SetFuzzyValue(0.04);
-        cut.SetRunParallel(true);
-        cut.Build();
-        if (!cut.IsDone()) return modifierFail("Thread boolean failed. Try Draft quality, a shorter length, or a pitch that fits the face.", false, requestId);
-        combined = cut.Shape();
+        if (!kernelBoolean(KernelBooleanOp::Cut, gSession.base, ridge, combined)) return modifierFail("Thread boolean failed. Try Draft quality, a shorter length, or a pitch that fits the face.", false, requestId);
       }
       combined = unify(combined);
       gSession.accumulated = combined;
-      return previewMesh(combined, requestId, 0.25, true);
+      return previewMesh(combined, requestId, meshForQuality(job.value("quality", "standard")), true);
     } catch (...) {
       return modifierFail("Thread boolean produced unusable geometry. Try a smaller pitch, shorter length, or Draft quality.", false, requestId);
     }
@@ -1765,7 +2178,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       return modifierFail("Push Pull produced an invalid solid at this distance. Try a smaller move.", false, requestId);
     }
     gSession.accumulated = result;
-    return previewMesh(result, requestId, previewLinearForQuality(job.value("quality", "standard"), job.value("distance", 0.0)), true);
+    return previewMesh(result, requestId, meshForQuality(job.value("quality", "standard")), true);
   }
   if (type == "preview") {
     std::vector<int> edgeIds;
@@ -1774,12 +2187,15 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
     }
     TopoDS_Shape result;
     std::vector<int> skipped;
-    if (!treatEdges(job.value("kind", "fillet"), edgeIds, job.value("amount", 1.0), job.value("chamferAngle", 45.0), job.value("filletProfile", "round"), result, skipped)) {
+    const bool stretched = treatStretchedCone(job.value("kind", "fillet"), edgeIds, job.value("amount", 1.0), job.value("chamferAngle", 45.0), job.value("filletProfile", "round"), result, skipped);
+    if (!stretched) skipped.clear();
+    if (!stretched && !treatEdges(job.value("kind", "fillet"), edgeIds, job.value("amount", 1.0), job.value("chamferAngle", 45.0), job.value("filletProfile", "round"), result, skipped)) {
+      const double largest = largestFittingSize(job.value("kind", "fillet"), edgeIds, job.value("amount", 1.0), job.value("chamferAngle", 45.0), job.value("filletProfile", "round"));
+      if (largest > 0.0) return modifierFail(tooBigMessage(job.value("kind", "fillet"), largest), false, requestId);
       return modifierFail("The chosen size creates invalid or overlapping edge geometry", false, requestId);
     }
     nlohmann::json positions, normals, indices;
-    const double linear = std::max(0.16, job.value("amount", 1.0) / 4.0);
-    if (!tessellatePreview(result, linear, positions, normals, indices)) {
+    if (!tessellatePreview(result, kSliderPreview.linear, positions, normals, indices, kSliderPreview.angular)) {
       return modifierFail("The chosen size creates invalid or overlapping edge geometry", false, requestId);
     }
     // Only a result that could be meshed becomes the shape `finalize` applies;
@@ -1794,7 +2210,9 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "indices", indices },
       { "triangleCount", indices.size() / 3 },
       { "brep", "" },
-      { "displayEdges", collectDisplayPolylines(result) },
+      // Like the browser kernel: no outlines from the treated solid. Its fillet seams are
+      // smooth, and the editor keeps the part's own sharp edges that were not treated.
+      { "displayEdges", nlohmann::json::array() },
       { "skippedEdgeIds", skipped },
     };
   }
@@ -1819,7 +2237,7 @@ nlohmann::json handleModifierJob(const nlohmann::json& job) {
       { "indices", indices },
       { "triangleCount", indices.size() / 3 },
       { "brep", "" },
-      { "displayEdges", collectDisplayPolylines(gSession.accumulated) },
+      { "displayEdges", nlohmann::json::array() },
       { "smooth", true },
     };
   }

@@ -1,6 +1,6 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
 import { booleanAngularDeflection } from "@/lib/displayTessellation";
-import { toNativeKernelSolids, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
+import { plainNativeReply, toNativeKernelSolids, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
 import type { OcctBooleanMeshResult, StepExportResult } from "@/lib/stepExport";
 import {
   applyNativeSketchSweepMesh,
@@ -125,7 +125,8 @@ function ensureWorker() {
 
 function nativeJobFor(request: OcctKernelRequest, requestId: number): NativeKernelJob | null {
   if (request.type === "boolean") {
-    const solids = toNativeKernelSolids(request.shapes);
+    // A locked shape stays out of a boolean, as in the browser engine.
+    const solids = toNativeKernelSolids(request.shapes.filter((shape) => !shape.locked));
     if (!solids) return null;
     return {
       id: requestId,
@@ -219,17 +220,33 @@ function nativeReplyToResult(request: OcctKernelRequest, reply: NativeKernelRepl
   return null;
 }
 
+/**
+ * The desktop engine answers first. A result, or a refusal meant for the user (a message
+ * with no fallback, such as "No solid geometry to export as STEP"), is final. Anything
+ * else (no reply, a crash, a timeout, or an answer it could not finish) falls through to
+ * the browser kernel, so the desktop app never does worse than the browser.
+ */
 async function tryNativeKernel(request: OcctKernelRequest, requestId: number): Promise<{ hit: boolean; value: unknown | null }> {
   const api = desktopKernel();
   if (!api?.request) return { hit: false, value: null };
   const job = nativeJobFor(request, requestId);
   if (!job) return { hit: false, value: null };
+  let reply: NativeKernelReply | null;
   try {
-    const reply = await api.request(job, cadModifierRequestTimeoutMs());
-    return { hit: true, value: nativeReplyToResult(request, reply) };
+    reply = plainNativeReply(await api.request(job, cadModifierRequestTimeoutMs()));
   } catch {
+    return { hit: false, value: null };
+  }
+  const value = nativeReplyToResult(request, reply);
+  if (value !== null) {
+    lastWorkerError = null;
+    return { hit: true, value };
+  }
+  if (reply && reply.ok === false && reply.fallback === false) {
+    lastWorkerError = reply.message || "CAD kernel failed";
     return { hit: true, value: null };
   }
+  return { hit: false, value: null };
 }
 
 function postKernelRequest(request: OcctKernelRequest): Promise<unknown> {
@@ -265,7 +282,6 @@ export async function runOcctKernelInWorker(request: OcctKernelRequest): Promise
   const requestId = nextRequestId;
   nextRequestId += 1;
   const native = await tryNativeKernel(request, requestId);
-  // A generator body has no mesh to fall back on, so a native miss still tries WASM.
-  if (native.hit && (native.value !== null || request.type !== "gridfinity")) return native.value;
+  if (native.hit) return native.value;
   return postKernelRequest(request);
 }

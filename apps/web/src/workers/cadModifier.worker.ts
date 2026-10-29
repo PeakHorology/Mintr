@@ -92,6 +92,11 @@ function kernel() {
   return kernelPromise;
 }
 
+/** Tests run this worker in Node with a kernel loaded from node_modules, to compare it with the desktop engine. */
+export function useCadModifierKernelForTests(cad: OcctKernel) {
+  kernelPromise = Promise.resolve(cad);
+}
+
 function releaseSession(cad: OcctKernel) {
   try {
     cad.releaseAll();
@@ -1027,7 +1032,7 @@ function captureStretchedConeFillet(cad: OcctKernel, parts: CadModifierMeshPart[
   if (parts.length !== 1 || parts[0].hole) return;
   const primitive = parts[0].primitive;
   if (!primitive || primitive.kind !== "cone" || !primitive.sectionScale || Math.abs(primitive.sectionScale - 1) < 1e-4) return;
-  const host = reconstructPrimitiveSolid(cad, { ...primitive, sectionScale: undefined });
+  const host = reconstructPrimitiveSolid(cad, { ...primitive, sectionScale: undefined, transform: undefined });
   const hostEdges = cad.getSubShapes(host, "edge");
   try {
     if (hostEdges.length === 0 || hostEdges.length !== edgeHandles.length) return;
@@ -1058,7 +1063,7 @@ function stretchedConeTreatment(
   const edgeMap = coneFilletEdgeMap;
   const sectionScale = primitive?.sectionScale;
   if (!primitive || !edgeMap || !sectionScale) return null;
-  const host = reconstructPrimitiveSolid(cad, { ...primitive, sectionScale: undefined });
+  const host = reconstructPrimitiveSolid(cad, { ...primitive, sectionScale: undefined, transform: undefined });
   const hostEdges = cad.getSubShapes(host, "edge");
   if (hostEdges.length !== edgeMap.length) {
     try { cad.release(host); } catch { /* Rebuilt only when the circle still lines up. */ }
@@ -1781,8 +1786,9 @@ export function applyRemovingTreatment(
   try {
     const treated = treat(solid, edges);
     // A convex fillet or chamfer removes material. That is the common click,
-    // and it does not need a face map of the whole solid.
-    if (shapeVolume(cad, treated) + 1e-3 < before) return singleSolid(cad, treated);
+    // and it does not need a face map of the whole solid. A size too big for the
+    // part can still lose volume while folding through itself, so it must be valid too.
+    if (shapeVolume(cad, treated) + 1e-3 < before && cadShapeIsValid(cad, treated)) return singleSolid(cad, treated);
     if (treated !== solid) {
       try { cad.release(treated); } catch { /* The filled corner is discarded. */ }
     }
@@ -1792,28 +1798,46 @@ export function applyRemovingTreatment(
   if (edges.length > 1) {
     let current = solid;
     let progressed = false;
-    let skipped = 0;
+    const missed: ShapeHandle[] = [];
     for (const edge of edges) {
       try {
-        const treated = treat(current, [edge]);
-        if (shapeVolume(cad, treated) + 1e-3 < shapeVolume(cad, current)) {
+        // After the first edge the solid is new, so find this edge again on it.
+        const target = current === solid ? edge : findMatchingEdge(cad, current, edge);
+        if (!target) {
+          missed.push(edge);
+          continue;
+        }
+        const treated = treat(current, [target]);
+        if (shapeVolume(cad, treated) + 1e-3 < shapeVolume(cad, current) && cadShapeIsValid(cad, treated)) {
           if (current !== solid) {
             try { cad.release(current); } catch { /* Replaced by the edge that worked. */ }
           }
           current = treated;
           progressed = true;
         } else {
-          skipped += 1;
+          missed.push(edge);
           if (treated !== current) {
             try { cad.release(treated); } catch { /* This edge did not remove material. */ }
           }
         }
       } catch {
         // Skip this edge and keep rounding the rest.
-        skipped += 1;
+        missed.push(edge);
       }
     }
     if (progressed) {
+      // Inside corners a fillet would fill are cut round instead, as when no edge worked.
+      const { concave } = missed.length > 0 ? classifyCornerEdges(cad, solid, missed) : { concave: [] as ShapeHandle[] };
+      let skipped = missed.length;
+      // One corner at a time, so a corner that clashes with its neighbour does not undo the rest.
+      for (const edge of concave) {
+        try {
+          current = cutConcaveCorners(cad, singleSolid(cad, current), solid, [edge], kind, amount, chamferAngle);
+          skipped -= 1;
+        } catch {
+          // This corner stays square and is reported as skipped.
+        }
+      }
       previewSkippedEdgeCount += skipped;
       return singleSolid(cad, current);
     }
@@ -2495,6 +2519,47 @@ function applyThreadCut(
   }
 }
 
+/**
+ * When a fillet or chamfer will not fit, the largest size that does, found by halving
+ * between nothing and the size asked for. The desktop engine runs the same search, so
+ * both say the same thing. Null when even a small size fails or the part has several bodies.
+ */
+function largestFittingSize(cad: OcctKernel, request: Extract<CadModifierWorkerRequest, { type: "preview" }>) {
+  if (baseSolids.length !== 1 || !(request.amount > 0)) return null;
+  const solid = baseSolids[0];
+  const edges = request.edgeIds.map((id) => edgeHandles[id]).filter((edge): edge is ShapeHandle => edge !== undefined);
+  if (edges.length === 0) return null;
+  const before = baseVolumes[0] || shapeVolume(cad, solid);
+  const fits = (amount: number) => {
+    try {
+      const treated = edgeTreatment(cad, request.kind, amount, request.chamferAngle, normalizeFilletProfile(request.filletProfile))(solid, edges);
+      const ok = shapeVolume(cad, treated) + 1e-3 < before && cadShapeIsValid(cad, treated);
+      if (treated !== solid) releaseQuiet(cad, treated);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+  return largestFitting(request.amount, fits);
+}
+
+/** Halving search shared in spirit with the desktop engine: seven tries, rounded down to a tidy size. */
+export function largestFitting(requested: number, fits: (amount: number) => boolean) {
+  let low = 0;
+  let high = requested;
+  for (let step = 0; step < 7; step += 1) {
+    const middle = (low + high) / 2;
+    if (fits(middle)) low = middle;
+    else high = middle;
+  }
+  const tidy = low >= 1 ? Math.floor(low * 10) / 10 : Math.floor(low * 100) / 100;
+  return tidy >= requested * 0.05 && tidy > 0 ? tidy : null;
+}
+
+export function tooBigMessage(kind: CadModifierKind, largest: number) {
+  return `That ${kind === "chamfer" ? "size" : "radius"} is too big for these edges. The largest that fits is about ${largest} mm.`;
+}
+
 /** Serialize prepare/preview/dispose so concurrent requests cannot corrupt the shared OCCT session. */
 let cadModifierQueue: Promise<void> = Promise.resolve();
 
@@ -2875,6 +2940,11 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
         message,
         resetSession: true,
       });
+      return;
+    }
+    const largest = request.type === "preview" && cad ? largestFittingSize(cad, request) : null;
+    if (request.type === "preview" && largest !== null) {
+      post({ type: "error", requestId: request.requestId, message: tooBigMessage(request.kind, largest) });
       return;
     }
     const message = request.type === "preview" && (rawMessage.includes("WebAssembly.Exception") || rawMessage.includes("fillet:") || rawMessage.includes("chamfer:") || rawMessage.includes("cut:") || rawMessage.includes("pipe:"))

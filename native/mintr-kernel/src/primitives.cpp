@@ -18,7 +18,11 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <GeomAPI_Interpolate.hxx>
 #include <Geom_Ellipse.hxx>
+#include <TColgp_HArray1OfPnt.hxx>
+#include <gp_Circ.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <gp_Ax1.hxx>
 #include <TopExp_Explorer.hxx>
@@ -83,12 +87,7 @@ TopoDS_Shape ellipseAlongY(double rx, double rz, double height) {
 }
 
 bool cutShape(const TopoDS_Shape& a, const TopoDS_Shape& b, TopoDS_Shape& out) {
-  BRepAlgoAPI_Cut cut(a, b);
-  cut.SetRunParallel(true);
-  cut.Build();
-  if (!cut.IsDone()) return false;
-  out = cut.Shape();
-  return !out.IsNull();
+  return kernelBoolean(KernelBooleanOp::Cut, a, b, out);
 }
 
 bool extrudeXz(const std::vector<Uv>& xz, double height, TopoDS_Shape& out) {
@@ -127,6 +126,156 @@ bool buildLoopsSolid(const nlohmann::json& solid, double height, TopoDS_Shape& o
     }
   }
   return true;
+}
+
+// True involute gear teeth, as the browser builds them (brepjs gear module,
+// Apache-2.0): each flank is a spline through points on the involute, joined by
+// a tip arc and a root arc, so the teeth are smooth curves, not short lines.
+struct GearTeeth {
+  double rPitch, rb, rTip, rRoot, alphaPitch, halfToothAngle, alphaTip, toothPitch;
+  bool internal;
+};
+
+GearTeeth gearTeeth(int teeth, double module, double alpha, double backlashHalf, bool internal) {
+  const double clearance = 0.25;
+  GearTeeth g{};
+  g.internal = internal;
+  g.rPitch = teeth * module / 2.0;
+  g.rb = g.rPitch * std::cos(alpha);
+  g.rTip = internal ? g.rPitch - module : g.rPitch + module;
+  g.rRoot = internal ? g.rPitch + module * (1.0 + clearance) : g.rPitch - module * (1.0 + clearance);
+  g.halfToothAngle = (kKernelPi / 2.0) / teeth + (internal ? 1.0 : -1.0) * backlashHalf / g.rPitch;
+  const double rOuter = internal ? g.rRoot : g.rTip;
+  g.alphaPitch = alpha;
+  g.alphaTip = rOuter <= g.rb ? 0.0 : std::acos(std::min(1.0, g.rb / rOuter));
+  g.toothPitch = 2.0 * kKernelPi / teeth;
+  return g;
+}
+
+double involuteAngle(double alpha) { return std::tan(alpha) - alpha; }
+
+gp_Pnt polarPoint(double radius, double angle) { return gp_Pnt(radius * std::cos(angle), radius * std::sin(angle), 0.0); }
+
+std::vector<gp_Pnt> flankPoints(const GearTeeth& g, double theta0, int count, double sign) {
+  std::vector<gp_Pnt> points;
+  for (int i = 0; i <= count; ++i) {
+    const double t = 0.5 - 0.5 * std::cos(static_cast<double>(i) / count * kKernelPi);
+    const double alpha = t * g.alphaTip;
+    points.push_back(polarPoint(g.rb / std::cos(alpha), theta0 + sign * involuteAngle(alpha)));
+  }
+  return points;
+}
+
+bool splineEdge(const std::vector<gp_Pnt>& points, double tolerance, BRepBuilderAPI_MakeWire& wire) {
+  Handle(TColgp_HArray1OfPnt) array = new TColgp_HArray1OfPnt(1, static_cast<int>(points.size()));
+  for (size_t i = 0; i < points.size(); ++i) array->SetValue(static_cast<int>(i) + 1, points[i]);
+  GeomAPI_Interpolate interpolate(array, false, tolerance);
+  interpolate.Perform();
+  if (!interpolate.IsDone()) return false;
+  wire.Add(BRepBuilderAPI_MakeEdge(interpolate.Curve()).Edge());
+  return wire.IsDone();
+}
+
+bool arcEdge(const gp_Pnt& a, const gp_Pnt& middle, const gp_Pnt& b, BRepBuilderAPI_MakeWire& wire) {
+  GC_MakeArcOfCircle arc(a, middle, b);
+  if (!arc.IsDone()) return false;
+  wire.Add(BRepBuilderAPI_MakeEdge(arc.Value()).Edge());
+  return wire.IsDone();
+}
+
+bool gearToothWire(int teeth, double module, double alpha, double backlashHalf, bool internal, TopoDS_Wire& out) {
+  if (teeth < 4 || module <= 0.0) return false;
+  const GearTeeth g = gearTeeth(teeth, module, alpha, backlashHalf, internal);
+  const int samples = std::max(16, static_cast<int>(std::lround(8.0 * std::sqrt(module))));
+  const double tolerance = g.rPitch * 1e-5;
+  // Flanks run from the base circle out to rOut; arcs close them at rOut and rIn.
+  // On a ring gear the outline is the tooth spaces, so the outer arc sits at the
+  // root and the inner one at the tips. (brepjs swaps these for a ring, which
+  // makes its outline cross itself.)
+  const double rOut = internal ? g.rRoot : g.rTip;
+  const double rIn = internal ? g.rTip : g.rRoot;
+  const bool bridge = g.rb > rIn;
+  const double invPitch = involuteAngle(g.alphaPitch);
+  BRepBuilderAPI_MakeWire wire;
+  for (int i = 0; i < teeth; ++i) {
+    const double center = i * g.toothPitch;
+    const double nextCenter = ((i + 1) % teeth) * g.toothPitch;
+    const double thetaLeft = center - g.halfToothAngle - invPitch;
+    const double thetaRight = center + g.halfToothAngle + invPitch;
+    const std::vector<gp_Pnt> left = flankPoints(g, thetaLeft, samples, 1.0);
+    std::vector<gp_Pnt> right = flankPoints(g, thetaRight, samples, -1.0);
+    std::reverse(right.begin(), right.end());
+    if (bridge) wire.Add(BRepBuilderAPI_MakeEdge(polarPoint(rIn, thetaLeft), left.front()).Edge());
+    if (!splineEdge(left, tolerance, wire)) return false;
+    if (!arcEdge(left.back(), polarPoint(rOut, center), right.front(), wire)) return false;
+    if (!splineEdge(right, tolerance, wire)) return false;
+    if (bridge) wire.Add(BRepBuilderAPI_MakeEdge(right.back(), polarPoint(rIn, thetaRight)).Edge());
+    const double rootEnd = nextCenter - g.halfToothAngle - invPitch;
+    double middle = 0.5 * (thetaRight + rootEnd);
+    if (rootEnd < thetaRight) middle += kKernelPi;
+    const gp_Pnt from = bridge ? polarPoint(rIn, thetaRight) : right.back();
+    const gp_Pnt to = bridge ? polarPoint(rIn, rootEnd) : polarPoint(g.rb, rootEnd);
+    if (!arcEdge(from, polarPoint(rIn, middle), to, wire)) return false;
+  }
+  if (!wire.IsDone()) return false;
+  out = wire.Wire();
+  return true;
+}
+
+TopoDS_Wire circleWire(double radius) {
+  const gp_Circ circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), radius);
+  return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge()).Wire();
+}
+
+// A spur or ring gear lying on XY, extruded up Z, then stood up and centred on Y
+// like every other primitive. False when the spec cannot make a gear.
+bool buildInvoluteGear(const nlohmann::json& spec, double height, TopoDS_Shape& out) {
+  const std::string form = spec.value("form", "spur");
+  if (form != "spur" && form != "ring") return false;
+  const int teeth = spec.value("teeth", 0);
+  const double module = spec.value("module", 0.0);
+  const double alpha = spec.value("pressureAngle", 20.0) * kKernelPi / 180.0;
+  const double backlashHalf = spec.value("backlash", 0.0) / 2.0;
+  TopoDS_Wire toothed;
+  if (!gearToothWire(teeth, module, alpha, backlashHalf, form == "ring", toothed)) return false;
+  TopoDS_Shape gear;
+  if (form == "ring") {
+    const double wall = module * 1.25 + spec.value("rim", 0.0);
+    // The ring is a disc with the toothed shape cut through it.
+    BRepBuilderAPI_MakeFace disc(circleWire(teeth * module / 2.0 + wall), true);
+    BRepBuilderAPI_MakeFace inner(toothed, true);
+    if (!disc.IsDone() || !inner.IsDone()) return false;
+    const TopoDS_Shape outer = BRepPrimAPI_MakePrism(disc.Face(), gp_Vec(0, 0, height)).Shape();
+    TopoDS_Shape cavity = BRepPrimAPI_MakePrism(inner.Face(), gp_Vec(0, 0, height + 1.0)).Shape();
+    gp_Trsf down;
+    down.SetTranslation(gp_Vec(0, 0, -0.5));
+    cavity = BRepBuilderAPI_Transform(cavity, down, true).Shape();
+    if (!cutShape(outer, cavity, gear)) return false;
+  } else {
+    BRepBuilderAPI_MakeFace face(toothed, true);
+    if (!face.IsDone()) return false;
+    gear = BRepPrimAPI_MakePrism(face.Face(), gp_Vec(0, 0, height)).Shape();
+    const double bore = spec.value("bore", 0.0);
+    if (bore > 0.0) {
+      const GearTeeth g = gearTeeth(teeth, module, alpha, backlashHalf, false);
+      if (bore >= 2.0 * g.rRoot) return false;
+      BRepBuilderAPI_MakeFace boreFace(circleWire(bore / 2.0), true);
+      if (!boreFace.IsDone()) return false;
+      TopoDS_Shape boreSolid = BRepPrimAPI_MakePrism(boreFace.Face(), gp_Vec(0, 0, height + 1.0)).Shape();
+      gp_Trsf down;
+      down.SetTranslation(gp_Vec(0, 0, -0.5));
+      boreSolid = BRepBuilderAPI_Transform(boreSolid, down, true).Shape();
+      TopoDS_Shape bored;
+      if (!cutShape(gear, boreSolid, bored)) return false;
+      gear = bored;
+    }
+  }
+  gp_Trsf stand;
+  stand.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), -kKernelPi / 2.0);
+  gp_Trsf lower;
+  lower.SetTranslation(gp_Vec(0, -height / 2.0, 0));
+  out = BRepBuilderAPI_Transform(gear, lower * stand, true).Shape();
+  return !out.IsNull() && kernelShapeIsValid(out);
 }
 
 bool filletAll(TopoDS_Shape& shape, double radius) {
@@ -172,8 +321,9 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
     const double rx = width / 2;
     const double ry = height / 2;
     const double rz = depth / 2;
-    out = BRepPrimAPI_MakeSphere(1.0).Shape();
-    out = kernelScale(out, rx, ry, rz);
+    // A round sphere stays a true sphere (as in the browser); only a stretched one is scaled.
+    if (nearly(rx, ry) && nearly(ry, rz)) out = BRepPrimAPI_MakeSphere(rx).Shape();
+    else out = kernelScale(BRepPrimAPI_MakeSphere(1.0).Shape(), rx, ry, rz);
     return true;
   }
 
@@ -200,8 +350,9 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
       poly.Add(gp_Pnt(-w, 0, d));
     } else {
       const double radius = std::min(width, depth) / 2;
+      // First corner on +Z, as the viewport and the browser draw it.
       for (int i = 0; i < sides; ++i) {
-        const double a = (2.0 * kKernelPi * i) / sides;
+        const double a = kKernelPi / 2.0 + (2.0 * kKernelPi * i) / sides;
         poly.Add(gp_Pnt(std::cos(a) * radius, 0, std::sin(a) * radius));
       }
     }
@@ -263,7 +414,9 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
     const double rx = width / 2;
     const double ry = height;
     const double rz = depth / 2;
-    TopoDS_Shape ball = kernelScale(BRepPrimAPI_MakeSphere(1.0).Shape(), rx, ry, rz);
+    TopoDS_Shape ball = nearly(rx, ry) && nearly(ry, rz)
+      ? BRepPrimAPI_MakeSphere(rx).Shape()
+      : kernelScale(BRepPrimAPI_MakeSphere(1.0).Shape(), rx, ry, rz);
     const TopoDS_Shape cutter = BRepPrimAPI_MakeBox(
       gp_Pnt(-rx * 2, -ry * 2, -rz * 2),
       rx * 4,
@@ -328,6 +481,7 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
   }
 
   if (kind == "gear") {
+    if (solid.contains("gearSpec") && solid["gearSpec"].is_object() && buildInvoluteGear(solid["gearSpec"], height, out)) return true;
     return buildLoopsSolid(solid, height, out);
   }
 
@@ -335,29 +489,11 @@ bool buildPrimitiveLocal(const nlohmann::json& solid, TopoDS_Shape& out) {
 }
 
 bool fuseOne(const TopoDS_Shape& a, const TopoDS_Shape& b, TopoDS_Shape& out) {
-  BRepAlgoAPI_Fuse fuse(a, b);
-  fuse.SetRunParallel(true);
-  fuse.SetFuzzyValue(0.04);
-  fuse.Build();
-  if (!fuse.IsDone()) return false;
-  out = fuse.Shape();
-  return !out.IsNull();
+  return kernelBoolean(KernelBooleanOp::Fuse, a, b, out);
 }
 
 bool cutOne(const TopoDS_Shape& solid, const TopoDS_Shape& hole, TopoDS_Shape& out) {
-  BRepAlgoAPI_Cut cut;
-  TopTools_ListOfShape args;
-  TopTools_ListOfShape tools;
-  args.Append(solid);
-  tools.Append(hole);
-  cut.SetArguments(args);
-  cut.SetTools(tools);
-  cut.SetRunParallel(true);
-  cut.SetFuzzyValue(0.04);
-  cut.Build();
-  if (!cut.IsDone()) return false;
-  out = cut.Shape();
-  return !out.IsNull();
+  return kernelBoolean(KernelBooleanOp::Cut, solid, hole, out);
 }
 
 } // namespace
@@ -385,7 +521,58 @@ bool kernelCutHoles(const TopoDS_Shape& solid, const std::vector<TopoDS_Shape>& 
   return !out.IsNull();
 }
 
+// A group is built the way the browser builds it: its children in the group's
+// own frame, combined by the group's operation, then the group's pose. So a hole
+// inside a group cuts only that group, and a tilted or mirrored group stays so.
+bool buildKernelGroupLocal(const nlohmann::json& group, TopoDS_Shape& out) {
+  std::vector<TopoDS_Shape> solids;
+  std::vector<TopoDS_Shape> holes;
+  for (const auto& child : group["children"]) {
+    TopoDS_Shape shape;
+    if (!buildKernelSolid(child, shape)) return false;
+    if (child.value("hole", false)) holes.push_back(shape);
+    else solids.push_back(shape);
+  }
+  const std::string op = group.value("op", "union");
+  TopoDS_Shape acc;
+  if (op == "intersect") {
+    std::vector<TopoDS_Shape> all = solids;
+    all.insert(all.end(), holes.begin(), holes.end());
+    if (all.size() < 2) return false;
+    acc = all[0];
+    for (size_t i = 1; i < all.size(); ++i) {
+      TopoDS_Shape shared;
+      if (!kernelBoolean(KernelBooleanOp::Common, acc, all[i], shared)) return false;
+      acc = shared;
+    }
+  } else {
+    if (!kernelFuseSolids(solids, acc)) return false;
+    if (op == "subtract" && !kernelCutHoles(acc, holes, acc)) return false;
+    if (solids.size() + (op == "subtract" ? holes.size() : 0) >= 3) acc = kernelUnify(acc);
+  }
+  out = acc;
+  return !out.IsNull();
+}
+
+bool kernelGroupParts(const nlohmann::json& group, std::vector<TopoDS_Shape>& parts) {
+  const gp_Trsf pose = kernelPoseTrsf(group, 0.0);
+  for (const auto& child : group["children"]) {
+    if (child.value("hole", false)) continue;
+    TopoDS_Shape shape;
+    if (!buildKernelSolid(child, shape)) return false;
+    parts.push_back(BRepBuilderAPI_Transform(shape, pose, true).Shape());
+  }
+  return !parts.empty();
+}
+
 bool buildKernelSolid(const nlohmann::json& solid, TopoDS_Shape& out) {
+  if (solid.value("kind", "") == "group" && solid.contains("children") && solid["children"].is_array()) {
+    TopoDS_Shape local;
+    if (!buildKernelGroupLocal(solid, local)) return false;
+    // A group's children sit on its floor, so its pose lifts by elevation only.
+    out = BRepBuilderAPI_Transform(local, kernelPoseTrsf(solid, 0.0), true).Shape();
+    return !out.IsNull();
+  }
   if (solid.contains("brepStep") && solid["brepStep"].is_string()) {
     TopoDS_Shape imported;
     if (!kernelReadStep(solid["brepStep"].get<std::string>(), imported)) return false;

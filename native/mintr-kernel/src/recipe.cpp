@@ -33,7 +33,6 @@ namespace {
 
 constexpr double kEps = 1e-6;
 /** Fuzzy tolerance for recipe booleans: generator features are ≥ 0.7 mm apart. */
-constexpr double kFuzzy = 0.02;
 
 struct Section {
   double y = 0;
@@ -293,31 +292,11 @@ bool buildPart(const nlohmann::json& solid, TopoDS_Shape& out, std::string& erro
 }
 
 bool fuseMany(const TopoDS_Shape& base, const TopTools_ListOfShape& tools, TopoDS_Shape& out) {
-  BRepAlgoAPI_Fuse fuse;
-  TopTools_ListOfShape args;
-  args.Append(base);
-  fuse.SetArguments(args);
-  fuse.SetTools(tools);
-  fuse.SetRunParallel(true);
-  fuse.SetFuzzyValue(kFuzzy);
-  fuse.Build();
-  if (!fuse.IsDone()) return false;
-  out = fuse.Shape();
-  return !out.IsNull();
+  return kernelBoolean(KernelBooleanOp::Fuse, base, tools, out);
 }
 
 bool cutMany(const TopoDS_Shape& base, const TopTools_ListOfShape& tools, TopoDS_Shape& out) {
-  BRepAlgoAPI_Cut cut;
-  TopTools_ListOfShape args;
-  args.Append(base);
-  cut.SetArguments(args);
-  cut.SetTools(tools);
-  cut.SetRunParallel(true);
-  cut.SetFuzzyValue(kFuzzy);
-  cut.Build();
-  if (!cut.IsDone()) return false;
-  out = cut.Shape();
-  return !out.IsNull();
+  return kernelBoolean(KernelBooleanOp::Cut, base, tools, out);
 }
 
 } // namespace
@@ -395,7 +374,7 @@ nlohmann::json handleBuildRecipe(const nlohmann::json& job) {
     return kernelFail("recipe body failed validation", true);
   }
   nlohmann::json positions, normals, indices;
-  if (!kernelTessellateIndexed(shape, positions, normals, indices, 0.08)) {
+  if (!kernelTessellateIndexed(shape, positions, normals, indices, 0.08, 0.32, sharedCorners())) {
     return kernelFail("native tessellation failed", true);
   }
   return {

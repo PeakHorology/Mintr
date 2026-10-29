@@ -18,6 +18,7 @@ int main() {
       const auto job = nlohmann::json::parse(payload);
       reply = handleKernelJob(job);
       if (job.contains("id")) reply["id"] = job["id"];
+      if (job.value("packMesh", false)) packMeshArrays(reply);
     } catch (...) {
       reply = { { "ok", false }, { "fallback", true }, { "message", "invalid kernel frame" } };
     }
