@@ -16,6 +16,11 @@ function slimGuideShape(shape: WorkplaneShape): WorkplaneShape {
     cadDisplayEdges: undefined,
     cadDisplayEdgesVersion: undefined,
     sketchDoc: undefined,
+    // Undo snapshots of the part before each fillet or thread. Guides read the steps
+    // (`edgeTreatments`, `features`), never these.
+    edgeTreatmentHistory: undefined,
+    threadHistory: undefined,
+    featureBase: undefined,
   };
   if (shape.imagePlate) next.imagePlate = { ...shape.imagePlate, dataUrl: "" };
   if (shape.sketchProfile?.images?.length) next.sketchProfile = { ...shape.sketchProfile, images: undefined };

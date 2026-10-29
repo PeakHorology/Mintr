@@ -262,9 +262,13 @@ function threadSoup(size: JointSize, clearance: number, z0: number, length: numb
     clearance,
     chamfer: 0.2,
   });
+  // Swapping y and z mirrors the solid, so each triangle is listed backwards to keep it facing out.
   const soup: number[] = [];
-  for (let index = 0; index < mesh.positions.length; index += 3) {
-    soup.push(mesh.positions[index], mesh.positions[index + 2], mesh.positions[index + 1] + z0);
+  const p = mesh.positions;
+  for (let index = 0; index < p.length; index += 9) {
+    for (const corner of [0, 6, 3]) {
+      soup.push(p[index + corner], p[index + corner + 2], p[index + corner + 1] + z0);
+    }
   }
   return soup;
 }

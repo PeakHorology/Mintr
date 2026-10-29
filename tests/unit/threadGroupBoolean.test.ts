@@ -3,7 +3,8 @@ import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ManifoldToplevel } from "manifold-3d";
 import { booleanMeshShape, shapeToManifoldSolid } from "@/lib/editorBoolean";
-import { MAX_THREAD_SIDES } from "@/lib/metricThreadSolid";
+import { MAX_THREAD_SIDES, buildMetricThreadedCylinder, type ThreadMeshOptions } from "@/lib/metricThreadSolid";
+import { resolveThreadParams } from "@/lib/metricThreads";
 import { createThreadShape, solidThreadShape } from "@/lib/threadShape";
 import { withHoleMode } from "@/lib/workplaneShapes";
 import type { ManifoldSolid } from "@/components/SketchForgeEditor";
@@ -112,5 +113,95 @@ describe("thread group boolean", () => {
     expect(upgraded.hole).toBe(true);
     expect(upgraded.name).toBe("Kept name");
     expect(upgraded.id).toBe("thread-1");
+  });
+
+  it("builds every kind of thread as one closed solid facing outward", async () => {
+    const runtime = await loadManifold();
+    const cases: Array<[string, number, number, number, ThreadMeshOptions, number]> = [
+      ["rod M1", 1, 0.25, 4, { role: "rod", chamfer: 0.1 }, 0],
+      ["rod M3", 3, 0.5, 20, { role: "rod", chamfer: 0.3 }, 0],
+      ["rod M6 left", 6, 1, 20, { role: "rod", chamfer: 0.3 }, 0],
+      ["rod M10 long", 10, 1.5, 80, { role: "rod", chamfer: 0.5 }, 0],
+      ["screw cylinder", 3, 0.5, 10, { role: "screw", head: "cylinder", chamfer: 0.3 }, 0],
+      ["screw hex", 3, 0.5, 10, { role: "screw", head: "hex", chamfer: 0.3 }, 0],
+      ["screw countersunk", 3, 0.5, 10, { role: "screw", head: "countersunk", chamfer: 0.3 }, 0],
+      ["nut M3", 3, 0.5, 2.4, { role: "nut", clearance: 0.2, chamfer: 0.3 }, 1],
+      ["nut M6 plain", 6, 1, 4.8, { role: "nut", clearance: 0.2 }, 1],
+      ["tapped hole M3", 3, 0.5, 5, { role: "bore", part: "threads", clearance: 0.2, chamfer: 0.3 }, 0],
+      ["shaft", 6, 1, 20, { part: "shaft", chamfer: 0.3 }, 0],
+      ["trapezoid", 12, 3, 20, { role: "rod", profile: "trapezoid" }, 0],
+      ["whitworth", 12, 1.8, 20, { role: "rod", profile: "whitworth" }, 0],
+      ["round", 12, 2, 20, { role: "rod", profile: "round" }, 0],
+      ["low sides", 6, 1, 10, { role: "rod", sides: 8 }, 0],
+    ];
+    for (const [name, diameter, pitch, length, options, genus] of cases) {
+      const params = resolveThreadParams({
+        majorDiameter: diameter,
+        pitch,
+        length,
+        side: options.role === "nut" || options.role === "bore" ? "internal" : "external",
+        handedness: name.includes("left") ? "left" : "right",
+      });
+      const mesh = buildMetricThreadedCylinder(params, length, options);
+      let signed = 0;
+      const p = mesh.positions;
+      for (let i = 0; i < p.length; i += 9) {
+        signed += (p[i] * (p[i + 4] * p[i + 8] - p[i + 5] * p[i + 7])
+          - p[i + 1] * (p[i + 3] * p[i + 8] - p[i + 5] * p[i + 6])
+          + p[i + 2] * (p[i + 3] * p[i + 7] - p[i + 4] * p[i + 6])) / 6;
+      }
+      expect(signed, name).toBeGreaterThan(0);
+      const solid = new runtime.Mesh({ numProp: 3, vertProperties: p, triVerts: mesh.indices });
+      solid.merge();
+      const manifold = runtime.Manifold.ofMesh(solid);
+      expect(manifold.status(), name).toBe("NoError");
+      expect(manifold.genus(), name).toBe(genus);
+      const pieces = manifold.decompose();
+      expect(pieces.length, name).toBe(1);
+      pieces.forEach((piece) => piece.delete());
+      expect(manifold.volume() / signed, name).toBeCloseTo(1, 3);
+      manifold.delete();
+    }
+  });
+
+  it("cuts a tapped hole that is empty in the middle, and joins a rod that adds to the block", async () => {
+    const runtime = await loadManifold();
+    const created: ManifoldSolid[] = [];
+    const block = shapeToManifoldSolid(runtime, boxShape(), created)!;
+    const tapped = createThreadShape({
+      designation: "M6",
+      height: 20,
+      base: {
+        id: "tap",
+        name: "Tapped hole",
+        color: "#b8c2cc",
+        height: 20,
+        threadSpec: { designation: "M6", majorDiameter: 6, pitch: 1, role: "bore", style: "hole", part: "threads", clearance: 0.2 },
+      },
+    });
+    const cutter = shapeToManifoldSolid(runtime, tapped, created)!;
+    expect(cutter.status()).toBe("NoError");
+    const cut = block.subtract(cutter);
+    created.push(cut);
+    expect(cut.volume()).toBeLessThan(block.volume() - cutter.volume() * 0.99);
+    expect(cut.volume()).toBeGreaterThan(block.volume() - cutter.volume() * 1.01);
+    // Nothing is left inside the hole's root circle.
+    const core = runtime.Manifold.cylinder(18, 2.2, 2.2, 48).rotate([-90, 0, 0]).translate([0, 1, 0]);
+    created.push(core);
+    const left = cut.intersect(core);
+    created.push(left);
+    expect(left.volume()).toBeLessThan(0.01);
+    // And the hole still has material in its teeth for the screw to grip.
+    const teeth = runtime.Manifold.cylinder(18, 3, 3, 96).rotate([-90, 0, 0]).translate([0, 1, 0]);
+    created.push(teeth);
+    const grip = cut.intersect(teeth);
+    created.push(grip);
+    expect(grip.volume()).toBeGreaterThan(20);
+
+    const rod = shapeToManifoldSolid(runtime, createThreadShape({ designation: "M6", height: 20, point: { x: 0, z: 0, elevation: 25 } }), created)!;
+    const joined = block.add(rod);
+    created.push(joined);
+    expect(joined.volume()).toBeGreaterThan(block.volume() + 100);
+    created.forEach((solid) => solid.delete?.());
   });
 });

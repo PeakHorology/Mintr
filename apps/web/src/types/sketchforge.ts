@@ -248,6 +248,80 @@ export type SketchProfile = {
   faceReferenceLoops?: Array<Array<{ x: number; z: number }>>;
 };
 
+/** Where an edge is, by geometry, so it can be found again after the part changes. */
+export type EdgeFingerprint = {
+  mid: [number, number, number];
+  length: number;
+  angle: number;
+  /**
+   * Arc-length weighted centroid. `mid` is only the chord midpoint of the polyline's
+   * endpoints, which collapses to an arbitrary point on the curve for a closed edge:
+   * a cylinder rim fingerprints to wherever the tessellation seam happens to fall. The
+   * centroid is independent of both the seam and the tessellation density.
+   * Optional: recipes saved before this field existed carry `mid` only.
+   */
+  centroid?: [number, number, number];
+  /** Unit chord direction, sign-canonicalized so vertex order cannot flip it. */
+  direction?: [number, number, number];
+};
+
+/**
+ * Where the solid a step was applied to sat: the bottom centre of its bounding box and its
+ * size, in millimetres. A step's edges and faces are measured from `origin`, so they can be
+ * found again after the part moves, and scaled by `size` after it is resized.
+ */
+export type PartFeatureFrame = {
+  origin: [number, number, number];
+  size: [number, number, number];
+};
+
+/**
+ * One step applied to a part, in the order it was applied. See docs/FEATURE-HISTORY.md.
+ * `suppressed` steps are skipped when the part is rebuilt; `failed` holds why a step no
+ * longer fits the part.
+ */
+export type PartFeature =
+  | {
+      id: string;
+      kind: "fillet" | "chamfer";
+      amount: number;
+      chamferAngle?: number;
+      filletProfile?: "round" | "cove";
+      edges:
+        | { rule: "allSharp"; sharpAngle: number }
+        | { rule: "picked"; sharpAngle: number; fingerprints: EdgeFingerprint[] };
+      frame?: PartFeatureFrame;
+      quality?: "draft" | "standard" | "fine" | "ultra";
+      suppressed?: boolean;
+      failed?: string;
+      /** Where the part's bounding box bottom centre was right after the step, in world space. */
+      appliedAt?: [number, number, number];
+    }
+  | {
+      id: string;
+      kind: "hollow";
+      thickness: number;
+      openings: Array<"top" | "bottom" | "front" | "back" | "left" | "right">;
+      corners: "sharp" | "round";
+      cornerRadius: number;
+      frame?: PartFeatureFrame;
+      suppressed?: boolean;
+      failed?: string;
+      /** Where the part's bounding box bottom centre was right after the step, in world space. */
+      appliedAt?: [number, number, number];
+    }
+  | {
+      id: string;
+      kind: "pushPull";
+      face: { origin: [number, number, number]; normal: [number, number, number]; area: number };
+      distance: number;
+      frame?: PartFeatureFrame;
+      suppressed?: boolean;
+      failed?: string;
+      /** Where the part's bounding box bottom centre was right after the step, in world space. */
+      appliedAt?: [number, number, number];
+    };
+
 export type EdgeTreatmentFeature = {
   kind: "fillet" | "chamfer";
   amount: number;
@@ -257,12 +331,8 @@ export type EdgeTreatmentFeature = {
   filletProfile?: "round" | "cove";
   /** Durable recipe so remesh can re-apply after edge IDs change. */
   edgeIds?: number[];
-  /** Geometric fingerprints (mid/length/angle) for rematch after remesh. */
-  edgeFingerprints?: Array<{
-    mid: [number, number, number];
-    length: number;
-    angle: number;
-  }>;
+  /** Geometric fingerprints for rematch after remesh, in world space at the time of the fillet. */
+  edgeFingerprints?: EdgeFingerprint[];
   allEdges?: boolean;
   sharpAngle?: number;
   quality?: "draft" | "standard" | "fine" | "ultra";
@@ -448,6 +518,13 @@ export type WorkplaneShape = {
     section?: { profile: SketchProfile; doc?: SketchDoc; standing?: boolean };
   };
   edgeTreatments?: EdgeTreatmentFeature[];
+  /** The steps applied to this part, oldest first, written alongside `edgeTreatments`. */
+  features?: PartFeature[];
+  /**
+   * The part as it was before its first step, so the steps can be replayed on it. A group
+   * rebuilds this from its pieces instead, so a group never stores one.
+   */
+  featureBase?: WorkplaneShape;
   /** A finish on the part: the body stays exact, and the textured triangles are rebuilt from it. */
   surfaceTexture?: SurfaceTexture;
   /** In a laser design, what the laser does along this part: cut through (the default), score a line, or engrave its area. */

@@ -35,6 +35,65 @@ jobs:
       - name: E2E tests (STEP round-trip)
         run: npm run test:e2e
 
+  # The desktop engine only builds on Windows, so the tests that hold it to the browser engine
+  # skip on Linux. Here they run for real.
+  desktop-engine:
+    name: Desktop engine matches the browser engine
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+      # Same vcpkg as the release builds, so the same OCCT 8.0.1.
+      VCPKG_COMMIT: 788afd74ebab48bcb0993e68ee7c98d86cd59cae
+      MINTR_REQUIRE_NATIVE_KERNEL: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Restore OCCT build
+        id: occt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-cache
+          key: occt-x64-windows-${{ env.VCPKG_COMMIT }}
+
+      - name: Build OCCT with vcpkg
+        shell: pwsh
+        run: |
+          git clone --quiet https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout --quiet $env:VCPKG_COMMIT
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_ROOT/vcpkg.exe" install "opencascade[core]:x64-windows"
+
+      # Saved even when a later step fails: building OCCT from scratch takes an hour.
+      - name: Save OCCT build
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-cache
+          key: occt-x64-windows-${{ env.VCPKG_COMMIT }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Copy OCCT wasm assets
+        run: npm run copy:occt
+
+      - name: Build the desktop engine
+        run: npm run build:kernel
+
+      - name: Unit tests, desktop engine included
+        run: npm test
+
   static-export:
     name: Static export worker assets
     runs-on: ubuntu-latest

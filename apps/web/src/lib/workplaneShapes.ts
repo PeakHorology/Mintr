@@ -511,6 +511,7 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
       before: canonicalizeShape(entry.before),
     }));
   }
+  if (shape.featureBase) next.featureBase = canonicalizeShape(shape.featureBase);
   return next;
 }
 
@@ -552,6 +553,8 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.imagePlate === b.imagePlate &&
     a.sketchProfile === b.sketchProfile &&
     a.edgeTreatments === b.edgeTreatments &&
+    a.features === b.features &&
+    a.featureBase === b.featureBase &&
     a.surfaceTexture === b.surfaceTexture &&
     a.laserJob === b.laserJob &&
     a.edgeTreatmentHistory === b.edgeTreatmentHistory &&

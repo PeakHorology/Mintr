@@ -10,6 +10,8 @@ export type ReleaseNotes = {
 
 /** Feature lines drawn stronger in Settings → Updates and the update card. */
 export const FEATURED_RELEASE_NOTES: readonly string[] = [
+  "Parts remember their steps. Change a push or pull, fillet, chamfer or hollow listed under Features and Mintr rebuilds the part with every later step kept.",
+  "Threads are rebuilt as clean solids with the standard 60° tooth shape, so tapped holes cut properly, rods and nuts join properly, and exported threads print as they look.",
   "A round part keeps its side count after a Group, a fillet, or a split. Smooth, Standard, Draft, and a number you type all carry through.",
   "Curves, holes, and grooves light from the real face. A sharp corner stays a sharp corner.",
   "Face takes Hollow's place on the toolbar. Click a flat face to add material or cut a pocket.",
@@ -30,6 +32,22 @@ export function noteIsFeatured(note: string): boolean {
 export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
+  {
+    version: "1.2.0",
+    items: [
+      "Parts remember their steps. Change a push or pull, fillet, chamfer or hollow listed under Features and Mintr rebuilds the part with every later step kept.",
+      "Resizing a part with fillets or pulls rebuilds it at the new size, so rounded edges and pulled faces keep the sizes you gave them instead of stretching.",
+      "Reopening Fillet or Chamfer on a part picks up the last one you added, so you can change its size or edges.",
+      "The browser version now uses the same geometry engine as the desktop app, so a design comes out the same in both.",
+      "Guides can teach Push Pull: the guide shows which face to click and the distance to type.",
+      "Threads are rebuilt as clean solids with the standard 60° tooth shape, so tapped holes cut properly, rods and nuts join properly, and exported threads print as they look.",
+      "Make matching tapped hole adds the tapped hole for a screw, rod or nut in the same size, ready to move into your part and Group.",
+      "Thread clearance follows your printer: 0.2 mm for filament and 0.1 mm for resin. Fine threads show a note that a brass threaded insert holds better.",
+      "Threads now come in M1, M1.2 and M1.6, and up to M24, M30 and M36.",
+      "Screws stay solid; a tapped hole is how a thread is cut into a part. A thread already grouped into a part keeps its old shape until it is grouped again.",
+      "Grouping parts with threads is much faster and no longer freezes the window.",
+    ],
+  },
   {
     version: "1.1.9.4",
     items: [

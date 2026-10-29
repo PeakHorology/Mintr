@@ -1,3 +1,4 @@
+import { stepsFromSnapshots } from "@/lib/partFeatures";
 import { lookup3mfPackage, remember3mfPackage } from "@/lib/threeMfSource";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 import { bakedImportedBrepStep } from "@/lib/importedBrepSource";
@@ -48,6 +49,7 @@ export function jsonSafeShape(shape: WorkplaneShape): WorkplaneShape {
       ...entry,
       before: jsonSafeShape(entry.before),
     })),
+    featureBase: shape.featureBase ? jsonSafeShape(shape.featureBase) : undefined,
   });
 }
 
@@ -85,7 +87,8 @@ export function hydrateClipboardShape(shape: WorkplaneShape): WorkplaneShape {
   const source3mf = shape.source3mf
     ? remember3mfPackage(shape.source3mf)
     : lookup3mfPackage(shape.source3mfKey);
-  return canonicalizeShape({
+  // Parts saved before steps were recorded are converted here, once, on every load path.
+  return stepsFromSnapshots(canonicalizeShape({
     ...shape,
     ...(source3mf ? { source3mf, source3mfKey: source3mf.key } : {}),
     importedMesh: shape.importedMesh ? hydrateMesh(shape.importedMesh) : undefined,
@@ -98,5 +101,6 @@ export function hydrateClipboardShape(shape: WorkplaneShape): WorkplaneShape {
       ...entry,
       before: hydrateClipboardShape(entry.before),
     })),
-  });
+    featureBase: shape.featureBase ? hydrateClipboardShape(shape.featureBase) : undefined,
+  }));
 }

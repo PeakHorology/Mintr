@@ -1,3 +1,4 @@
+import { browserMintrKernel } from "@/lib/browserMintrKernel";
 import { inferCsgOp } from "@/lib/csgTree";
 import { gearPlanLoops, normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
 import { gridfinityRecipeForShape, isGridfinityKind, type GridfinityRecipe } from "@/lib/gridfinity";
@@ -153,6 +154,17 @@ export function nativeKernelWindow(): (Window & { peakcadKernel?: PeakcadKernelA
 
 export function hasNativeOcctKernel() {
   return Boolean(nativeKernelWindow()?.peakcadKernel?.request);
+}
+
+/**
+ * The Mintr engine: the desktop app's MintrKernel.exe, or in the browser the same C++
+ * built to WebAssembly. Undefined once the browser build has failed to load, so callers
+ * go straight to the occt-wasm code paths.
+ */
+export function mintrKernel(): PeakcadKernelApi | undefined {
+  const desktop = nativeKernelWindow()?.peakcadKernel;
+  if (desktop?.request) return desktop;
+  return browserMintrKernel();
 }
 
 /** True when the desktop sidecar exe is on disk. Browser and missing-exe Electron still use WASM. */

@@ -1,6 +1,6 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
 import { booleanAngularDeflection } from "@/lib/displayTessellation";
-import { plainNativeReply, toNativeKernelSolids, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
+import { mintrKernel, plainNativeReply, toNativeKernelSolids, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
 import type { OcctBooleanMeshResult, StepExportResult } from "@/lib/stepExport";
 import {
   applyNativeSketchSweepMesh,
@@ -19,7 +19,7 @@ type PeakcadKernelApi = {
 
 function desktopKernel(): PeakcadKernelApi | undefined {
   if (typeof window === "undefined") return undefined;
-  return (window as Window & { peakcadKernel?: PeakcadKernelApi }).peakcadKernel;
+  return mintrKernel();
 }
 
 export type OcctKernelBooleanRequest = {

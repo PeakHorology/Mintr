@@ -5,6 +5,7 @@ import { cloneAsGroupChild } from "@/lib/editorGroup";
 import { evaluateCsgOpOnOperands, restoreGroupedChildren } from "@/lib/editorBoolean";
 import { containsHelicalThreadSolid, isHelicalThreadSolid, solidThreadShape } from "@/lib/threadShape";
 import { createLocalId } from "@/lib/localIds";
+import { edgeTreatmentPartFeature, stepsReplaceSnapshots, withPartFeature } from "@/lib/partFeatures";
 import { canonicalizeShape, cleanNearZero, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge } from "@/lib/cadModifierTypes";
 import type { WorkplaneShape } from "@/types/sketchforge";
@@ -151,9 +152,14 @@ export function shapeWithEdgeTreatmentRecord(
   feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number],
   preserveEdgeSize: boolean,
   createdAt: number,
+  solidEdges: ReadonlyArray<{ points: ArrayLike<number> }> = [],
+  keepSnapshot = false,
 ) {
+  // The undo snapshot and the recorded step share an id, so either can name the other.
+  const id = createLocalId("edge-history");
+  const recorded = withPartFeature(shape, before, edgeTreatmentPartFeature(id, feature, solidEdges));
   return canonicalizeShape({
-    ...shape,
+    ...recorded,
     edgeResizeMode: preserveEdgeSize ? "preserve" : "scale",
     edgeTreatments: [
       ...(before.edgeTreatments ?? []),
@@ -161,10 +167,11 @@ export function shapeWithEdgeTreatmentRecord(
         ...feature,
       },
     ],
-    edgeTreatmentHistory: [
+    // A part that rebuilds from its steps does not keep a copy of itself before each one.
+    edgeTreatmentHistory: !keepSnapshot && stepsReplaceSnapshots(recorded) ? undefined : [
       ...compactEdgeTreatmentHistory(before.edgeTreatmentHistory),
       {
-        id: createLocalId("edge-history"),
+        id,
         createdAt,
         feature,
         before: cloneWorkplaneShapeSnapshot(before),
@@ -338,7 +345,9 @@ export function groupedShapeWithComponentEdgeTreatment(
       groupedBaseDepth: source.groupedBaseDepth,
       groupedBaseHeight: source.groupedBaseHeight,
     });
-    updatedSources[sourceIndex] = shapeWithEdgeTreatmentRecord(retargeted, source, ownerFeature, session.preserveEdgeSize, createdAt);
+    const ownerEdges = session.edges.filter((edge) => edge.owner === owner);
+    // Pieces inside a group are not listed with their own steps, so they keep their copies.
+    updatedSources[sourceIndex] = shapeWithEdgeTreatmentRecord(retargeted, source, ownerFeature, session.preserveEdgeSize, createdAt, ownerEdges, true);
     changed = true;
   });
 
@@ -351,6 +360,8 @@ export function groupedShapeWithComponentEdgeTreatment(
     ...preview,
     edgeResizeMode: session.preserveEdgeSize ? "preserve" : "scale",
     edgeTreatments: base.edgeTreatments,
+    features: base.features,
+    featureBase: base.featureBase,
     edgeTreatmentHistory: base.edgeTreatmentHistory?.length ? compactEdgeTreatmentHistory(base.edgeTreatmentHistory) : undefined,
     groupedBaseWidth: shapeWidth(preview),
     groupedBaseDepth: shapeDepth(preview),

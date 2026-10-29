@@ -240,19 +240,18 @@ export function EdgeModifierPanel({
         <button type="button" disabled={!prepared || busy} onClick={onClear}>Clear</button>
       </div>
 
-      {appliedFeatureCount > 0 ? (
+      {/* Parts that list their steps in the Features panel change them there instead. */}
+      {appliedFeatureCount > 0 && reversibleFeatureCount > 0 ? (
         <div className="edge-modifier-history-actions">
           <button
             className="edge-modifier-history-toggle"
             type="button"
             aria-expanded={historyOpen}
-            disabled={reversibleFeatureCount === 0}
             onClick={() => setHistoryOpen((open) => !open)}
           >
             {historyOpen ? <Minus size={15} /> : <Plus size={15} />}
             <span>Edge feature history</span>
           </button>
-          {reversibleFeatureCount === 0 ? <span>Older edge features do not have stored undo history.</span> : null}
           {historyOpen && historyOptions.length > 0 ? (
             <div className="edge-modifier-history-list">
               {historyOptions.map((option) => (

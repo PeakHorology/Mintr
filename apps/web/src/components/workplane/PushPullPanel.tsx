@@ -64,7 +64,7 @@ export function PushPullPanel({
       {error ? <div className="edge-modifier-error" role="alert">{error}</div> : null}
       <div className="edge-modifier-footer">
         <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
-        <button type="button" className="primary" disabled={!prepared || busy || Math.abs(distance) < 0.05 || Boolean(error)} onClick={onApply}>
+        <button type="button" className="primary" data-lesson-target="push-pull-apply" disabled={!prepared || busy || Math.abs(distance) < 0.05 || Boolean(error)} onClick={onApply}>
           {busy ? <LoaderCircle className="edge-modifier-spinner" size={17} /> : <Check size={17} />}
           Apply
         </button>

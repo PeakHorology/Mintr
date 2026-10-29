@@ -7,7 +7,7 @@ import type {
   CadModifierWorkerResponse,
 } from "@/lib/cadModifierTypes";
 import { cadFailureCopy, type CadFailureKind } from "@/lib/cadFailureCopy";
-import { hasNativeOcctKernel, nativeKernelWindow, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
+import { mintrKernel, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
 
 type CadModifierWorkerPayload = CadModifierWorkerRequest extends infer Request
   ? Request extends unknown ? Omit<Request, "requestId"> : never
@@ -22,7 +22,7 @@ export function nativeCadModifierPartsAreExact(parts: CadModifierMeshPart[]) {
 }
 
 export function nativeCadModifierCanHandle(request: CadModifierWorkerPayload, nativeSessionLive: boolean) {
-  if (!hasNativeOcctKernel()) return false;
+  if (!mintrKernel()) return false;
   if (request.type === "prepare") return nativeCadModifierPartsAreExact(request.parts);
   if (request.type === "warmup") return false;
   if (request.type === "hollow" || request.type === "previewThread" || request.type === "pushPull") return nativeSessionLive;
@@ -170,7 +170,7 @@ export async function requestNativeCadModifier(
   requestId: number,
   timeoutMs: number,
 ): Promise<NativeKernelReply | null> {
-  const api = nativeKernelWindow()?.peakcadKernel;
+  const api = mintrKernel();
   if (!api?.request) return null;
   // Mesh numbers may arrive as typed arrays; mapNativeCadModifierReply copies them
   // straight into the preview buffers.

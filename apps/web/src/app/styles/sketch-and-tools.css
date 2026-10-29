@@ -111,6 +111,18 @@
   opacity: 0.5;
 }
 
+.csg-feature-note {
+  color: var(--peak-text-muted);
+  font-weight: 600;
+}
+
+.csg-feature-input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: var(--text-md);
+}
+
 .csg-feature-select {
   display: flex;
   gap: 8px;

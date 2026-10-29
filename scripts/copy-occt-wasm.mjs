@@ -37,3 +37,16 @@ await cp(join(manifoldSrc, "manifold.js"), join(publicDir, "manifold.js"));
 await cp(join(manifoldSrc, "manifold.wasm"), join(publicDir, "manifold.wasm"));
 console.log("[copy-occt-wasm] staged manifold.js and manifold.wasm into apps/web/public/");
 
+
+// The Mintr engine built to WebAssembly (npm run build:kernel:wasm). Optional: without
+// it the browser keeps using the occt-wasm code paths.
+const mintrSrc = join(root, "native", "mintr-kernel", "dist-wasm");
+const mintrDest = join(publicDir, "mintr-kernel");
+if (existsSync(join(mintrSrc, "MintrKernel.mjs")) && existsSync(join(mintrSrc, "MintrKernel.wasm"))) {
+  await mkdir(mintrDest, { recursive: true });
+  await cp(join(mintrSrc, "MintrKernel.mjs"), join(mintrDest, "MintrKernel.mjs"));
+  await cp(join(mintrSrc, "MintrKernel.wasm"), join(mintrDest, "MintrKernel.wasm"));
+  console.log("[copy-occt-wasm] staged the Mintr engine into apps/web/public/mintr-kernel/");
+} else {
+  console.log("[copy-occt-wasm] no Mintr engine build in native/mintr-kernel/dist-wasm; the browser uses occt-wasm only");
+}

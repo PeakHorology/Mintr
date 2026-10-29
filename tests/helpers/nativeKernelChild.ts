@@ -12,6 +12,11 @@ export const nativeKernelExe =
   kernelCandidates.find((file) => existsSync(file)) ?? kernelCandidates[1];
 export const hasNativeKernelExe = existsSync(nativeKernelExe);
 
+// On the Windows build machine the engine comparison must really run, not skip quietly.
+if (process.env.MINTR_REQUIRE_NATIVE_KERNEL && !hasNativeKernelExe) {
+  throw new Error(`MINTR_REQUIRE_NATIVE_KERNEL is set but ${nativeKernelExe} was not built`);
+}
+
 export type NativeKernelClient = {
   request: (job: Record<string, unknown>, timeoutMs?: number) => Promise<Record<string, unknown>>;
   close: () => void;

@@ -771,7 +771,18 @@ export function dropPatchForShape(shape: WorkplaneShape, targetY: number): Parti
   return { elevation: Math.abs(nextElevation) < 0.0005 ? 0 : Number(nextElevation.toFixed(4)) };
 }
 
+/** Bounds per shape object. Booleans ask for a cutter's bounds once per triangle of the part. */
+const meshAabbCache = new WeakMap<WorkplaneShape, Cuboid>();
+
 export function meshAabb(shape: WorkplaneShape): Cuboid {
+  const cached = meshAabbCache.get(shape);
+  if (cached) return { ...cached };
+  const bounds = uncachedMeshAabb(shape);
+  meshAabbCache.set(shape, bounds);
+  return { ...bounds };
+}
+
+function uncachedMeshAabb(shape: WorkplaneShape): Cuboid {
   const mesh = meshForShape(shape);
   if (mesh.vertices.length === 0) {
     return shapeAabb(shape);

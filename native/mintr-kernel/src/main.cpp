@@ -8,7 +8,11 @@
 
 int main() {
   Message::DefaultMessenger()->ChangePrinters().Clear();
+#ifdef _WIN32
   static std::ofstream occtLog("NUL");
+#else
+  static std::ofstream occtLog("/dev/null");
+#endif
   std::cout.rdbuf(occtLog.rdbuf());
   setStdioBinary();
   std::string payload;

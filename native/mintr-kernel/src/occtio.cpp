@@ -8,6 +8,7 @@
 #include <Standard_Failure.hxx>
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <BRepAdaptor_Curve.hxx>
@@ -60,6 +61,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <sstream>
 
@@ -352,6 +354,74 @@ bool facetPointsIntoSolid(
   }
 }
 
+// Faces that join smoothly share one patch, so a fillet and the faces it blends
+// into are oriented by one inside/outside test instead of one per face. Same
+// rule as orientSolidNormals in the browser: neighbouring facets within about
+// 73 degrees, corners matched to a thousandth of a millimetre.
+std::vector<int> smoothFacePatches(const TopoDS_Shape& meshed) {
+  struct CornerKey {
+    long long x, y, z;
+    bool operator<(const CornerKey& other) const {
+      if (x != other.x) return x < other.x;
+      if (y != other.y) return y < other.y;
+      return z < other.z;
+    }
+  };
+  struct Owner {
+    int face;
+    gp_Vec facet;
+  };
+  std::vector<int> parent;
+  const auto find = [&parent](int index) {
+    int root = index;
+    while (parent[static_cast<size_t>(root)] != root) root = parent[static_cast<size_t>(root)];
+    while (parent[static_cast<size_t>(index)] != root) {
+      const int next = parent[static_cast<size_t>(index)];
+      parent[static_cast<size_t>(index)] = root;
+      index = next;
+    }
+    return root;
+  };
+  const auto key = [](const gp_Pnt& point) {
+    return CornerKey{ std::llround(point.X() * 1000.0), std::llround(point.Y() * 1000.0), std::llround(point.Z() * 1000.0) };
+  };
+  std::map<std::pair<CornerKey, CornerKey>, Owner> edgeOwner;
+  int faceIndex = 0;
+  for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next(), ++faceIndex) {
+    parent.push_back(faceIndex);
+    const TopoDS_Face face = TopoDS::Face(exp.Current());
+    TopLoc_Location loc;
+    Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+    if (tri.IsNull()) continue;
+    const gp_Trsf trsf = loc.Transformation();
+    const bool reverse = face.Orientation() == TopAbs_REVERSED;
+    for (int i = 1; i <= tri->NbTriangles(); ++i) {
+      int n1, n2, n3;
+      tri->Triangle(i).Get(n1, n2, n3);
+      if (reverse) std::swap(n2, n3);
+      const gp_Pnt points[3] = { tri->Node(n1).Transformed(trsf), tri->Node(n2).Transformed(trsf), tri->Node(n3).Transformed(trsf) };
+      gp_Vec facet = gp_Vec(points[0], points[1]).Crossed(gp_Vec(points[0], points[2]));
+      if (facet.Magnitude() < 1e-12) continue;
+      facet.Normalize();
+      for (int slot = 0; slot < 3; ++slot) {
+        const CornerKey a = key(points[slot]);
+        const CornerKey b = key(points[(slot + 1) % 3]);
+        const auto edge = a < b ? std::make_pair(a, b) : std::make_pair(b, a);
+        const auto found = edgeOwner.find(edge);
+        if (found == edgeOwner.end()) {
+          edgeOwner.emplace(edge, Owner{ faceIndex, facet });
+          continue;
+        }
+        if (found->second.face != faceIndex && facet.Dot(found->second.facet) > 0.3) {
+          parent[static_cast<size_t>(find(faceIndex))] = find(found->second.face);
+        }
+      }
+    }
+  }
+  for (int index = 0; index < faceIndex; ++index) parent[static_cast<size_t>(index)] = find(index);
+  return parent;
+}
+
 bool faceNormalAt(const TopoDS_Face& face, const gp_Pnt& point, gp_Dir& normal) {
   try {
     BRepAdaptor_Surface adaptor(face, true);
@@ -413,13 +483,15 @@ bool kernelTessellateIndexed(
   std::vector<char> nodeReady;
   // Where each triangulation node already went in the output, for shared corners.
   std::vector<int> emitted;
+  // Built on first use: most patches are decided by the first test.
   std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
-  try {
-    classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
-  } catch (...) {
-    classifier.reset();
-  }
+  bool classifierTried = false;
+  const std::vector<int> patchOf = smoothFacePatches(meshed);
+  // Per patch: -1 not tested yet, otherwise whether its facets point into the solid.
+  std::vector<int> patchFlip(patchOf.size(), -1);
+  int faceIndex = -1;
   for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next()) {
+    ++faceIndex;
     const TopoDS_Face face = TopoDS::Face(exp.Current());
     TopLoc_Location loc;
     Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
@@ -444,7 +516,19 @@ bool kernelTessellateIndexed(
       if (facet.Magnitude() < 1e-12) continue;
       facet.Normalize();
       if (!flipDecided) {
-        flipFace = classifier && facetPointsIntoSolid(*classifier, a, b, c, facet);
+        int& patch = patchFlip[static_cast<size_t>(patchOf[static_cast<size_t>(faceIndex)])];
+        if (patch < 0) {
+          if (!classifierTried) {
+            classifierTried = true;
+            try {
+              classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
+            } catch (...) {
+              classifier.reset();
+            }
+          }
+          patch = classifier && facetPointsIntoSolid(*classifier, a, b, c, facet) ? 1 : 0;
+        }
+        flipFace = patch == 1;
         flipDecided = true;
       }
       const int nodes[3] = { n1, n2, n3 };

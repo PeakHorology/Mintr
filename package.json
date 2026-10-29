@@ -1,6 +1,6 @@
 {
   "name": "peakcad",
-  "version": "1.1.9.4",
+  "version": "1.2.0",
   "private": true,
   "license": "GPL-3.0-or-later",
   "author": "PeakHorologyLLC",
@@ -31,7 +31,8 @@
     "prepackage:desktop": "npm run export && node scripts/prepare-desktop-icon.mjs",
     "package:desktop": "node scripts/package-desktop.mjs",
     "prepare:desktop-icon": "node scripts/prepare-desktop-icon.mjs",
-    "build:kernel": "powershell -ExecutionPolicy Bypass -File scripts/build-mintr-kernel.ps1"
+    "build:kernel": "powershell -ExecutionPolicy Bypass -File scripts/build-mintr-kernel.ps1",
+    "build:kernel:wasm": "powershell -ExecutionPolicy Bypass -File scripts/build-mintr-kernel-wasm.ps1"
   },
   "dependencies": {
     "@formspree/react": "^3.0.0",
@@ -76,6 +77,7 @@
     "files": [
       "electron/**/*",
       "apps/web/.next-export/**/*",
+      "!apps/web/.next-export/mintr-kernel/**",
       "package.json"
     ],
     "asar": true,

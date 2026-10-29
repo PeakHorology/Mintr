@@ -110,7 +110,7 @@ import {
   pickGroupToUngroup,
   withCsgMeta,
 } from "@/lib/csgTree";
-import type { CsgOp } from "@/types/sketchforge";
+import type { CsgOp, PartFeature } from "@/types/sketchforge";
 import { bakeCadMetadataForShapeTransform, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForAnalyticCone, cadModifierPrimitiveForAnalyticCylinder, cadModifierPrimitiveForAnalyticPolygon, cadModifierPrimitiveForBakedShape, cadModifierPrimitiveForExactKind, exactModifierBrep } from "@/lib/cadBakeMetadata";
 import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
 import {
@@ -247,6 +247,8 @@ import {
   type StepPreflightRow,
 } from "@/lib/stepQuality";
 import { fingerprintsForEdgeIds, matchRecipeEdgeIds } from "@/lib/edgeTreatmentRematch";
+import { bakedPartSize, edgeTreatmentsForSteps, failedEdgeTreatmentFeatures, hasPartSteps, hollowPartFeature, rebuildsOnResize, resizedFeatureBase, stepsReplaceSnapshots, partFeatureLabel, pushPullPartFeature, stepsCanReplay, withoutEdgeTreatmentFeatures, withPartFeature, withPartStepSize } from "@/lib/partFeatures";
+import { placeReplayedShape, replayPartFeatures, type ReplayEngine } from "@/lib/featureReplay";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
 import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
 import { buildFaceBody, faceDraftsToBuild, joinedFaceDrafts, rememberFaceDraft, type FaceDraft } from "@/lib/faceBody";
@@ -468,7 +470,7 @@ import {
 } from "@/lib/nativeCadModifier";
 import { nativeOcctKernelIsReady, warmNativeOcctKernel } from "@/lib/nativeKernelProtocol";
 import { nearestMetricThreadForDiameter, type MetricThreadDesignation } from "@/lib/metricThreads";
-import { canSeparateThreadScrew, containsHelicalThreadSolid, createThreadShape, DEFAULT_THREAD_DESIGNATION, separateThreadScrewParts } from "@/lib/threadShape";
+import { canSeparateThreadScrew, containsHelicalThreadSolid, createThreadShape, DEFAULT_THREAD_DESIGNATION, matchingThreadPart, separateThreadScrewParts, threadCanBeHole } from "@/lib/threadShape";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchImage, SketchPlane, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 export { importedShapeFromStl, importedShapeFromSvg, importedShapeFrom3mf };
@@ -665,6 +667,8 @@ export type EdgeFeatureRevertOption = {
   createdAt: number;
   removesNewerCount: number;
 };
+const SCREW_STAYS_SOLID_NOTICE = "Screws stay solid. Use Make matching tapped hole to cut its thread into a part.";
+
 export type ManifoldSolid = ReturnType<ManifoldToplevel["Manifold"]["cube"]>;
 export type GroupBuildResult = {
   group: WorkplaneShape | null;
@@ -802,6 +806,7 @@ async function restoreEdgeTreatmentInShape(shape: WorkplaneShape, path: number[]
       hidden: shape.hidden,
       edgeResizeMode: shape.edgeResizeMode,
       edgeTreatments: shape.edgeTreatments,
+      features: shape.features,
       edgeTreatmentHistory: shape.edgeTreatmentHistory?.length ? compactEdgeTreatmentHistory(shape.edgeTreatmentHistory) : undefined,
     }),
     label: restoredChild.label,
@@ -1100,7 +1105,7 @@ async function remeshDirtyHistoryShapes(shapes: WorkplaneShape[]): Promise<{ sha
       failedNames.push(shape.name || shape.id);
       continue;
     }
-    const hadEdgeFeatures = Boolean(shape.edgeTreatments?.length);
+    const hadEdgeFeatures = hasPartSteps(shape);
     const remeshed = await remeshCsgGroup(shape);
     if (remeshed) {
       let restored = remeshed;
@@ -1109,6 +1114,7 @@ async function remeshDirtyHistoryShapes(shapes: WorkplaneShape[]): Promise<{ sha
         restored = {
           ...restored,
           edgeTreatments: shape.edgeTreatments ?? restored.edgeTreatments,
+          features: shape.features ?? restored.features,
           edgeTreatmentHistory: shape.edgeTreatmentHistory ?? restored.edgeTreatmentHistory,
           edgeResizeMode: shape.edgeResizeMode ?? restored.edgeResizeMode,
           cadBrep: undefined,
@@ -1718,6 +1724,13 @@ export function SketchForgeEditor({
   }) => cadPreviewSendRef.current(payload)));
   const cadModifierBaseShapeRef = useRef<WorkplaneShape | null>(null);
   const reapplyEdgeTreatmentsRef = useRef<(shape: WorkplaneShape) => Promise<void>>(async () => {});
+  /**
+   * `resized`: the part was resized and is rebuilt at its new size; the rebuild replaces the
+   * resize's own undo entry instead of adding one.
+   */
+  /** The part as it was just before its newest step, rebuilt from the steps before it. */
+  const partBeforeLastStepRef = useRef<(shape: WorkplaneShape) => Promise<WorkplaneShape | null>>(async () => null);
+  const replayPartStepsRef = useRef<(shapeId: string, features: PartFeature[], label: string, base?: WorkplaneShape, options?: { resized?: boolean }) => Promise<boolean>>(async () => false);
   const cadModifierBaseFingerprintRef = useRef("");
   const cadModifierSourcePartsRef = useRef<WorkplaneShape[]>([]);
   const cadModifierEditBeforeRef = useRef<WorkplaneShape | null>(null);
@@ -3115,6 +3128,7 @@ export function SketchForgeEditor({
         ...shape,
         edgeTreatments: undefined,
         edgeTreatmentHistory: undefined,
+        features: undefined,
         importedMesh: result.importedMesh,
         cadBrep: result.cadBrep,
         cadBrepFrame: result.cadBrepFrame
@@ -3406,7 +3420,7 @@ export function SketchForgeEditor({
         interactionHistoryChangedRef.current = true;
         return mapped;
       });
-      if (!projectInteractionActiveRef.current && next.edgeTreatments?.length) {
+      if (!projectInteractionActiveRef.current && hasPartSteps(next)) {
         await reapplyEdgeTreatmentsRef.current(next);
       }
       return;
@@ -3420,7 +3434,7 @@ export function SketchForgeEditor({
     );
     if (!remeshed && (body.csg?.op ?? inferCsgOp(body)) !== "assemble") {
       setNotice("Could not rebuild body after feature edit — last good mesh kept. Ungroup then Group to retry.");
-    } else if (next.edgeTreatments?.length) {
+    } else if (hasPartSteps(next)) {
       await reapplyEdgeTreatmentsRef.current(next);
     } else if (remeshed) {
       const activeChildren = (next.groupedShapes ?? []).filter((child) => (
@@ -3704,7 +3718,7 @@ export function SketchForgeEditor({
           body.id,
           `Sketch dimension → ${value.toFixed(2)} mm`,
         );
-        if (remeshed && body.edgeTreatments?.length) {
+        if (remeshed && hasPartSteps(body)) {
           await reapplyEdgeTreatmentsRef.current(body);
         }
         if (!remeshed) {
@@ -3748,6 +3762,7 @@ export function SketchForgeEditor({
               ...next,
               edgeTreatments: undefined,
               edgeTreatmentHistory: undefined,
+              features: undefined,
               cadBrep: undefined,
               cadBrepFrame: undefined,
               cadDisplayEdges: undefined,
@@ -5547,7 +5562,7 @@ export function SketchForgeEditor({
           asHole ? `Sketch hole updated in ${existingOwner.name}` : `Sketch feature updated in ${existingOwner.name}`,
         );
         keepSketch();
-        if (remeshed && body.edgeTreatments?.length) {
+        if (remeshed && hasPartSteps(body)) {
           await reapplyEdgeTreatmentsRef.current(body);
         }
         if (!remeshed) {
@@ -6144,6 +6159,12 @@ export function SketchForgeEditor({
       const bakeTransform = Boolean(patch.bakeTransform);
       const cleanedPatch = cleanShapePatch(patch);
       const previous = shapesRef.current.find((shape) => shape.id === id);
+      if (previous && cleanedPatch.hole && !threadCanBeHole(previous, cleanedPatch.threadSpec?.role ?? previous.threadSpec?.role)) {
+        delete cleanedPatch.hole;
+        delete cleanedPatch.color;
+        setNotice(SCREW_STAYS_SOLID_NOTICE);
+        if (Object.keys(cleanedPatch).length === 0) return;
+      }
 
       // Inspector Hole button: face-sketch cutters know their host — cut immediately.
       if (previous && !previous.locked && "hole" in cleanedPatch && cleanedPatch.hole && previous.sketchPlane?.hostShapeId) {
@@ -6532,7 +6553,7 @@ export function SketchForgeEditor({
     });
     syncProjectShapes(nextShapes);
     setNotice((modifierCancelled ? `Edge modifier cancelled · ${label}` : label) + remeshWarn);
-    const needFillet = nextShapes.filter((shape) => shape.edgeTreatments?.length && !shape.cadBrep);
+    const needFillet = nextShapes.filter((shape) => hasPartSteps(shape) && !shape.cadBrep);
     if (!needFillet.length) return;
     // Restoring the fillets is part of arriving at this step, not a step of its own.
     historyWriteSuspendedRef.current += 1;
@@ -7339,6 +7360,9 @@ export function SketchForgeEditor({
   const postCadModifierRequestAsync = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = [], timeoutMs = 20000) => {
     const requestId = cadModifierRequestRef.current + 1;
     cadModifierRequestRef.current = requestId;
+    // The engine drops a prepare reply that is not the current prepare (it belongs to a
+    // closed tool), so a scripted prepare (MCP, re-applied fillets, step replay) must be it.
+    if (request.type === "prepare") cadModifierPrepareRef.current = requestId;
     return new Promise<CadModifierWorkerResponse>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         if (!cadModifierPendingRef.current.has(requestId)) return;
@@ -7389,9 +7413,28 @@ export function SketchForgeEditor({
       setNotice("This edge feature has no stored edit history");
       return;
     }
-    const editEntry = indexed ?? lastEditableEdgeTreatment(selectedShape, kind);
-    const workingShape = editEntry ? restoreShapeBeforeEdgeTreatment(selectedShape, editEntry) : selectedShape;
-    cadModifierEditBeforeRef.current = editEntry ? workingShape : null;
+    // A part that rebuilds from its steps reopens its newest step when that is this tool's;
+    // older parts reopen their newest fillet or chamfer from the copy kept before it.
+    const fromSteps = stepsReplaceSnapshots(selectedShape);
+    const editEntry = fromSteps ? null : indexed ?? lastEditableEdgeTreatment(selectedShape, kind);
+    let workingShape = editEntry ? restoreShapeBeforeEdgeTreatment(selectedShape, editEntry) : selectedShape;
+    let editRecipe = editEntry?.feature;
+    const lastStep = selectedShape.features?.[selectedShape.features.length - 1];
+    if (fromSteps && historyIndex === undefined && lastStep?.kind === kind && !lastStep.suppressed && !lastStep.failed) {
+      setNotice(`Opening the last ${kind}`);
+      try {
+        const before = await partBeforeLastStepRef.current(selectedShape);
+        if (before) {
+          workingShape = before;
+          editRecipe = selectedShape.edgeTreatments?.[selectedShape.edgeTreatments.length - 1];
+        }
+      } catch {
+        // Opens as a new fillet or chamfer on the part as it is.
+      }
+      invalidateCadModifierSession();
+      if (shapesRef.current.find((shape) => shape.id === selectedShape.id) !== selectedShape) return;
+    }
+    cadModifierEditBeforeRef.current = editRecipe ? workingShape : null;
     const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(workingShape);
     const hasAppliedEdgeTreatment = Boolean(workingShape.importedMesh && workingShape.edgeTreatments?.length);
     const sourceParts = edgeTreatmentSourceParts(workingShape, {
@@ -7409,7 +7452,6 @@ export function SketchForgeEditor({
       return;
     }
     const defaultAmount = Math.max(MIN_EDGE_MODIFIER_AMOUNT, Math.min(1, shapeWidth(workingShape) / 6, shapeDepth(workingShape) / 6, workingShape.height / 6));
-    const editRecipe = editEntry?.feature;
     cadModifierBaseShapeRef.current = selectedShape;
     cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
     cadModifierSourcePartsRef.current = sourceParts;
@@ -7425,7 +7467,7 @@ export function SketchForgeEditor({
         filletProfile: normalizeFilletProfile(editRecipe?.filletProfile),
         quality: modifierPreviewQualityForDisplay(workspaceSettingsRef.current.displayQuality),
         tangentChain: true,
-        preserveEdgeSize: selectedShape.edgeResizeMode === "preserve",
+        preserveEdgeSize: (selectedShape.edgeResizeMode ?? "preserve") === "preserve",
         busy: true,
         prepared: false,
         error: null,
@@ -7904,6 +7946,7 @@ export function SketchForgeEditor({
       feature,
       preserveEdgeSize,
       createdAt,
+      response.edges,
     );
     const modifiedShape = await recutIgnoredThreadsAfterEdgeTreatment(recordedShape, shape);
     const currentTarget = shapesRef.current.find((candidate) => candidate.id === shape.id);
@@ -7928,6 +7971,12 @@ export function SketchForgeEditor({
   }, [commitShapes, flashCadApply, invalidateCadModifierSession, prepareCadModifierForMcp, postCadModifierRequestAsync]);
 
   reapplyEdgeTreatmentsRef.current = async (shape: WorkplaneShape) => {
+    // A group whose steps were all recorded rebuilds every one of them (hollow and push/pull
+    // too) on its freshly rebuilt pieces, as one undo step.
+    if (shape.groupedShapes?.length && shape.features?.length && stepsCanReplay(shape.features)) {
+      await replayPartStepsRef.current(shape.id, shape.features, "Rebuilt steps", { ...shape, features: undefined, edgeTreatments: undefined });
+      return;
+    }
     const recipes = [...(shape.edgeTreatments ?? [])];
     if (recipes.length === 0) return;
     // Strip recipes first so re-apply does not double-stack the same features.
@@ -7935,6 +7984,7 @@ export function SketchForgeEditor({
       ...shape,
       edgeTreatments: undefined,
       edgeTreatmentHistory: undefined,
+      features: withoutEdgeTreatmentFeatures(shape.features),
       cadBrep: undefined,
       cadBrepFrame: undefined,
       cadDisplayEdges: undefined,
@@ -7984,7 +8034,14 @@ export function SketchForgeEditor({
         commitShapes(
           shapesRef.current.map((entry) => (
             entry.id === shape.id
-              ? { ...entry, edgeTreatments: [...(entry.edgeTreatments ?? []), ...failed] }
+              ? {
+                  ...entry,
+                  edgeTreatments: [...(entry.edgeTreatments ?? []), ...failed],
+                  features: [
+                    ...(entry.features ?? []),
+                    ...failedEdgeTreatmentFeatures(shape, failed.map((recipe) => recipes.indexOf(recipe))),
+                  ],
+                }
               : entry
           )),
           shape.id,
@@ -7997,6 +8054,232 @@ export function SketchForgeEditor({
       setNotice(`Re-applied ${applied} of ${recipes.length} edge features after remesh`);
     } else {
       setNotice("Body rebuilt. Could not auto re-apply fillet/chamfer — use Edge tools again.");
+    }
+  };
+
+  /**
+   * Change a part's recorded steps and rebuild it. A group rebuilds its pieces first and
+   * replays the steps on them; any other part replays on the base it stored.
+   */
+  const changePartSteps = useCallback(async (shapeId: string, change: (features: PartFeature[]) => PartFeature[], label: string) => {
+    const live = shapesRef.current.find((shape) => shape.id === shapeId);
+    if (!live?.features?.length) return;
+    let base = live.featureBase;
+    if (!base && live.groupedShapes?.length) {
+      base = (await remeshCsgGroup({ ...live, features: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined })) ?? undefined;
+    }
+    if (!base) {
+      setNotice("This part does not have its starting shape stored, so its steps cannot be rebuilt.");
+      return;
+    }
+    await replayPartStepsRef.current(shapeId, change(live.features), label, base);
+  }, []);
+
+  /** The engine calls a step replay makes, answered with the live tools' own requests. */
+  const editorReplayEngine = useCallback((): ReplayEngine => {
+    const finish = async (source: WorkplaneShape, response: CadModifierWorkerResponse, refineFor?: number) => {
+      if (response.type === "error") throw new Error(response.message);
+      if (response.type !== "preview") throw new Error("The CAD engine did not return a result");
+      let mesh = response;
+      if (refineFor !== undefined) {
+        try {
+          const refined = await postCadModifierRequestAsync({
+            type: "refine",
+            ...curvedDisplayTessellation(refineFor, curveSidesForShape(source)),
+          }, [], 30000);
+          if (refined.type === "preview") mesh = refined;
+        } catch {
+          mesh = response;
+        }
+      }
+      let brep = mesh.brep || response.brep;
+      if (!brep) {
+        const exact = await postCadModifierRequestAsync({ type: "finalize" }, [], 30000);
+        if (exact.type === "previewBrep" && exact.brep) brep = exact.brep;
+      }
+      const raw = shapeFromCadMesh(source, mesh.positions, mesh.normals, mesh.indices, brep, mesh.step ?? response.step);
+      if (!raw) throw new Error("The CAD engine returned an empty part");
+      const shaped = canonicalizeShape({
+        ...raw,
+        cadDisplayEdges: cadDisplayEdgesForShape(raw, response.displayEdges),
+        cadDisplayEdgesVersion: 2 as const,
+      });
+      return source.groupedShapes?.length ? bakedEdgeTreatmentPreview(shaped, source) : shaped;
+    };
+    let edgeStepsDone = 0;
+    return {
+      async prepare(shape, sharpAngle) {
+        const sourceParts = edgeTreatmentSourceParts(shape, {
+          keepResultMesh: Boolean(shape.importedMesh && shape.cadBrep),
+          ignoreThreads: true,
+        });
+        const parts: CadModifierMeshPart[] = sourceParts.map(modifierPartInput).map(cadModifierPartFromInput);
+        const transfer = parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer as Transferable, part.indices.buffer as Transferable] : []);
+        const response = await postCadModifierRequestAsync({
+          type: "prepare",
+          parts,
+          sharpAngle,
+          // As the live tool: once a part has a fillet, its fillet seams are not offered as edges.
+          suppressTreatmentDetailEdges: edgeStepsDone > 0 || edgeTreatmentFeatureCount(shape) > 0,
+        }, transfer);
+        if (response.type === "error") throw new Error(response.message);
+        if (response.type !== "ready") throw new Error("The CAD engine did not return the part's edges");
+        return { edges: response.edges, planarFaces: response.planarFaces ?? [] };
+      },
+      async edgeTreatment(shape, step) {
+        const result = await finish(shape, await postCadModifierRequestAsync({ type: "preview", ...step }, [], 30000), step.amount);
+        edgeStepsDone += 1;
+        return result;
+      },
+      async hollow(shape, step) {
+        return finish(shape, await postCadModifierRequestAsync({ type: "hollow", ...step, quality: "standard" }, [], 30000));
+      },
+      async pushPull(shape, step) {
+        return finish(shape, await postCadModifierRequestAsync({ type: "pushPull", ...step, quality: "standard" }, [], 30000));
+      },
+    };
+  }, [postCadModifierRequestAsync]);
+
+  partBeforeLastStepRef.current = async (shape) => {
+    const steps = shape.features ?? [];
+    const last = steps[steps.length - 1];
+    if (!last) return null;
+    const base = shape.featureBase ?? (shape.groupedShapes?.length
+      ? (await remeshCsgGroup({ ...shape, features: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined })) ?? undefined
+      : undefined);
+    if (!base) return null;
+    const result = await replayPartFeatures(base, steps.slice(0, -1), editorReplayEngine());
+    // The newest step's frame is where the part sat just before it; follow the part's moves since.
+    const lastApplied = last.frame && last.appliedAt
+      ? {
+          recordedAt: last.appliedAt,
+          drift: [
+            last.frame.origin[0] - result.shape.x,
+            last.frame.origin[1] - (result.shape.elevation ?? 0),
+            last.frame.origin[2] - result.shape.z,
+          ] as [number, number, number],
+        }
+      : result.lastApplied;
+    const placed = placeReplayedShape(result.shape, shape, lastApplied);
+    return canonicalizeShape({
+      ...placed,
+      features: result.features.length ? result.features : undefined,
+      featureBase: shape.groupedShapes?.length ? undefined : base,
+      edgeTreatments: edgeTreatmentsForSteps(result.features, shape),
+      edgeTreatmentHistory: undefined,
+      edgeResizeMode: shape.edgeResizeMode,
+    });
+  };
+
+  // A part with steps that was resized is rebuilt at its new size once the resize settles,
+  // so its fillets, walls and pulls keep their sizes instead of stretching.
+  // Only sizes changed while editing count: opening a file never rebuilds anything.
+  const resizeRebuildTriedRef = useRef(new Set<string>());
+  const partSizesSeenRef = useRef(new Map<string, string>());
+  const resizedPartIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const shape of shapes) {
+      const size = `${shapeWidth(shape)}x${shape.height}x${shapeDepth(shape)}`;
+      const seen = partSizesSeenRef.current.get(shape.id);
+      if (seen !== undefined && seen !== size) resizedPartIdsRef.current.add(shape.id);
+      partSizesSeenRef.current.set(shape.id, size);
+    }
+    const due = (shape: WorkplaneShape) => {
+      if (!resizedPartIdsRef.current.has(shape.id) || !rebuildsOnResize(shape)) return null;
+      const baked = bakedPartSize(shape);
+      if (!baked) return null;
+      const live: [number, number, number] = [shapeWidth(shape), shape.height, shapeDepth(shape)];
+      if (live.every((size, axis) => Math.abs(size - baked[axis]) <= 1e-4)) return null;
+      const key = `${shape.id}:${live.map((size) => size.toFixed(4)).join("x")}`;
+      return resizeRebuildTriedRef.current.has(key) ? null : { shape, baked, live, key };
+    };
+    if (!shapes.some(due)) return;
+    const timer = window.setTimeout(async () => {
+      if (projectInteractionActiveRef.current || cadApplyBusyRef.current) return;
+      for (const candidate of shapesRef.current) {
+        const job = due(candidate);
+        if (!job?.shape.featureBase || !job.shape.features) continue;
+        resizeRebuildTriedRef.current.add(job.key);
+        resizedPartIdsRef.current.delete(job.shape.id);
+        const base = resizedFeatureBase(job.shape.featureBase, job.baked, job.live);
+        await replayPartStepsRef.current(job.shape.id, job.shape.features, "Resized", base, { resized: true });
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [shapes]);
+
+  /**
+   * Rebuild a part from `features` and commit it as one undo step. `base` is the part before
+   * its steps; a group passes its freshly rebuilt pieces, other parts use their stored base.
+   */
+  replayPartStepsRef.current = async (shapeId, features, label, base, options) => {
+    const live = shapesRef.current.find((shape) => shape.id === shapeId);
+    if (!live) return false;
+    const start = base ?? live.featureBase;
+    if (!start) {
+      setNotice("This part does not have its starting shape stored, so its steps cannot be rebuilt.");
+      return false;
+    }
+    if (cadApplyBusyRef.current) {
+      if (!options?.resized) setNotice("Finish the current tool first");
+      return false;
+    }
+    cadApplyBusyRef.current = true;
+    invalidateCadModifierSession();
+    const sourceFingerprint = projectShapesFingerprint([live]);
+    try {
+      const result = await replayPartFeatures(start, features, editorReplayEngine());
+      const current = shapesRef.current.find((shape) => shape.id === shapeId);
+      if (!current || projectShapesFingerprint([current]) !== sourceFingerprint) {
+        if (!options?.resized) setNotice("The part changed while it was rebuilding. Try again.");
+        return false;
+      }
+      // A resized part is rebuilt at its new size, so it is not stretched to it afterwards.
+      const placed = placeReplayedShape(result.shape, options?.resized ? { ...live, cadBrepFrame: undefined } : live, result.lastApplied);
+      const rebuilt = canonicalizeShape({
+        ...placed,
+        features: result.features.length ? result.features : undefined,
+        featureBase: result.features.length && !live.groupedShapes?.length ? start : undefined,
+        edgeTreatments: edgeTreatmentsForSteps(result.features, live),
+        edgeTreatmentHistory: undefined,
+        edgeResizeMode: live.edgeResizeMode,
+        csg: live.csg ? { ...live.csg, dirty: false } : live.csg,
+      });
+      const nextShapes = shapesRef.current.map((shape) => (shape.id === shapeId ? rebuilt : shape));
+      if (options?.resized) {
+        const index = historyIndexRef.current;
+        const resizeEntry = historyRef.current[index];
+        const resizeFingerprint = editorHistoryEntry(shapesRef.current, selectedIdsRef.current).fingerprint;
+        historyWriteSuspendedRef.current += 1;
+        try {
+          commitShapes(nextShapes, selectedIdsRef.current);
+        } finally {
+          historyWriteSuspendedRef.current -= 1;
+        }
+        if (resizeEntry?.fingerprint === resizeFingerprint) {
+          const entries = historyRef.current.map((entry, entryIndex) => (
+            entryIndex === index ? editorHistoryEntry(nextShapes, resizeEntry.selectedIds, resizeEntry.label) : entry
+          ));
+          historyRef.current = entries;
+          setHistory(entries);
+        }
+      } else {
+        commitShapes(nextShapes, shapeId, label);
+        flashCadApply(shapeId);
+      }
+      const failed = result.steps.filter((step) => !step.ok);
+      if (failed.length === 1) {
+        setNotice(`One step no longer fits this part and was skipped. ${failed[0].message ?? ""}`.trim());
+      } else if (failed.length > 1) {
+        setNotice(`${failed.length} steps no longer fit this part and were skipped.`);
+      }
+      return true;
+    } catch (error) {
+      setNotice(error instanceof Error && error.message ? error.message : "Could not rebuild this part");
+      return false;
+    } finally {
+      cadApplyBusyRef.current = false;
+      invalidateCadModifierSession();
     }
   };
 
@@ -8114,6 +8397,7 @@ export function SketchForgeEditor({
         feature,
         session.preserveEdgeSize,
         createdAt,
+        session.edges,
       );
       const modifiedShape: WorkplaneShape = await recutIgnoredThreadsAfterEdgeTreatment(recordedShape, recordBefore);
       commitShapes(
@@ -8232,8 +8516,12 @@ export function SketchForgeEditor({
       setNotice(live ? "The object changed while Hollow was open. Start Hollow again." : "That object is no longer in the scene.");
       return;
     }
+    const settings = shellSessionRef.current;
+    const hollowed = settings
+      ? withPartFeature(preview, base, hollowPartFeature(createLocalId("hollow"), settings, base))
+      : preview;
     commitShapes(
-      shapes.map((shape) => shape.id === base.id ? preview : shape),
+      shapes.map((shape) => shape.id === base.id ? hollowed : shape),
       base.id,
       "Hollowed",
     );
@@ -8258,9 +8546,13 @@ export function SketchForgeEditor({
     if (cadApplyBusyRef.current) return;
     cadApplyBusyRef.current = true;
     setPushPullSession((current) => current ? { ...current, busy: true } : current);
+    const pushedFace = session.faces.find((face) => face.id === session.selectedFaceId);
     const finish = (exact: WorkplaneShape) => {
+      const recorded = pushedFace
+        ? withPartFeature(exact, base, pushPullPartFeature(createLocalId("push-pull"), pushedFace, distance, session.faces))
+        : exact;
       commitShapes(
-        shapesRef.current.map((shape) => shape.id === base.id ? exact : shape),
+        shapesRef.current.map((shape) => shape.id === base.id ? recorded : shape),
         base.id,
         pushPullHistoryLabel(distance, workspaceSettingsRef.current.accuracy),
       );
@@ -8725,9 +9017,14 @@ export function SketchForgeEditor({
         return;
       }
       const selected = new Set(selectedIds);
+      const keptSolid = hole && shapesRef.current.some((shape) => selected.has(shape.id) && !threadCanBeHole(shape));
       const nextShapes = shapesRef.current.map((shape) =>
-        selected.has(shape.id) && !shape.locked ? withHoleMode(shape, hole) : shape,
+        selected.has(shape.id) && !shape.locked && (!hole || threadCanBeHole(shape)) ? withHoleMode(shape, hole) : shape,
       );
+      if (keptSolid && !nextShapes.some((shape, index) => shape !== shapesRef.current[index])) {
+        setNotice(SCREW_STAYS_SOLID_NOTICE);
+        return;
+      }
 
       if (hole) {
         // Face-sketch holes know their host — cut immediately instead of requiring a manual Group.
@@ -9173,6 +9470,14 @@ export function SketchForgeEditor({
     }
   }, [commitShapes, selectedShape, selectedShapes.length, shapes]);
 
+  const makeMatchingThread = useCallback(() => {
+    if (selectedShapes.length !== 1 || !selectedShape) return;
+    const mate = matchingThreadPart(selectedShape, workspaceSettingsRef.current.printerKind);
+    if (!mate) return;
+    commitShapes([...shapes, mate], [mate.id], `Made a matching ${mate.threadSpec?.designation ?? ""} tapped hole`);
+    setNotice("Matching tapped hole added on the same axis. Move it into your part, then Group.");
+  }, [commitShapes, selectedShape, selectedShapes.length, shapes]);
+
   /** Replace a baseplate that overhangs the printer bed with tabbed pieces laid out around its centre. */
   const splitSelectedGridfinityPlate = useCallback(() => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.kind !== "gridfinityBaseplate" || !selectedShape.gridfinityBaseplate) {
@@ -9204,6 +9509,7 @@ export function SketchForgeEditor({
         gridfinityBuilt: undefined,
         edgeTreatments: undefined,
         edgeTreatmentHistory: undefined,
+        features: undefined,
       });
       // Piece centres are given about the plate's grid centre; the shape's x/z is its
       // outline centre, which padding and tabs shift, so go through the footprint offset.
@@ -12145,6 +12451,12 @@ export function SketchForgeEditor({
       faceTool: Boolean(faceSession),
       faceChosen: faceSession?.selectedFaceId != null,
       faceDirection: faceSession?.direction ?? null,
+      pushPullOpen: Boolean(pushPullSession),
+      pushPullFaceNormal: (() => {
+        const face = pushPullSession?.faces.find((entry) => entry.id === pushPullSession.selectedFaceId);
+        return face ? [face.normal.x, face.normal.y, face.normal.z] as [number, number, number] : null;
+      })(),
+      pushPullDistance: pushPullSession?.distance ?? null,
       edgeKind: edgeModifier?.kind ?? null,
       edgeAmount: edgeModifier?.amount ?? null,
       allEdgesSelected: Boolean(
@@ -13031,6 +13343,7 @@ export function SketchForgeEditor({
           )?.sketchDoc?.dimensions?.length ? editSelectedSketchDimension : undefined}
           canSeparateParts={canSeparateSelectedParts}
           onSeparateParts={separateSelectedParts}
+          onMakeMatchingThread={makeMatchingThread}
           canSplitForPrintBed={canSplitSelectedGridfinityPlate}
           onSplitForPrintBed={splitSelectedGridfinityPlate}
           onReduceTriangles={reduceSelectedMesh}
@@ -13063,6 +13376,28 @@ export function SketchForgeEditor({
             if (!feature) return;
             void startEdgeModifier(feature.kind, index);
           } : undefined}
+          onEditPartStep={selectedShape?.features?.length && (selectedShape.featureBase || selectedShape.groupedShapes?.length) && stepsCanReplay(selectedShape.features) ? (featureId, valueMm) => {
+            const step = selectedShape.features?.find((feature) => feature.id === featureId);
+            if (!step) return;
+            const changed = withPartStepSize(step, valueMm);
+            void changePartSteps(selectedShape.id, (features) => features.map((feature) => (feature.id === featureId ? changed : feature)), `Changed ${partFeatureLabel(changed)}`);
+          } : undefined}
+          onTogglePartStep={(featureId) => {
+            if (!selectedShape) return;
+            const step = selectedShape.features?.find((feature) => feature.id === featureId);
+            if (!step) return;
+            void changePartSteps(
+              selectedShape.id,
+              (features) => features.map((feature) => (feature.id === featureId ? { ...feature, suppressed: !feature.suppressed || undefined } : feature)),
+              `${step.suppressed ? "Turned on" : "Turned off"} ${partFeatureLabel(step)}`,
+            );
+          }}
+          onRemovePartStep={(featureId) => {
+            if (!selectedShape) return;
+            const step = selectedShape.features?.find((feature) => feature.id === featureId);
+            if (!step) return;
+            void changePartSteps(selectedShape.id, (features) => features.filter((feature) => feature.id !== featureId), `Removed ${partFeatureLabel(step)}`);
+          }}
           onRemoveEdgeTreatment={selectedShape?.edgeTreatments?.length ? (index) => {
             const entry = selectedShape.edgeTreatmentHistory?.[index];
             if (!entry) {

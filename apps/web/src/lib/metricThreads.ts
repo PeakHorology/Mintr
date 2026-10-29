@@ -1,4 +1,7 @@
 export type MetricThreadDesignation =
+  | "M1"
+  | "M1.2"
+  | "M1.6"
   | "M2"
   | "M2.5"
   | "M3"
@@ -11,7 +14,10 @@ export type MetricThreadDesignation =
   | "M14"
   | "M16"
   | "M18"
-  | "M20";
+  | "M20"
+  | "M24"
+  | "M30"
+  | "M36";
 
 export type MetricThreadSpec = {
   designation: MetricThreadDesignation;
@@ -21,8 +27,11 @@ export type MetricThreadSpec = {
   pitch: number;
 };
 
-/** ISO metric coarse series used by the Threads shape presets. */
+/** ISO 261 metric coarse series, first-choice sizes, used by the Threads shape presets. */
 export const METRIC_COARSE_THREADS: readonly MetricThreadSpec[] = [
+  { designation: "M1", majorDiameter: 1, pitch: 0.25 },
+  { designation: "M1.2", majorDiameter: 1.2, pitch: 0.25 },
+  { designation: "M1.6", majorDiameter: 1.6, pitch: 0.35 },
   { designation: "M2", majorDiameter: 2, pitch: 0.4 },
   { designation: "M2.5", majorDiameter: 2.5, pitch: 0.45 },
   { designation: "M3", majorDiameter: 3, pitch: 0.5 },
@@ -36,6 +45,9 @@ export const METRIC_COARSE_THREADS: readonly MetricThreadSpec[] = [
   { designation: "M16", majorDiameter: 16, pitch: 2 },
   { designation: "M18", majorDiameter: 18, pitch: 2.5 },
   { designation: "M20", majorDiameter: 20, pitch: 2.5 },
+  { designation: "M24", majorDiameter: 24, pitch: 3 },
+  { designation: "M30", majorDiameter: 30, pitch: 3.5 },
+  { designation: "M36", majorDiameter: 36, pitch: 4 },
 ] as const;
 
 export type ThreadSide = "external" | "internal";

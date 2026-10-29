@@ -1,21 +1,7 @@
 /** Geometric edge fingerprints so fillet/chamfer recipes survive remesh ID churn. */
+import type { EdgeFingerprint } from "@/types/sketchforge";
 
-export type EdgeTreatmentFingerprint = {
-  mid: [number, number, number];
-  length: number;
-  angle: number;
-  /**
-   * Arc-length weighted centroid. `mid` is only the chord midpoint of the polyline's
-   * endpoints, which collapses to an arbitrary point on the curve for a closed edge —
-   * a cylinder rim fingerprints to wherever the tessellation seam happens to fall, so a
-   * re-seamed rim can score further from itself than the opposite rim does. The centroid
-   * is independent of both the seam and the tessellation density.
-   * Optional: recipes saved before this field existed carry `mid` only.
-   */
-  centroid?: [number, number, number];
-  /** Unit chord direction, sign-canonicalized so vertex order cannot flip it. */
-  direction?: [number, number, number];
-};
+export type EdgeTreatmentFingerprint = EdgeFingerprint;
 
 type FingerprintableEdge = {
   id: number;

@@ -731,13 +731,19 @@ export function punchThroughCutter(hole: WorkplaneShape, solids: WorkplaneShape[
   const height = hole.height + growMin + growMax;
   const shift = (growMax - growMin) / 2;
   const center = new THREE.Vector3(hole.x, (hole.elevation ?? 0) + hole.height / 2, hole.z).addScaledVector(axis, shift);
-  return {
+  const grown = {
     ...hole,
     x: center.x,
     z: center.z,
     elevation: center.y - height / 2,
     height,
   };
+  if (hole.kind === "thread" && hole.threadSpec) {
+    // A longer thread is built, not a stretched one, so the pitch stays true.
+    const length = (hole.threadSpec.length ?? hole.height) + growMin + growMax;
+    return solidThreadShape({ ...grown, threadSpec: { ...hole.threadSpec, length } });
+  }
+  return grown;
 }
 
 export function booleanCutters(holes: WorkplaneShape[], solids: WorkplaneShape[]) {
@@ -3568,6 +3574,7 @@ export async function remeshCsgGroupFromWorldChildren(
     // Keep recipes so the editor can re-apply fillet/chamfer after remesh.
     // Geometry (cadBrep / display edges) is invalid until re-applied.
     edgeTreatments: body.edgeTreatments,
+    features: body.features,
     edgeTreatmentHistory: body.edgeTreatmentHistory,
     edgeResizeMode: body.edgeResizeMode,
     cadBrep: undefined,

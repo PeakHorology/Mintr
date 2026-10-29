@@ -1,7 +1,7 @@
 "use client";
 
 import { stlMegabytes } from "@/lib/laser/crystalFile";
-import { ChevronDown, ChevronUp, Split, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Copy, Split, X } from "lucide-react";
 import { isLaserDesign } from "@/lib/laserMachine";
 import { LASER_JOB_LABEL, type LaserJob } from "@/lib/laser/cutFile";
 import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
@@ -13,6 +13,7 @@ import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTool
 import { useChromePresence } from "@/lib/chromePresence";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, formatVolumeWithMilliliters, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
+import { partFeatureLabel, partStepSize } from "@/lib/partFeatures";
 import {
   clampRoofRidgeX,
   MAX_ROOF_ANGLE,
@@ -23,8 +24,9 @@ import {
   roofRidgeXFromRightAngle,
 } from "@/lib/roofGeometry";
 import {
-  DEFAULT_THREAD_CLEARANCE,
   DEFAULT_THREAD_SIDES,
+  defaultThreadClearance,
+  effectiveThreadClearance,
   MAX_THREAD_CLEARANCE,
   MAX_THREAD_SIDES,
   MIN_THREAD_CLEARANCE,
@@ -32,6 +34,7 @@ import {
   threadNutSize,
 } from "@/lib/metricThreadSolid";
 import { THREAD_SIZE_OPTIONS, type ThreadSeries } from "@/lib/metricThreads";
+import { canMakeMatchingTappedHole, threadCanBeHole } from "@/lib/threadShape";
 import { resolveShapeSides, resolveShapeSteps } from "@/lib/displayTessellation";
 import {
   gearFootprint,
@@ -171,6 +174,13 @@ type SelectPropertyConfig = {
 type ShapePropertyConfig = RangePropertyConfig | TextPropertyConfig | SelectPropertyConfig;
 export type ShapeInspectorUpdateOptions = { resizeAxis?: "width" | "depth" | "height" };
 type ShapeInspectorUpdate = (patch: Partial<WorkplaneShape>, options?: ShapeInspectorUpdateOptions) => void;
+
+/** First row of a part's step list: what the steps were applied to. */
+function partStepsStartLabel(shape: WorkplaneShape) {
+  if (shape.groupedShapes?.length) return "Combined parts";
+  const kind = shape.featureBase?.importedMesh ? "Imported part" : shape.featureBase?.kind ?? shape.kind;
+  return kind.charAt(0).toUpperCase() + kind.slice(1);
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -385,7 +395,15 @@ function fontChoices(current: string): string[] {
   return options.includes(current) ? options : [...options, current];
 }
 
-function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate, sceneShapes: readonly WorkplaneShape[] = []): ShapePropertyConfig[] {
+/** Below this pitch a filament printer cannot hold the tooth shape. */
+const FINE_THREAD_PITCH_FOR_FILAMENT = 0.7;
+
+function getShapeProperties(
+  shape: WorkplaneShape,
+  onUpdate: ShapeInspectorUpdate,
+  sceneShapes: readonly WorkplaneShape[] = [],
+  printerKind: WorkplaneWorkspaceSettings["printerKind"] = "filament",
+): ShapePropertyConfig[] {
   if (shape.kind === "gridfinityBin") return gridfinityBinProperties(shape, onUpdate);
   if (shape.kind === "gridfinityBaseplate") return gridfinityBaseplateProperties(shape, onUpdate);
   if (shape.kind === "gear") {
@@ -475,6 +493,10 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
       ...patch,
     });
     const length = shape.threadSpec?.length ?? shape.height;
+    const pitch = shape.threadSpec?.pitch ?? 1;
+    const clearance = shape.threadSpec?.clearance ?? defaultThreadClearance(printerKind);
+    const heldClearance = effectiveThreadClearance(clearance, pitch, shape.threadSpec?.profile);
+    const fineForFilament = printerKind === "filament" && pitch < FINE_THREAD_PITCH_FOR_FILAMENT;
     return [
       {
         type: "select",
@@ -493,7 +515,7 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
               style: tapped ? "hole" : "screw",
               part: tapped ? "threads" : "screw",
               clearance: tapped || nut
-                ? (alreadyLoose ? (shape.threadSpec?.clearance ?? 0.4) : 0.4)
+                ? (alreadyLoose ? clearance : defaultThreadClearance(printerKind))
                 : 0,
               length: nut ? threadNutSize(major).height : length,
             }),
@@ -577,10 +599,13 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
       ...(role === "Nut" || role === "Tapped hole"
         ? [{
             label: "Clearance",
-            value: shape.threadSpec?.clearance ?? DEFAULT_THREAD_CLEARANCE,
+            value: clearance,
             min: MIN_THREAD_CLEARANCE,
             max: MAX_THREAD_CLEARANCE,
             step: 0.05,
+            hint: heldClearance < clearance - 1e-6
+              ? `Held to ${heldClearance.toFixed(2)} mm so the thread still grips.`
+              : undefined,
             onChange: (clearance: number) => onUpdate({ threadSpec: nextSpec({ clearance }) }),
           }]
         : []),
@@ -605,6 +630,7 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
         value: length,
         min: MIN_SHAPE_SIZE,
         max: 160,
+        hint: fineForFilament ? "Threads this fine print poorly on filament. A brass threaded insert holds better." : undefined,
         onChange: (nextLength) => onUpdate({
           height: nextLength,
           threadSpec: nextSpec({ length: nextLength }),
@@ -883,6 +909,7 @@ export function ShapeInspector({
   onEditSketchDimension,
   canSeparateParts = false,
   onSeparateParts,
+  onMakeMatchingThread,
   canSplitForPrintBed = false,
   onSplitForPrintBed,
   onReduceTriangles,
@@ -898,6 +925,9 @@ export function ShapeInspector({
   onDissolvePattern,
   onEditEdgeTreatment,
   onRemoveEdgeTreatment,
+  onEditPartStep,
+  onTogglePartStep,
+  onRemovePartStep,
 }: {
   shape: WorkplaneShape;
   workspace: WorkplaneWorkspaceSettings;
@@ -907,6 +937,8 @@ export function ShapeInspector({
   onEditSketchDimension?: (dimensionId: string, value: number) => void;
   canSeparateParts?: boolean;
   onSeparateParts?: () => void;
+  /** Add the tapped hole of the same thread size, on the same axis. */
+  onMakeMatchingThread?: () => void;
   /** Gridfinity baseplate larger than the printer bed. */
   canSplitForPrintBed?: boolean;
   onSplitForPrintBed?: () => void;
@@ -927,6 +959,10 @@ export function ShapeInspector({
   onDissolvePattern?: () => void;
   /** Open the fillet or chamfer tool on this feature of the selected shape. */
   onEditEdgeTreatment?: (index: number) => void;
+  /** Change a recorded step's size (fillet amount, wall thickness, push distance), in mm. */
+  onEditPartStep?: (featureId: string, valueMm: number) => void;
+  onTogglePartStep?: (featureId: string) => void;
+  onRemovePartStep?: (featureId: string) => void;
   /** Restore the shape to before this feature. Newer features on top of it go with it. */
   onRemoveEdgeTreatment?: (index: number) => void;
 }) {
@@ -977,7 +1013,7 @@ export function ShapeInspector({
     }
     onUpdate(patch, options);
   };
-  const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget, sceneShapes ?? []));
+  const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget, sceneShapes ?? [], workspace.printerKind));
   const sizeProperties = properties.filter(isFootprintSize);
   const detailProperties = properties.filter((property) => !isFootprintSize(property));
   const sketchFeature = resolveEditableSketchShape(
@@ -990,13 +1026,15 @@ export function ShapeInspector({
   const showFeatureTree = Boolean(csgChildren.length && (isEvaluatedCsgBody(shape) || csgOp));
   const pattern = shape.patternFeature;
   const holeSpec = shape.holeSpec ?? inspectTarget.holeSpec;
-  const showShallowFeatures = Boolean(pattern || (shape.edgeTreatments?.length ?? 0) > 0 || holeSpec || shape.construction);
+  const partSteps = onEditPartStep ? shape.features ?? [] : [];
+  const showShallowFeatures = Boolean(pattern || (shape.edgeTreatments?.length ?? 0) > 0 || partSteps.length > 0 || holeSpec || shape.construction);
   const sourceTriangleCount = inspectTarget.groupedShapes?.length
     ? inspectTarget.groupedShapes.reduce((total, child) => total + (child.importedMesh?.triangleCount ?? 0), 0) || (inspectTarget.importedMesh?.triangleCount ?? 0)
     : (inspectTarget.importedMesh?.triangleCount ?? 0);
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [colorOpen, setColorOpen] = useState(false);
   const [featuresOpen, setFeaturesOpen] = useState(true);
+  const [stepDraft, setStepDraft] = useState<{ id: string; value: string } | null>(null);
   const [dimensionDialog, setDimensionDialog] = useState<{ id: string; value: number } | null>(null);
   const [reduceOpen, setReduceOpen] = useState(false);
   const [keepPercent, setKeepPercent] = useState(50);
@@ -1099,6 +1137,8 @@ export function ShapeInspector({
         </div>
       </div>
 
+      {/* A thread's Kind decides solid or hole. Older files that made a screw a hole can still turn it back. */}
+      {inspectTarget.kind !== "thread" || (inspectTarget.hole && !threadCanBeHole(inspectTarget)) ? (
       <div className="shape-state-card" role="group" aria-label="Shape mode">
         <button
           className={!inspectTarget.hole ? "active solid-choice" : "solid-choice"}
@@ -1128,6 +1168,7 @@ export function ShapeInspector({
           <span>Hole</span>
         </button>
       </div>
+      ) : null}
 
       {isLaserDesign(workspace) && !inspectTarget.hole ? (
         <div className="laser-job-card">
@@ -1372,6 +1413,13 @@ export function ShapeInspector({
         </button>
       ) : null}
 
+      {onMakeMatchingThread && canMakeMatchingTappedHole(shape) ? (
+        <button className="inspector-action-button" type="button" onClick={onMakeMatchingThread}>
+          <Copy size={17} strokeWidth={2.5} />
+          <span>Make matching tapped hole</span>
+        </button>
+      ) : null}
+
       {canSplitForPrintBed && onSplitForPrintBed && shape.kind === "gridfinityBaseplate" ? (
         <PeakTipButton
           className="inspector-action-button"
@@ -1419,9 +1467,78 @@ export function ShapeInspector({
           {featuresOpen ? (
             <div className="csg-feature-list" id={`cad-features-${shape.id}`}>
               <div className="csg-feature-row">
-                <span className="csg-feature-name">{isConstructionShape(shape) ? "Construction plane" : inspectTarget.kind}</span>
+                <span className="csg-feature-name">{isConstructionShape(shape) ? "Construction plane" : partSteps.length > 0 ? partStepsStartLabel(shape) : inspectTarget.kind}</span>
               </div>
-              {(shape.edgeTreatments ?? []).map((feature, index) => {
+              {partSteps.length > 0 ? partSteps.map((step) => {
+                const blocked = locked || modelTreeLocked;
+                const size = partStepSize(step);
+                const unit = lengthDisplayUnit(workspace).label;
+                const editing = stepDraft?.id === step.id;
+                const commitDraft = () => {
+                  const typed = Number(stepDraft?.value);
+                  setStepDraft(null);
+                  if (!Number.isFinite(typed)) return;
+                  const mm = displayToMillimeters(typed, workspace);
+                  if (Math.abs(mm - size) > 1e-6) onEditPartStep?.(step.id, mm);
+                };
+                const label = partFeatureLabel(step, (mm) => `${formatMeasurementNumber(millimetersToDisplay(mm, workspace), workspace.accuracy)} ${unit}`);
+                return (
+                  <div
+                    key={step.id}
+                    className={`csg-feature-row${step.suppressed ? " suppressed" : ""}${step.failed ? " failed" : ""}`}
+                    title={step.failed ? `Skipped: ${step.failed}` : undefined}
+                  >
+                    {editing ? (
+                      <input
+                        className="csg-feature-input"
+                        type="number"
+                        step="any"
+                        autoFocus
+                        aria-label={`New size for ${label}`}
+                        value={stepDraft.value}
+                        onChange={(event) => setStepDraft({ id: step.id, value: event.target.value })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") commitDraft();
+                          if (event.key === "Escape") setStepDraft(null);
+                        }}
+                        onBlur={commitDraft}
+                      />
+                    ) : (
+                      <span className="csg-feature-name">
+                        {label}
+                        {step.failed ? <span className="csg-feature-note"> · skipped</span> : null}
+                      </span>
+                    )}
+                    <div className="csg-feature-actions">
+                      <button
+                        type="button"
+                        disabled={blocked || editing}
+                        title="Change the size of this step"
+                        onClick={() => setStepDraft({ id: step.id, value: formatMeasurementNumber(millimetersToDisplay(size, workspace), workspace.accuracy) })}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blocked || !onTogglePartStep}
+                        title={step.suppressed ? "Put this step back" : "Leave this step out for now"}
+                        onClick={() => onTogglePartStep?.(step.id)}
+                      >
+                        {step.suppressed ? "On" : "Off"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blocked || !onRemovePartStep}
+                        title="Remove only this step; the steps after it stay"
+                        onClick={() => onRemovePartStep?.(step.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              }) : null}
+              {partSteps.length > 0 ? null : (shape.edgeTreatments ?? []).map((feature, index) => {
                 const entry = shape.edgeTreatmentHistory?.[index];
                 const canChange = Boolean(entry && entry.feature.kind === feature.kind);
                 const newer = Math.max(0, (shape.edgeTreatments?.length ?? 0) - index - 1);

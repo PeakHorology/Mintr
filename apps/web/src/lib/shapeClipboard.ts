@@ -53,6 +53,7 @@ function collectShapeIds(shape: WorkplaneShape, ids: Set<string>) {
   shape.groupedShapes?.forEach((child) => collectShapeIds(child, ids));
   shape.edgeTreatmentHistory?.forEach((entry) => collectShapeIds(entry.before, ids));
   shape.threadHistory?.forEach((entry) => collectShapeIds(entry.before, ids));
+  if (shape.featureBase) collectShapeIds(shape.featureBase, ids);
 }
 
 function remapShapeTree(shape: WorkplaneShape, idMap: Map<string, string>, sketchMap: Map<string, string>): WorkplaneShape {
@@ -92,6 +93,7 @@ function remapShapeTree(shape: WorkplaneShape, idMap: Map<string, string>, sketc
       id: createLocalId("thread-history"),
       before: remapShapeTree(entry.before, idMap, sketchMap),
     })),
+    featureBase: shape.featureBase ? remapShapeTree(shape.featureBase, idMap, sketchMap) : undefined,
   };
 }
 
@@ -129,6 +131,7 @@ export function cloneShapesForPaste(shapes: WorkplaneShape[]): WorkplaneShape[] 
     shape.groupedShapes?.forEach(collectSketchIds);
     shape.edgeTreatmentHistory?.forEach((entry) => collectSketchIds(entry.before));
     shape.threadHistory?.forEach((entry) => collectSketchIds(entry.before));
+    if (shape.featureBase) collectSketchIds(shape.featureBase);
   };
   cloned.forEach(collectSketchIds);
 

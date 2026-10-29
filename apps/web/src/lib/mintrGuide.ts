@@ -4,7 +4,7 @@ import type { EditorHistoryEntry } from "@/lib/editorHistory";
 import { sameEdgeFingerprints, type EdgeTreatmentFingerprint } from "@/lib/edgeTreatmentRematch";
 import { isDefaultSketchPlane } from "@/lib/sketchPlane";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
-import type { AlignAxis, AlignTarget, EdgeTreatmentFeature, SketchPlane, SketchProfile, WorkplaneShape } from "@/types/sketchforge";
+import type { AlignAxis, AlignTarget, EdgeTreatmentFeature, PartFeature, SketchPlane, SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 
 /** A checklist row the author keeps or drops. Playback expands a sketch row into several prompts. */
 export type GuideStep = {
@@ -131,6 +131,7 @@ const CUE_NAME: Record<string, string> = {
   chamfer: "Chamfer",
   fillet: "Fillet",
   "pad/pocket": "Pad/Pocket",
+  pushPull: "Push Pull",
 };
 
 export function guideCueName(cue: string) {
@@ -277,6 +278,10 @@ function classifyChange(prev: readonly WorkplaneShape[], next: readonly Workplan
       label: treatment === "chamfer" ? "Chamfer the edges" : "Round the edges",
     };
   }
+  const pulled = addedPushPull(prev, next);
+  if (pulled) {
+    return { cue: "pushPull", included: true, label: pulled.step.distance < 0 ? "Push a face in" : "Pull a face out" };
+  }
   if (sizeOnlyScene(prev, next)) return { cue: "model", included: true, label: "Change the size" };
   if (rotationOnlyScene(prev, next)) return { cue: "model", included: true, label: "Turn the part" };
   if (somethingMoved(prev, next)) return { cue: "model", included: true, label: "Move a part" };
@@ -305,6 +310,68 @@ function treatmentCue(prev: readonly WorkplaneShape[], next: readonly WorkplaneS
     }
   });
   return added;
+}
+
+type PushPullStep = Extract<PartFeature, { kind: "pushPull" }>;
+
+/** The push/pull step the change added, and the part that has it. */
+function addedPushPull(prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]) {
+  const before = new Set<string>();
+  walkShapes(prev, (shape) => {
+    for (const feature of shape.features ?? []) before.add(feature.id);
+  });
+  let found: { step: PushPullStep; host: WorkplaneShape } | null = null;
+  walkShapes(next, (shape) => {
+    for (const feature of shape.features ?? []) {
+      if (feature.kind === "pushPull" && !before.has(feature.id)) found = { step: feature, host: shape };
+    }
+  });
+  return found as { step: PushPullStep; host: WorkplaneShape } | null;
+}
+
+const FACE_NAMES: Array<{ name: string; axis: 0 | 1 | 2; sign: 1 | -1 }> = [
+  { name: "top", axis: 1, sign: 1 },
+  { name: "bottom", axis: 1, sign: -1 },
+  { name: "front", axis: 2, sign: 1 },
+  { name: "back", axis: 2, sign: -1 },
+  { name: "right", axis: 0, sign: 1 },
+  { name: "left", axis: 0, sign: -1 },
+];
+
+/** "top", "left" and so on for a face pointing along an axis; null for a slanted face. */
+function faceName(normal: readonly [number, number, number]) {
+  return FACE_NAMES.find((face) => normal[face.axis] * face.sign > 0.99)?.name ?? null;
+}
+
+function sameFaceDirection(left: readonly [number, number, number], right: readonly [number, number, number]) {
+  return left[0] * right[0] + left[1] * right[1] + left[2] * right[2] > 0.99;
+}
+
+/** The learner's part is the author's size, and has a push/pull of the same face by the same distance. */
+function pushPullStepSatisfied(step: GuideStep, history: readonly EditorHistoryEntry[], shapes: readonly WorkplaneShape[]) {
+  const prev = history[step.historyIndex - 1]?.shapes ?? [];
+  const target = history[step.historyIndex]?.shapes;
+  const wanted = target ? addedPushPull(prev, target) : null;
+  if (!wanted) return target ? sceneMatchesGuide(shapes, target) : false;
+  if (!hostSizeRemains(shapes, [wanted.host])) return false;
+  let found = false;
+  walkShapes(shapes, (shape) => {
+    for (const feature of shape.features ?? []) {
+      if (feature.kind !== "pushPull" || feature.suppressed || feature.failed) continue;
+      if (Math.abs(feature.distance - wanted.step.distance) <= 0.1 && sameFaceDirection(feature.face.normal, wanted.step.face.normal)) found = true;
+    }
+  });
+  return found;
+}
+
+function pushPullWords(step: PushPullStep) {
+  const face = faceName(step.face.normal);
+  const which = face ? `the ${face} face` : "the face";
+  return {
+    which,
+    title: `${step.distance < 0 ? "Push" : "Pull"} ${which} ${step.distance < 0 ? "in" : "out"} ${formatMm(Math.abs(step.distance))}`,
+    distance: formatMm(step.distance),
+  };
 }
 
 function treatmentAmount(shapes: readonly WorkplaneShape[], kind: "chamfer" | "fillet") {
@@ -470,7 +537,7 @@ function edgeStepSatisfied(
   return hostSizeRemains(shapes, target) && treatmentMatchesGuide(shapes, target, step.cue);
 }
 
-const STRUCTURAL_CUES = new Set(["model", "sketch", "group", "chamfer", "fillet", "pad/pocket"]);
+const STRUCTURAL_CUES = new Set(["model", "sketch", "group", "chamfer", "fillet", "pad/pocket", "pushPull"]);
 
 function addedShapeId(prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]) {
   const prevIds = new Set(prev.map((shape) => shape.id));
@@ -793,6 +860,7 @@ function guideStepSatisfied(
   steps: readonly GuideStep[],
 ) {
   if (step.cue === "chamfer" || step.cue === "fillet") return edgeStepSatisfied(step, history, shapes);
+  if (step.cue === "pushPull") return pushPullStepSatisfied(step, history, shapes);
   // A chamfer turns a sketch or a new solid into a mesh. Align and Group still have to happen.
   if (carriedByLaterTreatment(step) && steps.some((later) => later.included
     && later.historyIndex > step.historyIndex
@@ -1009,6 +1077,14 @@ export function describeGuideStep(
       body: `Click ${name}, set the ${step.cue === "chamfer" ? "distance" : "radius"}${amount == null ? "" : ` to ${formatMm(amount)}`}, select ${edges}, then Apply.`,
     };
   }
+  const pulled = step.cue === "pushPull" ? addedPushPull(prev, next) : null;
+  if (pulled) {
+    const words = pushPullWords(pulled.step);
+    return {
+      title: words.title,
+      body: `Click Push Pull, click ${words.which}, type ${words.distance} for Distance, then Apply.`,
+    };
+  }
   const pocket = step.cue === "pad/pocket"
     ? { inset: step.insetMm ?? 4, depth: step.depthMm ?? 6 }
     : recordedPocket(step, history);
@@ -1221,6 +1297,10 @@ export function guidePrompt(input: {
   edgeKind?: "chamfer" | "fillet" | null;
   /** Distance or radius currently in that panel, in millimetres. */
   edgeAmount?: number | null;
+  /** Push Pull is open; the face picked in it points along this normal, and its distance in millimetres. */
+  pushPullOpen?: boolean;
+  pushPullFaceNormal?: [number, number, number] | null;
+  pushPullDistance?: number | null;
   /** Every sharp edge the open tool can take is selected. */
   allEdgesSelected?: boolean;
   /** How many edges are selected in the open chamfer or fillet tool. */
@@ -1381,6 +1461,20 @@ export function guidePrompt(input: {
       };
     }
     return { ...base, cue: "edge-apply", title: "Apply", body: "Click Apply." };
+  }
+  const pulled = step.cue === "pushPull" ? addedPushPull(prev, next) : null;
+  if (pulled) {
+    const words = pushPullWords(pulled.step);
+    const title = pulled.step.distance < 0 ? "Push the face in" : "Pull the face out";
+    if (!input.pushPullOpen) return { ...base, cue: "push pull", title, body: "Click Push Pull." };
+    if (!input.pushPullFaceNormal) return { ...base, cue: "face", title, body: `Click ${words.which}.` };
+    if (!sameFaceDirection(input.pushPullFaceNormal, pulled.step.face.normal)) {
+      return { ...base, cue: "face", title, body: `Click ${words.which} instead.` };
+    }
+    if (typeof input.pushPullDistance !== "number" || Math.abs(input.pushPullDistance - pulled.step.distance) > 0.1) {
+      return { ...base, cue: "push-pull-distance", title: "Distance", body: `Type ${words.distance} for Distance.` };
+    }
+    return { ...base, cue: "push-pull-apply", title: "Apply", body: "Click Apply." };
   }
   if (step.cue === "pad/pocket") {
     const inset = formatMm(step.insetMm ?? 4);

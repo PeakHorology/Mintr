@@ -349,6 +349,7 @@ export type WorkplaneViewportProps = {
   onEditSketchDimension?: (dimensionId: string, value: number) => void;
   canSeparateParts?: boolean;
   onSeparateParts?: () => void;
+  onMakeMatchingThread?: () => void;
   /** Gridfinity baseplate wider than the printer bed: offer to split it into tabbed pieces. */
   canSplitForPrintBed?: boolean;
   onSplitForPrintBed?: () => void;
@@ -363,6 +364,9 @@ export type WorkplaneViewportProps = {
   onDissolvePattern?: () => void;
   onEditEdgeTreatment?: (index: number) => void;
   onRemoveEdgeTreatment?: (index: number) => void;
+  onEditPartStep?: (featureId: string, valueMm: number) => void;
+  onTogglePartStep?: (featureId: string) => void;
+  onRemovePartStep?: (featureId: string) => void;
   onUpdateShape: (id: string, patch: ShapeUpdatePatch) => void;
   onWorkspaceSettingsChange?: (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
   settingsOpen?: boolean;
@@ -2639,6 +2643,7 @@ export function WorkplaneViewport({
   onEditSketchDimension,
   canSeparateParts = false,
   onSeparateParts,
+  onMakeMatchingThread,
   canSplitForPrintBed = false,
   onSplitForPrintBed,
   onReduceTriangles,
@@ -2652,6 +2657,9 @@ export function WorkplaneViewport({
   onDissolvePattern,
   onEditEdgeTreatment,
   onRemoveEdgeTreatment,
+  onEditPartStep,
+  onTogglePartStep,
+  onRemovePartStep,
   onUpdateShape,
   onWorkspaceSettingsChange,
   settingsOpen = false,
@@ -6998,6 +7006,7 @@ export function WorkplaneViewport({
             onEditSketchDimension={onEditSketchDimension}
             canSeparateParts={canSeparateParts}
             onSeparateParts={onSeparateParts}
+            onMakeMatchingThread={onMakeMatchingThread}
             canSplitForPrintBed={canSplitForPrintBed}
             onSplitForPrintBed={onSplitForPrintBed}
             onReduceTriangles={onReduceTriangles}
@@ -7011,6 +7020,9 @@ export function WorkplaneViewport({
             onDissolvePattern={onDissolvePattern}
             onEditEdgeTreatment={onEditEdgeTreatment}
             onRemoveEdgeTreatment={onRemoveEdgeTreatment}
+            onEditPartStep={onEditPartStep}
+            onTogglePartStep={onTogglePartStep}
+            onRemovePartStep={onRemovePartStep}
             onInteractionActiveChange={onInteractionActiveChange}
           />
         </div>

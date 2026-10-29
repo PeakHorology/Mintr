@@ -9,6 +9,7 @@ import {
 import {
   buildMetricThreadedCylinder,
   DEFAULT_THREAD_CLEARANCE,
+  defaultThreadClearance,
   DEFAULT_THREAD_SIDES,
   MAX_THREAD_CLEARANCE,
   MAX_THREAD_SIDES,
@@ -19,6 +20,8 @@ import {
   type ThreadProfile,
   type ThreadRole,
 } from "@/lib/metricThreadSolid";
+import * as THREE from "three";
+import { shapeYawDegrees } from "@/lib/shapeBounds";
 import { canonicalizeShape, withHoleMode } from "@/lib/workplaneShapes";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
@@ -351,11 +354,74 @@ export function separateThreadScrewParts(shape: WorkplaneShape): WorkplaneShape[
     },
   });
 
-  // Nudge the cutter slightly so both remain selectable after split.
-  return [
-    shaft,
-    canonicalizeShape({ ...cutter, x: cutter.x + 0.01 }),
-  ];
+  // The cutter shares the shaft's axis exactly; it is the larger of the two, so it is the one a click finds.
+  return [shaft, cutter];
+}
+
+/**
+ * Only a tapped hole is a hole. A screw, rod or nut stays solid; its matching tapped hole
+ * is what cuts a thread into a part. `role` is the role the thread is about to have.
+ */
+export function threadCanBeHole(shape: WorkplaneShape, role = shape.threadSpec?.role) {
+  return shape.kind !== "thread" || role === "bore";
+}
+
+/** Screws, rods and nuts can make the tapped hole of their own size. */
+export function canMakeMatchingTappedHole(shape: WorkplaneShape) {
+  if (shape.kind !== "thread" || !shape.threadSpec || shape.threadSpec.part === "shaft") return false;
+  const role = shape.threadSpec.role ?? (shape.threadSpec.style === "hole" ? "bore" : "rod");
+  return role !== "bore";
+}
+
+/**
+ * The tapped hole for the same thread (M3 makes an M3 tapped hole), on the same axis and as
+ * long as the threaded length. Same hand and profile; clearance suits the printer.
+ */
+export function matchingThreadPart(shape: WorkplaneShape, printerKind?: "filament" | "resin"): WorkplaneShape | null {
+  const spec = shape.threadSpec;
+  if (!spec || !canMakeMatchingTappedHole(shape)) return null;
+  const length = spec.length ?? shape.height;
+  // Parts turn about their centre. The hole's centre sits on the same axis, at the middle
+  // of the threaded length (a screw's head is above that).
+  const axis = new THREE.Vector3(0, 1, 0).applyEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(shape.rotationX ?? 0),
+    THREE.MathUtils.degToRad(shapeYawDegrees(shape)),
+    THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
+    "XYZ",
+  ));
+  const center = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z)
+    .addScaledVector(axis, length / 2 - shape.height / 2);
+  return createThreadShape({
+    height: length,
+    point: { x: center.x, z: center.z, elevation: center.y - length / 2 },
+    base: {
+      id: createLocalId("thread"),
+      name: `Tapped hole ${spec.designation}`,
+      color: "#b8c2cc",
+      sides: shape.sides,
+      rotation: shape.rotation,
+      rotationX: shape.rotationX,
+      rotationZ: shape.rotationZ,
+      mirrorX: shape.mirrorX,
+      mirrorY: shape.mirrorY,
+      mirrorZ: shape.mirrorZ,
+      hole: true,
+      threadSpec: {
+        designation: spec.designation,
+        majorDiameter: spec.majorDiameter,
+        pitch: spec.pitch,
+        hand: spec.hand,
+        series: spec.series,
+        profile: spec.profile,
+        chamfer: spec.chamfer,
+        style: "hole",
+        part: "threads",
+        role: "bore",
+        clearance: defaultThreadClearance(printerKind),
+        length,
+      },
+    },
+  });
 }
 
 /** Helix solids (screws, nuts, tapped-hole cutters). Smooth shafts stay in the fillet body. */

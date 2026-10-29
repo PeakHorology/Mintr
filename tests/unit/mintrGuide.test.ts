@@ -400,6 +400,44 @@ describe("mintr guide", () => {
     expect(guidePrompt({ ...input, shapes: [filleted] })?.title).toBe("Tutorial complete");
   });
 
+  it("coaches a push/pull step and checks the face and distance", () => {
+    const start = box("b");
+    const pull = {
+      id: "pull-1",
+      kind: "pushPull" as const,
+      face: { origin: [0, 20, 0] as [number, number, number], normal: [0, 1, 0] as [number, number, number], area: 400 },
+      distance: 6,
+      frame: { origin: [0, 0, 0] as [number, number, number], size: [20, 20, 20] as [number, number, number] },
+    };
+    const pulled = { ...start, kind: "mesh" as const, height: 26, features: [pull] };
+    const history = [entry([start], "Add a box"), entry([pulled], "Pull 6 mm")];
+    const steps = proposeGuideSteps(history, 1);
+    expect(steps.map((step) => [step.cue, step.label])).toEqual([["pushPull", "Pull a face out"]]);
+    const input = {
+      guide: { title: "Pull", author: "", summary: "", steps: [steps[0]] },
+      history,
+      shapes: [start],
+      sketchMode: false,
+      pickingFace: false,
+      sketching: false,
+      sketchingOffPart: false,
+      sketchClosed: false,
+      extrudeOpen: false,
+      sketchPoints: [],
+    };
+    expect(guidePrompt(input)?.body).toBe("Click Push Pull.");
+    expect(guidePrompt({ ...input, pushPullOpen: true })?.body).toBe("Click the top face.");
+    expect(guidePrompt({ ...input, pushPullOpen: true, pushPullFaceNormal: [1, 0, 0] })?.body).toBe("Click the top face instead.");
+    expect(guidePrompt({ ...input, pushPullOpen: true, pushPullFaceNormal: [0, 1, 0], pushPullDistance: 2 })?.body).toBe("Type 6 mm for Distance.");
+    expect(guidePrompt({ ...input, pushPullOpen: true, pushPullFaceNormal: [0, 1, 0], pushPullDistance: 6 })?.body).toBe("Click Apply.");
+    // The learner pulled the top of their own box by 6 mm: same size, same face, done.
+    const learner = { ...pulled, id: "mine", x: 40, features: [{ ...pull, id: "their-pull" }] };
+    expect(guidePrompt({ ...input, shapes: [learner] })?.title).toBe("Tutorial complete");
+    // Pulling the side instead leaves a part of the wrong shape.
+    const side = { ...learner, height: 20, width: 26, features: [{ ...pull, id: "side", face: { ...pull.face, normal: [1, 0, 0] as [number, number, number] } }] };
+    expect(guidePrompt({ ...input, shapes: [side] })?.title).not.toBe("Tutorial complete");
+  });
+
   it("asks for only the chamfered edges when the guide did not chamfer all of them", () => {
     const session = plateGuideSession();
     const host = session.history[1].shapes[0];

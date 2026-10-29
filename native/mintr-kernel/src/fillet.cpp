@@ -141,6 +141,20 @@ nlohmann::json modifierFail(const std::string& message, bool fallback, int reque
   };
 }
 
+/** Rigid motion and uniform scale, as cadTransformIsSimilarity in the browser. */
+bool rowMajorIsSimilarity(const double m[12]) {
+  const gp_Vec columns[3] = { gp_Vec(m[0], m[4], m[8]), gp_Vec(m[1], m[5], m[9]), gp_Vec(m[2], m[6], m[10]) };
+  const double scale = columns[0].Magnitude();
+  for (const gp_Vec& column : columns) {
+    const double length = column.Magnitude();
+    if (length < 1e-9 || std::abs(length - scale) > 1e-6 * std::max(1.0, scale)) return false;
+  }
+  const double limit = 1e-5 * scale * scale;
+  return std::abs(columns[0].Dot(columns[1])) <= limit
+    && std::abs(columns[1].Dot(columns[2])) <= limit
+    && std::abs(columns[0].Dot(columns[2])) <= limit;
+}
+
 void applyRowMajor(TopoDS_Shape& shape, const nlohmann::json& transform) {
   if (!transform.is_array() || transform.size() < 12) return;
   const double m[12] = {
@@ -148,6 +162,19 @@ void applyRowMajor(TopoDS_Shape& shape, const nlohmann::json& transform) {
     transform[4].get<double>(), transform[5].get<double>(), transform[6].get<double>(), transform[7].get<double>(),
     transform[8].get<double>(), transform[9].get<double>(), transform[10].get<double>(), transform[11].get<double>(),
   };
+  // A move, turn or even scale keeps planes and cylinders as they are. The general
+  // transform rebuilds every face as a free-form surface, which makes each later
+  // fillet, volume and mesh several times slower. Only a stretch needs it.
+  // Same rule as applyCadTransform in the browser.
+  if (rowMajorIsSimilarity(m)) {
+    try {
+      gp_Trsf trsf;
+      trsf.SetValues(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+      shape = BRepBuilderAPI_Transform(shape, trsf, true).Shape();
+      return;
+    } catch (const Standard_Failure&) {
+    }
+  }
   gp_Mat mat(m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]);
   gp_GTrsf gtrsf;
   gtrsf.SetVectorialPart(mat);

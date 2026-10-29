@@ -111,6 +111,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     groupedBaseDepth: shape.groupedBaseDepth,
     groupedBaseHeight: shape.groupedBaseHeight,
     edgeTreatments: shape.edgeTreatments,
+    features: shape.features,
     surfaceTexture: shape.surfaceTexture,
     cadDisplayEdgesVersion: shape.cadDisplayEdgesVersion,
     edgeResizeMode: shape.edgeResizeMode,
@@ -186,6 +187,9 @@ export function compactHistoryShape(
         before: compactHistoryShape(entry.before, vault, `${path}/edgeBefore/${index}/${entry.before.id}`),
       })),
     };
+  }
+  if (next.featureBase) {
+    next = { ...next, featureBase: compactHistoryShape(next.featureBase, vault, `${path}/featureBase/${next.featureBase.id}`) };
   }
 
   const op = next.csg?.op;
@@ -272,6 +276,9 @@ export function expandHistoryShapes(
           before: expand(entry.before, `${path}/edgeBefore/${index}/${entry.before.id}`),
         })),
       };
+    }
+    if (next.featureBase) {
+      next = { ...next, featureBase: expand(next.featureBase, `${path}/featureBase/${next.featureBase.id}`) };
     }
 
     const blob = vault?.[meshVaultKey(path)];

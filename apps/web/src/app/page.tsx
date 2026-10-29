@@ -948,6 +948,12 @@ export default function Home() {
   }, []);
   const [projectShapesById, setProjectShapesById] = useState<Record<string, ProjectShapeCacheEntry>>({});
   const projectsJsonRef = useRef("");
+  /**
+   * The list as last taken from another tab. It is not written back: two tabs whose code
+   * stores a project slightly differently (an older copy of Mintr still open, say) would
+   * otherwise rewrite each other's list without end.
+   */
+  const projectsFromOtherTabRef = useRef<DashboardProject[] | null>(null);
   const foldersJsonRef = useRef("");
   const nextProjectRevisionRef = useRef(0);
   const projectShapeSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
@@ -1354,6 +1360,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!mounted) return;
+    if (projects === projectsFromOtherTabRef.current) return;
     // Write-only: never feed merged storage back into React state. That feedback
     // loop was clobbering in-memory folderId right after drag-move.
     persistProjectsList(projects);
@@ -1391,15 +1398,22 @@ export default function Home() {
         const stored = readProjects();
         setProjects((current) => {
           const currentById = new Map(current.map((project) => [project.id, project]));
-          return stored.map((project) => {
+          let keptLocal = false;
+          const merged = stored.map((project) => {
             const live = currentById.get(project.id);
             if (!live) return project;
             // Keep newer in-memory folder assignment if storage is behind.
             if ((live.updatedAt ?? 0) >= (project.updatedAt ?? 0)) {
-              return { ...project, folderId: live.folderId ?? null, updatedAt: Math.max(project.updatedAt, live.updatedAt) };
+              const folderId = live.folderId ?? null;
+              const updatedAt = Math.max(project.updatedAt, live.updatedAt);
+              if (folderId !== (project.folderId ?? null) || updatedAt !== project.updatedAt) keptLocal = true;
+              return { ...project, folderId, updatedAt };
             }
             return project;
           });
+          // Only a list that kept something of this tab's is worth writing back.
+          projectsFromOtherTabRef.current = keptLocal ? null : merged;
+          return merged;
         });
       }
       if (event.key === FOLDERS_STORAGE_KEY) {
