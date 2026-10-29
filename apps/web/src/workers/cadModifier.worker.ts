@@ -1494,22 +1494,53 @@ export function coveEdges(cad: OcctKernel, solid: ShapeHandle, edges: ShapeHandl
     }
     tools.push(cad.translate(cad.makeSphere(ball), point.x, point.y, point.z));
   });
+  // One tool at a time. A cut can never take away more than its tool holds, and must leave
+  // a sound solid. One that fails either is a broken boolean, and every cut after it would
+  // go wrong too (on a moved or turned part this left holes in the surface). So it is tried
+  // again after the others, with the tool grown by a fraction of a micron: too little to
+  // see, enough to move it off the exact touching faces. The desktop engine does the same.
   let current = solid;
+  let volume = Math.abs(cad.getVolume(solid));
+  let pending = tools;
+  const grown: ShapeHandle[] = [];
+  const drop = (shape: ShapeHandle) => {
+    if (shape === solid) return;
+    try { cad.release(shape); } catch { /* Replaced by the next cut. */ }
+  };
   try {
-    for (const tool of tools) {
-      const next = cad.cut(current, tool);
-      if (current !== solid) {
-        try { cad.release(current); } catch { /* Replaced by the next cut. */ }
+    for (let round = 0; round < 3 && pending.length > 0; round += 1) {
+      const retry: ShapeHandle[] = [];
+      for (const tool of pending) {
+        let cutter = tool;
+        if (round > 0) {
+          const box = cad.getBoundingBox(tool, false);
+          cutter = cad.scale(tool, { x: (box.xmin + box.xmax) / 2, y: (box.ymin + box.ymax) / 2, z: (box.zmin + box.zmax) / 2 }, 1 + 2e-5 * round);
+          grown.push(cutter);
+        }
+        const next = cad.cut(current, cutter);
+        const left = Math.abs(cad.getVolume(next));
+        if (volume - left > Math.abs(cad.getVolume(tool)) * 1.001 + 1e-6 || !cadShapeIsValid(cad, next)) {
+          drop(next);
+          retry.push(tool);
+          continue;
+        }
+        drop(current);
+        current = next;
+        volume = left;
       }
-      current = next;
+      if (retry.length === pending.length) break;
+      pending = retry;
+    }
+    if (pending.length > 0) {
+      drop(current);
+      throw new Error("The concave fillet could not be cut cleanly on these edges.");
     }
     const simplified = singleSolid(cad, cad.simplify(current));
-    if (simplified !== current && current !== solid) {
-      try { cad.release(current); } catch { /* Merged faces replace the raw cut. */ }
-    }
+    if (simplified !== current) drop(current);
     return simplified;
   } finally {
     releaseHandles(cad, tools);
+    releaseHandles(cad, grown);
   }
 }
 

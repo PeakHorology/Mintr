@@ -728,18 +728,44 @@ bool coveEdges(const TopoDS_Shape& solid, const std::vector<TopoDS_Edge>& edges,
     }
     tools.Append(BRepPrimAPI_MakeSphere(point, ball).Shape());
   }
-  // All grooves and balls in one cut is fastest. Where they crowd together (a pocket's
-  // corners) that cut can come out broken, so fall back to one tool at a time, the way
-  // the browser kernel always cuts them.
-  TopoDS_Shape coved;
-  if (!kernelBoolean(KernelBooleanOp::Cut, solid, tools, coved) || !kernelShapeIsValid(coved)) {
-    coved = solid;
-    for (TopTools_ListOfShape::Iterator it(tools); it.More(); it.Next()) {
+  // One tool at a time, the way the browser kernel cuts them. Cutting every groove and
+  // ball at once was faster, but on a moved or turned part it could come out wrong while
+  // still passing the validity check: whole faces gone.
+  // A cut can never take away more than its tool holds, and must leave a sound solid. One
+  // that fails either is a broken boolean (every cut after it then goes wrong too), so it
+  // is tried again after the others, once the part around it has changed.
+  std::vector<TopoDS_Shape> pending;
+  for (TopTools_ListOfShape::Iterator it(tools); it.More(); it.Next()) pending.push_back(it.Value());
+  TopoDS_Shape coved = solid;
+  double volume = volumeOf(solid);
+  for (int round = 0; round < 3 && !pending.empty(); ++round) {
+    std::vector<TopoDS_Shape> retry;
+    for (const auto& tool : pending) {
+      // On a retry the tool grows by a fraction of a micron: too little to see, enough to
+      // move it off the exact touching faces that tripped the boolean.
+      TopoDS_Shape cutter = tool;
+      if (round > 0) {
+        double x0, y0, z0, x1, y1, z1;
+        if (kernelBounds(tool, x0, y0, z0, x1, y1, z1)) {
+          gp_Trsf grow;
+          grow.SetScale(gp_Pnt((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0), 1.0 + 2e-5 * round);
+          cutter = BRepBuilderAPI_Transform(tool, grow, true).Shape();
+        }
+      }
       TopoDS_Shape next;
-      if (!kernelBoolean(KernelBooleanOp::Cut, coved, it.Value(), next)) return false;
+      if (!kernelBoolean(KernelBooleanOp::Cut, coved, cutter, next)) return false;
+      const double left = volumeOf(next);
+      if (volume - left > volumeOf(tool) * 1.001 + 1e-6 || !kernelShapeIsValid(next)) {
+        retry.push_back(tool);
+        continue;
+      }
       coved = next;
+      volume = left;
     }
+    if (retry.size() == pending.size()) break;
+    pending = retry;
   }
+  if (!pending.empty()) return false;
   const double before = volumeOf(solid);
   const double after = volumeOf(coved);
   // A cove always removes material; anything else means the tool missed the edge.

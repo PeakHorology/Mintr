@@ -31,6 +31,9 @@ const shift = (y: number) => [1, 0, 0, 0, 0, 1, 0, y, 0, 0, 1, 0];
 
 const PARTS: Record<string, CadModifierMeshPart[]> = {
   cube: [{ hole: false, primitive: box }],
+  // Moved and turned, as a part on the workplane usually is. Concave fillets on a part like
+  // this once cut whole faces away on the desktop.
+  "cube, turned and moved": [{ hole: false, primitive: { ...box, transform: [0.8660254, 0, 0.5, 30, 0, 1, 0, 10, -0.5, 0, 0.8660254, -20] } }],
   "plate with a through hole": [
     { hole: false, primitive: { kind: "box", width: 40, depth: 30, height: 10 } },
     { hole: true, primitive: { kind: "cylinder", radius: 5, height: 20, transform: shift(-5) } },
@@ -154,6 +157,29 @@ describe.skipIf(!hasNativeKernelExe)("desktop engine matches the browser engine"
     await browser.request({ type: "dispose", requestId: nextId++ });
     await native.request({ id: nextId, requestId: nextId++, type: "dispose" });
   }, 300000);
+
+  // Moving a part must not change what a concave fillet leaves. On the desktop these picks once
+  // cut whole faces off a turned cube while every edge at once still came out right.
+  for (const picks of [[0, 1, 2, 3], [1, 2, 3, 7, 8, 9, 10, 11]]) {
+    it(`turned and moved cube: concave fillet on edges ${picks.join(", ")} matches the cube left in place`, async () => {
+      const smoothVolume = async (parts: CadModifierMeshPart[]) => {
+        const prepareId = nextId++;
+        const ready = await native.request({ id: prepareId, requestId: prepareId, type: "prepare", sharpAngle: 12, parts }, 60000);
+        const edges = (ready.selectableEdgeIds as number[] | undefined) ?? [];
+        const previewId = nextId++;
+        const preview = await native.request({ id: previewId, requestId: previewId, type: "preview", chamferAngle: 45, kind: "fillet", amount: 2, filletProfile: "cove", edgeIds: picks.map((index) => edges[index]) }, 60000);
+        expect(preview.ok, String(preview.message)).not.toBe(false);
+        expect((preview.skippedEdgeIds as number[] | undefined) ?? []).toEqual([]);
+        const refineId = nextId++;
+        const smooth = await native.request({ id: refineId, requestId: refineId, type: "refine" }, 60000);
+        await native.request({ id: nextId, requestId: nextId++, type: "dispose" });
+        return meshVolume({ positions: smooth.positions as number[], indices: smooth.indices as number[] });
+      };
+      const inPlace = await smoothVolume(PARTS.cube);
+      const moved = await smoothVolume(PARTS["cube, turned and moved"]);
+      expect(Math.abs(moved - inPlace) / inPlace, `moved ${moved.toFixed(1)} mm³, in place ${inPlace.toFixed(1)} mm³`).toBeLessThan(0.002);
+    }, 120000);
+  }
 
   for (const kind of ["fillet", "chamfer"] as const) {
     it(`cube: a ${kind} too big for one edge names the same largest size`, async () => {

@@ -31,6 +31,12 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.9.4",
+    items: [
+      "Concave fillets in the desktop app no longer cut faces off a part that has been moved or turned on the workplane.",
+    ],
+  },
+  {
     version: "1.1.9.3",
     items: [
       "Big designs stay smooth while you work: Mintr now saves your work instantly in the background and rewrites the design file a few seconds after you stop, and right away when you save, close or go back to your designs.",
