@@ -58,6 +58,12 @@ function grantOpenPath(filePath) {
 }
 
 let pendingOpenPath = grantOpenPath(findPeakcadArg(process.argv));
+// Set when the page crashed and was reloaded, so it can say the design was recovered.
+let recoveredFromCrash = false;
+// Reloads in the last minute. A page that keeps crashing is left alone rather than looping.
+let recentCrashReloads = [];
+const CRASH_RELOAD_WINDOW_MS = 60_000;
+const MAX_CRASH_RELOADS = 2;
 
 /** License files ship in resources/ when packaged; from source they live in the repo and the staged legal folder. */
 function legalFilePath(name) {
@@ -558,6 +564,20 @@ function createWindow(port) {
     event.preventDefault();
   });
 
+  // A crashed page (out of memory, GPU driver reset) used to leave a blank window. Reload it:
+  // the autosave already holds the design, and the page reopens it as usual.
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit" || closeRequested || window.isDestroyed()) return;
+    const now = Date.now();
+    recentCrashReloads = recentCrashReloads.filter((time) => now - time < CRASH_RELOAD_WINDOW_MS);
+    if (recentCrashReloads.length >= MAX_CRASH_RELOADS) return;
+    recentCrashReloads.push(now);
+    recoveredFromCrash = true;
+    setTimeout(() => {
+      if (!window.isDestroyed()) window.webContents.reload();
+    }, 250);
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -615,6 +635,11 @@ if (!gotSingleInstanceLock) {
       return next;
     });
     ipcMain.handle("peakcad:fullscreen-state", () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
+    ipcMain.handle("peakcad:take-crash-recovery", () => {
+      const recovered = recoveredFromCrash;
+      recoveredFromCrash = false;
+      return recovered;
+    });
     return bootstrap();
   }).catch((error) => {
     console.error(error);

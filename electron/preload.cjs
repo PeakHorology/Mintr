@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("peakcadWindow", {
   setTheme: (theme) => ipcRenderer.send("peakcad:set-theme", theme),
   toggleFullScreen: () => ipcRenderer.invoke("peakcad:fullscreen-toggle"),
   isFullScreen: () => ipcRenderer.invoke("peakcad:fullscreen-state"),
+  takeCrashRecovery: () => ipcRenderer.invoke("peakcad:take-crash-recovery"),
   onFullScreen: (listener) => {
     const wrapped = (_event, full) => listener(full === true);
     ipcRenderer.on("peakcad:fullscreen", wrapped);

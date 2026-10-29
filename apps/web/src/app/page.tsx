@@ -2,6 +2,7 @@
 
 import { ArrowLeft, CircleArrowUp, Download, EllipsisVertical, FolderOpen, FolderPlus, Grid3X3, KeyRound, List, Lock, LockOpen, Pencil, Plus, Search, Settings, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent } from "react";
+import { takeCrashRecovery } from "@/lib/desktopWindow";
 import { rememberProblem } from "@/lib/problemReport";
 import { noteIsFeatured, RELEASE_NOTES, UNRELEASED_NOTES } from "@/lib/releaseNotes";
 import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchForgeEditor";
@@ -891,6 +892,17 @@ async function serializeProjectForDisk(project: DashboardProject, entry: Project
   return text ?? serializePeakcadDocument(buildDocumentForProject(project, entry));
 }
 
+/** How long the .mintr file waits after the last edit before it is rewritten. */
+const PROJECT_FILE_WRITE_DELAY_MS = 4000;
+
+type PendingDiskWrite = {
+  revision: number;
+  entry: ProjectShapeCacheEntry;
+  /** False when the store save failed, so the file is built from this entry instead. */
+  stored: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [startupReady, setStartupReady] = useState(false);
@@ -947,6 +959,8 @@ export default function Home() {
   const projectShapesByIdRef = useRef<Record<string, ProjectShapeCacheEntry>>({});
   const projectFolderMapRef = useRef<Record<string, string | null>>({});
   const lastDiskRevisionRef = useRef<Record<string, number>>({});
+  // The newest autosave not yet written to the .mintr file, per project.
+  const pendingDiskWritesRef = useRef<Record<string, PendingDiskWrite>>({});
   const knownFilePathRef = useRef<Record<string, string>>({});
   const dashboardOrderRef = useRef<DashboardOrder>(emptyDashboardOrder());
   const activeProjectIdRef = useRef<string | null>(activeProjectId);
@@ -992,6 +1006,12 @@ export default function Home() {
     return () => {
       cancel = true;
     };
+  }, []);
+
+  useEffect(() => {
+    void takeCrashRecovery().then((recovered) => {
+      if (recovered) setDashboardNotice("Mintr closed unexpectedly and reopened itself. Your work is back from the last autosave.");
+    });
   }, []);
 
   useEffect(() => {
@@ -2035,6 +2055,44 @@ export default function Home() {
       });
   }, []);
 
+  // Writes the newest autosave to the project's .mintr file, in the same queue as the
+  // store saves so they never cross. Skipped when an explicit Save already wrote it.
+  const writePendingProjectFile = useCallback((projectId: string) => {
+    const pending = pendingDiskWritesRef.current[projectId];
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    delete pendingDiskWritesRef.current[projectId];
+    const previousSave = projectShapeSaveQueuesRef.current[projectId] ?? Promise.resolve();
+    const queuedWrite = previousSave.catch(() => undefined).then(async () => {
+      const project = projectsRef.current.find((item) => item.id === projectId);
+      if (!project?.filePath || !hasDesktopProjectFiles()) return;
+      if ((lastDiskRevisionRef.current[projectId] ?? 0) >= pending.revision) return;
+      const revision = pending.revision;
+      const meta = peakcadProjectMeta({ ...project, updatedAt: revision, revision }, pending.entry.shapes.length);
+      const plain = (pending.stored ? await serializeStoredProject(projectId, meta, projectDesignFonts(pending.entry)).catch(() => null) : null)
+        ?? serializePeakcadDocument(buildDocumentForProject({ ...project, updatedAt: revision, revision }, pending.entry));
+      const text = await sealPeakcadText({ ...project, updatedAt: revision, revision }, plain, false);
+      if (text) {
+        await writePeakcadText(project.filePath, text);
+        lastDiskRevisionRef.current[projectId] = Math.max(lastDiskRevisionRef.current[projectId] ?? 0, revision);
+      }
+    });
+    projectShapeSaveQueuesRef.current[projectId] = queuedWrite;
+    void queuedWrite
+      .catch((error) => {
+        if (projectShapeSaveQueuesRef.current[projectId] === queuedWrite) {
+          const message = `Autosave failed: ${error instanceof Error ? error.message : "could not write the project file"}`;
+          setDashboardNotice(message);
+          notifyEditor(message);
+        }
+      })
+      .finally(() => {
+        if (projectShapeSaveQueuesRef.current[projectId] === queuedWrite) {
+          delete projectShapeSaveQueuesRef.current[projectId];
+        }
+      });
+  }, [notifyEditor, sealPeakcadText]);
+
   const updateProjectShapes = useCallback((snapshot: {
     projectId: string;
     shapes: WorkplaneShape[];
@@ -2065,23 +2123,26 @@ export default function Home() {
 
     const previousSave = projectShapeSaveQueuesRef.current[snapshot.projectId] ?? Promise.resolve();
     const queuedSave = previousSave.catch(() => undefined).then(async () => {
-      // A full or broken IndexedDB must not stop the .mintr file on disk from
-      // being written — that file is the copy people can actually recover.
       let storeError: unknown = null;
       const stored = await saveProjectShapes(snapshot.projectId, entry).then(() => true, (error: unknown) => {
         storeError = error;
         return false;
       });
+      // The store save above is the instant safety copy. Rewriting the whole .mintr
+      // file after every nudge stalled big designs, so the file catches up a few
+      // seconds after the last change (and at once on Save, close or leaving the
+      // design). A full or broken store still gets the file written: that is the
+      // copy people can actually recover.
       const project = projectsRef.current.find((item) => item.id === snapshot.projectId);
       if (project?.filePath && hasDesktopProjectFiles()) {
-        const meta = peakcadProjectMeta({ ...project, updatedAt: revision, revision }, snapshot.shapes.length);
-        const plain = (stored ? await serializeStoredProject(snapshot.projectId, meta, projectDesignFonts(entry)).catch(() => null) : null)
-          ?? serializePeakcadDocument(buildDocumentForProject({ ...project, updatedAt: revision, revision }, entry));
-        const text = await sealPeakcadText({ ...project, updatedAt: revision, revision }, plain, false);
-        if (text) {
-          await writePeakcadText(project.filePath, text);
-          lastDiskRevisionRef.current[snapshot.projectId] = revision;
-        }
+        const previous = pendingDiskWritesRef.current[snapshot.projectId];
+        if (previous?.timer) clearTimeout(previous.timer);
+        pendingDiskWritesRef.current[snapshot.projectId] = {
+          revision,
+          entry,
+          stored,
+          timer: setTimeout(() => writePendingProjectFile(snapshot.projectId), stored ? PROJECT_FILE_WRITE_DELAY_MS : 0),
+        };
       }
       if (!stored) throw storeError instanceof Error ? storeError : new Error("Could not save project shapes");
     });
@@ -2109,7 +2170,7 @@ export default function Home() {
           delete projectShapeSaveQueuesRef.current[snapshot.projectId];
         }
       });
-  }, [notifyEditor, sealPeakcadText]);
+  }, [notifyEditor, writePendingProjectFile]);
 
   const updateProjectWorkspace = useCallback((snapshot: { projectId: string; workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => {
     // Same reason as updateProjectShapes: a settings change made just before leaving the editor
@@ -2256,6 +2317,8 @@ export default function Home() {
   };
 
   const openDashboard = () => {
+    // Leaving a design writes its .mintr file now rather than a few seconds later.
+    if (activeProjectId) writePendingProjectFile(activeProjectId);
     setOpeningProjectId(null);
     setOpenSpinner(false);
     setViewportReady(false);
@@ -2482,6 +2545,9 @@ export default function Home() {
   }, [confirmLeaveEditor, openFromDisk, saveProjectToDisk]);
 
   const awaitProjectSaveQueue = useCallback(async (projectId: string) => {
+    // Let the store save in flight finish, then write the file now instead of waiting.
+    await projectShapeSaveQueuesRef.current[projectId]?.catch(() => undefined);
+    writePendingProjectFile(projectId);
     let queue = projectShapeSaveQueuesRef.current[projectId];
     while (queue) {
       try {
@@ -2494,7 +2560,7 @@ export default function Home() {
       queue = next;
     }
     return true;
-  }, []);
+  }, [writePendingProjectFile]);
 
   useEffect(() => {
     return subscribePeakcadSaveBeforeClose(async () => {

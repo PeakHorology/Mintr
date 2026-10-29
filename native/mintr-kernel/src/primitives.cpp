@@ -36,8 +36,12 @@
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
 
+#include <BRepBuilderAPI_Copy.hxx>
+
 #include <algorithm>
 #include <cmath>
+#include <list>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -492,6 +496,49 @@ bool fuseOne(const TopoDS_Shape& a, const TopoDS_Shape& b, TopoDS_Shape& out) {
   return kernelBoolean(KernelBooleanOp::Fuse, a, b, out);
 }
 
+// Shapes read from STEP or BRep text, newest first. The same body comes back in
+// request after request (every slider tick, every boolean preview), and reading the
+// text is the slow part, so the last few are kept. The text itself is the key, compared
+// in full, so a hit can never hand back the wrong body.
+struct ReadShape {
+  bool step;
+  std::string text;
+  TopoDS_Shape shape;
+};
+std::list<ReadShape> readShapes;
+std::size_t readShapeBytes = 0;
+std::mutex readShapesLock;
+constexpr std::size_t kReadShapeEntries = 24;
+constexpr std::size_t kReadShapeBytes = 96u * 1024u * 1024u;
+
+bool readShapeText(const std::string& text, bool step, TopoDS_Shape& out) {
+  {
+    std::lock_guard<std::mutex> guard(readShapesLock);
+    for (auto it = readShapes.begin(); it != readShapes.end(); ++it) {
+      if (it->step != step || it->text.size() != text.size() || it->text != text) continue;
+      readShapes.splice(readShapes.begin(), readShapes, it);
+      // A copy, so later healing or tolerance fixes on this request never touch the kept one.
+      out = BRepBuilderAPI_Copy(it->shape, true, false).Shape();
+      return !out.IsNull();
+    }
+  }
+  TopoDS_Shape read;
+  if (!(step ? kernelReadStep(text, read) : kernelReadBrep(text, read)) || read.IsNull()) return false;
+  if (text.size() <= kReadShapeBytes / 4) {
+    std::lock_guard<std::mutex> guard(readShapesLock);
+    readShapes.push_front({ step, text, read });
+    readShapeBytes += text.size();
+    while (readShapes.size() > kReadShapeEntries || readShapeBytes > kReadShapeBytes) {
+      readShapeBytes -= readShapes.back().text.size();
+      readShapes.pop_back();
+    }
+    out = BRepBuilderAPI_Copy(read, true, false).Shape();
+    return !out.IsNull();
+  }
+  out = read;
+  return true;
+}
+
 bool cutOne(const TopoDS_Shape& solid, const TopoDS_Shape& hole, TopoDS_Shape& out) {
   return kernelBoolean(KernelBooleanOp::Cut, solid, hole, out);
 }
@@ -575,14 +622,14 @@ bool buildKernelSolid(const nlohmann::json& solid, TopoDS_Shape& out) {
   }
   if (solid.contains("brepStep") && solid["brepStep"].is_string()) {
     TopoDS_Shape imported;
-    if (!kernelReadStep(solid["brepStep"].get<std::string>(), imported)) return false;
+    if (!readShapeText(solid["brepStep"].get<std::string>(), true, imported)) return false;
     const double height = solid.value("height", 0.0);
     out = kernelPlaced(kernelFitImportedLocal(imported, solid), solid, height > 1e-6 ? height : 0.0);
     return true;
   }
   if (solid.contains("cadBrep") && solid["cadBrep"].is_string()) {
     TopoDS_Shape imported;
-    if (!kernelReadBrep(solid["cadBrep"].get<std::string>(), imported)) return false;
+    if (!readShapeText(solid["cadBrep"].get<std::string>(), false, imported)) return false;
     const double height = solid.value("height", 0.0);
     out = kernelPlaced(kernelFitImportedLocal(imported, solid), solid, height > 1e-6 ? height : 0.0);
     return true;

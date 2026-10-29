@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
@@ -44,7 +44,7 @@ const {
   allowPath: (filePath: string) => string;
   isAllowlisted: (filePath: string) => boolean;
   readTextFile: (filePath: string) => { path: string; text: string };
-  writeTextFile: (filePath: string, text: string) => string;
+  writeTextFile: (filePath: string, text: string) => Promise<string>;
 };
 
 const defaultDir = path.join("C:", "Users", "docs", "PeakCAD");
@@ -192,12 +192,12 @@ describe("transitionProjectFilesToMintrDir", () => {
 });
 
 describe("writeTextFile", () => {
-  it("replaces the file atomically and leaves no temp file behind", () => {
+  it("replaces the file atomically and leaves no temp file behind", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-write-"));
     const target = path.join(dir, "Plate.mintr");
     try {
       fs.writeFileSync(target, "old", "utf8");
-      writeTextFile(target, "{\"format\":\"mintr\"}");
+      await writeTextFile(target, "{\"format\":\"mintr\"}");
       expect(fs.readFileSync(target, "utf8")).toBe("{\"format\":\"mintr\"}");
       expect(fs.readdirSync(dir)).toEqual(["Plate.mintr"]);
     } finally {
@@ -205,26 +205,27 @@ describe("writeTextFile", () => {
     }
   });
 
-  it("keeps the previous file intact when the write cannot complete", () => {
+  it("keeps the previous file intact when the write cannot complete", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-write-fail-"));
     const target = path.join(dir, "Plate.mintr");
     try {
       fs.writeFileSync(target, "previous save", "utf8");
-      // A directory squatting on the temp name makes writeFileSync fail
-      // before anything touches the real project file.
-      fs.mkdirSync(`${target}.${process.pid}.tmp`);
-      expect(() => writeTextFile(target, "new contents")).toThrow();
+      // A rename that fails mid-save (sync client, full disk) must leave the old file alone.
+      const rename = vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(new Error("busy"));
+      await expect(writeTextFile(target, "new contents")).rejects.toThrow(/busy/);
+      rename.mockRestore();
+      expect(fs.readdirSync(dir)).toEqual(["Plate.mintr"]);
       expect(fs.readFileSync(target, "utf8")).toBe("previous save");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("rejects non-string contents before touching the disk", () => {
+  it("rejects non-string contents before touching the disk", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-write-type-"));
     const target = path.join(dir, "Plate.mintr");
     try {
-      expect(() => writeTextFile(target, 42 as unknown as string)).toThrow(/text/);
+      await expect(writeTextFile(target, 42 as unknown as string)).rejects.toThrow(/text/);
       expect(fs.existsSync(target)).toBe(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

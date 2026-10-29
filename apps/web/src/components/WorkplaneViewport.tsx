@@ -2660,14 +2660,14 @@ export function WorkplaneViewport({
   modifierActive = false,
   modifierPreserveSelection = false,
   modifierPreviewActive = false,
-  modifierEdges = [],
-  selectedModifierEdgeIds = [],
+  modifierEdges = NO_MODIFIER_EDGES,
+  selectedModifierEdgeIds = NO_IDS,
   onModifierEdgeToggle,
   pushPullActive = false,
-  pushPullFaces = [],
+  pushPullFaces = NO_FACES,
   pushPullHoverFaceId = null,
   pushPullSelectedFaceId = null,
-  pushPullMarkedFaceIds = [],
+  pushPullMarkedFaceIds = NO_IDS,
   pushPullDistance = 0,
   pushPullShowGhost = false,
   pushPullGhostOpacity = 1,
@@ -3024,19 +3024,27 @@ export function WorkplaneViewport({
     rebuildModifierEdges(threeRef.current, modifierEdges, selectedModifierEdgeIds, modifierPreviewActive, hoverModifierEdgeId);
   }, [hoverModifierEdgeId, modifierEdges, modifierPreviewActive, selectedModifierEdgeIds]);
 
+  // The editor hands over fresh handler functions on every render. Keeping them in refs
+  // here means only real changes to the faces below rebuild anything or redraw the view.
+  useEffect(() => {
+    onPushPullHoverRef.current = onPushPullHover;
+    onPushPullDragStartRef.current = onPushPullDragStart;
+    onPushPullDragRef.current = onPushPullDrag;
+    onPushPullDragEndRef.current = onPushPullDragEnd;
+    onPushPullFacePickRef.current = onPushPullFacePick;
+    onPushPullFaceMissRef.current = onPushPullFaceMiss;
+  });
+
+  useEffect(() => {
+    if (pushPullActive) cancelActiveInteraction();
+  }, [cancelActiveInteraction, pushPullActive]);
+
   useEffect(() => {
     pushPullActiveRef.current = pushPullActive;
     pushPullFacesRef.current = pushPullFaces;
     pushPullSelectedFaceIdRef.current = pushPullSelectedFaceId;
     pushPullDistanceRef.current = pushPullDistance;
-    onPushPullHoverRef.current = onPushPullHover;
-    onPushPullDragStartRef.current = onPushPullDragStart;
-    onPushPullDragRef.current = onPushPullDrag;
-    onPushPullDragEndRef.current = onPushPullDragEnd;
     facePickOnlyRef.current = facePickOnly;
-    onPushPullFacePickRef.current = onPushPullFacePick;
-    onPushPullFaceMissRef.current = onPushPullFaceMiss;
-    if (pushPullActive) cancelActiveInteraction();
     rebuildPushPullFaces(threeRef.current, pushPullFaces, pushPullHoverFaceId, pushPullSelectedFaceId, pushPullMarkedFaceIds);
     rebuildPushPullGhost(threeRef.current, pushPullFaces, pushPullSelectedFaceId, pushPullDistance, pushPullShowGhost, pushPullGhostOpacity);
     const state = threeRef.current;
@@ -3048,8 +3056,8 @@ export function WorkplaneViewport({
     } else {
       setPushPullChipScreen(null);
     }
-    if (state) state.needsRender = true;
-  }, [cancelActiveInteraction, facePickOnly, onPushPullFaceMiss, onPushPullFacePick, pushPullActive, pushPullDistance, pushPullFaces, pushPullGhostOpacity, pushPullHoverFaceId, pushPullMarkedFaceIds, pushPullSelectedFaceId, pushPullShowGhost, onPushPullDrag, onPushPullDragEnd, onPushPullDragStart, onPushPullHover]);
+    if (state && (pushPullActive || face)) state.needsRender = true;
+  }, [facePickOnly, pushPullActive, pushPullDistance, pushPullFaces, pushPullGhostOpacity, pushPullHoverFaceId, pushPullMarkedFaceIds, pushPullSelectedFaceId, pushPullShowGhost]);
 
   const placementRulerModeRef = useRef(placementRulerMode);
   const [objectSnapGuide, setObjectSnapGuide] = useState<ObjectSnapResult | null>(null);
@@ -9721,6 +9729,10 @@ function polylineToLinePositions(points: number[]) {
   return positions;
 }
 
+const NO_IDS: number[] = [];
+const NO_FACES: CadPlanarFace[] = [];
+const NO_MODIFIER_EDGES: CadModifierEdge[] = [];
+
 function rebuildPushPullFaces(
   state: ThreeState | null,
   faces: CadPlanarFace[],
@@ -9730,6 +9742,8 @@ function rebuildPushPullFaces(
 ) {
   if (!state) return;
   const existing = state.modifierLayer.userData.pushPullFaceLines as THREE.LineSegments | undefined;
+  // Nothing drawn and nothing to draw: skip the work and the extra frame.
+  if (!existing && faces.length === 0) return;
   if (existing) {
     state.modifierLayer.remove(existing);
     existing.geometry.dispose();
@@ -9785,6 +9799,7 @@ function rebuildPushPullGhost(
 ) {
   if (!state) return;
   const existing = state.modifierLayer.userData.pushPullGhost as THREE.Mesh | undefined;
+  if (!existing && (!show || faces.length === 0)) return;
   if (existing) {
     state.modifierLayer.remove(existing);
     existing.geometry.dispose();
@@ -10761,8 +10776,21 @@ function fillSilhouetteGeometry(
     packed[used + 5] = bz;
     used += 6;
   }
+  // One graphics buffer per outline, refilled in place as the camera turns. Calling
+  // setPositions() every frame made a new buffer each time and left the old ones behind.
+  const buffer = lineGeometry.userData.silhouetteBuffer as THREE.InterleavedBuffer | undefined;
+  if (buffer && buffer.array === packed) {
+    buffer.clearUpdateRanges();
+    buffer.addUpdateRange(0, used);
+    buffer.needsUpdate = true;
+    lineGeometry.instanceCount = used / 6;
+    return;
+  }
   if (used < 6) return;
-  lineGeometry.setPositions(used === packed.length ? packed : packed.subarray(0, used));
+  lineGeometry.setPositions(packed);
+  const start = lineGeometry.getAttribute("instanceStart") as THREE.InterleavedBufferAttribute | undefined;
+  lineGeometry.userData.silhouetteBuffer = start?.data;
+  lineGeometry.instanceCount = used / 6;
 }
 
 function refreshSilhouetteOutlines(state: ThreeState) {
@@ -10804,6 +10832,20 @@ function isOutlineSourceMesh(child: THREE.Object3D): child is THREE.Mesh {
     && child.raycast.length !== 0;
 }
 
+/**
+ * The outline lines cached for a shape's surface live on the graphics card too. Free
+ * them when that surface is freed; otherwise every edit left its old outlines behind.
+ */
+function releaseOutlineCachesWith(source: THREE.BufferGeometry) {
+  source.addEventListener("dispose", () => {
+    shapeHoverEdgeCache.get(source)?.dispose();
+    shapeOutlineEdgeCache.get(source)?.dispose();
+    shapeHoverEdgeCache.delete(source);
+    shapeOutlineEdgeCache.delete(source);
+    shapeSilhouetteCache.delete(source);
+  });
+}
+
 function overlayEdgesForMesh(mesh: THREE.Mesh) {
   const triangles = Math.floor((mesh.geometry.index?.count ?? mesh.geometry.getAttribute("position")?.count ?? 0) / 3);
   if (triangles > 20_000) return null;
@@ -10812,6 +10854,7 @@ function overlayEdgesForMesh(mesh: THREE.Mesh) {
     edges = new THREE.EdgesGeometry(mesh.geometry, SHAPE_OUTLINE_EDGE_THRESHOLD);
     edges.userData.cached = true;
     shapeHoverEdgeCache.set(mesh.geometry, edges);
+    releaseOutlineCachesWith(mesh.geometry);
   }
   const count = edges.getAttribute("position")?.count ?? 0;
   return count >= SHAPE_OUTLINE_MIN_EDGE_VERTS ? edges : null;
@@ -10831,6 +10874,7 @@ function overlayFatEdgesForMesh(mesh: THREE.Mesh) {
     : Float32Array.from(src).subarray(0, n);
   fat = new LineSegmentsGeometry();
   fat.setPositions(positions);
+  fat.userData.cached = true;
   shapeOutlineEdgeCache.set(mesh.geometry, fat);
   return fat;
 }
@@ -10881,7 +10925,7 @@ function attachSilhouetteOutline(
   if (!topology) return false;
   const geometry = new LineSegmentsGeometry();
   fillSilhouetteGeometry(geometry, mesh, topology, camera);
-  const segments = geometry.getAttribute("instanceStart")?.count ?? 0;
+  const segments = Number.isFinite(geometry.instanceCount) ? geometry.instanceCount : 0;
   if (segments < SHAPE_OUTLINE_MIN_EDGE_VERTS / 2) {
     geometry.dispose();
     return false;

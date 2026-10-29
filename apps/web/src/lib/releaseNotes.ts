@@ -31,6 +31,18 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.1.9.3",
+    items: [
+      "Big designs stay smooth while you work: Mintr now saves your work instantly in the background and rewrites the design file a few seconds after you stop, and right away when you save, close or go back to your designs.",
+      "Hidden shapes and construction guides are no longer included when you export to STL, 3MF or OBJ, or send a part to your slicer.",
+      "Exported STL, 3MF and OBJ files always use the smoothest curves, even when the view is set to a lighter quality.",
+      "If the Mintr window ever crashes, it now reopens by itself with your work from the last autosave, instead of leaving a blank window.",
+      "When a hole cannot be cut while exporting STEP in the desktop app, the other holes still go in and Mintr names the part that is missing a cut.",
+      "The desktop engine remembers parts it has just read, so repeated edits on imported and combined parts respond faster.",
+      "The 3D view frees outline memory it no longer needs and does less redrawing while you work.",
+    ],
+  },
+  {
     version: "1.1.9.2",
     items: [
       "Concave fillet on every edge of a corner now scoops the corner cleanly in the desktop app too, not just in the browser.",

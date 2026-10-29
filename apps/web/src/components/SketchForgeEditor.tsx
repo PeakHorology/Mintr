@@ -20,6 +20,7 @@ import {
   resolveShapeSides,
   resolveShapeSteps,
   setActiveDisplayQuality,
+  withDisplayQuality,
 } from "@/lib/displayTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { sphereTessellation } from "@/lib/sphereTessellation";
@@ -10552,7 +10553,7 @@ export function SketchForgeEditor({
 
   const exportDesign = useCallback((format: ExportFormat) => {
     const sourceShapes = hasSelection ? selectedShapes : shapes;
-    const exportable = sourceShapes.filter((shape) => !shape.hole);
+    const exportable = sourceShapes.filter((shape) => !shape.hole && !shape.hidden && !isConstructionShape(shape));
     if (exportable.length === 0) {
       setNotice(hasSelection ? "Select at least one solid shape before exporting" : "Add a solid shape before exporting");
       return;
@@ -10591,7 +10592,8 @@ export function SketchForgeEditor({
       // Mesh building runs synchronously; a degenerate imported mesh or an
       // allocation failure on a very dense model throws here, not in the promise.
       try {
-        const meshes = exportable.map(printMeshForShape);
+        // Files leave at full smoothness, whatever the view is set to draw.
+        const meshes = withDisplayQuality("smooth", () => exportable.map(printMeshForShape));
         void downloadBlobFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
           .then((result) => {
             finishNotice("STL", result);
@@ -10608,7 +10610,7 @@ export function SketchForgeEditor({
     }
     if (format === "3mf") {
       try {
-        const exported = to3mfForShapes(exportable);
+        const exported = withDisplayQuality("smooth", () => to3mfForShapes(exportable));
         const label = exported.preserved
           ? "3MF. The model was updated and the file’s other settings were kept"
           : "3MF";
@@ -10621,7 +10623,7 @@ export function SketchForgeEditor({
       return;
     }
     try {
-      const meshes = exportable.map(printMeshForShape);
+      const meshes = withDisplayQuality("smooth", () => exportable.map(printMeshForShape));
       void downloadTextFile(projectExportFileName(projectName, "obj"), toObj(meshes), "text/plain")
         .then((result) => finishNotice("OBJ", result))
         .catch((error: unknown) => failNotice("OBJ", error));
@@ -11006,7 +11008,7 @@ export function SketchForgeEditor({
   const openInSlicer = useCallback(() => {
     if (slicer.busy) return;
     const sourceShapes = hasSelection ? selectedShapes : shapes;
-    const exportable = sourceShapes.filter((shape) => !shape.hole);
+    const exportable = sourceShapes.filter((shape) => !shape.hole && !shape.hidden && !isConstructionShape(shape));
     if (exportable.length === 0) {
       setNotice(hasSelection ? "Select at least one solid shape before exporting" : "Add a solid shape before exporting");
       return;
@@ -11029,7 +11031,7 @@ export function SketchForgeEditor({
     const filename = projectExportFileName(projectName, format);
     let bytes: Uint8Array;
     try {
-      bytes = format === "stl" ? toStl(exportable.map(printMeshForShape)) : to3mfForShapes(exportable).bytes;
+      bytes = withDisplayQuality("smooth", () => (format === "stl" ? toStl(exportable.map(printMeshForShape)) : to3mfForShapes(exportable).bytes));
     } catch (error: unknown) {
       setNotice(error instanceof Error ? error.message : "Could not open the slicer");
       return;
@@ -13075,11 +13077,11 @@ export function SketchForgeEditor({
           modifierPreserveSelection={false}
           modifierPreviewActive={Boolean(edgeModifier?.preview || pushPullSession?.preview)}
           modifierEdges={modifierSelectableEdges}
-          selectedModifierEdgeIds={edgeModifier ? edgeModifier.selectedEdgeIds : []}
+          selectedModifierEdgeIds={edgeModifier?.selectedEdgeIds}
           onModifierEdgeToggle={toggleModifierEdge}
           pushPullActive={Boolean(pushPullSession || faceSession)}
           facePickOnly={Boolean(faceSession)}
-          pushPullFaces={(faceSession ?? pushPullSession)?.faces ?? []}
+          pushPullFaces={(faceSession ?? pushPullSession)?.faces}
           pushPullHoverFaceId={(faceSession ?? pushPullSession)?.hoverFaceId ?? null}
           pushPullSelectedFaceId={(faceSession ?? pushPullSession)?.selectedFaceId ?? null}
           pushPullMarkedFaceIds={faceKeptIds}

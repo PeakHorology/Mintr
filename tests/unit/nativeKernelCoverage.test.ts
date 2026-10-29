@@ -790,6 +790,42 @@ describe.skipIf(!hasNativeKernelExe)("MintrKernel.exe job coverage", () => {
     expect((bodies[0]?.positions?.length ?? 0) >= 9).toBe(true);
   });
 
+  it("cuts a hole only into the part it reaches and reports no missing cuts", async () => {
+    const exported = await client.request({
+      id: 51,
+      type: "exportStep",
+      solids: [
+        toNativeKernelSolid(box("plate", { name: "Plate" })),
+        toNativeKernelSolid(box("far", { name: "Far block", x: 200 })),
+        toNativeKernelSolid(box("bore", { kind: "cylinder", width: 6, depth: 6, height: 40, elevation: -10, hole: true })),
+      ],
+    });
+    expect(exported.ok, String(exported.message)).toBe(true);
+    expect(exported.exportedCount).toBe(2);
+    expect(exported.degraded).toEqual([]);
+    expect(String(exported.step)).toContain("CYLINDRICAL_SURFACE");
+  });
+
+  it("reads the same imported body twice to the same result", async () => {
+    const source = await client.request({ id: 52, type: "exportStep", solids: [toNativeKernelSolid(box("kept"))] });
+    const brepStep = String(source.step ?? "");
+    const job = (id: number) => ({
+      id,
+      type: "boolean",
+      op: "subtract",
+      solids: [
+        { ...toNativeKernelSolid(box("imported")), brepStep },
+        toNativeKernelSolid(box("cutter", { kind: "cylinder", width: 6, depth: 6, height: 40, elevation: -10, hole: true })),
+      ],
+    });
+    const first = await client.request(job(53));
+    const second = await client.request(job(54));
+    expect(first.ok, String(first.message)).toBe(true);
+    expect(second.ok, String(second.message)).toBe(true);
+    expect(replyMeshVolume(second)).toBeCloseTo(replyMeshVolume(first), 3);
+    expect(replyMeshVolume(first)).toBeLessThan(8000 - 400);
+  });
+
   it("prepares a box, fillets, and hollows it", async () => {
     const prepared = await client.request({
       id: 7,

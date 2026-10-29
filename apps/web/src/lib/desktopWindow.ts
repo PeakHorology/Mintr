@@ -3,12 +3,20 @@ export type DesktopWindowApi = {
   toggleFullScreen: () => Promise<boolean>;
   isFullScreen: () => Promise<boolean>;
   onFullScreen: (listener: (full: boolean) => void) => () => void;
+  takeCrashRecovery?: () => Promise<boolean>;
 };
 
 export function desktopWindow(): DesktopWindowApi | null {
   if (typeof window === "undefined") return null;
   const api = (window as Window & { peakcadWindow?: DesktopWindowApi }).peakcadWindow;
   return api?.toggleFullScreen ? api : null;
+}
+
+/** True once after the desktop app reloaded a crashed window. */
+export async function takeCrashRecovery(): Promise<boolean> {
+  const desktop = desktopWindow();
+  if (!desktop?.takeCrashRecovery) return false;
+  return desktop.takeCrashRecovery().then((recovered) => recovered === true, () => false);
 }
 
 /** Cover the screen. The desktop app uses the window; a browser uses the page. */

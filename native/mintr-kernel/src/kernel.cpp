@@ -13,6 +13,7 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Shape.hxx>
 
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -123,25 +124,61 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
     }
     if (type == "exportStep") {
       std::vector<TopoDS_Shape> solids;
+      std::vector<std::string> names;
       std::vector<TopoDS_Shape> holes;
-      // An assemble group at the top keeps its bodies apart in the file, as in the browser.
-      nlohmann::json rest = job;
-      rest["solids"] = nlohmann::json::array();
       for (const auto& item : job.value("solids", nlohmann::json::array())) {
+        const std::string name = item.value("name", std::string("Part"));
         if (item.value("kind", "") == "group" && item.value("op", "") == "assemble" && !item.value("hole", false)) {
+          // An assemble group at the top keeps its bodies apart in the file, as in the browser.
           if (!kernelGroupParts(item, solids)) return kernelFail("native kernel could not build export solids", true);
+          names.resize(solids.size(), name);
+          continue;
+        }
+        TopoDS_Shape shape;
+        if (!buildKernelSolid(item, shape)) return kernelFail("native kernel could not build export solids", true);
+        if (item.value("hole", false)) {
+          holes.push_back(shape);
         } else {
-          rest["solids"].push_back(item);
+          solids.push_back(shape);
+          names.push_back(name);
         }
       }
-      if (!rest["solids"].empty() && !collectSolids(rest, solids, holes)) return kernelFail("native kernel could not build export solids", true);
+      // Each hole is tried on its own, and only on parts its box reaches. One hole that
+      // will not cut used to drop every cut on the part without a word; now the rest
+      // still go in and the part is named in the warning, as the browser does.
+      std::vector<std::array<double, 6>> holeBoxes;
+      for (const auto& hole : holes) {
+        std::array<double, 6> box{};
+        if (!kernelBounds(hole, box[0], box[1], box[2], box[3], box[4], box[5])) box = { -1e300, -1e300, -1e300, 1e300, 1e300, 1e300 };
+        holeBoxes.push_back(box);
+      }
       BRep_Builder builder;
       TopoDS_Compound compound;
       builder.MakeCompound(compound);
       int exported = 0;
-      for (auto part : solids) {
-        TopoDS_Shape cut = part;
-        if (!kernelCutHoles(part, holes, cut)) cut = part;
+      nlohmann::json degraded = nlohmann::json::array();
+      for (size_t index = 0; index < solids.size(); ++index) {
+        TopoDS_Shape cut = solids[index];
+        std::array<double, 6> partBox{};
+        const bool bounded = kernelBounds(cut, partBox[0], partBox[1], partBox[2], partBox[3], partBox[4], partBox[5]);
+        int missed = 0;
+        for (size_t h = 0; h < holes.size(); ++h) {
+          const auto& hb = holeBoxes[h];
+          const double gap = 1e-6;
+          if (bounded && (hb[0] > partBox[3] + gap || hb[3] < partBox[0] - gap
+            || hb[1] > partBox[4] + gap || hb[4] < partBox[1] - gap
+            || hb[2] > partBox[5] + gap || hb[5] < partBox[2] - gap)) continue;
+          TopoDS_Shape next;
+          if (kernelBoolean(KernelBooleanOp::Cut, cut, holes[h], next) && !next.IsNull()) cut = next;
+          else missed += 1;
+        }
+        if (missed > 0) {
+          degraded.push_back({
+            { "name", index < names.size() ? names[index] : std::string("Part") },
+            { "kind", "solid" },
+            { "reason", missed == 1 ? "one hole could not be cut, so it is missing" : std::to_string(missed) + " holes could not be cut, so they are missing" },
+          });
+        }
         builder.Add(compound, cut);
         exported += 1;
       }
@@ -155,7 +192,7 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
         { "exactCount", exported },
         { "facetedCount", 0 },
         { "skipped", nlohmann::json::array() },
-        { "degraded", nlohmann::json::array() },
+        { "degraded", degraded },
       };
     }
     return kernelFail("Unknown CAD kernel request", true);

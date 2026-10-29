@@ -85,7 +85,9 @@ function assertWritable(app, filePath) {
   throw new Error("That file path is not available for save.");
 }
 
-function writeTextFile(filePath, text) {
+let temporaryCounter = 0;
+
+async function writeTextFile(filePath, text) {
   if (typeof text !== "string") {
     throw new Error("Project file contents must be text.");
   }
@@ -93,17 +95,20 @@ function writeTextFile(filePath, text) {
   if (bytes > MAX_BYTES) {
     throw new Error("This project file is too large to save.");
   }
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  // Async so writing a big design never freezes the window while it saves.
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   // Write beside the target and rename over it. A crash, power loss, full disk
   // or a sync client holding the file mid-write must never leave a truncated
   // .mintr where the user's only on-disk copy used to be.
-  const temporary = `${filePath}.${process.pid}.tmp`;
+  // Each write gets its own temp name so a Save landing during an autosave cannot collide.
+  temporaryCounter += 1;
+  const temporary = `${filePath}.${process.pid}-${temporaryCounter}.tmp`;
   try {
-    fs.writeFileSync(temporary, text, "utf8");
-    fs.renameSync(temporary, filePath);
+    await fs.promises.writeFile(temporary, text, "utf8");
+    await fs.promises.rename(temporary, filePath);
   } catch (error) {
     try {
-      fs.rmSync(temporary, { force: true });
+      await fs.promises.rm(temporary, { force: true });
     } catch {
       // The target file is untouched; the leftover temp file is harmless.
     }
@@ -147,7 +152,7 @@ function registerProjectFileIpc(app, getWindow) {
 
   ipcMain.handle("peakcad:file-write", async (_event, payload) => {
     const resolved = assertWritable(app, payload?.path);
-    return { path: writeTextFile(resolved, payload?.text) };
+    return { path: await writeTextFile(resolved, payload?.text) };
   });
 
   ipcMain.handle("peakcad:file-save-as", async (_event, payload) => {
@@ -163,7 +168,7 @@ function registerProjectFileIpc(app, getWindow) {
     });
     if (result.canceled || !result.filePath) return null;
     const target = allowPath(ensureProjectExtension(result.filePath, preferred));
-    return { path: writeTextFile(target, payload?.text) };
+    return { path: await writeTextFile(target, payload?.text) };
   });
 
   ipcMain.handle("peakcad:file-resolve-name", async (_event, defaultName) => {
@@ -180,7 +185,7 @@ function registerProjectFileIpc(app, getWindow) {
       CURRENT_EXTENSION,
     );
     const target = uniquePath(path.join(dir, name));
-    return { path: writeTextFile(target, payload?.text) };
+    return { path: await writeTextFile(target, payload?.text) };
   });
 
   ipcMain.handle("peakcad:file-pending-moves", async () => readRememberedMoves(app));
