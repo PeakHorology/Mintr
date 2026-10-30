@@ -10,6 +10,11 @@ export type ReleaseNotes = {
 
 /** Feature lines drawn stronger in Settings → Updates and the update card. */
 export const FEATURED_RELEASE_NOTES: readonly string[] = [
+  "New Loft shape in the Shapes panel: pick a bottom and a top outline (circle, square or polygon), set the top size, add a twist, or make it hollow for a vase or sleeve.",
+  "Shrink Wrap wraps the selected shapes in one tight skin, as if plastic were shrunk around them. Holes still cut through it, and the parts stay editable inside.",
+  "Smooth, in Modify, lets you sculpt soft, flowing curves into a part. It starts on the part's exact shape, or rounds it all off if you choose. Click Edit points and drag a dot to push and pull the surface, holding Ctrl to pull straight in and out of it, then raise Smoothness for more points to refine it. Keep a face flat holds a face exactly as it is, such as a base or a face something mounts to. Mirror copies each pull to the other side, Alt-drag picks a box of points, and Make edge smooth or Make edge sharp rounds an edge or makes a crisp line. Ungroup brings the original parts back.",
+  "Mintr now runs in your web browser at app.mintr3d.com, with nothing to install. Designs are kept in that browser as you work. Save as… downloads a copy to keep on your computer.",
+  "Bring your Tinkercad designs over: in Import, drag the Send to Mintr button to your bookmarks bar, then click it on a design open in Tinkercad. Shapes come over at their sizes and places, editable, with groups, holes, colours and bundles (as Ties). Stars, text and other shapes Mintr does not have yet are left out, and Mintr says which.",
   "Parts remember their steps. Change a push or pull, fillet, chamfer or hollow listed under Features and Mintr rebuilds the part with every later step kept.",
   "Threads are rebuilt as clean solids with the standard 60° tooth shape, so tapped holes cut properly, rods and nuts join properly, and exported threads print as they look.",
   "A round part keeps its side count after a Group, a fillet, or a split. Smooth, Standard, Draft, and a number you type all carry through.",
@@ -32,6 +37,25 @@ export function noteIsFeatured(note: string): boolean {
 export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
+  {
+    version: "1.3.0",
+    items: [
+      "New Loft shape in the Shapes panel: pick a bottom and a top outline (circle, square or polygon), set the top size, add a twist, or make it hollow for a vase or sleeve.",
+      "Loft joins two or more flat outlines stacked at different heights into one smooth solid. It works with sketches, boxes, cylinders and polygons, and Ungroup brings the outlines back.",
+      "Shrink Wrap wraps the selected shapes in one tight skin, as if plastic were shrunk around them. Holes still cut through it, and the parts stay editable inside.",
+      "Smooth, in Modify, lets you sculpt soft, flowing curves into a part. It starts on the part's exact shape, or rounds it all off if you choose. Click Edit points and drag a dot to push and pull the surface, holding Ctrl to pull straight in and out of it, then raise Smoothness for more points to refine it. Keep a face flat holds a face exactly as it is, such as a base or a face something mounts to. Mirror copies each pull to the other side, Alt-drag picks a box of points, and Make edge smooth or Make edge sharp rounds an edge or makes a crisp line. Ungroup brings the original parts back.",
+      "Mintr now runs in your web browser at app.mintr3d.com, with nothing to install. Designs are kept in that browser as you work. Save as… downloads a copy to keep on your computer.",
+      "Leaving a design no longer asks to save: autosave already keeps it, and writes its .mintr file when it has one. It only asks when imported STEP parts need a save to keep their exact curves.",
+      "Bring your Tinkercad designs over: in Import, drag the Send to Mintr button to your bookmarks bar, then click it on a design open in Tinkercad. Shapes come over at their sizes and places, editable, with groups, holes, colours and bundles (as Ties). Stars, text and other shapes Mintr does not have yet are left out, and Mintr says which.",
+      "Sage now sits on the left of the top bar, next to Home.",
+      "With parts on the workplane, Sketch asks where to draw: click a face of a part, or the workplane. On an empty workplane it starts drawing right away.",
+      "The first tutorial, Add a Hole to a Box, now turns a cylinder into a hole and groups it with the box.",
+      "Extrude can finish right away: click Create solid (or Cut into part) without previewing in 3D first, or press Extrude again. Preview in 3D is still there when you want a look.",
+      "Split joints fit together now. Sockets open through the cut face, a dovetail slides in from the side, the snap has a split prong that clicks into place, and the plug piece lies with its joint pointing up so it prints without supports.",
+      "Split pieces stay where the object was instead of jumping to the middle of the bed, and in the browser they come out ready for CAD export.",
+      "Holes look like frosted glass with a quiet outline, so you can see their shape against the parts around them.",
+    ],
+  },
   {
     version: "1.2.0",
     items: [

@@ -2,10 +2,11 @@ import { browserMintrKernel } from "@/lib/browserMintrKernel";
 import { inferCsgOp } from "@/lib/csgTree";
 import { gearPlanLoops, normalizeGearSpec, rackPlanLoop } from "@/lib/gearProfile";
 import { gridfinityRecipeForShape, isGridfinityKind, type GridfinityRecipe } from "@/lib/gridfinity";
+import { loftBuildPending, serializeLoftJob } from "@/lib/loftShape";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
-import type { WorkplaneShape } from "@/types/sketchforge";
+import type { LoftSection, WorkplaneShape } from "@/types/sketchforge";
 
 export type NativeKernelSolid = {
   hole: boolean;
@@ -45,6 +46,8 @@ export type NativeKernelSolid = {
   children?: NativeKernelSolid[];
   /** Generator body (`kind: "recipe"`) the kernel builds from add / cut solids. */
   recipe?: GridfinityRecipe;
+  /** A loft (`kind: "loft"`) whose exact body is still being built: its outlines in mm. */
+  loft?: { sections: LoftSection[]; smooth: boolean; wall: number };
 };
 
 export type NativeKernelJob =
@@ -58,6 +61,7 @@ export type NativeKernelJob =
   | { id: number; type: "sketchSweep"; [key: string]: unknown }
   | { id: number; type: "importStep"; fileName: string; step: string }
   | { id: number; type: "buildRecipe"; recipe: GridfinityRecipe; name?: string; key?: string }
+  | { id: number; type: "buildLoft"; loft: { sections: LoftSection[]; smooth: boolean; wall: number }; name?: string; key?: string }
   | { id: number; requestId: number; type: string; [key: string]: unknown };
 
 export type NativeKernelReply = {
@@ -196,6 +200,17 @@ export async function requestNativeKernelJob(job: NativeKernelJob, timeoutMs = 4
   }
 }
 
+/** The same job in the Mintr engine wherever it runs: the desktop exe, or WebAssembly in the browser. */
+export async function requestMintrKernelJob(job: NativeKernelJob, timeoutMs = 45_000): Promise<NativeKernelReply | null> {
+  const api = mintrKernel();
+  if (!api?.request) return null;
+  try {
+    return plainNativeReply(await api.request(job, timeoutMs));
+  } catch {
+    return null;
+  }
+}
+
 /** A group's child in the group's own frame, stretched with the group when it was resized. */
 function localChildFromGroup(group: WorkplaneShape, child: WorkplaneShape): WorkplaneShape {
   const sx = group.groupedBaseWidth ? shapeWidth(group) / Math.max(0.001, group.groupedBaseWidth) : 1;
@@ -264,6 +279,11 @@ export function toNativeKernelSolid(shape: WorkplaneShape): NativeKernelSolid | 
   // shape a newer fillet (cadBrep) wins over a STEP stored before it, and a box
   // or cylinder stays exact even when it still carries a STEP.
   if (storedStep && shape.groupedShapes?.length) return storedStep;
+  if (shape.kind === "loft" && loftBuildPending(shape)) {
+    // Resized or edited since the last build: the kernel lofts the outlines as they are now.
+    const job = serializeLoftJob(shape);
+    return job ? { ...pose, kind: "loft", loft: job.loft } : null;
+  }
   if (shape.cadBrep) {
     return { ...pose, kind: "brep", cadBrep: shape.cadBrep, fitScale: storedSolidWasResized(shape) };
   }
@@ -306,6 +326,8 @@ export function toNativeKernelSolid(shape: WorkplaneShape): NativeKernelSolid | 
 function encodeNativeKernelShape(shape: WorkplaneShape): NativeKernelSolid | null {
   if (shape.importedMesh?.brepStep || shape.cadBrep || !shape.groupedShapes?.length) return toNativeKernelSolid(shape);
   const op = inferCsgOp(shape) ?? "union";
+  // Shrink Wrap and Smooth have no exact solid; the mesh is the body, so the browser kernels handle it.
+  if (op === "hull" || op === "smooth") return null;
   const children: NativeKernelSolid[] = [];
   for (const child of shape.groupedShapes) {
     // Inside a group only a switched-off feature is left out, as in the browser.

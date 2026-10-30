@@ -69,6 +69,7 @@ function estimatePrimitiveTriangles(shape: WorkplaneShape, quality: DisplayQuali
       return 4_000;
     case "gridfinityBin":
     case "gridfinityBaseplate":
+    case "loft":
       // Box stand-in until the kernel mesh lands (then importedMesh.triangleCount wins).
       return 12;
     default:

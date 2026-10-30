@@ -13,6 +13,7 @@ const SHAPE_DESCRIPTIONS: Record<string, string> = {
   cylinder: TOOL_DESCRIPTIONS.cylinder,
   thread: TOOL_DESCRIPTIONS.thread,
   gear: TOOL_DESCRIPTIONS.gear,
+  loft: TOOL_DESCRIPTIONS.loft,
   "gridfinity-bin": TOOL_DESCRIPTIONS.gridfinityBin,
   "gridfinity-baseplate": TOOL_DESCRIPTIONS.gridfinityBaseplate,
   sphere: TOOL_DESCRIPTIONS.sphere,

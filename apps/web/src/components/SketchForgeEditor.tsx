@@ -90,6 +90,8 @@ import {
   SHARED_CLIPBOARD_STORAGE_KEY,
   writeShapeClipboard,
 } from "@/lib/shapeClipboard";
+import { TinkercadBookmark } from "@/components/workplane/TinkercadBookmark";
+import { readTinkercadClipboard, readTinkercadSystemClipboard, tinkercadSkippedNotice, tinkercadToShapes, type TinkercadPayload } from "@/lib/tinkercadImport";
 import {
   type BooleanCleanupOptions,
   bumpCsgVersion,
@@ -290,6 +292,7 @@ import {
   shapeFromCadMesh,
 } from "@/lib/editorEdgeTreatments";
 import { cloneAsGroupChild, groupedShape } from "@/lib/editorGroup";
+import { useSmoothEdit } from "@/components/workplane/useSmoothEdit";
 import { toStl } from "@/lib/stlExport";
 import {
   type Cuboid,
@@ -311,6 +314,8 @@ import {
   buildGroupedShapeFromSelection,
   manifoldBooleanMeshShape,
   buildIntersectionShapeFromSelection,
+  shrinkWrapMeshShape,
+  smoothMeshShape,
   canIntersectShapes,
   cleanShapePatch,
   effectiveAlignmentAnchorId,
@@ -396,6 +401,7 @@ import { projectExportFileName } from "@/lib/exportNames";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets } from "@/lib/shapeCatalog";
 import { gridfinityBuildPending, gridfinityFootprint, gridfinityShapeKey, gridfinitySplitForBed, isGridfinityKind } from "@/lib/gridfinity";
 import { applyGridfinityKernelMesh, buildGridfinityShape, createGridfinityShape } from "@/lib/gridfinityShape";
+import { applyLoftKernelMesh, buildLoftShape, canLoftShape, createSketchLoft, loftBuildPending, loftShapeKey, loftSources } from "@/lib/loftShape";
 import { normalizePrinterBed } from "@/lib/printerBed";
 import { BlueprintExportModal } from "@/components/workplane/BlueprintExportModal";
 import { EditorTopBar, SketchFocusTabs } from "@/components/workplane/EditorTopBar";
@@ -864,7 +870,7 @@ function pushPullSourceParts(shape: WorkplaneShape): WorkplaneShape[] {
 function shapeKeepsLiveParameters(shape: WorkplaneShape) {
   if (shape.kind === "mesh") return false;
   // Gridfinity parts are rebuilt from their spec; a turn stays a pose, not a baked mesh.
-  if (isGridfinityKind(shape.kind)) return true;
+  if (isGridfinityKind(shape.kind) || shape.kind === "loft") return true;
   if (shape.cadBrep || shape.edgeTreatments?.length) return false;
   if ((shape.importedMesh?.positions.length ?? 0) >= 9) return false;
   return true;
@@ -1344,6 +1350,7 @@ export function SketchForgeEditor({
   initialHistoryIndex,
   initialSnap,
   initialWorkspace,
+  openingNotice,
   onHome,
   onProjectShapesChange,
   onProjectSnapshot,
@@ -1367,6 +1374,8 @@ export function SketchForgeEditor({
   initialHistoryIndex?: number;
   initialSnap?: GridSize;
   initialWorkspace?: WorkplaneWorkspaceSettings;
+  /** Said once when the design first opens, in place of the usual "Project synced". */
+  openingNotice?: string | null;
   onHome?: () => void;
   onProjectShapesChange?: (snapshot: {
     projectId: string;
@@ -1488,6 +1497,7 @@ export function SketchForgeEditor({
   const [mirrorPreviewAxis, setMirrorPreviewAxis] = useState<AlignAxis | null>(null);
   const [activeMode, setActiveMode] = useState("3D Design");
   const [notice, setNoticeState] = useState("Ready");
+  const openingNoticeRef = useRef(openingNotice ?? null);
   const [noticeVisible, setNoticeVisible] = useState(false);
   const [noticeSeq, setNoticeSeq] = useState(0);
   const [noticeQuiet, setNoticeQuiet] = useState(false);
@@ -2778,7 +2788,10 @@ export function SketchForgeEditor({
       setMenuOpen(false);
       setSketchFacePickMode(false);
       setSketchEditOffer(null);
-      beginBlankSketchRef.current();
+      // An empty workplane goes straight into a sketch; with parts on it, the next click
+      // chooses where: a face of a part, or the workplane.
+      if (shapesRef.current.some((shape) => !shape.hidden)) beginSketchFacePickRef.current();
+      else beginBlankSketchRef.current();
       return;
     }
     if (mode === "geometry" && sketchActive) {
@@ -3068,6 +3081,8 @@ export function SketchForgeEditor({
     [appendHistorySnapshot, selectedIds, syncProjectShapes],
   );
 
+  const smoothEditing = useSmoothEdit({ selectedShape, shapesRef, setShapes, commitShapes, setNotice });
+
   const flashCadApply = useCallback((
     ids: string | string[] | null | undefined,
     edgeWipe?: { polylines: number[][] },
@@ -3120,6 +3135,27 @@ export function SketchForgeEditor({
     let changed = false;
     const next = current.map((shape) => {
       const result = built.get(shape.id);
+      if (result && shape.kind === "loft" && result.loftBuilt && loftShapeKey(shape) === result.loftBuilt) {
+        changed = true;
+        // The loft keeps its pose; the body, its size and its exact source come from the build.
+        return canonicalizeShape({
+          ...shape,
+          width: result.width,
+          depth: result.depth,
+          height: result.height,
+          size: result.size,
+          loftSpec: result.loftSpec,
+          importedMesh: result.importedMesh,
+          cadBrep: result.cadBrep,
+          cadBrepFrame: result.cadBrepFrame
+            ? { ...result.cadBrepFrame, x: shape.x, z: shape.z, elevation: shape.elevation ?? 0 }
+            : undefined,
+          cadPrimitiveFrame: undefined,
+          cadDisplayEdges: undefined,
+          cadDisplayEdgesVersion: undefined,
+          loftBuilt: result.loftBuilt,
+        });
+      }
       if (!result || !isGridfinityKind(shape.kind) || gridfinityShapeKey(shape) !== result.gridfinityBuilt) return shape;
       changed = true;
       // Keep the live pose; only the body and its exact source change. Fillets and
@@ -3159,16 +3195,19 @@ export function SketchForgeEditor({
 
   useEffect(() => {
     if (projectInteractionActive) return;
-    const pending = shapes.filter((shape) => gridfinityBuildPending(shape));
+    // Lofts build the same way: a quick preview first, the exact body when it lands.
+    const keyOf = (shape: WorkplaneShape) => (shape.kind === "loft" ? loftShapeKey(shape) : gridfinityShapeKey(shape));
+    const pending = shapes.filter((shape) => gridfinityBuildPending(shape) || loftBuildPending(shape));
     if (pending.length === 0) return;
     // Undo/redo or a repeated spec: reuse the body built earlier for that key.
     const cached = new Map<string, WorkplaneShape>();
     const toBuild: WorkplaneShape[] = [];
     pending.forEach((shape) => {
-      const key = gridfinityShapeKey(shape);
+      const key = keyOf(shape);
       if (!key || gridfinityFailedKeysRef.current.has(key)) return;
       const hit = gridfinityBuildCacheRef.current.get(key);
-      const applied = hit ? applyGridfinityKernelMesh(shape, hit.positions, hit.normals, hit.indices, hit.cadBrep, key) : null;
+      const apply = shape.kind === "loft" ? applyLoftKernelMesh : applyGridfinityKernelMesh;
+      const applied = hit ? apply(shape, hit.positions, hit.normals, hit.indices, hit.cadBrep, key) : null;
       if (applied) cached.set(shape.id, applied);
       else toBuild.push(shape);
     });
@@ -3178,14 +3217,15 @@ export function SketchForgeEditor({
     }
     const target = toBuild[0];
     if (!target) return;
-    const key = gridfinityShapeKey(target);
+    const key = keyOf(target);
     if (!key || gridfinityBuildingRef.current === key) return;
+    const loft = target.kind === "loft";
     let cancelled = false;
     const timer = window.setTimeout(() => {
       gridfinityBuildingRef.current = key;
-      void buildGridfinityShape(target)
+      void (loft ? buildLoftShape(target) : buildGridfinityShape(target))
         .then((built) => {
-          if (built?.importedMesh && built.cadBrep && built.gridfinityBuilt === key) {
+          if (built?.importedMesh && built.cadBrep && (loft ? built.loftBuilt : built.gridfinityBuilt) === key) {
             const cache = gridfinityBuildCacheRef.current;
             cache.set(key, {
               positions: built.importedMesh.positions,
@@ -3197,12 +3237,16 @@ export function SketchForgeEditor({
             if (!cancelled) applyGridfinityBuilds(new Map([[target.id, built]]));
           } else {
             gridfinityFailedKeysRef.current.add(key);
-            if (!cancelled) setNotice(`${target.name} could not be built; try a thicker wall or fewer features`);
+            // Without the Mintr engine a loft keeps its preview as the body, quietly.
+            if (!cancelled && !loft) setNotice(`${target.name} could not be built; try a thicker wall or fewer features`);
           }
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           gridfinityFailedKeysRef.current.add(key);
-          if (!cancelled) setNotice(`${target.name} could not be built; try a thicker wall or fewer features`);
+          if (cancelled) return;
+          setNotice(loft
+            ? `${error instanceof Error && error.message ? error.message : "This loft could not be built"}. The preview stays until you change it.`
+            : `${target.name} could not be built; try a thicker wall or fewer features`);
         })
         .finally(() => {
           if (gridfinityBuildingRef.current === key) gridfinityBuildingRef.current = null;
@@ -3250,12 +3294,15 @@ export function SketchForgeEditor({
     return () => window.clearTimeout(timer);
   }, [bakeImportedBrepForAutosave, shapes]);
 
+  /**
+   * Leaving only asks when something would be lost. Autosave keeps every design (and writes its
+   * .mintr file when it has one), but only an explicit Save stores the exact curves of imported
+   * STEP parts; without it they come back, and export, as triangles.
+   */
   const hasUnsavedProjectChanges = useCallback(() => {
     if (!projectId || !onSaveProject) return false;
     const current = pendingProjectShapesRef.current ?? shapesRef.current;
-    if (importedBrepBakeInFlightRef.current || importedBrepStepsAwaitingSave(current).length > 0) return true;
-    const baseline = explicitSaveFingerprintRef.current;
-    return baseline !== null && projectShapesFingerprint(current) !== baseline;
+    return importedBrepBakeInFlightRef.current || importedBrepStepsAwaitingSave(current).length > 0;
   }, [onSaveProject, projectId]);
 
   /**
@@ -3399,8 +3446,10 @@ export function SketchForgeEditor({
     const skipOcct = Boolean(options?.skipOcct) || Boolean(options?.draft);
     const remeshGen = remeshGenerationRef.current + 1;
     remeshGenerationRef.current = remeshGen;
-    const remeshed = await remeshCsgGroup(body, { skipOcct, draft: Boolean(options?.draft) });
+    let rebuildNotice: string | null = null;
+    const remeshed = await remeshCsgGroup(body, { skipOcct, draft: Boolean(options?.draft), onNotice: (message) => { rebuildNotice = message; } });
     if (remeshGen !== remeshGenerationRef.current) return;
+    if (rebuildNotice) setNotice(rebuildNotice);
     const next = remeshed ?? {
       ...body,
       importedMesh: body.importedMesh,
@@ -5643,14 +5692,14 @@ export function SketchForgeEditor({
     }
   }, [extrudeAsHole, finishSketchExtrudeInner, guidePlayback, setNotice]);
 
-  /** The Extrude button (and E) opens the extrude, and while it is being previewed, finishes it. */
+  /** The Extrude button (and E) opens the extrude; pressed again while it is open, it finishes it. */
   const pressSketchExtrude = useCallback(() => {
-    if (extrudeLook !== null && extrudeHeightPrompt !== null) {
+    if (extrudeHeightPrompt !== null) {
       void finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole);
       return;
     }
     startSketchExtrude();
-  }, [extrudeAsHole, extrudeHeightPrompt, extrudeLook, finishSketchExtrude, startSketchExtrude]);
+  }, [extrudeAsHole, extrudeHeightPrompt, finishSketchExtrude, startSketchExtrude]);
 
   const completeSketchRevolve = useCallback((axis: SketchRevolveAxis) => {
     const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
@@ -6061,7 +6110,9 @@ export function SketchForgeEditor({
         : needsHeal
           ? "Project synced · rebuilt group meshes"
           : "Project synced";
-      setNotice(incoming.length ? healNotice : "Ready");
+      const opening = openingNoticeRef.current;
+      openingNoticeRef.current = null;
+      setNotice(opening ?? (incoming.length ? healNotice : "Ready"));
       if (needsHeal && remeshFailed.length === 0) {
         // Persist healed tessellations so the next load is not empty again.
         syncProjectShapes(migratedIncoming);
@@ -6500,8 +6551,29 @@ export function SketchForgeEditor({
     setNotice(`Copied ${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`);
   }, [hasSelection, selectedShapes]);
 
+  /** A design the "Send to Mintr" bookmark copied from Tinkercad comes in where it was there. */
+  const pasteTinkercad = useCallback(async (payload: TinkercadPayload) => {
+    const sourceProjectId = projectInfoRef.current.projectId;
+    const { shapes: imported, skipped } = tinkercadToShapes(payload);
+    if (imported.length === 0) {
+      setNotice(tinkercadSkippedNotice(skipped) ?? "That Tinkercad design has no shapes in it.");
+      return;
+    }
+    setNotice("Bringing the Tinkercad design in…");
+    const built = await remeshDirtyHistoryShapes(imported);
+    if (projectInfoRef.current.projectId !== sourceProjectId) return;
+    commitShapes([...shapesRef.current, ...built.shapes], built.shapes.map((shape) => shape.id), "Pasted from Tinkercad");
+    setNotice(tinkercadSkippedNotice(skipped) ?? `Brought ${imported.length} shape${imported.length === 1 ? "" : "s"} over from Tinkercad`);
+  }, [commitShapes]);
+
   const pasteShape = useCallback(async () => {
     const sourceProjectId = projectInfoRef.current.projectId;
+    // The Paste button has no paste event to read, so it asks for the clipboard where it can.
+    const tinkercad = await readTinkercadSystemClipboard();
+    if (tinkercad) {
+      await pasteTinkercad(tinkercad);
+      return;
+    }
     const storedClipboard = await readShapeClipboard();
     const sourceClipboard = storedClipboard.length > 0 ? storedClipboard : clipboard;
     if (sourceClipboard.length === 0) {
@@ -6521,7 +6593,35 @@ export function SketchForgeEditor({
       z: Math.min(110, shape.z + 12),
     }));
     commitShapes([...shapesRef.current, ...pasted], pasted.map((shape) => shape.id), `Pasted ${pasted.length} shape${pasted.length === 1 ? "" : "s"}`);
-  }, [clipboard, commitShapes]);
+  }, [clipboard, commitShapes, pasteTinkercad]);
+
+  // Ctrl+V lets the browser's own paste happen, which carries the clipboard's text with no
+  // permission prompt: that is how a Tinkercad design copied by the bookmark arrives. Anything
+  // else pastes Mintr's own copied shapes. If no paste event comes (nothing to paste into),
+  // the shortcut pastes Mintr's shapes after a moment anyway.
+  const keyboardPasteTimerRef = useRef<number | null>(null);
+  const pasteFromKeyboard = useCallback(() => {
+    if (keyboardPasteTimerRef.current !== null) window.clearTimeout(keyboardPasteTimerRef.current);
+    keyboardPasteTimerRef.current = window.setTimeout(() => {
+      keyboardPasteTimerRef.current = null;
+      void pasteShape();
+    }, 150);
+  }, [pasteShape]);
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      if (keyboardPasteTimerRef.current === null) return;
+      window.clearTimeout(keyboardPasteTimerRef.current);
+      keyboardPasteTimerRef.current = null;
+      event.preventDefault();
+      const payload = readTinkercadClipboard(event.clipboardData?.getData("text/plain") ?? "");
+      void (payload ? pasteTinkercad(payload) : pasteShape());
+    };
+    window.addEventListener("paste", onPaste, true);
+    return () => {
+      window.removeEventListener("paste", onPaste, true);
+      if (keyboardPasteTimerRef.current !== null) window.clearTimeout(keyboardPasteTimerRef.current);
+    };
+  }, [pasteShape, pasteTinkercad]);
 
   const restoreHistoryEntry = useCallback(async (nextIndex: number, label: string, modifierCancelled: boolean) => {
     const entry = historyRef.current[nextIndex];
@@ -9428,7 +9528,114 @@ export function SketchForgeEditor({
     setActiveFeatureId(null);
   }, [commitShapes, flashCadApply, selectedShapes]);
 
+  const shrinkWrapSelected = useCallback(async () => {
+    const wrappable = selectedShapes.filter((shape) => !isConstructionShape(shape));
+    if (wrappable.filter((shape) => !shape.hole).length < 2) {
+      setNotice("Select two or more solids to shrink wrap");
+      return;
+    }
+    if (wrappable.some((shape) => shape.locked)) {
+      setNotice("Unlock every selected shape before wrapping");
+      return;
+    }
+    flushSync(() => {
+      setNotice("Wrapping…");
+    });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+    const sourceFingerprint = projectShapesFingerprint(shapesRef.current);
+    const sourceProjectId = projectInfoRef.current.projectId;
+    const wrapped = await shrinkWrapMeshShape(wrappable);
+    if (projectInfoRef.current.projectId !== sourceProjectId || projectShapesFingerprint(shapesRef.current) !== sourceFingerprint) {
+      setNotice("The scene changed while wrapping; select the objects and try again");
+      return;
+    }
+    if (!wrapped) {
+      setNotice("Could not wrap these shapes");
+      return;
+    }
+    const wrappedIds = new Set(wrappable.map((shape) => shape.id));
+    commitShapes(
+      [...shapesRef.current.filter((shape) => !wrappedIds.has(shape.id)), wrapped],
+      wrapped.id,
+      `Shrink wrapped ${wrappable.length} shapes. Ungroup brings them back.`,
+    );
+    flashCadApply(wrapped.id, undefined, "combine");
+    setActiveFeatureId(null);
+  }, [commitShapes, flashCadApply, selectedShapes]);
+
+  const smoothSelected = useCallback(async () => {
+    const sources = selectedShapes.filter((shape) => !isConstructionShape(shape));
+    if (!sources.some((shape) => !shape.hole)) {
+      setNotice("Select a solid to smooth");
+      return;
+    }
+    if (sources.some((shape) => shape.locked)) {
+      setNotice("Unlock every selected shape before smoothing");
+      return;
+    }
+    flushSync(() => {
+      setNotice("Smoothing…");
+    });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+    const sourceFingerprint = projectShapesFingerprint(shapesRef.current);
+    const sourceProjectId = projectInfoRef.current.projectId;
+    let lowered: string | null = null;
+    const smoothed = await smoothMeshShape(sources, { level: 3, keepEdges: true }, { onNotice: (message) => { lowered = message; } });
+    if (projectInfoRef.current.projectId !== sourceProjectId || projectShapesFingerprint(shapesRef.current) !== sourceFingerprint) {
+      setNotice("The scene changed while smoothing; select the objects and try again");
+      return;
+    }
+    if (!smoothed) {
+      setNotice("Could not smooth these shapes");
+      return;
+    }
+    const sourceIds = new Set(sources.map((shape) => shape.id));
+    commitShapes(
+      [...shapesRef.current.filter((shape) => !sourceIds.has(shape.id)), smoothed],
+      smoothed.id,
+      lowered ?? `Smoothed ${sources.length === 1 ? "1 shape" : `${sources.length} shapes`}. Ungroup brings ${sources.length === 1 ? "it" : "them"} back.`,
+    );
+    flashCadApply(smoothed.id, undefined, "combine");
+    setActiveFeatureId(null);
+  }, [commitShapes, flashCadApply, selectedShapes]);
+
+  const loftSelected = useCallback(() => {
+    const sources = selectedShapes.filter((shape) => !isConstructionShape(shape));
+    if (sources.some((shape) => shape.locked)) {
+      setNotice("Unlock every selected outline before lofting");
+      return;
+    }
+    const result = createSketchLoft(sources);
+    if ("error" in result) {
+      setNotice(result.error);
+      return;
+    }
+    const sourceIds = new Set(sources.map((shape) => shape.id));
+    commitShapes(
+      [...shapesRef.current.filter((shape) => !sourceIds.has(shape.id)), result.shape],
+      result.shape.id,
+      `Lofted ${sources.length} outlines. Ungroup brings them back.`,
+    );
+    flashCadApply(result.shape.id, undefined, "combine");
+    setActiveFeatureId(null);
+  }, [commitShapes, flashCadApply, selectedShapes]);
+
   const ungroupSelected = useCallback(() => {
+    const loft = selectedShapes.find((shape) => loftSources(shape).length > 0);
+    if (loft && !selectedShapes.some((shape) => shape.groupedShapes?.length)) {
+      const restored = loftSources(loft);
+      commitShapes(
+        [...shapesRef.current.filter((shape) => shape.id !== loft.id), ...restored],
+        restored.map((shape) => shape.id),
+        "Separated the loft back into its outlines",
+      );
+      flashCadApply(restored.map((shape) => shape.id), undefined, "separate");
+      return;
+    }
     const groups = selectedShapes.filter((shape) => shape.groupedShapes?.length);
     if (groups.length === 0) {
       setNotice("Select a group first");
@@ -12054,8 +12261,8 @@ export function SketchForgeEditor({
           cutSelected();
           break;
         case "paste":
-          event.preventDefault();
-          pasteShape();
+          // Not prevented: the paste event that follows carries the clipboard (see pasteFromKeyboard).
+          pasteFromKeyboard();
           break;
         case "duplicate":
           event.preventDefault();
@@ -12193,7 +12400,7 @@ export function SketchForgeEditor({
     hotkeys,
     nudgeSelectedByView,
     pasteSelectedSketch,
-    pasteShape,
+    pasteFromKeyboard,
     polygonSidesPrompt,
     extrudeHeightPrompt,
     raiseSelected,
@@ -12244,7 +12451,12 @@ export function SketchForgeEditor({
     hasSelection,
     canGroup: selectedShapes.filter((shape) => !isConstructionShape(shape)).length > 1 && selectedShapes.every((shape) => !shape.locked),
     canIntersect: canIntersectShapes(selectedShapes.filter((shape) => !isConstructionShape(shape))),
-    canUngroup: selectedShapes.some((shape) => Boolean(shape.groupedShapes?.length)),
+    canUngroup: selectedShapes.some((shape) => Boolean(shape.groupedShapes?.length) || loftSources(shape).length > 0),
+    canLoft: selectedShapes.length >= 2 && selectedShapes.every((shape) => canLoftShape(shape)),
+    canShrinkWrap: selectedShapes.filter((shape) => !isConstructionShape(shape) && !shape.hole).length > 1 && selectedShapes.every((shape) => !shape.locked),
+    canSmooth: selectedShapes.some((shape) => !isConstructionShape(shape) && !shape.hole)
+      && selectedShapes.every((shape) => !shape.locked)
+      && !(selectedShapes.length === 1 && inferCsgOp(selectedShapes[0]) === "smooth"),
     alignMode,
     snapActive: faceSnap !== null,
     layFlatActive: layFlat,
@@ -12270,6 +12482,9 @@ export function SketchForgeEditor({
     onAssemble: assembleSelected,
     onUngroup: ungroupSelected,
     onIntersect: intersectSelected,
+    onLoft: loftSelected,
+    onShrinkWrap: shrinkWrapSelected,
+    onSmooth: smoothSelected,
     onAlign: toggleAlignMode,
     onSnap: snapSelected,
     onLayFlat: laySelectedFace,
@@ -12405,18 +12620,8 @@ export function SketchForgeEditor({
   const lesson = lessonActive
     ? lessonPrompt({
       shapes,
-      sketchMode: toolbarMode === "sketch" && !sketchActive && !sketchFacePickMode,
-      pickingFace: sketchFacePickMode,
-      sketchingOnPart: sketchActive && isFaceHostedSketch(
-        sketchProfile.sketchPlane ?? sketchDoc.plane,
-        sketchProfile.faceReferenceLoops ?? sketchDoc.faceReferenceLoops,
-      ),
-      sketchingOffPart: sketchActive && !isFaceHostedSketch(
-        sketchProfile.sketchPlane ?? sketchDoc.plane,
-        sketchProfile.faceReferenceLoops ?? sketchDoc.faceReferenceLoops,
-      ),
-      sketchClosed: closedProfilesFromLegacy(sketchProfile).length > 0,
-      extrudeOpen: extrudeHeightPrompt !== null,
+      sketching: toolbarMode === "sketch" || sketchActive || sketchFacePickMode,
+      selectedIds,
     })
     : null;
   const lessonNote = lesson && !lesson.complete ? lessonExportNote(lessonExport, lessonThroughHole) : null;
@@ -12764,7 +12969,7 @@ export function SketchForgeEditor({
         >
           <div className="dashboard-confirm-dialog">
             <header>
-              <strong id="editor-unsaved-title">Save this design?</strong>
+              <strong id="editor-unsaved-title">Keep the exact curves?</strong>
               <button
                 type="button"
                 aria-label="Stay in this project"
@@ -12779,11 +12984,7 @@ export function SketchForgeEditor({
                 ? exactStepSaveProgress
                   ? `Saving exact STEP… ${exactStepSaveProgress.done} / ${exactStepSaveProgress.total} imported ${exactStepSaveProgress.total === 1 ? "body" : "bodies"}`
                   : "Saving…"
-                : (
-                  <>
-                    <span>{projectName}</span> is already kept in Mintr. A new file is saved as .mintr. An open .peakcad file keeps that name.
-                  </>
-                )}
+                : "Your imported STEP parts keep their exact curves for STEP export only once the design is saved. Exit without saving and they export as triangles."}
             </p>
             <div className="dashboard-confirm-actions">
               <button
@@ -12792,7 +12993,7 @@ export function SketchForgeEditor({
                 disabled={unsavedPrompt.saving}
                 onClick={() => settleUnsavedPrompt(true)}
               >
-                Exit to Menu
+                Exit without saving
               </button>
               <button
                 className="dashboard-confirm-save"
@@ -12801,7 +13002,7 @@ export function SketchForgeEditor({
                 disabled={unsavedPrompt.saving}
                 onClick={() => void saveFromUnsavedPrompt()}
               >
-                {unsavedPrompt.saving ? "Saving…" : "Save file"}
+                {unsavedPrompt.saving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
@@ -13406,6 +13607,14 @@ export function SketchForgeEditor({
             }
             void removeEdgeTreatment(`root:${entry.id}`);
           } : undefined}
+          smoothControls={smoothEditing.smoothControls}
+          smoothEdit={smoothEditing.smoothEdit}
+          onSmoothPointPick={smoothEditing.onSmoothPointPick}
+          onSmoothDragStart={smoothEditing.onSmoothDragStart}
+          onSmoothDrag={smoothEditing.onSmoothDrag}
+          onSmoothDragEnd={smoothEditing.onSmoothDragEnd}
+          onSmoothBoxSelect={smoothEditing.onSmoothBoxSelect}
+          onSmoothFacePick={(spot, toward) => void smoothEditing.onSmoothFacePick(spot, toward)}
           onUpdateShape={updateShape}
           onWorkspaceSettingsChange={updateProjectWorkspaceSettings}
           modifierActive={Boolean(edgeModifier)}
@@ -13918,25 +14127,24 @@ export function SketchForgeEditor({
                 </button>
               </div>
               <div className="sketch-revolve-prompt-actions">
+                {/* Finish straight away, or look at it in 3D first. */}
+                <button type="button" className="primary" data-lesson-target={extrudeLook === null ? undefined : "cut"} disabled={extrudeBuilding} onClick={() => finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole)}>
+                  {extrudeBuilding ? <LoaderCircle className="edge-modifier-spinner" size={16} aria-hidden="true" /> : null}
+                  {extrudeBuilding
+                    ? "Building…"
+                    : extrudeAsHole
+                      ? (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create hole" : "Cut into part")
+                      : (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create solid" : "Join to part")}
+                </button>
                 {extrudeLook === null ? (
                   <>
-                    <button type="button" className="primary" data-lesson-target="cut" onClick={previewSketchExtrude}>
+                    <button type="button" data-lesson-target="cut" disabled={extrudeBuilding} onClick={previewSketchExtrude}>
                       Preview in 3D
                     </button>
-                    <button type="button" className="cancel" onClick={cancelExtrudeHeightPrompt}>Cancel</button>
+                    <button type="button" className="cancel" disabled={extrudeBuilding} onClick={cancelExtrudeHeightPrompt}>Cancel</button>
                   </>
                 ) : (
-                  <>
-                    <button type="button" className="primary" data-lesson-target="cut" disabled={extrudeBuilding} onClick={() => finishSketchExtrude(extrudeHeightPrompt, extrudeAsHole)}>
-                      {extrudeBuilding ? <LoaderCircle className="edge-modifier-spinner" size={16} aria-hidden="true" /> : null}
-                      {extrudeBuilding
-                        ? "Building…"
-                        : extrudeAsHole
-                          ? (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create hole" : "Cut into part")
-                          : (isDefaultSketchPlane(sketchProfile.sketchPlane) ? "Create solid" : "Join to part")}
-                    </button>
-                    <button type="button" disabled={extrudeBuilding} onClick={backFromExtrudePreview}>Back to sketch</button>
-                  </>
+                  <button type="button" disabled={extrudeBuilding} onClick={backFromExtrudePreview}>Back to sketch</button>
                 )}
               </div>
             </div>
@@ -14398,6 +14606,7 @@ function TopActionPanel({
               </button>
             </div>
           ) : null}
+          <TinkercadBookmark />
         </div>
       ) : null}
       {panel === "export" && laser?.crystal ? (

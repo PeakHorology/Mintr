@@ -121,6 +121,8 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     sketchId: shape.sketchId,
     sketchFinish: shape.sketchFinish,
     sketchSweep: shape.sketchSweep,
+    loftSpec: shape.loftSpec,
+    smooth: shape.smooth,
     sketchProfileIds: shape.sketchProfileIds,
     sketchPlane: shape.sketchPlane,
     sketchProfile: shape.sketchProfile,

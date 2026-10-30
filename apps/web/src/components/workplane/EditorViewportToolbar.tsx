@@ -18,6 +18,9 @@ import {
   ToolbarGroupIcon,
   ToolbarHistoryIcon,
   ToolbarIntersectionIcon,
+  ToolbarLoftIcon,
+  ToolbarShrinkWrapIcon,
+  ToolbarSmoothIcon,
   ToolbarMirrorIcon,
   ToolbarPasteIcon,
   ToolbarRedoIcon,
@@ -52,6 +55,8 @@ type ToolDef = {
   active?: boolean;
   shortcut?: string;
   disabledReason?: string;
+  /** Sage guide key, when the label is shared with another tool. */
+  sageKey?: string;
 };
 
 type ToolSection = {
@@ -98,6 +103,7 @@ function ToolbarButton({ tool }: { tool: ToolDef }) {
       aria-label={tool.label}
       aria-disabled={!tool.enabled}
       data-toolbar-tool={tool.label}
+      data-sage-key={tool.sageKey}
       data-tool-help={tool.description}
       data-tool-shortcut={tool.shortcut}
       data-lesson-target={tool.label.toLowerCase()}
@@ -400,6 +406,9 @@ export function EditorViewportToolbar({
   hasSelection,
   canGroup,
   canIntersect,
+  canShrinkWrap,
+  canSmooth,
+  canLoft,
   canUngroup,
   alignMode,
   snapActive,
@@ -430,6 +439,9 @@ export function EditorViewportToolbar({
   onAssemble,
   onUngroup,
   onIntersect,
+  onShrinkWrap,
+  onSmooth,
+  onLoft,
   onAlign,
   onSnap,
   onLayFlat,
@@ -453,6 +465,9 @@ export function EditorViewportToolbar({
   hasSelection: boolean;
   canGroup: boolean;
   canIntersect: boolean;
+  canShrinkWrap: boolean;
+  canSmooth: boolean;
+  canLoft: boolean;
   canUngroup: boolean;
   alignMode: boolean;
   snapActive: boolean;
@@ -483,6 +498,9 @@ export function EditorViewportToolbar({
   onAssemble: () => void;
   onUngroup: () => void;
   onIntersect: () => void;
+  onShrinkWrap: () => void;
+  onSmooth: () => void;
+  onLoft: () => void;
   onAlign: () => void;
   onSnap: () => void;
   onLayFlat: () => void;
@@ -538,6 +556,9 @@ export function EditorViewportToolbar({
       { label: "Tie", description: TOOL_DESCRIPTIONS.assembly, icon: ToolbarAssemblyIcon, action: onAssemble, enabled: canGroup, disabledReason: "Select two or more shapes to tie together" },
       { label: "Ungroup", description: TOOL_DESCRIPTIONS.ungroup, icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup, shortcut: shortcutLabel(hotkeys, "ungroup"), disabledReason: "Select a grouped shape to ungroup" },
       { label: "Intersect", description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select two or more overlapping shapes" },
+      { label: "Shrink Wrap", description: TOOL_DESCRIPTIONS.shrinkWrap, icon: ToolbarShrinkWrapIcon, action: onShrinkWrap, enabled: canShrinkWrap, disabledReason: "Select two or more solids to wrap" },
+      // A loft is printed, so laser designs leave it out.
+      ...(laserTools ? [] : [{ label: "Loft", description: TOOL_DESCRIPTIONS.loftSketches, icon: ToolbarLoftIcon, action: onLoft, enabled: canLoft, disabledReason: "Select two or more flat outlines stacked at different heights" }]),
     ],
   };
   const modifySection: ToolSection = {
@@ -549,6 +570,7 @@ export function EditorViewportToolbar({
       { label: "Push Pull", description: TOOL_DESCRIPTIONS.pushPull, icon: ToolbarPushPullIcon, action: onPushPull, enabled: canEdgeModify, active: pushPullActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Pad/Pocket", description: TOOL_DESCRIPTIONS.face, icon: ToolbarHollowIcon, action: onFace, enabled: canEdgeModify, active: faceActive, disabledReason: "Select a single unlocked shape first" },
       { label: "Split", description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canSplit || splitActive, active: splitActive, disabledReason: canEdgeModify ? "Gridfinity bins stay in one piece" : "Select a single unlocked shape first" },
+      { label: "Smooth", description: TOOL_DESCRIPTIONS.smoothBody, icon: ToolbarSmoothIcon, action: onSmooth, enabled: canSmooth, disabledReason: "Select an unlocked solid to smooth", sageKey: "smooth shape" },
       // Works with nothing selected: click Texture, then the part. A printed finish, so not in laser designs.
       ...(laserTools ? [] : [{ label: "Texture", description: TOOL_DESCRIPTIONS.texture, icon: ToolbarTextureIcon, action: onTexture, enabled: true, active: textureActive }]),
     ],

@@ -15,7 +15,7 @@ import { shapeFromSketchRevolve } from "@/lib/sketchRevolve";
 import { createGearGeometry } from "@/lib/gearMesh";
 import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
-import { ShapeInspector, SnapGridControl, TYPED_DIMENSION_MAX_MM, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
+import { ShapeInspector, SnapGridControl, TYPED_DIMENSION_MAX_MM, type ShapeInspectorUpdateOptions, type SmoothInspectorControls } from "@/components/workplane/ShapeInspector";
 import { LaserIcon, ToolbarDropToWorkplaneIcon, ToolbarEraserIcon } from "@/components/icons";
 import { objectSnapTolerance, snapAabbFromShape, snapMovingAabb, unionSnapAabbs, type FaceMatePose, type ObjectSnapResult } from "@/lib/objectSnap";
 import { buildPickBvh, raycastPickBvh, type PickBvh } from "@/lib/meshPickBvh";
@@ -248,6 +248,7 @@ const SHAPE_KINDS = new Set<ShapeAsset["kind"]>([
   "gear",
   "gridfinityBin",
   "gridfinityBaseplate",
+  "loft",
 ]);
 const importedGeometryCache = new WeakMap<
   NonNullable<WorkplaneShape["importedMesh"]>,
@@ -268,6 +269,7 @@ const NORMAL_IMPORTED_SELECTION_EDGE_ANGLE = 20;
 /** Feature creases only. Fillet facets sit near 11°, so they stay off this line. */
 const IMPORTED_MESH_EDGE_ANGLE = 20;
 const MODEL_CREASE_COLOR = "#5a6972";
+const HOLE_EDGE_COLOR = "#7d8a94";
 const ASSET_PLACEMENT_PREVIEW_NAME = "AssetPlacementPreview";
 
 function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
@@ -367,6 +369,17 @@ export type WorkplaneViewportProps = {
   onEditPartStep?: (featureId: string, valueMm: number) => void;
   onTogglePartStep?: (featureId: string) => void;
   onRemovePartStep?: (featureId: string) => void;
+  /** Smooth card in the inspector, on a Smooth body. */
+  smoothControls?: SmoothInspectorControls | null;
+  /** Edit points on a Smooth body: the dots to draw and drag. */
+  smoothEdit?: SmoothEditOverlay | null;
+  onSmoothPointPick?: (index: number | null, additive: boolean) => void;
+  onSmoothBoxSelect?: (indices: number[], additive: boolean) => void;
+  /** A click on the body while picking a face to keep flat: where, and which way the camera is. */
+  onSmoothFacePick?: (spot: [number, number, number], toward: [number, number, number]) => void;
+  onSmoothDragStart?: () => void;
+  onSmoothDrag?: (delta: SmoothPull) => void;
+  onSmoothDragEnd?: (delta: SmoothPull) => void;
   onUpdateShape: (id: string, patch: ShapeUpdatePatch) => void;
   onWorkspaceSettingsChange?: (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
   settingsOpen?: boolean;
@@ -2660,6 +2673,14 @@ export function WorkplaneViewport({
   onEditPartStep,
   onTogglePartStep,
   onRemovePartStep,
+  smoothControls,
+  smoothEdit = null,
+  onSmoothPointPick,
+  onSmoothBoxSelect,
+  onSmoothFacePick,
+  onSmoothDragStart,
+  onSmoothDrag,
+  onSmoothDragEnd,
   onUpdateShape,
   onWorkspaceSettingsChange,
   settingsOpen = false,
@@ -2945,6 +2966,19 @@ export function WorkplaneViewport({
   const modifierEdgesRef = useRef(modifierEdges);
   const [hoverModifierEdgeId, setHoverModifierEdgeId] = useState<number | null>(null);
   const pushPullActiveRef = useRef(pushPullActive);
+  const smoothEditRef = useRef(smoothEdit);
+  smoothEditRef.current = smoothEdit;
+  const smoothCallbacksRef = useRef({ onSmoothPointPick, onSmoothBoxSelect, onSmoothFacePick, onSmoothDragStart, onSmoothDrag, onSmoothDragEnd });
+  smoothCallbacksRef.current = { onSmoothPointPick, onSmoothBoxSelect, onSmoothFacePick, onSmoothDragStart, onSmoothDrag, onSmoothDragEnd };
+  const smoothBoxRef = useRef<{ pointerId: number; startX: number; startY: number; currentX: number; currentY: number; additive: boolean } | null>(null);
+  const smoothDragRef = useRef<{
+    pointerId: number;
+    plane: THREE.Plane;
+    start: THREE.Vector3;
+    /** Set: the pull goes straight in or out along this, measured along `measure`. */
+    out: { measure: THREE.Vector3; sign: number } | null;
+    delta: SmoothPull;
+  } | null>(null);
   const pushPullFacesRef = useRef(pushPullFaces);
   const pushPullSelectedFaceIdRef = useRef(pushPullSelectedFaceId);
   const pushPullDistanceRef = useRef(pushPullDistance);
@@ -3046,6 +3080,12 @@ export function WorkplaneViewport({
   useEffect(() => {
     if (pushPullActive) cancelActiveInteraction();
   }, [cancelActiveInteraction, pushPullActive]);
+
+  useEffect(() => {
+    rebuildSmoothEditOverlay(threeRef.current, smoothEdit);
+    // The move and resize handles would fight the points, so they hide while editing.
+    setSelectionHelpersVisible(threeRef.current, !smoothEdit);
+  }, [smoothEdit]);
 
   useEffect(() => {
     pushPullActiveRef.current = pushPullActive;
@@ -5380,6 +5420,70 @@ export function WorkplaneViewport({
         }
       }
 
+      const smoothOverlay = smoothEditRef.current;
+      if (smoothOverlay?.pickingFace) {
+        // Picking a face to keep flat: a click on the part picks it, a miss leaves the camera free.
+        const live = threeRef.current ?? state;
+        pointerWorldRay(live, event.clientX, event.clientY);
+        const surface = surfaceHits(live)[0];
+        if (!surface) return;
+        event.preventDefault();
+        const eye = live.camera.position;
+        const toward = eye.clone().sub(surface.point).normalize();
+        smoothCallbacksRef.current.onSmoothFacePick?.([surface.point.x, surface.point.y, surface.point.z], [toward.x, toward.y, toward.z]);
+        return;
+      }
+      if (smoothOverlay) {
+        const live = threeRef.current ?? state;
+        const hit = pickSmoothPoint(live, smoothOverlay, event.clientX, event.clientY);
+        // A miss leaves the camera free to orbit; without Shift it clears the selection.
+        if (hit === null) {
+          if (event.altKey) {
+            // Alt-drag draws a box: every dot inside facing you is picked.
+            event.preventDefault();
+            const rect = live.renderer.domElement.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            smoothBoxRef.current = { pointerId: event.pointerId, startX: x, startY: y, currentX: x, currentY: y, additive: event.shiftKey };
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            live.controls.enabled = false;
+            return;
+          }
+          if (!event.shiftKey) smoothCallbacksRef.current.onSmoothPointPick?.(null, false);
+          return;
+        }
+        event.preventDefault();
+        const wasSelected = smoothOverlay.selected.has(hit);
+        if (event.shiftKey || !wasSelected) smoothCallbacksRef.current.onSmoothPointPick?.(hit, event.shiftKey);
+        if (event.shiftKey && wasSelected) return;
+        const dot = new THREE.Vector3(smoothOverlay.points[hit * 3], smoothOverlay.points[hit * 3 + 1], smoothOverlay.points[hit * 3 + 2]);
+        const facing = new THREE.Vector3();
+        live.camera.getWorldDirection(facing);
+        // A drag moves the point across the screen; with Drag set to In and out, or Ctrl held,
+        // it pulls straight out of the surface (or pushes in).
+        const free = !(smoothOverlay.dragInOut || event.ctrlKey || event.metaKey);
+        const normal = new THREE.Vector3(smoothOverlay.normals[hit * 3], smoothOverlay.normals[hit * 3 + 1], smoothOverlay.normals[hit * 3 + 2]);
+        let plane = new THREE.Plane().setFromNormalAndCoplanarPoint(facing, dot);
+        let out: { measure: THREE.Vector3; sign: number } | null = null;
+        if (!free && normal.lengthSq() > 0.5) {
+          const side = facing.clone().addScaledVector(normal, -facing.dot(normal));
+          if (side.length() > 0.3) {
+            // The pointer runs along the line out of the surface, on the plane through it that faces you most.
+            plane = new THREE.Plane().setFromNormalAndCoplanarPoint(side.normalize(), dot);
+            out = { measure: normal, sign: 1 };
+          } else {
+            // Looking straight at the surface: dragging up pulls it toward you, down pushes it in.
+            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(live.camera.quaternion);
+            out = { measure: up, sign: normal.dot(facing) < 0 ? 1 : -1 };
+          }
+        }
+        smoothDragRef.current = { pointerId: event.pointerId, plane, start: smoothPlanePoint(live, plane, event.clientX, event.clientY) ?? dot, out, delta: out ? 0 : [0, 0, 0] };
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        live.controls.enabled = false;
+        smoothCallbacksRef.current.onSmoothDragStart?.();
+        return;
+      }
+
       if (pushPullActiveRef.current) {
         event.preventDefault();
         const live = threeRef.current ?? state;
@@ -5764,6 +5868,42 @@ export function WorkplaneViewport({
       if (faceSnapActiveRef.current) {
         updateFaceSnapHover(event.clientX, event.clientY);
       }
+      const smoothBox = smoothBoxRef.current;
+      if (smoothBox && event.pointerId === smoothBox.pointerId) {
+        const live = threeRef.current;
+        if (!live) return;
+        const rect = live.renderer.domElement.getBoundingClientRect();
+        smoothBox.currentX = event.clientX - rect.left;
+        smoothBox.currentY = event.clientY - rect.top;
+        setMarqueeRect({
+          left: Math.min(smoothBox.startX, smoothBox.currentX),
+          top: Math.min(smoothBox.startY, smoothBox.currentY),
+          width: Math.abs(smoothBox.currentX - smoothBox.startX),
+          height: Math.abs(smoothBox.currentY - smoothBox.startY),
+        });
+        return;
+      }
+      const smoothDrag = smoothDragRef.current;
+      if (smoothDrag && event.pointerId === smoothDrag.pointerId) {
+        const live = threeRef.current;
+        const point = live ? smoothPlanePoint(live, smoothDrag.plane, event.clientX, event.clientY) : null;
+        if (!point) return;
+        const delta: [number, number, number] = [point.x - smoothDrag.start.x, point.y - smoothDrag.start.y, point.z - smoothDrag.start.z];
+        if (smoothDrag.out) {
+          const { measure, sign } = smoothDrag.out;
+          smoothDrag.delta = sign * (delta[0] * measure.x + delta[1] * measure.y + delta[2] * measure.z);
+          smoothCallbacksRef.current.onSmoothDrag?.(smoothDrag.delta);
+          return;
+        }
+        // Shift keeps the pull to the one direction it mostly runs in.
+        if (event.shiftKey) {
+          const axis = [0, 1, 2].reduce((best, k) => (Math.abs(delta[k]) > Math.abs(delta[best]) ? k : best), 0);
+          for (let k = 0; k < 3; k += 1) if (k !== axis) delta[k] = 0;
+        }
+        smoothDrag.delta = delta;
+        smoothCallbacksRef.current.onSmoothDrag?.(delta);
+        return;
+      }
       if (pushPullActiveRef.current) {
         const live = threeRef.current;
         if (!live) return;
@@ -5971,6 +6111,33 @@ export function WorkplaneViewport({
         textureDragRef.current = null;
         if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         if (threeRef.current) threeRef.current.controls.enabled = true;
+        return;
+      }
+      const smoothBox = smoothBoxRef.current;
+      if (smoothBox && event.pointerId === smoothBox.pointerId) {
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        smoothBoxRef.current = null;
+        setMarqueeRect(null);
+        const live = threeRef.current;
+        const overlay = smoothEditRef.current;
+        if (live) live.controls.enabled = true;
+        if (live && overlay) {
+          const picked = smoothPointsInBox(live, overlay, {
+            left: Math.min(smoothBox.startX, smoothBox.currentX),
+            top: Math.min(smoothBox.startY, smoothBox.currentY),
+            right: Math.max(smoothBox.startX, smoothBox.currentX),
+            bottom: Math.max(smoothBox.startY, smoothBox.currentY),
+          });
+          smoothCallbacksRef.current.onSmoothBoxSelect?.(picked, smoothBox.additive);
+        }
+        return;
+      }
+      const smoothDrag = smoothDragRef.current;
+      if (smoothDrag && event.pointerId === smoothDrag.pointerId) {
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        smoothDragRef.current = null;
+        if (threeRef.current) threeRef.current.controls.enabled = true;
+        smoothCallbacksRef.current.onSmoothDragEnd?.(smoothDrag.delta);
         return;
       }
       const pushPullDrag = pushPullDragRef.current;
@@ -6880,7 +7047,7 @@ export function WorkplaneViewport({
               </button>
             )
           ) : null}
-          {transformOverlay && !sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive && !pushPullActive ? (
+          {transformOverlay && !smoothEdit && !sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive && !pushPullActive ? (
             <TransformOverlay
               box={transformOverlay}
               measureKey={pinnedMeasureKey ?? hoverMeasureKey}
@@ -7023,6 +7190,7 @@ export function WorkplaneViewport({
             onEditPartStep={onEditPartStep}
             onTogglePartStep={onTogglePartStep}
             onRemovePartStep={onRemovePartStep}
+            smoothControls={smoothControls}
             onInteractionActiveChange={onInteractionActiveChange}
           />
         </div>
@@ -9801,6 +9969,262 @@ function rebuildPushPullFaces(
   state.needsRender = true;
 }
 
+/** Edit points on a Smooth body: dots on the smooth surface, joined by the net's edges. */
+export type SmoothEditOverlay = {
+  points: Float32Array;
+  edges: Uint32Array;
+  /** Edges that are sharp, drawn darker. */
+  sharpEdges: Uint32Array;
+  /** Which way the surface faces at each point. */
+  normals: Float32Array;
+  selected: ReadonlySet<number>;
+  /** Mirror twins of the selected points. */
+  twins: ReadonlySet<number>;
+  /** Points on a face kept flat (1): drawn grey, and they cannot be picked. */
+  locked: Uint8Array;
+  /** The first points were already there one detail down; they are drawn larger. */
+  coarseCount: number;
+  /** A click picks a face of the part to keep flat, instead of a point. */
+  pickingFace: boolean;
+  /** Drags pull straight in and out of the surface; otherwise Ctrl does. */
+  dragInOut: boolean;
+};
+
+/** How far a Smooth drag has gone: a move in world mm, or a number for straight out of the surface (negative is in). */
+export type SmoothPull = [number, number, number] | number;
+
+const SMOOTH_DOT_COLOR = new THREE.Color("#ffffff");
+const SMOOTH_DOT_SELECTED = new THREE.Color("#0098c7");
+const SMOOTH_DOT_TWIN = new THREE.Color("#8fd3ea");
+const SMOOTH_DOT_LOCKED = new THREE.Color("#8a949a");
+let smoothDotTexture: THREE.Texture | null = null;
+let smoothRingTexture: THREE.Texture | null = null;
+
+/** A hollow ring drawn round each Mirror twin, so the point that will move with yours stands out. */
+function smoothRingSprite() {
+  if (smoothRingTexture) return smoothRingTexture;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.beginPath();
+    context.arc(32, 32, 24, 0, Math.PI * 2);
+    context.lineWidth = 10;
+    context.strokeStyle = "#ffffff";
+    context.stroke();
+    context.beginPath();
+    context.arc(32, 32, 24, 0, Math.PI * 2);
+    context.lineWidth = 6;
+    context.strokeStyle = "#0098c7";
+    context.stroke();
+  }
+  smoothRingTexture = new THREE.CanvasTexture(canvas);
+  return smoothRingTexture;
+}
+
+function smoothDotSprite() {
+  if (smoothDotTexture) return smoothDotTexture;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.beginPath();
+    context.arc(32, 32, 26, 0, Math.PI * 2);
+    context.fillStyle = "#ffffff";
+    context.fill();
+    context.lineWidth = 8;
+    context.strokeStyle = "#1f2a30";
+    context.stroke();
+  }
+  smoothDotTexture = new THREE.CanvasTexture(canvas);
+  return smoothDotTexture;
+}
+
+/** Draw a little in front of the surface the dots sit on, so they are not lost in it. */
+function biasTowardCamera<T extends THREE.Material>(material: T): T {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <project_vertex>",
+      // A small share of the distance, not of the depth buffer: depth steps grow far from the
+      // camera, and a fixed depth nudge there pushed the dots right through the part.
+      "#include <project_vertex>\n  gl_Position = projectionMatrix * vec4(mvPosition.xyz * 0.996, 1.0);",
+    );
+  };
+  material.customProgramCacheKey = () => "smooth-edit-bias-2";
+  return material;
+}
+
+function rebuildSmoothEditOverlay(state: ThreeState | null, overlay: SmoothEditOverlay | null) {
+  if (!state) return;
+  const existing = state.scene.userData.smoothEdit as THREE.Group | undefined;
+  if (existing) {
+    state.scene.remove(existing);
+    existing.traverse((object) => {
+      const drawable = object as THREE.Points | THREE.LineSegments;
+      drawable.geometry?.dispose();
+      (drawable.material as THREE.Material | undefined)?.dispose();
+    });
+    delete state.scene.userData.smoothEdit;
+  }
+  if (!overlay || overlay.points.length < 3) {
+    state.needsRender = true;
+    return;
+  }
+  const group = new THREE.Group();
+  group.name = "SmoothEdit";
+  const edgeLines = (edges: Uint32Array, color: string, opacity: number) => {
+    const linePositions = new Float32Array(edges.length * 3);
+    edges.forEach((v, i) => {
+      linePositions[i * 3] = overlay.points[v * 3];
+      linePositions[i * 3 + 1] = overlay.points[v * 3 + 1];
+      linePositions[i * 3 + 2] = overlay.points[v * 3 + 2];
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(linePositions, 3));
+    return new THREE.LineSegments(geometry, biasTowardCamera(new THREE.LineBasicMaterial({ color, transparent: true, opacity })));
+  };
+  const lines = edgeLines(overlay.edges, "#1f2a30", 0.45);
+  lines.renderOrder = 1003;
+  const sharp = edgeLines(overlay.sharpEdges, "#005f80", 0.95);
+  sharp.renderOrder = 1003;
+  const count = overlay.points.length / 3;
+  const colors = new Float32Array(overlay.points.length);
+  for (let v = 0; v < count; v += 1) {
+    const color = overlay.selected.has(v) ? SMOOTH_DOT_SELECTED : overlay.twins.has(v) ? SMOOTH_DOT_TWIN : overlay.locked[v] ? SMOOTH_DOT_LOCKED : SMOOTH_DOT_COLOR;
+    colors[v * 3] = color.r;
+    colors[v * 3 + 1] = color.g;
+    colors[v * 3 + 2] = color.b;
+  }
+  const dotGeometry = new THREE.BufferGeometry();
+  dotGeometry.setAttribute("position", new THREE.BufferAttribute(overlay.points, 3));
+  dotGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const dotMaterial = (size: number) => new THREE.PointsMaterial({
+    size,
+    sizeAttenuation: false,
+    map: smoothDotSprite(),
+    vertexColors: true,
+    transparent: true,
+    alphaTest: 0.2,
+    depthWrite: false,
+  });
+  // The points a detail down are drawn full size and the new ones in between smaller,
+  // so the shape still reads at the finest detail. Coarse points come first in the list.
+  const coarse = overlay.coarseCount > 0 ? overlay.coarseCount : count;
+  const dots = (first: number, last: number, size: number) => {
+    if (last <= first) return [];
+    // Points round the back stay hidden by the part, so the side you are shaping reads clearly.
+    const front = new THREE.Points(dotGeometry, biasTowardCamera(dotMaterial(size)));
+    front.renderOrder = 1004;
+    front.onBeforeRender = () => dotGeometry.setDrawRange(first, last - first);
+    return [front];
+  };
+  const objects: THREE.Object3D[] = [lines, sharp, ...dots(0, coarse, 11), ...dots(coarse, count, 7)];
+  if (overlay.twins.size > 0) {
+    // Rings round the twins show through the part, since a twin is often round the back.
+    const ringPositions = new Float32Array(overlay.twins.size * 3);
+    [...overlay.twins].forEach((v, i) => {
+      ringPositions[i * 3] = overlay.points[v * 3];
+      ringPositions[i * 3 + 1] = overlay.points[v * 3 + 1];
+      ringPositions[i * 3 + 2] = overlay.points[v * 3 + 2];
+    });
+    const ringGeometry = new THREE.BufferGeometry();
+    ringGeometry.setAttribute("position", new THREE.BufferAttribute(ringPositions, 3));
+    const rings = new THREE.Points(ringGeometry, new THREE.PointsMaterial({
+      size: 22,
+      sizeAttenuation: false,
+      map: smoothRingSprite(),
+      transparent: true,
+      alphaTest: 0.2,
+      depthTest: false,
+      depthWrite: false,
+    }));
+    rings.renderOrder = 1005;
+    objects.push(rings);
+  }
+  for (const object of objects) object.frustumCulled = false;
+  group.add(...objects);
+  state.scene.add(group);
+  state.scene.userData.smoothEdit = group;
+  state.needsRender = true;
+}
+
+/** Dots inside a box on the canvas that face the camera, so a box does not reach through the part. */
+function smoothPointsInBox(state: ThreeState, overlay: SmoothEditOverlay, box: { left: number; top: number; right: number; bottom: number }) {
+  const picked: number[] = [];
+  const point = new THREE.Vector3();
+  const toPoint = new THREE.Vector3();
+  for (let v = 0; v < overlay.points.length / 3; v += 1) {
+    point.set(overlay.points[v * 3], overlay.points[v * 3 + 1], overlay.points[v * 3 + 2]);
+    if (overlay.locked[v]) continue;
+    const screen = projectToCanvasPx(state, point);
+    if (screen.x < box.left || screen.x > box.right || screen.y < box.top || screen.y > box.bottom) continue;
+    toPoint.copy(point).sub(state.camera.position);
+    const facing = overlay.normals[v * 3] * toPoint.x + overlay.normals[v * 3 + 1] * toPoint.y + overlay.normals[v * 3 + 2] * toPoint.z;
+    if (facing < 0) picked.push(v);
+  }
+  return picked;
+}
+
+/** Nearest dot within reach of the pointer, preferring dots in front of the part. */
+/** Drawn on screen: it and everything it sits in are visible, and its material draws. */
+function isDrawn(object: THREE.Object3D) {
+  const material = (object as THREE.Mesh).material;
+  if (Array.isArray(material) ? material.every((m) => !m.visible || m.opacity === 0) : material && (!material.visible || material.opacity === 0)) return false;
+  for (let at: THREE.Object3D | null = object; at; at = at.parent) if (!at.visible) return false;
+  return true;
+}
+
+/**
+ * What the ray meets on the parts' real surfaces, nearest first. Large meshes normally answer
+ * clicks with their outer box to stay quick; that would hide every point inside it.
+ */
+function surfaceHits(state: ThreeState) {
+  const hits: THREE.Intersection[] = [];
+  state.shapeLayer.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !isDrawn(mesh)) return;
+    if (mesh.userData.boundsPick) THREE.Mesh.prototype.raycast.call(mesh, state.raycaster, hits);
+    else mesh.raycast(state.raycaster, hits);
+  });
+  return hits.sort((a, b) => a.distance - b.distance);
+}
+
+function pickSmoothPoint(state: ThreeState, overlay: SmoothEditOverlay, clientX: number, clientY: number) {
+  const rect = state.renderer.domElement.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const reach = 12;
+  const near: { v: number; away: number }[] = [];
+  const point = new THREE.Vector3();
+  for (let v = 0; v < overlay.points.length / 3; v += 1) {
+    if (overlay.locked[v]) continue;
+    point.set(overlay.points[v * 3], overlay.points[v * 3 + 1], overlay.points[v * 3 + 2]);
+    const screen = projectToCanvasPx(state, point);
+    const away = Math.hypot(screen.x - x, screen.y - y);
+    if (away <= reach) near.push({ v, away });
+  }
+  near.sort((a, b) => a.away - b.away);
+  // The nearest dot the camera can see: points behind the part cannot be picked.
+  const eye = state.camera.position;
+  const toward = new THREE.Vector3();
+  for (const { v } of near) {
+    point.set(overlay.points[v * 3], overlay.points[v * 3 + 1], overlay.points[v * 3 + 2]);
+    const distance = point.distanceTo(eye);
+    toward.subVectors(point, eye).normalize();
+    state.raycaster.set(eye, toward);
+    const surface = surfaceHits(state)[0];
+    if (!surface || surface.distance >= distance - Math.max(0.1, distance * 0.01)) return v;
+  }
+  return null;
+}
+
+function smoothPlanePoint(state: ThreeState, plane: THREE.Plane, clientX: number, clientY: number) {
+  pointerWorldRay(state, clientX, clientY);
+  return state.raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+}
+
 function rebuildPushPullGhost(
   state: ThreeState | null,
   faces: CadPlanarFace[],
@@ -9870,7 +10294,9 @@ function rebuildSelectionHelpers(state: ThreeState | null, shapes: WorkplaneShap
   });
 }
 
-function setSelectionHelpersVisible(state: ThreeState | null, visible: boolean) {
+function setSelectionHelpersVisible(state: ThreeState | null, shown: boolean) {
+  // The move and resize handles stay away while Smooth points are being edited.
+  const visible = shown && !state?.scene.userData.smoothEdit;
   if (!state || state.helperLayer.visible === visible) {
     return;
   }
@@ -11263,20 +11689,23 @@ function clearAssetPlacementPreviewObject(state: ThreeState) {
 }
 
 /**
- * Hole cutter look: translucent gray-blue 45° hatch, no rim.
- * Light/dark bands stay medium-light so the pattern reads without a dark outline.
+ * Hole cutter look: frosted glass, like the crystal blank. Faces turned toward the camera stay
+ * clear so the part behind shows through; faces seen edge-on frost up, so the hole's outline
+ * reads from any angle against the light workplane. A faint 45° hatch keeps the familiar "this
+ * is a hole" cue.
  */
 function createHoleStripeMaterial(role: "hole" | "overlap" = "hole") {
   const overlap = role === "overlap";
-  const light = new THREE.Color(overlap ? "#c0cad2" : "#e6eef3");
-  const dark = new THREE.Color(overlap ? "#93a0a9" : "#b7c3cc");
+  const light = new THREE.Color(overlap ? "#c3ced6" : "#a9b8c4");
+  const dark = new THREE.Color(overlap ? "#97a5af" : "#93a3b0");
+  const frost = new THREE.Color(overlap ? "#d7e0e6" : "#eef3f6");
   const material = new THREE.MeshStandardMaterial({
-    color: overlap ? "#a9b5bd" : "#d0dae2",
+    color: overlap ? "#a9b5bd" : "#dfe6ea",
     transparent: true,
-    opacity: overlap ? 0.54 : 0.44,
+    opacity: overlap ? 0.5 : 0.5,
     depthTest: true,
     depthWrite: false,
-    roughness: 0.94,
+    roughness: 0.3,
     metalness: 0,
     side: THREE.FrontSide,
     polygonOffset: true,
@@ -11287,25 +11716,31 @@ function createHoleStripeMaterial(role: "hole" | "overlap" = "hole") {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.holeStripeLight = { value: light };
     shader.uniforms.holeStripeDark = { value: dark };
+    shader.uniforms.holeFrost = { value: frost };
     shader.uniforms.holeStripeScale = { value: overlap ? 0.18 : 0.14 };
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
         `#include <common>
-varying vec3 vHoleWorldPos;`,
+varying vec3 vHoleWorldPos;
+varying float vHoleGlancing;`,
       )
       .replace(
         "#include <project_vertex>",
         `#include <project_vertex>
-vHoleWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
+vHoleWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vec3 holeViewNormal = normalize(normalMatrix * objectNormal);
+vHoleGlancing = 1.0 - abs(dot(holeViewNormal, normalize(-mvPosition.xyz)));`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
         `#include <common>
 varying vec3 vHoleWorldPos;
+varying float vHoleGlancing;
 uniform vec3 holeStripeLight;
 uniform vec3 holeStripeDark;
+uniform vec3 holeFrost;
 uniform float holeStripeScale;`,
       )
       .replace(
@@ -11313,10 +11748,19 @@ uniform float holeStripeScale;`,
         `#include <color_fragment>
 float hatch = fract((vHoleWorldPos.x + vHoleWorldPos.y) * holeStripeScale);
 float band = smoothstep(0.28, 0.5, hatch) * (1.0 - smoothstep(0.78, 1.0, hatch));
-diffuseColor.rgb = mix(holeStripeLight, holeStripeDark, band * 0.62);`,
+float rim = pow(clamp(vHoleGlancing, 0.0, 1.0), 2.2);
+diffuseColor.rgb = mix(mix(holeStripeLight, holeStripeDark, band * 0.38), holeFrost, rim * 0.7);
+diffuseColor.a = clamp(diffuseColor.a * (0.8 + rim * 1.2), 0.0, 0.88);`,
+      )
+      // Lighting alone turns faces facing the light near-white, lost on the workplane. Blend in
+      // the frost colour after lighting so every face of a hole keeps the same body.
+      .replace(
+        "#include <opaque_fragment>",
+        `outgoingLight = mix(outgoingLight, diffuseColor.rgb, 0.55);
+#include <opaque_fragment>`,
       );
   };
-  material.customProgramCacheKey = () => `peakcad-hole-stripe-${role}-v4`;
+  material.customProgramCacheKey = () => `peakcad-hole-frost-${role}-v10`;
   return material;
 }
 
@@ -11620,6 +12064,7 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
       break;
     case "mesh":
     case "thread":
+    case "loft":
     case "gridfinityBin":
     case "gridfinityBaseplate":
       // Gridfinity bodies arrive from the kernel asynchronously; until then the
@@ -11887,6 +12332,7 @@ function addMesh(
   const texturedTriangles = group.userData.surfaceTextured ? (prepared.index?.count ?? 0) / 3 : 0;
   if (importedTriangles > LARGE_PICK_TRIANGLE_CAP || texturedTriangles > LARGE_PICK_TRIANGLE_CAP) {
     mesh.raycast = raycastImportedBounds;
+    mesh.userData.boundsPick = true;
   }
   if (position) {
     mesh.position.copy(position);
@@ -11898,6 +12344,8 @@ function addMesh(
   if (scale) {
     mesh.scale.copy(scale);
   }
+  // The see-through workplane writes depth; drawn after a far hole it would wash the hole out.
+  if (shape.hole) mesh.renderOrder = 3;
   group.add(mesh);
   // Crease lines on a texture would be every bump; the texture shows its own shape.
   if (group.userData.surfaceTextured) return;
@@ -11923,7 +12371,9 @@ function addMesh(
   const importedTriangleCount = shape.importedMesh?.triangleCount ?? 0;
   const skipHeavyImportedEdges = Boolean(shape.importedMesh) && importedTriangleCount > Math.min(IMPORTED_SELECTED_EDGE_TRIANGLE_LIMIT, 20_000);
   const showImportedCreases = Boolean(shape.importedMesh) && !shape.hole && !shape.construction && !skipHeavyImportedEdges;
-  const showIdleEdges = !shape.hole && !shape.construction && (showImportedCreases || (!shape.importedMesh && (sharpDetailEdges || facetedSolid)));
+  // Holes keep a quiet outline, like the crystal blank's edges, so the frosted body reads as a shape.
+  const holeOutline = Boolean(shape.hole) && !shape.construction && !skipHeavyImportedEdges;
+  const showIdleEdges = holeOutline || (!shape.hole && !shape.construction && (showImportedCreases || (!shape.importedMesh && (sharpDetailEdges || facetedSolid))));
   const selectedOutline = Boolean(group.userData.showEdges);
   const creaseEdges = showImportedCreases || sharpDetailEdges || facetedSolid;
   const cadEdgeColor = selectedOutline ? SHAPE_OUTLINE_BRONZE : MODEL_CREASE_COLOR;
@@ -11935,12 +12385,14 @@ function addMesh(
   );
   if (!cadDrawn && (group.userData.showEdges || showIdleEdges) && !skipHeavyImportedEdges) {
     const selectedRoundedBox = selectedOutline && shape.kind === "box" && Boolean(shape.radius && shape.radius > 0);
-    const edgeColor = selectedOutline ? SHAPE_OUTLINE_BRONZE : creaseEdges ? MODEL_CREASE_COLOR : darkenHex(shape.color, 0.55);
+    const edgeColor = selectedOutline ? SHAPE_OUTLINE_BRONZE : holeOutline ? HOLE_EDGE_COLOR : creaseEdges ? MODEL_CREASE_COLOR : darkenHex(shape.color, 0.55);
     const edgeOpacity = selectedRoundedBox
       ? 0
       : selectedOutline
         ? 0.9
-        : creaseEdges
+        : holeOutline
+          ? 0.7
+          : creaseEdges
           ? 0.55
           : shape.kind === "text"
             ? 0.86
@@ -11969,7 +12421,7 @@ function addMesh(
       }),
     );
     edges.userData.complexEdge = sharpDetailEdges || curvedSurface || facetedSolid;
-    edges.renderOrder = selectedOutline ? 2 : 1;
+    edges.renderOrder = holeOutline ? 4 : selectedOutline ? 2 : 1;
     edges.position.copy(mesh.position);
     edges.rotation.copy(mesh.rotation);
     edges.scale.copy(mesh.scale);

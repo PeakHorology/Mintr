@@ -24,7 +24,39 @@ export type ShapeKind =
   | "thread"
   | "gear"
   | "gridfinityBin"
-  | "gridfinityBaseplate";
+  | "gridfinityBaseplate"
+  | "loft";
+
+export type LoftPoint = [number, number];
+export type LoftStep = { kind: "line"; to: LoftPoint } | { kind: "bezier"; c1: LoftPoint; c2: LoftPoint; to: LoftPoint };
+/** One closed outline in the X / Z plane, drawn from `start` by each step in turn. */
+export type LoftLoop = { start: LoftPoint; steps: LoftStep[] };
+/** An outline at height `y`. Lofts store them fitted to a unit box: x and z run -0.5..0.5, y 0..1. */
+export type LoftSection = { y: number; loop: LoftLoop };
+export type LoftOutline = "circle" | "square" | "polygon";
+/** The Shapes palette loft: one outline at the bottom, one at the top. */
+export type LoftStarter = {
+  bottom: LoftOutline;
+  top: LoftOutline;
+  /** Sides of a polygon outline. */
+  sides: number;
+  /** Top outline size, percent of the bottom. */
+  topScale: number;
+  /** Turn of the top against the bottom, degrees. */
+  twist: number;
+};
+export type LoftSpec = {
+  sections: LoftSection[];
+  /** Bend smoothly through the outlines, rather than run straight between them. */
+  smooth: boolean;
+  /** Wall thickness in mm for a hollow loft, open at both ends. 0 is solid. */
+  wall: number;
+  /** Size in mm of the box the outlines fill, as last built. */
+  span: [number, number, number];
+  starter?: LoftStarter;
+  /** The sketches a sketch loft was made from, so Separate Parts can bring them back. */
+  sources?: WorkplaneShape[];
+};
 
 export type GridfinitySide = "left" | "right" | "front" | "back";
 
@@ -407,7 +439,54 @@ export type CadPrimitiveFrame = {
 };
 
 /** Live CSG / feature-tree op on a body. Mesh cache is derived; children are truth. */
-export type CsgOp = "union" | "subtract" | "intersect" | "assemble";
+/** `hull` is Shrink Wrap: one convex skin around the solids, holes cut after. */
+/** `smooth` is Smooth: the solids joined and rounded off (Catmull-Clark), holes cut after. */
+export type CsgOp = "union" | "subtract" | "intersect" | "assemble" | "hull" | "smooth";
+
+/** A pulled point on a Smooth body. Group frame, like the children: x and z from the centre, y up from the bottom. */
+export type SmoothTug = {
+  /** Which detail level the point belongs to. */
+  detail: number;
+  /** The point's place in the net before it was pulled: how it is found again after a rebuild. */
+  at: [number, number, number];
+  /** Where the smooth surface now passes. */
+  to: [number, number, number];
+  /**
+   * Where the surface was before this pull, for pulls at a finer detail. The pull is then
+   * kept as the step from here to `to`, so it rides along when the rough shape changes.
+   */
+  from?: [number, number, number];
+};
+
+/** A sharp edge on a Smooth body: the net edge between two points at one detail level, found by their unpulled places. */
+export type SmoothCrease = {
+  detail: number;
+  a: [number, number, number];
+  b: [number, number, number];
+  /** Set: the edge is made smooth instead, for an edge the shape started out sharp. */
+  smooth?: boolean;
+};
+
+export type SmoothSpec = {
+  /** How many times the surface is subdivided after the net: 1 to 3. */
+  level: number;
+  /** Extra subdivisions of the net before pulling: more points to grab, less shrink. 0 to 2. */
+  detail?: number;
+  /** The part's own edges start sharp, so the shape stays as it was until it is pulled. */
+  keepEdges?: boolean;
+  /** Faces on the bed stay flat (their rim is a crease). On unless turned off. */
+  keepBottomFlat?: boolean;
+  /** Pulling a point also pulls the points this close to it, fading out. Millimetres; 0 is off. */
+  softRadius?: number;
+  /** Pulls are copied across the body's middle, left to right (x) or front to back (z). */
+  mirror?: "x" | "z";
+  tugs?: SmoothTug[];
+  creases?: SmoothCrease[];
+  /** Flat faces of the parts that stay exactly as they are, each found by a spot on it. */
+  keepFaces?: [number, number, number][];
+  /** Pulls and sharp edges made on the other "Start from" shape, kept for switching back. */
+  parked?: { keepEdges: boolean; tugs: SmoothTug[]; creases: SmoothCrease[] };
+};
 
 export type CsgBodyMeta = {
   op: CsgOp;
@@ -577,6 +656,10 @@ export type WorkplaneShape = {
    * the current spec means the kernel build is still pending.
    */
   gridfinityBuilt?: string;
+  /** `kind: "loft"` outlines and settings. */
+  loftSpec?: LoftSpec;
+  /** Key of the loft the stored exact body was built from. A mismatch means a build is pending. */
+  loftBuilt?: string;
   cadDisplayEdges?: CadDisplayEdge[];
   cadDisplayEdgesVersion?: 2;
   edgeResizeMode?: "scale" | "preserve";
@@ -588,6 +671,8 @@ export type WorkplaneShape = {
    * source of truth and `importedMesh` is an evaluation cache.
    */
   csg?: CsgBodyMeta;
+  /** Smooth settings and pulled points; only on a `smooth` body. */
+  smooth?: SmoothSpec;
   groupedShapes?: WorkplaneShape[];
   groupedBaseWidth?: number;
   groupedBaseDepth?: number;

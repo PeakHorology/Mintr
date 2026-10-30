@@ -40,6 +40,9 @@ export type SagePicture =
   | "ungroup"
   | "tie"
   | "intersect"
+  | "shrink-wrap"
+  | "smooth-shape"
+  | "loft"
   | "chamfer"
   | "fillet"
   | "push-pull"
@@ -79,6 +82,9 @@ const GUIDE_LIST: Array<SageGuide & { keys: string[] }> = [
   { keys: ["tie"], title: "Tie", what: "Keeps shapes separate and moves them together.", steps: ["Select the shapes that should stay a set.", "Click Tie. They move as one and do not fuse."], picture: "tie" },
   { keys: ["ungroup"], title: "Ungroup", what: "Unwraps one level of the last Group.", steps: ["Select a grouped shape.", "Click Ungroup. Nested groups unwrap one level at a time."], hotkey: "ungroup", picture: "ungroup" },
   { keys: ["intersect"], title: "Intersect", what: "Keeps only the volume where the selected shapes overlap.", steps: ["Select the shapes that overlap.", "Click Intersect. Everything outside the overlap is removed."], picture: "intersect" },
+  { keys: ["shrink wrap"], title: "Shrink Wrap", what: "Wraps the selected shapes in one tight skin, as if plastic were shrunk around them. Good for a handle between two knobs or a smooth case around parts.", steps: ["Select two or more shapes. Holes in the selection still cut through the skin.", "Click Shrink Wrap.", "The parts stay inside, listed under Model tree. Move one and the skin follows. Ungroup brings them back."], picture: "shrink-wrap" },
+  { keys: ["smooth shape"], title: "Smooth", what: "Puts pullable points on a part so you can sculpt soft, flowing curves into it. Start from a part with known sizes and shape a style into it.", steps: ["Select one or more solids and click Smooth in Modify. The part keeps its exact shape until you pull; set Start from to Rounded to round it all off instead.", "Click Edit points, then drag a dot to push or pull the surface. Hold Ctrl while dragging to pull straight in and out of the surface, or set Drag to In and out to always do that. Shift-click or Alt-drag a box to pick several. Soft radius brings nearby points along, and Mirror copies each pull to the other side.", "Click Keep a face flat, then a face, to hold it exactly as it is, such as a base or a face something mounts to. Its points turn grey.", "Shape the big curves first, then raise Smoothness: the surface gets finer and you get more points for the details, with your pulls kept.", "Pick a row of neighbouring points and click Make edge smooth to round an edge, or Make edge sharp for a crisp line. Ungroup brings the original parts back."], picture: "smooth-shape" },
+  { keys: ["loft"], title: "Loft", what: "Makes a smooth solid that changes from one outline to another, like a square base that turns round at the top.", steps: ["For a quick one, click Loft in the Shapes panel and pick the bottom and top outlines, the top size, a twist, or Hollow.", "To loft your own outlines, stack two or more flat sketches, boxes, cylinders or polygons at different heights.", "Select them all and click Loft in Combine. With three or more, choose Smooth or Straight. Ungroup brings the outlines back."], picture: "loft" },
   { keys: ["chamfer"], title: "Chamfer", what: "Cuts a flat bevel along the edges you pick.", steps: ["Select one solid.", "Click Chamfer, then the edges, and set the distance."], picture: "chamfer" },
   { keys: ["fillet"], title: "Fillet", what: "Rounds the edges you pick.", steps: ["Select one solid.", "Click Fillet, then the edges, and set the radius."], picture: "fillet" },
   { keys: ["push pull"], title: "Push Pull", what: "Grows or shrinks a solid by dragging a flat face.", steps: ["Select one solid.", "Click Push Pull, drag a face, then Apply."], picture: "push-pull" },

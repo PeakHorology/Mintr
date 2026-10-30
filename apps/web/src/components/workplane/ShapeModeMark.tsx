@@ -111,6 +111,8 @@ export function shapeModePath(kind: ShapeKind, sides?: number) {
       return `${circlePath(32, 32, 32)} ${circlePath(32, 32, 15)}`;
     case "wedge":
       return "M2 62 V4 L62 62 Z";
+    case "loft":
+      return "M2 62 H62 L54 34 Q48 2 32 2 Q16 2 10 34 Z";
     case "text":
       return "M8 62 L32 2 L56 62 H44 L39 48 H25 L20 62 Z M27 40 H37 L32 26 Z";
     default:

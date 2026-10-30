@@ -51,6 +51,8 @@ export type SplitHalves = {
   negative: number[];
   /** World-space triangle soup on the positive side of the cut normal. */
   positive: number[];
+  /** The whole solid, uncut, as world-space triangle soup. */
+  whole: number[];
   frame: ReturnType<typeof splitPlaneFrame>;
 };
 
@@ -65,9 +67,12 @@ export function splitWorldHalves(shape: WorkplaneShape, cut: SplitCut): SplitHal
   const source = meshToGeometry(mesh);
   const positive = subtractHalf(source, origin, normal.clone().multiplyScalar(-1), span);
   const negative = subtractHalf(source, origin, normal, span);
+  const flat = source.index ? source.toNonIndexed() : source;
+  const whole = Array.from(flat.getAttribute("position").array as ArrayLike<number>);
+  if (flat !== source) flat.dispose();
   source.dispose();
   if (negative.length < 9 || positive.length < 9) return null;
-  return { negative, positive, frame };
+  return { negative, positive, whole, frame };
 }
 
 /** Cut one solid into the two closed pieces on either side of the plane. */

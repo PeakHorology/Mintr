@@ -1063,7 +1063,7 @@ export function describeGuideStep(
     const how = distance == null ? "" : cuts ? `, cut ${formatMm(distance)} into the part` : `, extruded ${formatMm(distance)}`;
     return {
       title: `Sketch ${shape}${onPart ? " on the part" : ""}${how}`,
-      body: `${onPart ? "Click New sketch, then the face. " : "Click Sketch. "}${ghost ? outlineSentence(ghost, tool) : "Draw the outline."}${distance == null ? "" : cuts ? ` Then Extrude, type ${formatMm(distance)}, click Preview in 3D, and Cut into part.` : ` Then Extrude, type ${formatMm(distance)}, and click Preview in 3D.`}`,
+      body: `${onPart ? "Click Sketch, then the face. " : "Click Sketch. "}${ghost ? outlineSentence(ghost, tool) : "Draw the outline."}${distance == null ? "" : cuts ? ` Then Extrude, type ${formatMm(distance)}, click Preview in 3D, and Cut into part.` : ` Then Extrude, type ${formatMm(distance)}, and click Preview in 3D.`}`,
     };
   }
   if (step.cue === "chamfer" || step.cue === "fillet") {

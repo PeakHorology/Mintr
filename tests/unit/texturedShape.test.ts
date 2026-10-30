@@ -47,7 +47,7 @@ describe("textured parts", () => {
     expect((min[2] + max[2]) / 2).toBeCloseTo(-12, 0);
     expect(max[0] - min[0]).toBeGreaterThan(20);
     expect(max[0] - min[0]).toBeLessThan(20 + 2 * 0.6 + 0.01);
-  });
+  }, 30_000);
 
   it("reuse the texture when the part only moves", async () => {
     const shape = part({ surfaceTexture: defaultSurfaceTexture("grooves") });

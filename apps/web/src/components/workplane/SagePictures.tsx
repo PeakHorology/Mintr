@@ -699,6 +699,52 @@ function IntersectPicture() {
   );
 }
 
+/** The square and circle, then one skin pulled tight around both. */
+function ShrinkWrapPicture() {
+  const skin = `M${GROUP_SQUARE.x} ${GROUP_SQUARE.y}H${GROUP_CIRCLE.cx}A${GROUP_CIRCLE.r} ${GROUP_CIRCLE.r} 0 0 1 ${GROUP_CIRCLE.cx} ${GROUP_CIRCLE.cy + GROUP_CIRCLE.r}H${GROUP_SQUARE.x}Z`;
+  return (
+    <>
+      <Vanish at={1.3}><LooseShapes selected={0.5} /></Vanish>
+      <Appear at={0.9}><path className="sage-guide sage-dash" d={skin} /></Appear>
+      <Appear at={1.3}><path className="sage-thick" d={skin} /></Appear>
+    </>
+  );
+}
+
+/** A block rounds off into a soft shape on a flat bottom, then one point is pulled up into a bump. */
+function SmoothShapePicture() {
+  return (
+    <>
+      <Vanish at={0.8}><rect x="16" y="20" width="40" height="26" /></Vanish>
+      <Appear at={0.8}>
+        <Vanish at={1.6}><path className="sage-thick" d="M16 46C14 34 18 22 36 22C54 22 58 34 56 46Z" /></Vanish>
+      </Appear>
+      <Appear at={1.6}>
+        <path className="sage-thick" d="M16 46C14 34 20 26 30 24C33 16 34 8 36 8C38 8 39 16 42 24C52 26 58 34 56 46Z" />
+      </Appear>
+      <Point x={36} y={8} at={1.6} />
+    </>
+  );
+}
+
+/** A square outline below, a circle above, then the sides that join them. */
+function LoftPicture() {
+  const bottom = "M14 44L36 50L58 44L36 38Z";
+  return (
+    <>
+      <path d={bottom} />
+      <ellipse cx="36" cy="12" rx="10" ry="4" />
+      <Appear at={0.5}>
+        <path className="sage-sel" d={bottom} />
+        <ellipse className="sage-sel" cx="36" cy="12" rx="10" ry="4" />
+      </Appear>
+      <Appear at={1.1}>
+        <path className="sage-thick" d="M14 44C18 30 23 20 26 12M58 44C54 30 49 20 46 12M36 50C36 36 36 24 36 16" />
+      </Appear>
+    </>
+  );
+}
+
 const EDGE_BOX = { x: 12, y: 22, w: 34, h: 22, dx: 12, dy: -9 };
 
 /** Click the front top edge; it is cut back (`round` false) or rounded over. */
@@ -1004,6 +1050,9 @@ const PICTURES: Record<SagePicture, () => ReactNode> = {
   ungroup: UngroupPicture,
   tie: TiePicture,
   intersect: IntersectPicture,
+  "shrink-wrap": ShrinkWrapPicture,
+  loft: LoftPicture,
+  "smooth-shape": SmoothShapePicture,
   chamfer: ChamferPicture,
   fillet: FilletPicture,
   "push-pull": PushPullPicture,

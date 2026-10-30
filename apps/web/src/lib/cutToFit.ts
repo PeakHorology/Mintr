@@ -1,10 +1,10 @@
-import { ADDITION, Brush, Evaluator, SUBTRACTION } from "three-bvh-csg";
+import { ADDITION, Brush, Evaluator, INTERSECTION, SUBTRACTION } from "three-bvh-csg";
 import * as THREE from "three";
 import { createLocalId } from "@/lib/localIds";
 import { buildMetricThreadedCylinder } from "@/lib/metricThreadSolid";
 import { nearestMetricThreadForDiameter, resolveThreadParams } from "@/lib/metricThreads";
 import { MIN_SHAPE_DIMENSION, cleanModelDimension } from "@/lib/modelDimension";
-import { requestNativeKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
+import { requestMintrKernelJob, toNativeKernelSolids } from "@/lib/nativeKernelProtocol";
 import { shapeFromSplitWorld, splitPlaneFrame, splitWorldHalves, type SplitAxis, type SplitCut } from "@/lib/splitShape";
 import { booleanAngularDeflection } from "@/lib/displayTessellation";
 import { canonicalizeShape, cleanNearZero } from "@/lib/workplaneShapes";
@@ -83,7 +83,7 @@ export async function cutShapeToFitNative(shape: WorkplaneShape, cut: CutToFit):
   const solids = toNativeKernelSolids([shape]);
   if (!solids) return null;
   const frame = splitPlaneFrame(shape, cut);
-  const reply = await requestNativeKernelJob({
+  const reply = await requestMintrKernelJob({
     id: Date.now(),
     type: "split",
     solids,
@@ -102,10 +102,16 @@ export async function cutShapeToFitNative(shape: WorkplaneShape, cut: CutToFit):
   const parts = (reply.parts ?? [])
     .map((part) => shapeFromKernelPart(shape, part))
     .filter((part): part is WorkplaneShape => part !== null);
-  return parts.length >= 2 ? parts : null;
+  if (parts.length < 2) return null;
+  return cut.joint === "none" ? parts : besideSource(shape, parts);
 }
 
-/** Native B-rep split when MintrKernel is up; mesh CSG otherwise. */
+/** The jointed pieces lie side by side where the object was, not in the middle of the bed. */
+function besideSource(source: WorkplaneShape, parts: WorkplaneShape[]) {
+  return parts.map((part) => ({ ...part, x: cleanNearZero(source.x + part.x, 0.0005), z: cleanNearZero(source.z + part.z, 0.0005) }));
+}
+
+/** Exact B-rep split in the Mintr engine (desktop or browser); mesh CSG otherwise. */
 export async function cutShapeToFitBest(shape: WorkplaneShape, cut: CutToFit): Promise<WorkplaneShape[]> {
   const native = await cutShapeToFitNative(shape, cut);
   if (native?.length === 2) return native;
@@ -128,16 +134,19 @@ export function cutShapeToFit(shape: WorkplaneShape, cut: CutToFit): WorkplaneSh
   const frame = cutFrame(halves.frame.origin, halves.frame.normal);
   const size = jointSize(halves.negative, halves.positive, frame.normal);
   const clearance = Math.min(clampCutClearance(cut.clearance), size.radius * 0.45);
-  const maleTool = jointSoup(cut.joint, size, 0, true);
+  let maleTool = placeSoup(jointSoup(cut.joint, size, 0, true), frame, 0);
+  // A dovetail runs right across the cut so it slides in from the side; trim the tail to the part.
+  if (cut.joint === "dovetail") maleTool = csgSoup(maleTool, halves.whole, INTERSECTION);
   const femaleTool = jointSoup(cut.joint, size, clearance, false);
-  const maleWorld = csgSoup(halves.positive, placeSoup(maleTool, frame, 0), ADDITION);
+  const maleWorld = csgSoup(halves.positive, maleTool, ADDITION);
   const femaleWorld = csgSoup(halves.negative, placeSoup(femaleTool, frame, 0.35), SUBTRACTION);
   if (maleWorld.length < 9 || femaleWorld.length < 9) {
     throw new Error("The joint did not fit that cut. Move the line or choose a smaller clearance.");
   }
 
   const [maleLabel, femaleLabel] = jointLabels(cut.joint);
-  const maleFlat = orientCutFaceDown(maleWorld, frame.normal.clone().multiplyScalar(-1));
+  // The plug side lies cut face up so its plug, tail or screw points up and prints without supports.
+  const maleFlat = orientCutFaceDown(maleWorld, frame.normal);
   const femaleFlat = orientCutFaceDown(femaleWorld, frame.normal);
   const male = shapeFromSplitWorld(shape, maleFlat, maleLabel);
   const female = shapeFromSplitWorld(shape, femaleFlat, femaleLabel);
@@ -151,7 +160,7 @@ export function cutShapeToFit(shape: WorkplaneShape, cut: CutToFit): WorkplaneSh
   female.z = 0;
   male.elevation = 0;
   female.elevation = 0;
-  return [male, female];
+  return besideSource(shape, [male, female]);
 }
 
 function sideName(axis: SplitAxis, positive: boolean) {
@@ -195,6 +204,8 @@ type JointSize = {
   depth: number;
   embed: number;
   length: number;
+  /** Long enough to run right across the cut face. */
+  through: number;
 };
 
 function jointSize(negative: number[], positive: number[], normal: THREE.Vector3): JointSize {
@@ -221,6 +232,7 @@ function jointSize(negative: number[], positive: number[], normal: THREE.Vector3
     depth: Math.max(2.5, Math.min(10, room * 0.45)),
     embed: Math.max(1.2, Math.min(2.5, room * 0.25)),
     length: Math.max(8, Math.min(28, face * 0.5)),
+    through: Math.max(span(positive, tangent), span(negative, tangent)) + 4,
   };
 }
 
@@ -232,13 +244,18 @@ function jointSoup(joint: CutJoint, size: JointSize, clearance: number, male: bo
   if (joint === "dovetail") {
     const root = size.radius * 1.5 + extra;
     const tip = root * 1.45 + extra;
-    const length = size.length + extra * 2;
-    return taperedBox(-length / 2, length / 2, root, tip, z0, z1);
+    return taperedBox(-size.through / 2, size.through / 2, root, tip, z0, z1);
   }
   if (joint === "snap") {
-    const shaft = cylinderSoup(size.radius + extra, z0, z0 + (z1 - z0) * 0.72, 20);
-    const head = sphereSoup(size.radius * 1.45 + extra, z0 + (z1 - z0) * 0.78, 10, 8);
-    return shaft.concat(head);
+    // A ball a little wider than its neck, on a split prong that squeezes to get it through.
+    const radius = Math.min(size.radius, size.depth * 0.4);
+    const headRadius = radius * 1.15;
+    const center = size.depth - headRadius + (male ? 0 : 0.35);
+    const ball = csgSoup(cylinderSoup(radius + extra, z0, center, 24), sphereSoup(headRadius + extra, center, 12, 24), ADDITION);
+    if (!male) return ball;
+    const slot = Math.max(0.8, radius * 0.35);
+    const across = headRadius + 1;
+    return csgSoup(ball, taperedBox(-across, across, slot, slot, Math.min(center * 0.3, 1), size.depth + 1), SUBTRACTION);
   }
   if (joint === "thread") {
     return threadSoup(size, extra, z0, z1 - z0);
@@ -262,13 +279,11 @@ function threadSoup(size: JointSize, clearance: number, z0: number, length: numb
     clearance,
     chamfer: 0.2,
   });
-  // Swapping y and z mirrors the solid, so each triangle is listed backwards to keep it facing out.
+  // Turn the rod from +Y to +Z. A turn, not a swap of y and z, so the thread stays right-handed.
   const soup: number[] = [];
   const p = mesh.positions;
-  for (let index = 0; index < p.length; index += 9) {
-    for (const corner of [0, 6, 3]) {
-      soup.push(p[index + corner], p[index + corner + 2], p[index + corner + 1] + z0);
-    }
+  for (let index = 0; index < p.length; index += 3) {
+    soup.push(p[index], -p[index + 2], p[index + 1] + z0);
   }
   return soup;
 }
@@ -284,7 +299,9 @@ function placeSoup(local: number[], frame: Frame, zShift: number): number[] {
   for (let index = 0; index < local.length; index += 3) {
     point.copy(frame.origin);
     point.addScaledVector(frame.tangent, local[index]);
-    point.addScaledVector(frame.bitangent, local[index + 1]);
+    // Local y runs along -bitangent: tangent, -bitangent and direction make a right-handed frame,
+    // so the tools keep their faces turned out (and match the desktop engine's placement).
+    point.addScaledVector(frame.bitangent, -local[index + 1]);
     point.addScaledVector(frame.normal, zShift);
     point.addScaledVector(frame.direction, local[index + 2]);
     world.push(point.x, point.y, point.z);
@@ -307,7 +324,7 @@ function orientCutFaceDown(world: number[], outward: THREE.Vector3): number[] {
   return turned;
 }
 
-function csgSoup(source: number[], tool: number[], operation: typeof ADDITION | typeof SUBTRACTION) {
+function csgSoup(source: number[], tool: number[], operation: typeof ADDITION | typeof SUBTRACTION | typeof INTERSECTION) {
   const sourceGeometry = soupGeometry(source);
   const toolGeometry = soupGeometry(tool);
   const solid = new Brush(sourceGeometry);
@@ -428,9 +445,9 @@ function sphereSoup(radius: number, zCenter: number, stacks: number, slices: num
       const b = point(stack + 1, slice);
       const c = point(stack + 1, slice + 1);
       const d = point(stack, slice + 1);
-      if (stack === 0) pushTri(soup, a, c, b);
-      else if (stack === stacks - 1) pushTri(soup, a, d, b);
-      else pushQuad(soup, a, d, c, b);
+      if (stack === 0) pushTri(soup, a, b, c);
+      else if (stack === stacks - 1) pushTri(soup, a, b, d);
+      else pushQuad(soup, a, b, c, d);
     }
   }
   return soup;

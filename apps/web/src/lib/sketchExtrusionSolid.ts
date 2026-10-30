@@ -165,7 +165,8 @@ export function applyNativeSketchExtrudeMesh(
   });
 }
 
-function serializeSketchLoop(path: OrderedSketchPath, doc: SketchDoc | undefined) {
+/** One closed sketch outline as the kernel draws it: a circle, or a wire of line / arc / bezier steps. */
+export function serializeSketchLoop(path: OrderedSketchPath, doc: SketchDoc | undefined) {
   const circleOwner = soleCurve(path);
   const circle = circleOwner ? circleGeometry(doc, circleOwner) : null;
   if (circle) return { kind: "circle" as const, cx: circle.cx, cz: circle.cz, radius: circle.radius };
@@ -349,7 +350,7 @@ function arcMidpoint(center: Xz, start: Xz, end: Xz, ccw: boolean): Xz {
   };
 }
 
-function pathArea(path: OrderedSketchPath) {
+export function pathArea(path: OrderedSketchPath) {
   const points = path.points;
   let sum = 0;
   for (let index = 0; index < points.length; index += 1) {

@@ -495,6 +495,12 @@ async function buildCsgBodySolid(
   }
 
   const op = shape.csg?.op ?? inferCsgOp(shape) ?? "union";
+  // Shrink Wrap and Smooth have no exact solid; they export as the mesh they are.
+  if (op === "hull" || op === "smooth") {
+    return allowFaceted && shape.importedMesh
+      ? buildFacetedSolid(brep, shape)
+      : { skip: op === "hull" ? "Shrink wrap exports as a mesh" : "Smooth exports as a mesh" };
+  }
   const children = (shape.groupedShapes ?? []).filter((child) => !child.suppressed && !child.csg?.suppressed);
   if (children.length === 0) {
     return allowFaceted ? buildFacetedSolid(brep, shape) : { skip: "CSG body has no children" };

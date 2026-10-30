@@ -9,6 +9,7 @@ import {
 } from "@/lib/sketchSweep";
 import { applyNativeSketchExtrudeMesh, serializeSketchExtrudeJob } from "@/lib/sketchExtrusionSolid";
 import { applyGridfinityKernelMesh, serializeGridfinityBuildJob } from "@/lib/gridfinityShape";
+import { applyLoftKernelMesh, serializeLoftJob } from "@/lib/loftShape";
 import type { SketchDoc } from "@/lib/sketch/types";
 import type { SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 
@@ -54,7 +55,14 @@ export type OcctKernelGridfinityRequest = {
   shape: WorkplaneShape;
 };
 
+/** Build a loft body (mesh + exact B-Rep) from its outlines. */
+export type OcctKernelLoftRequest = {
+  type: "loft";
+  shape: WorkplaneShape;
+};
+
 export type OcctKernelRequest =
+  | OcctKernelLoftRequest
   | OcctKernelBooleanRequest
   | OcctKernelExportRequest
   | OcctKernelSketchExtrudeRequest
@@ -156,6 +164,11 @@ function nativeJobFor(request: OcctKernelRequest, requestId: number): NativeKern
     if (!payload) return null;
     return { id: requestId, ...payload };
   }
+  if (request.type === "loft") {
+    const payload = serializeLoftJob(request.shape);
+    if (!payload) return null;
+    return { id: requestId, ...payload };
+  }
   return null;
 }
 
@@ -216,6 +229,12 @@ function nativeReplyToResult(request: OcctKernelRequest, reply: NativeKernelRepl
     const key = serializeGridfinityBuildJob(request.shape)?.key;
     if (!reply.positions || !reply.indices || !cadBrep || !key) return null;
     return applyGridfinityKernelMesh(request.shape, reply.positions, reply.normals, reply.indices, cadBrep, key);
+  }
+  if (request.type === "loft") {
+    const cadBrep = reply.cadBrep ?? reply.brep ?? "";
+    const key = serializeLoftJob(request.shape)?.key;
+    if (!reply.positions || !reply.indices || !cadBrep || !key) return null;
+    return applyLoftKernelMesh(request.shape, reply.positions, reply.normals, reply.indices, cadBrep, key);
   }
   return null;
 }
@@ -278,10 +297,16 @@ export async function runOcctKernelInWorker(request: OcctKernelExportRequest): P
 export async function runOcctKernelInWorker(request: OcctKernelSketchExtrudeRequest): Promise<WorkplaneShape | null>;
 export async function runOcctKernelInWorker(request: OcctKernelSketchSweepRequest): Promise<SweepShapeResult | null>;
 export async function runOcctKernelInWorker(request: OcctKernelGridfinityRequest): Promise<WorkplaneShape | null>;
+export async function runOcctKernelInWorker(request: OcctKernelLoftRequest): Promise<WorkplaneShape | null>;
 export async function runOcctKernelInWorker(request: OcctKernelRequest): Promise<unknown> {
   const requestId = nextRequestId;
   nextRequestId += 1;
   const native = await tryNativeKernel(request, requestId);
   if (native.hit) return native.value;
+  // Only the Mintr engine lofts; without it the preview mesh stays as the body.
+  if (request.type === "loft") {
+    lastWorkerError = null;
+    return null;
+  }
   return postKernelRequest(request);
 }

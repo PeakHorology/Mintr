@@ -4,7 +4,7 @@ import { stlMegabytes } from "@/lib/laser/crystalFile";
 import { ChevronDown, ChevronUp, Copy, Split, X } from "lucide-react";
 import { isLaserDesign } from "@/lib/laserMachine";
 import { LASER_JOB_LABEL, type LaserJob } from "@/lib/laser/cutFile";
-import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { ToolbarHideSelectedIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
@@ -60,6 +60,7 @@ import {
   normalizeGridfinityBinSpec,
 } from "@/lib/gridfinity";
 import { withGridfinityBaseplateSpec, withGridfinityBinSpec } from "@/lib/gridfinityShape";
+import { loftHasSteps, loftPatch, maxLoftWall, withLoftSettings, withLoftStarter } from "@/lib/loftShape";
 import { parseDimensionEntry } from "@/lib/dimensionEntry";
 import { uniformScalePatch } from "@/lib/uniformScale";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
@@ -80,7 +81,9 @@ import type {
   GridfinityBinSpec,
   GridfinitySide,
   GridSize,
+  LoftOutline,
   MeasurementAccuracy,
+  SmoothSpec,
   WorkplaneShape,
   WorkplaneWorkspaceSettings,
 } from "@/types/sketchforge";
@@ -168,11 +171,44 @@ type SelectPropertyConfig = {
   label: string;
   value: string;
   options: string[];
+  hint?: string;
   onChange: (value: string) => void;
 };
 
 type ShapePropertyConfig = RangePropertyConfig | TextPropertyConfig | SelectPropertyConfig;
 export type ShapeInspectorUpdateOptions = { resizeAxis?: "width" | "depth" | "height" };
+
+/** The Smooth card: settings, and Edit points while it is on. */
+export type SmoothInspectorControls = {
+  editing: boolean;
+  preparing: boolean;
+  selectedCount: number;
+  /** Middle of the selected points, world mm. */
+  selectionCenter: [number, number, number] | null;
+  /** Size of the blocks inside, before smoothing. */
+  blocks: { width: number; depth: number; height: number };
+  hasFlatBottom: boolean;
+  /** A click on the part picks a face to keep flat. */
+  pickingFace: boolean;
+  /** Drags pull straight in and out of the surface, rather than moving freely. */
+  dragInOut: boolean;
+  onDragInOutChange: (inOut: boolean) => void;
+  /** Faces kept exactly flat. */
+  keptFaces: number;
+  /** Some edges between the selected points are smooth, or sharp. */
+  canMakeSharp: boolean;
+  canMakeSmooth: boolean;
+  onChange: (patch: Partial<SmoothSpec>) => void;
+  onToggleEdit: () => void;
+  onMoveSelection: (axis: 0 | 1 | 2, valueMm: number) => void;
+  onPickFace: () => void;
+  onMakeSharp: () => void;
+  onMakeSmooth: () => void;
+  onResetPoints: () => void;
+};
+
+const SMOOTH_MIRROR_LABELS = { off: "Off", x: "Left to right", z: "Front to back" } as const;
+
 type ShapeInspectorUpdate = (patch: Partial<WorkplaneShape>, options?: ShapeInspectorUpdateOptions) => void;
 
 /** First row of a part's step list: what the steps were applied to. */
@@ -180,6 +216,24 @@ function partStepsStartLabel(shape: WorkplaneShape) {
   if (shape.groupedShapes?.length) return "Combined parts";
   const kind = shape.featureBase?.importedMesh ? "Imported part" : shape.featureBase?.kind ?? shape.kind;
   return kind.charAt(0).toUpperCase() + kind.slice(1);
+}
+
+/**
+ * A typed value is kept when you click anywhere else, not only on Enter. Clicking the 3D view
+ * does not take focus from the field, and the click may deselect the shape and close this panel
+ * before the field ever loses focus, so the field lets go of focus as soon as the press starts.
+ */
+function useBlurOnOutsidePress(inputRef: RefObject<HTMLInputElement | null>) {
+  useEffect(() => {
+    const onPress = (event: PointerEvent) => {
+      const input = inputRef.current;
+      if (!input || document.activeElement !== input) return;
+      if (event.target instanceof Node && input.contains(event.target)) return;
+      input.blur();
+    };
+    document.addEventListener("pointerdown", onPress, true);
+    return () => document.removeEventListener("pointerdown", onPress, true);
+  }, [inputRef]);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -204,7 +258,7 @@ function propertyUsesLengthUnit(label: string) {
 }
 
 function propertyUsesDegreeUnit(label: string) {
-  return label === "Left Angle" || label === "Right Angle" || label === "Pressure angle" || label === "Helix angle";
+  return label === "Left Angle" || label === "Right Angle" || label === "Pressure angle" || label === "Helix angle" || label === "Twist";
 }
 
 const MAX_SHAPE_NAME_LENGTH = 48;
@@ -394,6 +448,9 @@ function fontChoices(current: string): string[] {
   const options = textFontOptions();
   return options.includes(current) ? options : [...options, current];
 }
+
+const LOFT_OUTLINE_LABELS: Record<LoftOutline, string> = { circle: "Circle", square: "Square", polygon: "Polygon" };
+const loftOutlineFromLabel = (label: string): LoftOutline => (label === "Circle" ? "circle" : label === "Polygon" ? "polygon" : "square");
 
 /** Below this pitch a filament printer cannot hold the tooth shape. */
 const FINE_THREAD_PITCH_FOR_FILAMENT = 0.7;
@@ -644,6 +701,85 @@ function getShapeProperties(
   const setWidth = (value: number) => onUpdate({ width: value, size: resizedShapeSize(value, depth) }, { resizeAxis: "width" });
   const setDepth = (value: number) => onUpdate({ depth: value, size: resizedShapeSize(width, value) }, { resizeAxis: "depth" });
   const setHeight = (height: number) => onUpdate({ height }, { resizeAxis: "height" });
+
+  if (shape.kind === "loft") {
+    const sizes: ShapePropertyConfig[] = [
+      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
+      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
+      { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight },
+    ];
+    const spec = shape.loftSpec;
+    // A fillet or other step makes the body the part; its outlines no longer drive it.
+    if (!spec || loftHasSteps(shape)) return sizes;
+    const apply = (next: WorkplaneShape) => onUpdate(loftPatch(next));
+    const starter = spec.starter;
+    const outlineProperties: ShapePropertyConfig[] = [];
+    if (starter) {
+      const outline = (label: string, key: "bottom" | "top"): SelectPropertyConfig => ({
+        type: "select",
+        label,
+        value: LOFT_OUTLINE_LABELS[starter[key]],
+        options: Object.values(LOFT_OUTLINE_LABELS),
+        onChange: (value) => apply(withLoftStarter(shape, { [key]: loftOutlineFromLabel(value) })),
+      });
+      outlineProperties.push(outline("Bottom", "bottom"), outline("Top", "top"));
+      if (starter.bottom === "polygon" || starter.top === "polygon") {
+        outlineProperties.push({ label: "Sides", value: starter.sides, min: 3, max: 24, step: 1, onChange: (sides) => apply(withLoftStarter(shape, { sides: Math.round(sides) })) });
+      }
+      outlineProperties.push({
+        label: "Top size",
+        value: starter.topScale,
+        min: 5,
+        max: 300,
+        step: 1,
+        hint: "Percent of the bottom outline.",
+        onChange: (topScale) => apply(withLoftStarter(shape, { topScale })),
+      });
+      if (starter.bottom === starter.top && starter.bottom !== "circle") {
+        outlineProperties.push({
+          label: "Twist",
+          value: starter.twist,
+          min: -180,
+          max: 180,
+          step: 1,
+          centerDetent: true,
+          hint: "Turns the top against the bottom, smoothly all the way up.",
+          onChange: (twist) => apply(withLoftStarter(shape, { twist: Math.round(twist) })),
+        });
+      }
+    } else if (spec.sections.length > 2) {
+      outlineProperties.push({
+        type: "select",
+        label: "Between outlines",
+        value: spec.smooth ? "Smooth" : "Straight",
+        options: ["Smooth", "Straight"],
+        onChange: (value) => apply(withLoftSettings(shape, { smooth: value === "Smooth" })),
+      });
+    }
+    const maxWall = maxLoftWall(shape);
+    return [
+      ...outlineProperties,
+      ...sizes,
+      {
+        type: "select",
+        label: "Body",
+        value: spec.wall > 0 ? "Hollow" : "Solid",
+        options: ["Solid", "Hollow"],
+        onChange: (value) => apply(withLoftSettings(shape, { wall: value === "Hollow" ? Math.min(1.2, maxWall) : 0 })),
+      },
+      ...(spec.wall > 0
+        ? [{
+          label: "Wall thickness",
+          value: spec.wall,
+          min: 0.4,
+          max: Math.max(0.5, maxWall),
+          step: 0.05,
+          hint: "Open at the top and bottom, like a sleeve or a vase without a floor.",
+          onChange: (wall: number) => apply(withLoftSettings(shape, { wall })),
+        }]
+        : []),
+    ];
+  }
 
   if (shape.kind === "box") {
     return [
@@ -928,6 +1064,7 @@ export function ShapeInspector({
   onEditPartStep,
   onTogglePartStep,
   onRemovePartStep,
+  smoothControls,
 }: {
   shape: WorkplaneShape;
   workspace: WorkplaneWorkspaceSettings;
@@ -965,6 +1102,8 @@ export function ShapeInspector({
   onRemovePartStep?: (featureId: string) => void;
   /** Restore the shape to before this feature. Newer features on top of it go with it. */
   onRemoveEdgeTreatment?: (index: number) => void;
+  /** Present on a Smooth body. */
+  smoothControls?: SmoothInspectorControls | null;
 }) {
   const feature =
     activeFeatureId
@@ -1312,6 +1451,10 @@ export function ShapeInspector({
         </div>
       ) : null}
 
+      {smoothControls && shape.smooth && !feature ? (
+        <SmoothCard spec={shape.smooth} controls={smoothControls} locked={locked} workspace={workspace} renderProperty={renderProperty} />
+      ) : null}
+
       {onEditSketch ? (
         <button className="edit-sketch-button" type="button" disabled={locked} onClick={onEditSketch}>
           Edit sketch
@@ -1337,7 +1480,7 @@ export function ShapeInspector({
         </div>
       ) : null}
 
-      {inspectTarget.importedMesh && !feature && onReduceTriangles ? (
+      {inspectTarget.importedMesh && inspectTarget.kind !== "loft" && !feature && onReduceTriangles ? (
         <div className="mesh-reduce">
           <p className="mesh-reduce-count">
             Triangles: {(inspectTarget.importedMesh.triangleCount || sourceTriangleCount).toLocaleString()}
@@ -1623,7 +1766,7 @@ export function ShapeInspector({
             <div className="csg-feature-list" id={`features-${shape.id}`}>
               <div className="csg-feature-meta">
                 <span className="csg-feature-op">
-                  {csgOp === "assemble" ? "tie" : csgOp === "subtract" ? "cut" : csgOp === "union" ? "union" : csgOp === "intersect" ? "intersect" : "group"}
+                  {csgOp === "assemble" ? "tie" : csgOp === "subtract" ? "cut" : csgOp === "union" ? "union" : csgOp === "intersect" ? "intersect" : csgOp === "hull" ? "shrink wrap" : csgOp === "smooth" ? "smooth" : "group"}
                 </span>
                 <span className="csg-feature-tip">
                   {csgOp === "assemble"
@@ -1817,6 +1960,8 @@ function RangeProperty({
   // rounded display value (0.79 in → 20.066 mm) or push a history entry.
   const focusTextRef = useRef(displayText);
   const cancelCommitRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useBlurOnOutsidePress(inputRef);
   const unit = isLength ? lengthDisplayUnit(workspace).label : isAngle ? "°" : null;
   useEffect(() => {
     if (!editing) {
@@ -1850,11 +1995,16 @@ function RangeProperty({
     setDraft(formatPropertyNumber(isLength ? millimetersToDisplay(modelValue, workspace) : modelValue, accuracy, controlStep));
   };
   return (
-    <label className="range-property" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
+    <label
+      className="range-property"
+      data-lesson-target={label === "Width" || label === "Length" ? "size" : undefined}
+      style={{ "--slider-pos": `${position}%` } as CSSProperties}
+    >
       <span className="range-property-header">
         <span className="range-property-name">{label}</span>
         <span className="range-value-control">
           <input
+            ref={inputRef}
             type="text"
             inputMode="decimal"
             value={editing ? draft : formatPropertyNumber(controlValue, accuracy, controlStep)}
@@ -1896,6 +2046,130 @@ function RangeProperty({
   );
 }
 
+function SmoothCard({
+  spec,
+  controls,
+  locked,
+  workspace,
+  renderProperty,
+}: {
+  spec: SmoothSpec;
+  controls: SmoothInspectorControls;
+  locked: boolean;
+  workspace: WorkplaneWorkspaceSettings;
+  renderProperty: (property: ShapePropertyConfig) => ReactNode;
+}) {
+  const unit = lengthDisplayUnit(workspace);
+  const size = (mm: number) => formatMeasurementNumber(millimetersToDisplay(mm, workspace), workspace.accuracy);
+  const settings: ShapePropertyConfig[] = [
+    {
+      type: "select",
+      label: "Smoothness",
+      // Each step up is finer and has more points to pull; the pulls already made stay.
+      value: String(Math.max(0, Math.min(2, spec.detail ?? 0)) + 1),
+      options: ["1", "2", "3"],
+      onChange: (value) => controls.onChange({ detail: Number(value) - 1, level: 3 }),
+    },
+    {
+      type: "select",
+      label: "Start from",
+      // The exact shape keeps its edges sharp, so nothing moves until a point is pulled.
+      value: spec.keepEdges ? "Exact shape" : "Rounded",
+      options: ["Exact shape", "Rounded"],
+      onChange: (value) => controls.onChange({ keepEdges: value === "Exact shape" }),
+    },
+    ...(controls.hasFlatBottom && !spec.keepEdges
+      ? [{
+        type: "select" as const,
+        label: "Bottom",
+        value: spec.keepBottomFlat === false ? "Rounded" : "Flat on the bed",
+        options: ["Flat on the bed", "Rounded"],
+        onChange: (value: string) => controls.onChange({ keepBottomFlat: value !== "Rounded" }),
+      }]
+      : []),
+    {
+      label: "Soft radius",
+      value: spec.softRadius ?? 0,
+      min: 0,
+      max: 60,
+      step: 0.5,
+      hint: "Pulling a point also pulls the points this close to it, fading out. 0 moves only the points you picked.",
+      onChange: (softRadius) => controls.onChange({ softRadius }),
+    },
+    {
+      type: "select",
+      label: "Mirror",
+      value: SMOOTH_MIRROR_LABELS[spec.mirror ?? "off"],
+      options: Object.values(SMOOTH_MIRROR_LABELS),
+      onChange: (value) => controls.onChange({ mirror: value === SMOOTH_MIRROR_LABELS.x ? "x" : value === SMOOTH_MIRROR_LABELS.z ? "z" : undefined }),
+    },
+  ];
+  const center = controls.selectionCenter;
+  const axisNames = ["X", "Y", "Z"] as const;
+  return (
+    <div className="property-card smooth-card" aria-label="Smooth">
+      {settings.map(renderProperty)}
+      <p className="smooth-card-hint">
+        Smoothed. The blocks inside are {size(controls.blocks.width)} × {size(controls.blocks.depth)} × {size(controls.blocks.height)} {unit.label}.
+      </p>
+      <button className="inspector-action-button" type="button" disabled={locked || controls.preparing} onClick={controls.onToggleEdit}>
+        {controls.preparing ? "Preparing points…" : controls.editing ? "Done editing points" : "Edit points"}
+      </button>
+      {controls.editing ? (
+        <>
+          <p className="smooth-card-hint">
+            {controls.pickingFace
+              ? "Click a flat face of the part to keep it exactly as it is, or a kept face to free it. Esc cancels."
+              : controls.selectedCount === 0
+                ? "Click a point, Shift-click several, or Alt-drag a box around them, then drag. Hold Shift while dragging to keep to one direction."
+                : `${controls.selectedCount} ${controls.selectedCount === 1 ? "point" : "points"} selected. Drag to pull, or type where ${controls.selectedCount === 1 ? "it goes" : "their middle goes"}.`}
+          </p>
+          {renderProperty({
+            type: "select",
+            label: "Drag",
+            value: controls.dragInOut ? "In and out" : "Free",
+            options: ["Free", "In and out"],
+            hint: controls.dragInOut
+              ? "Points move straight out of the surface or push in."
+              : "Points move freely. Hold Ctrl while dragging to pull straight in and out.",
+            onChange: (value) => controls.onDragInOutChange(value === "In and out"),
+          })}
+          {center
+            ? axisNames.map((name, axis) => renderProperty({
+              type: "text",
+              label: `Point ${name}`,
+              value: formatMeasurementNumber(millimetersToDisplay(center[axis], workspace), workspace.accuracy),
+              maxLength: 12,
+              onChange: (value) => {
+                const typed = Number(value);
+                if (Number.isFinite(typed)) controls.onMoveSelection(axis as 0 | 1 | 2, displayToMillimeters(typed, workspace));
+              },
+            }))
+            : null}
+          {controls.canMakeSharp || controls.canMakeSmooth ? (
+            <div className="smooth-card-row">
+              <button className="inspector-action-button" type="button" disabled={locked || !controls.canMakeSharp} onClick={controls.onMakeSharp}>
+                Make edge sharp
+              </button>
+              <button className="inspector-action-button" type="button" disabled={locked || !controls.canMakeSmooth} onClick={controls.onMakeSmooth}>
+                Make edge smooth
+              </button>
+            </div>
+          ) : null}
+          <button className="inspector-action-button" type="button" disabled={locked} aria-pressed={controls.pickingFace} onClick={controls.onPickFace}>
+            {controls.pickingFace ? "Cancel" : controls.keptFaces > 0 ? `Keep a face flat (${controls.keptFaces} kept)` : "Keep a face flat"}
+          </button>
+          {(spec.tugs?.length ?? 0) > 0 || (spec.creases?.length ?? 0) > 0 ? (
+            <button className="inspector-action-button" type="button" disabled={locked} onClick={controls.onResetPoints}>
+              Reset points
+            </button>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function TextProperty({
   label,
   value,
@@ -1905,6 +2179,8 @@ function TextProperty({
 }: TextPropertyConfig & { disabled?: boolean }) {
   const [draft, setDraft] = useState(value);
   const cancelRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useBlurOnOutsidePress(inputRef);
 
   useEffect(() => {
     setDraft(value);
@@ -1939,6 +2215,7 @@ function TextProperty({
     <label className="text-property">
       <span>{label}</span>
       <input
+        ref={inputRef}
         type="text"
         value={draft}
         disabled={disabled}
@@ -1964,7 +2241,7 @@ function TextProperty({
   );
 }
 
-function SelectProperty({ label, value, options, disabled, onChange }: SelectPropertyConfig & { disabled?: boolean }) {
+function SelectProperty({ label, value, options, hint, disabled, onChange }: SelectPropertyConfig & { disabled?: boolean }) {
   return (
     <label className="select-property">
       <span>{label}</span>
@@ -1975,6 +2252,7 @@ function SelectProperty({ label, value, options, disabled, onChange }: SelectPro
           </option>
         ))}
       </select>
+      {hint ? <span className="range-property-hint">{hint}</span> : null}
     </label>
   );
 }

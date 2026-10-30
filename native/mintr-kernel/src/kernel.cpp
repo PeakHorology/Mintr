@@ -78,6 +78,7 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
     if (type == "sketchSweep") return handleSketchSweep(job);
     if (type == "importStep") return handleImportStep(job);
     if (type == "buildRecipe") return handleBuildRecipe(job);
+    if (type == "buildLoft") return handleBuildLoft(job);
     if (
       type == "prepare" || type == "preview" || type == "refine" || type == "finalize"
       || type == "dispose" || type == "warmup" || type == "hollow" || type == "previewThread"

@@ -11,7 +11,7 @@ import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { toolbarShapeAssets } from "@/lib/shapeCatalog";
 import { hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry } from "@/lib/editorHistory";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
-import { hardwareProfile } from "@/lib/desktopHardware";
+import { hardwareProfile, isDesktopShell } from "@/lib/desktopHardware";
 import { createLocalId } from "@/lib/localIds";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { StartupThemeTabs } from "@/components/workplane/StartupThemeTabs";
@@ -94,6 +94,7 @@ import { laserDesignWorkspace, loadMachineChoice, machineHasLaser, type DesignKi
 import { NewDesignChooser } from "@/components/NewDesignChooser";
 import { SageHomePanel } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
+import { readTinkercadClipboard, readTinkercadHash, TINKERCAD_HASH_KEY, tinkercadSkippedNotice, tinkercadToShapes, type TinkercadPayload } from "@/lib/tinkercadImport";
 
 type AppView = "dashboard" | "editor";
 type ViewMode = "grid" | "list";
@@ -169,6 +170,7 @@ const ARRANGE_DRAG_MIME = "application/x-peakcad-arrange";
 const PROJECT_THUMBNAIL_MAX_SIZE = hardwareProfile().thumbnailSize;
 const PROJECT_ACCENTS: DashboardProject["accent"][] = ["cyan", "green", "gold", "red"];
 const STATIC_EXPORT_BUILD = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
+const WEB_STORAGE_NOTE_KEY = "mintr.webStorageNoteShown";
 const RECENT_PROJECT_COUNT = 4;
 const FOLDER_PUSH_MS = 260;
 const EDITOR_FADE_MS = 160;
@@ -909,6 +911,8 @@ export default function Home() {
   const [startupLeaving, setStartupLeaving] = useState(false);
   const [enteredStudio, setEnteredStudio] = useState(() => {
     if (typeof window === "undefined") return false;
+    // A design sent over from Tinkercad goes straight in, past the start screen.
+    if (window.location.hash.startsWith(`#${TINKERCAD_HASH_KEY}=`)) return true;
     return new URLSearchParams(window.location.search).get("editor") === "1";
   });
   const [updateOffer, setUpdateOffer] = useState<DesktopUpdateOffer | null>(null);
@@ -1020,6 +1024,20 @@ export default function Home() {
     });
   }, []);
 
+  // In a web browser, designs live in the browser's own storage. Ask it to keep them, and say once
+  // that Save as… keeps a copy on the computer, since clearing the browser's data would remove them.
+  useEffect(() => {
+    if (isDesktopShell()) return;
+    void navigator.storage?.persist?.().catch(() => false);
+    try {
+      if (window.localStorage.getItem(WEB_STORAGE_NOTE_KEY)) return;
+      window.localStorage.setItem(WEB_STORAGE_NOTE_KEY, "1");
+    } catch {
+      return;
+    }
+    setDashboardNotice("Your designs are kept in this browser. Use Save as… in a design to keep a copy on your computer too.");
+  }, []);
+
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
       rememberProblem(`window error: ${event.message}`);
@@ -1036,8 +1054,47 @@ export default function Home() {
     };
   }, []);
 
-  const createAndOpenProjectRef = useRef<(name?: string, kind?: DesignKind) => void>(() => undefined);
+  const createAndOpenProjectRef = useRef<(name?: string, kind?: DesignKind, shapes?: WorkplaneShape[]) => string | undefined>(() => undefined);
+  /** What a design says when it first opens, such as which Tinkercad shapes were left out. */
+  const [openingNotice, setOpeningNotice] = useState<{ projectId: string; text: string } | null>(null);
   const startNewDesignRef = useRef<() => void>(() => undefined);
+
+  /** A design sent over by the "Send to Mintr" bookmark opens as a new design of its own. */
+  const openTinkercadDesign = useCallback((payload: TinkercadPayload) => {
+    const { shapes, skipped } = tinkercadToShapes(payload);
+    if (shapes.length === 0) {
+      setDashboardNotice(tinkercadSkippedNotice(skipped) ?? "That Tinkercad design has no shapes in it.");
+      return;
+    }
+    const projectId = createAndOpenProjectRef.current(payload.name?.trim() || "Tinkercad design", "print", shapes);
+    if (projectId) setOpeningNotice({ projectId, text: tinkercadSkippedNotice(skipped) ?? "Brought the design over from Tinkercad." });
+  }, []);
+
+  // The web bookmark opens Mintr with the design in the address. Take it out of the address
+  // straight away so a reload or a shared link does not bring it in twice.
+  useEffect(() => {
+    if (!mounted) return;
+    const payload = readTinkercadHash(window.location.hash);
+    if (!window.location.hash.startsWith(`#${TINKERCAD_HASH_KEY}=`)) return;
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    if (payload) openTinkercadDesign(payload);
+    else setDashboardNotice("Mintr could not read that Tinkercad design. Click the bookmark on the design again.");
+  }, [mounted, openTinkercadDesign]);
+
+  // Ctrl+V on the home screen after the bookmark copied a design (the desktop app's way in).
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      const payload = readTinkercadClipboard(event.clipboardData?.getData("text/plain") ?? "");
+      if (!payload) return;
+      event.preventDefault();
+      openTinkercadDesign(payload);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [openTinkercadDesign, view]);
   /** Set while asking whether a new design is printed or laser cut. */
   const [newDesignAsk, setNewDesignAsk] = useState<MachineChoice | null>(null);
   /** Set only while an editor is mounted; asks before leaving a project with unsaved changes. */
@@ -2217,9 +2274,9 @@ export default function Home() {
     });
   }, []);
 
-  const createAndOpenProject = (name?: string, kind: DesignKind = "print") => {
-    const project = newProject(name ?? nextDesignName(projects), projects.length, 0, null, kind);
-    const shapeEntry = projectShapeCacheEntry(project.revision ?? project.updatedAt, []);
+  const createAndOpenProject = (name?: string, kind: DesignKind = "print", shapes: WorkplaneShape[] = []) => {
+    const project = newProject(name ?? nextDesignName(projects), projects.length, shapes.length, null, kind);
+    const shapeEntry = projectShapeCacheEntry(project.revision ?? project.updatedAt, shapes);
     // Seed shapes + project list before switching views so the editor never mounts
     // against a missing cache entry (that unmount/remount cycle was blanking WebGL).
     setProjectShapesById((current) => ({
@@ -2251,6 +2308,7 @@ export default function Home() {
           setDashboardNotice("Created the design, but could not write a .mintr file yet. Use Save As to pick a folder.");
         });
     }
+    return project.id;
   };
   createAndOpenProjectRef.current = createAndOpenProject;
 
@@ -2816,6 +2874,7 @@ export default function Home() {
             initialHistoryIndex={activeProjectShapeEntry?.historyIndex}
             initialSnap={activeProject?.snapGrid ?? DEFAULT_SNAP_GRID}
             initialWorkspace={activeProject?.workspace ?? DEFAULT_WORKPLANE_WORKSPACE}
+            openingNotice={openingNotice?.projectId === activeProjectId ? openingNotice.text : null}
             onHome={openDashboard}
             onProjectShapesChange={updateProjectShapes}
             onProjectSnapshot={updateProjectSnapshot}

@@ -2,6 +2,7 @@ import { catalogSidesForKind, catalogStepsForKind, getActiveDisplayQuality } fro
 import { defaultGearSpec, gearFootprint } from "@/lib/gearProfile";
 import { isGridfinityKind } from "@/lib/gridfinity";
 import { GRIDFINITY_BASEPLATE_COLOR, GRIDFINITY_BIN_COLOR, createGridfinityShape } from "@/lib/gridfinityShape";
+import { LOFT_COLOR, createLoftShape } from "@/lib/loftShape";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 import { createLocalId } from "@/lib/localIds";
 import { DEFAULT_TEXT_FONT } from "@/lib/textFonts";
@@ -29,6 +30,7 @@ export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "half-sphere", name: "Half Sphere", src: "assets/peakcad/shape-icons/half-sphere.png", menuIcon: "assets/peakcad/shape-icons/half-sphere.png", kind: "halfSphere", color: "#c9009a", group: "solid" },
   { id: "torus", name: "Torus", src: "assets/peakcad/shape-icons/torus.png", menuIcon: "assets/peakcad/shape-icons/torus.png", kind: "torus", color: "#0098c7", group: "solid" },
   { id: "tube", name: "Ring", src: "assets/peakcad/shape-icons/tube.png", menuIcon: "assets/peakcad/shape-icons/tube.png", kind: "tube", color: "#ce7013", group: "solid" },
+  { id: "loft", name: "Loft", src: "assets/peakcad/shape-icons/loft.png", menuIcon: "assets/peakcad/shape-icons/loft.png", kind: "loft", color: LOFT_COLOR, group: "solid", printOnly: true },
   { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b", group: "part" },
   { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813", group: "part", printOnly: true },
   { id: "gear", name: "Gear", src: "assets/peakcad/shape-icons/gear.png", menuIcon: "assets/peakcad/shape-icons/gear.png", kind: "gear", color: "#2aa77e", group: "part" },
@@ -72,6 +74,9 @@ export function makeShapeFromAsset(
   /** In a laser design, a new part is as thick as the sheet it is cut from. */
   sheetThickness?: number,
 ): WorkplaneShape {
+  if (asset.kind === "loft") {
+    return createLoftShape(point, { id: createLocalId(asset.id), color: asset.color });
+  }
   if (isGridfinityKind(asset.kind)) {
     return createGridfinityShape(asset.kind, point, { id: createLocalId(asset.id), color: asset.color });
   }

@@ -287,7 +287,7 @@ export function isGridfinityKind(kind: WorkplaneShape["kind"]): kind is "gridfin
 export function shapeUsesImportedMesh(
   shape: WorkplaneShape,
 ): shape is WorkplaneShape & { importedMesh: NonNullable<WorkplaneShape["importedMesh"]> } {
-  return Boolean(shape.importedMesh) && (shape.kind === "mesh" || shape.kind === "thread" || isGridfinityKind(shape.kind));
+  return Boolean(shape.importedMesh) && (shape.kind === "mesh" || shape.kind === "thread" || shape.kind === "loft" || isGridfinityKind(shape.kind));
 }
 
 /** Spec key for any Gridfinity shape, or null for other kinds. */

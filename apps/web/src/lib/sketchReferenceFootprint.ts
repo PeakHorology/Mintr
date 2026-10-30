@@ -96,7 +96,7 @@ function blankNode(shape: WorkplaneShape): SketchReferenceNode {
 }
 
 function drawShape(shape: WorkplaneShape): { fillD: string | null; outlineD: string | null; evenOdd: boolean } {
-  if (shape.importedMesh && (shape.kind === "mesh" || shape.kind === "thread" || shape.kind === "gridfinityBin" || shape.kind === "gridfinityBaseplate" || shape.kind === "sketch" || shape.kind === "scribble")) {
+  if (shape.importedMesh && (shape.kind === "mesh" || shape.kind === "thread" || shape.kind === "loft" || shape.kind === "gridfinityBin" || shape.kind === "gridfinityBaseplate" || shape.kind === "sketch" || shape.kind === "scribble")) {
     const projected = projectImportedMesh(shape);
     if (projected) return projected;
   }

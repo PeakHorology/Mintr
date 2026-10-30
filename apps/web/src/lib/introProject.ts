@@ -122,7 +122,7 @@ export function createIntroProjectMeta(now = Date.now()) {
 
 /** Empty lesson. Beginners build the part themselves. Older "Block with a hole" files are left alone. */
 export const LESSON_PROJECT_ID = "peakcad-lesson-first-part";
-export const LESSON_PROJECT_NAME = "Make a block with a hole";
+export const LESSON_PROJECT_NAME = "Add a Hole to a Box";
 export const LESSON_SEEDED_STORAGE_KEY = "peakcad:lessonSeeded";
 export const LESSON_COACH_DISMISSED_KEY = "peakcad:lessonCoachDismissed";
 export const LESSON_DONE_STORAGE_KEY = "peakcad:lessonDone";
@@ -271,8 +271,8 @@ export const TUTORIALS: Tutorial[] = [
   {
     id: LESSON_PROJECT_ID,
     title: LESSON_PROJECT_NAME,
-    summary: "Place a box, sketch a hole on the top, and cut through.",
-    length: "3 steps",
+    summary: "Place a box, turn a cylinder into a hole, and group them to cut through.",
+    length: "6 steps",
   },
   {
     id: PLATE_GUIDE_ID,
@@ -314,11 +314,23 @@ export function sceneHasThroughHole(shapes: WorkplaneShape[]): boolean {
   return list.some((shape) => Boolean(shape.groupedShapes?.length) && sceneHasThroughHole(shape.groupedShapes ?? []));
 }
 
+/**
+ * The hole reaches both sides of the part along one direction (flush counts: a hole as tall as
+ * the box cuts right through) and is narrower than the part the other two ways, so it opens a
+ * hole rather than carving the part away.
+ */
 function holePunchesThrough(solid: WorkplaneShape, hole: WorkplaneShape) {
   const part = worldAabb(solid);
   const cutter = worldAabb(hole);
   if (!aabbsOverlap(part, cutter)) return false;
-  return [0, 1, 2].some((axis) => cutter.min[axis] < part.min[axis] - 0.2 && cutter.max[axis] > part.max[axis] + 0.2);
+  const spans = (axis: number) => cutter.min[axis] <= part.min[axis] + 0.01 && cutter.max[axis] >= part.max[axis] - 0.01;
+  const inside = (axis: number) => cutter.min[axis] > part.min[axis] + 0.2 && cutter.max[axis] < part.max[axis] - 0.2;
+  return [0, 1, 2].some((axis) => spans(axis) && [0, 1, 2].every((other) => other === axis || inside(other)));
+}
+
+/** Loose cylinders at the top of the scene: the one the lesson turns into a hole. */
+function looseCylinders(shapes: WorkplaneShape[]) {
+  return shapes.filter((shape) => !shape.hidden && !shape.suppressed && shape.kind === "cylinder" && !shape.groupedShapes?.length);
 }
 
 export function sceneHasBox(shapes: WorkplaneShape[]): boolean {
@@ -329,12 +341,12 @@ export function sceneHasBox(shapes: WorkplaneShape[]): boolean {
 
 export type LessonCue =
   | "box"
-  | "sketch"
-  | "new-sketch"
-  | "face"
-  | "circle"
-  | "extrude"
-  | "cut"
+  | "cylinder"
+  | "hole"
+  | "size"
+  | "select-both"
+  | "group"
+  | "geometry"
   | "export"
   | "download-stl"
   | "done";
@@ -366,47 +378,56 @@ export function lessonExportOk(report: LessonExportReport, hasThroughHole: boole
 export function lessonExportNote(report: LessonExportReport | null, hasThroughHole: boolean): string | null {
   if (!report || lessonExportOk(report, hasThroughHole)) return null;
   if (!hasThroughHole) return "That file is a solid with no hole. Follow the prompt, then Download STL again.";
-  if (!report.keptHole) return "The hole did not make it into the STL. Cut into the box, then Download STL again.";
+  if (!report.keptHole) return "The hole did not make it into the STL. Group the hole with the box, then Download STL again.";
   return null;
 }
 
-const LESSON_TOTAL = 3;
+const LESSON_TOTAL = 6;
 
 /** The single next prompt. Later scenes skip ahead, so a finished hole does not send them back to Box. */
 export function lessonPrompt(input: {
   shapes: WorkplaneShape[];
-  sketchMode: boolean;
-  pickingFace: boolean;
-  sketchingOnPart: boolean;
-  sketchingOffPart: boolean;
-  sketchClosed: boolean;
-  extrudeOpen: boolean;
+  /** In the Sketch tab, or sketching: this lesson only uses shapes. */
+  sketching: boolean;
+  /** Selected shape ids: Group needs the box and the hole both selected. */
+  selectedIds?: readonly string[];
 }): LessonPrompt {
-  const hasBox = sceneHasBox(input.shapes);
-  const through = sceneHasThroughHole(input.shapes);
-  if (through) {
+  const step = (cue: LessonCue, at: number, title: string, body: string): LessonPrompt => ({ cue, step: at, total: LESSON_TOTAL, title, body, complete: false });
+  if (lessonStlKeepsHole(input.shapes)) {
     return { cue: "done", step: LESSON_TOTAL, total: LESSON_TOTAL, title: "You made a part with a hole", body: "The box has a hole through it. Close this when you want to keep modeling.", complete: true };
   }
-  if (input.extrudeOpen) {
-    return { cue: "cut", step: 3, total: LESSON_TOTAL, title: "Cut the hole", body: "Leave the number. It matches the box, so the cut goes all the way through. Click Preview in 3D, then Cut into part.", complete: false };
+  if (input.sketching) {
+    return step("geometry", 1, "This guide uses shapes", "Click Cancel if you are drawing, then click Geometry at the top.");
   }
-  if (input.sketchingOnPart && input.sketchClosed) {
-    return { cue: "extrude", step: 3, total: LESSON_TOTAL, title: "Turn the circle into a hole", body: "Click Extrude.", complete: false };
+  const hasBox = sceneHasBox(input.shapes);
+  if (!hasBox) {
+    return step("box", 1, "Place a box", "Click Box on the right. A red box lands on the grid.");
   }
-  if (input.sketchingOnPart) {
-    return { cue: "circle", step: 2, total: LESSON_TOTAL, title: "Draw the hole", body: "Click Circle. Drag on the face, starting near the middle. Keep it smaller than the box.", complete: false };
+  const cylinders = looseCylinders(input.shapes);
+  const holes = cylinders.filter((shape) => shape.hole);
+  if (holes.length === 0) {
+    if (cylinders.length === 0) {
+      return step("cylinder", 2, "Add a cylinder", "Click Cylinder on the right. It lands right where the box is.");
+    }
+    return step("hole", 3, "Turn the cylinder into a hole", "With the cylinder selected, click Hole in the panel on the right.");
   }
-  if (input.sketchingOffPart && hasBox) {
-    return { cue: "face", step: 2, total: LESSON_TOTAL, title: "Sketch on the box", body: "This sketch is on the empty grid. Click Cancel, then New sketch, and click the top of the box.", complete: false };
+  if (sceneHasThroughHole(input.shapes)) {
+    const selected = new Set(input.selectedIds ?? []);
+    const bothPicked = holes.some((hole) => selected.has(hole.id))
+      && input.shapes.some((shape) => !shape.hole && !shape.hidden && selected.has(shape.id));
+    if (!bothPicked) {
+      return step("select-both", 5, "Select the box and the hole", "Group needs both selected. Click the hole, then hold Shift and click the box. Ctrl+A selects everything.");
+    }
+    return step("group", 6, "Cut the hole", "Both are selected. Click Group at the top, and the hole cuts through the box.");
   }
-  if (input.pickingFace && hasBox) {
-    return { cue: "face", step: 2, total: LESSON_TOTAL, title: "Click the top of the box", body: "Click the top face. The view turns toward it. Draw on that face.", complete: false };
+  const solids = input.shapes.filter((shape) => !shape.hidden && !shape.hole && !shape.suppressed);
+  const tooWide = holes.every((hole) => solids.some((solid) => {
+    const part = worldAabb(solid);
+    const cutter = worldAabb(hole);
+    return cutter.max[0] - cutter.min[0] >= part.max[0] - part.min[0] - 0.2 || cutter.max[2] - cutter.min[2] >= part.max[2] - part.min[2] - 0.2;
+  }));
+  if (tooWide) {
+    return step("size", 4, "Make the hole smaller", "The hole is as wide as the box. Set its Length and Width to 8 mm in the panel on the right.");
   }
-  if (input.sketchMode && hasBox) {
-    return { cue: "new-sketch", step: 2, total: LESSON_TOTAL, title: "Start a sketch on the box", body: "Click New sketch. Then click the top of the box.", complete: false };
-  }
-  if (hasBox) {
-    return { cue: "sketch", step: 2, total: LESSON_TOTAL, title: "Sketch on the box", body: "Click Sketch at the top, next to Geometry.", complete: false };
-  }
-  return { cue: "box", step: 1, total: LESSON_TOTAL, title: "Place a box", body: "Click Box on the right. A red box lands on the grid.", complete: false };
+  return step("size", 4, "Line the hole up", "Move the hole so it sits inside the box, and make its Height at least as tall as the box so it cuts all the way through.");
 }

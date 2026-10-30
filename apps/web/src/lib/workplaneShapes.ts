@@ -576,6 +576,8 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.gridfinityBin === b.gridfinityBin &&
     a.gridfinityBaseplate === b.gridfinityBaseplate &&
     a.gridfinityBuilt === b.gridfinityBuilt &&
+    a.loftSpec === b.loftSpec &&
+    a.loftBuilt === b.loftBuilt &&
     (a.kind === "gear" ? gearSpecKey(a.gearSpec) === gearSpecKey(b.gearSpec) : true)
   );
 }

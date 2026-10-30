@@ -61,8 +61,9 @@ gp_Dir orthonormalU(const gp_Dir& axis) {
 }
 
 bool bboxOf(const TopoDS_Shape& shape, double& xmin, double& ymin, double& zmin, double& xmax, double& ymax, double& zmax) {
+  // The geometry itself, not padded by edge tolerances that a fuzzy boolean can grow.
   Bnd_Box box;
-  BRepBndLib::Add(shape, box);
+  BRepBndLib::AddOptimal(shape, box, false, false);
   if (box.IsVoid()) return false;
   box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
   return true;
@@ -166,7 +167,7 @@ bool makeJointTool(
   double radius,
   double depth,
   double embed,
-  double length,
+  double through,
   double extra,
   bool male,
   TopoDS_Shape& out
@@ -176,13 +177,26 @@ bool makeJointTool(
   if (joint == "dovetail") {
     const double root = radius * 1.5 + extra;
     const double tip = root * 1.45 + extra;
-    return makeDovetail(length + extra * 2, root, tip, z0, z1, out);
+    return makeDovetail(through, root, tip, z0, z1, out);
   }
   if (joint == "snap") {
-    const double shaftLen = (z1 - z0) * 0.72;
-    TopoDS_Shape shaft = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)), radius + extra, shaftLen).Shape();
-    TopoDS_Shape head = BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, z0 + shaftLen * 1.08), radius * 1.45 + extra).Shape();
-    return kernelBoolean(KernelBooleanOp::Fuse, shaft, head, out);
+    // A ball a little wider than its neck, on a split prong that squeezes to get it through.
+    const double neck = std::min(radius, depth * 0.4);
+    const double headR = neck * 1.15;
+    const double center = depth - headR + (male ? 0.0 : 0.35);
+    TopoDS_Shape shaft = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1)), neck + extra, center - z0).Shape();
+    TopoDS_Shape head = BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, center), headR + extra).Shape();
+    TopoDS_Shape ball;
+    if (!kernelBoolean(KernelBooleanOp::Fuse, shaft, head, ball)) return false;
+    if (!male) {
+      out = ball;
+      return !out.IsNull();
+    }
+    const double slot = std::max(0.8, neck * 0.35);
+    const double across = headR + 1.0;
+    const double slotZ0 = std::min(center * 0.3, 1.0);
+    TopoDS_Shape cutter = BRepPrimAPI_MakeBox(gp_Pnt(-across, -slot / 2, slotZ0), gp_Pnt(across, slot / 2, depth + 1.0)).Shape();
+    return kernelBoolean(KernelBooleanOp::Cut, ball, cutter, out);
   }
   if (joint == "thread") {
     return makeThread(radius, z0, z1 - z0, !male, extra, out);
@@ -310,26 +324,34 @@ nlohmann::json handleSplit(const nlohmann::json& job) {
   const double radius = std::max(1.6, std::min(10.0, face * 0.16));
   const double depth = std::max(2.5, std::min(10.0, room * 0.45));
   const double embed = std::max(1.2, std::min(2.5, room * 0.25));
-  const double length = std::max(8.0, std::min(28.0, face * 0.5));
+  const double through = std::max(spanAlong(positive, tangent), spanAlong(negative, tangent)) + 4.0;
   const double clearance = std::min(std::max(0.0, job.value("clearance", 0.2)), radius * 0.45);
 
   TopoDS_Shape maleTool;
   TopoDS_Shape femaleTool;
-  if (!makeJointTool(joint, radius, depth, embed, length, 0.0, true, maleTool)) {
+  if (!makeJointTool(joint, radius, depth, embed, through, 0.0, true, maleTool)) {
     return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
   }
-  if (!makeJointTool(joint, radius, depth, embed, length, clearance, false, femaleTool)) {
+  if (!makeJointTool(joint, radius, depth, embed, through, clearance, false, femaleTool)) {
     return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
   }
-  const TopoDS_Shape maleWorldTool = placeLocal(maleTool, origin, tangent, gp_Dir(normal.Reversed()), 0.0);
-  const TopoDS_Shape femaleWorldTool = placeLocal(femaleTool, origin, tangent, gp_Dir(normal.Reversed()), 0.35);
+  TopoDS_Shape maleWorldTool = placeLocal(maleTool, origin, tangent, gp_Dir(normal.Reversed()), 0.0);
+  // Start the socket cutter 0.35 mm on the plug's side of the cut so it opens the cut face.
+  const TopoDS_Shape femaleWorldTool = placeLocal(femaleTool, origin, tangent, gp_Dir(normal.Reversed()), -0.35);
+  // A dovetail runs right across the cut so it slides in from the side; trim the tail to the part.
+  if (joint == "dovetail") {
+    TopoDS_Shape trimmed;
+    if (!kernelBoolean(KernelBooleanOp::Common, maleWorldTool, solid, trimmed)) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
+    maleWorldTool = trimmed;
+  }
 
   TopoDS_Shape added;
   if (!kernelBoolean(KernelBooleanOp::Fuse, positive, maleWorldTool, added)) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
   TopoDS_Shape subtracted;
   if (!kernelBoolean(KernelBooleanOp::Cut, negative, femaleWorldTool, subtracted)) return kernelFail("The joint did not fit that cut. Move the line or choose a smaller clearance.", false);
 
-  const TopoDS_Shape maleFlat = orientCutFaceDown(added, gp_Dir(normal.Reversed()));
+  // The plug side lies cut face up so its plug, tail or screw points up and prints without supports.
+  const TopoDS_Shape maleFlat = orientCutFaceDown(added, normal);
   const TopoDS_Shape femaleFlat = orientCutFaceDown(subtracted, normal);
   const auto labels = jointLabels(joint);
   auto male = packPart(maleFlat, labels.first, angular);

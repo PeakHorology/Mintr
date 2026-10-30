@@ -1,6 +1,7 @@
 #include "primitives.hpp"
 #include "occtio.hpp"
 #include "recipe.hpp"
+#include "sketch.hpp"
 
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
@@ -641,6 +642,16 @@ bool buildKernelSolid(const nlohmann::json& solid, TopoDS_Shape& out) {
     if (!buildRecipeLocal(solid["recipe"], built, error)) return false;
     const double height = solid["recipe"].value("height", solid.value("height", 0.0));
     out = kernelPlaced(centerOnY(built, height), solid, height);
+    return true;
+  }
+  if (solid.value("kind", "") == "loft" && solid.contains("loft")) {
+    // A loft whose exact build is still pending on the JS side, sized as it is now.
+    TopoDS_Shape built;
+    std::string error;
+    if (!buildLoftLocal(solid["loft"], built, error)) return false;
+    // The shape box sits on the body, which can bulge a little past its outlines.
+    const double height = solid.value("height", 0.0);
+    out = kernelPlaced(centerOnY(kernelRecenterToLocalMeshFrame(built), height), solid, height);
     return true;
   }
   TopoDS_Shape local;

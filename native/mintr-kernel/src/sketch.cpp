@@ -10,7 +10,10 @@
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
+#include <Standard_Failure.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -21,6 +24,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Wire.hxx>
+#include <GeomAbs_JoinType.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
@@ -234,7 +238,142 @@ bool pipeSolid(const TopoDS_Wire& profile, const TopoDS_Wire& path, TopoDS_Shape
   return std::abs(props.Mass()) > 1e-6;
 }
 
+
+// A flat outline moved inward by distance, or false once it would vanish.
+bool shrinkWire(const TopoDS_Wire& wire, double distance, TopoDS_Wire& out) {
+  const TopoDS_Face face = BRepBuilderAPI_MakeFace(wire, true).Face();
+  if (face.IsNull()) return false;
+  GProp_GProps whole;
+  BRepGProp::SurfaceProperties(face, whole);
+  const double area = std::abs(whole.Mass());
+  for (double sign : { -1.0, 1.0 }) {
+    try {
+      BRepOffsetAPI_MakeOffset offset(face, GeomAbs_Arc);
+      offset.Perform(sign * distance);
+      if (!offset.IsDone()) continue;
+      TopExp_Explorer explore(offset.Shape(), TopAbs_WIRE);
+      if (!explore.More()) continue;
+      const TopoDS_Wire candidate = TopoDS::Wire(explore.Current());
+      explore.Next();
+      if (explore.More()) continue;
+      const TopoDS_Face shrunk = BRepBuilderAPI_MakeFace(candidate, true).Face();
+      if (shrunk.IsNull()) continue;
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(shrunk, props);
+      const double inner = std::abs(props.Mass());
+      if (inner > 1e-6 && inner < area * (1 - 1e-6)) {
+        out = candidate;
+        return true;
+      }
+    } catch (const Standard_Failure&) {
+      // Tries the other side.
+    }
+  }
+  return false;
+}
+
 } // namespace
+
+// A loft skins two or more outlines stacked up the part's Y axis. Each section is
+// {y, loop} in the part's own millimetres, y from the floor up; the loop is a sketch
+// loop (circle, or a wire of line / arc / bezier steps) in the X / Z plane. Straight
+// lofts run flat faces between sections; smooth ones bend through them. A wall over
+// zero hollows it, open at both ends.
+bool buildLoftLocal(const nlohmann::json& loft, TopoDS_Shape& out, std::string& error) {
+  if (!loft.contains("sections") || !loft["sections"].is_array() || loft["sections"].size() < 2) {
+    error = "A loft needs two or more outlines";
+    return false;
+  }
+  const bool smooth = loft.value("smooth", false);
+  const double wall = loft.value("wall", 0.0);
+  BRepOffsetAPI_ThruSections maker(true, !smooth, 1e-6);
+  maker.CheckCompatibility(true);
+  maker.SetSmoothing(false);
+  std::vector<TopoDS_Wire> wires;
+  for (const auto& section : loft["sections"]) {
+    if (!section.contains("loop")) {
+      error = "A loft outline is missing";
+      return false;
+    }
+    const double y = section.value("y", 0.0);
+    const nlohmann::json plane = {
+      { "origin", { 0.0, y, 0.0 } },
+      { "uAxis", { 1.0, 0.0, 0.0 } },
+      { "vAxis", { 0.0, 0.0, 1.0 } },
+      { "normal", { 0.0, 1.0, 0.0 } },
+    };
+    TopoDS_Wire wire;
+    if (!wireFromLoop(section["loop"], plane, wire)) {
+      error = "A loft outline could not be traced";
+      return false;
+    }
+    maker.AddWire(wire);
+    wires.push_back(wire);
+  }
+  try {
+    maker.Build();
+  } catch (const Standard_Failure&) {
+    error = "The loft could not join these outlines";
+    return false;
+  }
+  if (!maker.IsDone() || maker.Shape().IsNull()) {
+    error = "The loft could not join these outlines";
+    return false;
+  }
+  out = maker.Shape();
+  if (wall <= 1e-6) return true;
+  // The wall is measured across each outline, as the preview draws it: every outline
+  // is shrunk by the wall, those are lofted the same way, and that core is cut out.
+  BRepOffsetAPI_ThruSections core(true, !smooth, 1e-6);
+  core.CheckCompatibility(true);
+  core.SetSmoothing(false);
+  for (const auto& wire : wires) {
+    TopoDS_Wire inner;
+    if (!shrinkWire(wire, wall, inner)) {
+      error = "This wall is too thick for the loft";
+      return false;
+    }
+    core.AddWire(inner);
+  }
+  try {
+    core.Build();
+  } catch (const Standard_Failure&) {
+    error = "This wall is too thick for the loft";
+    return false;
+  }
+  TopoDS_Shape hollowed;
+  if (!core.IsDone() || !kernelBoolean(KernelBooleanOp::Cut, out, core.Shape(), hollowed) || !kernelShapeIsValid(hollowed, 20000)) {
+    error = "This wall is too thick for the loft";
+    return false;
+  }
+  out = hollowed;
+  return true;
+}
+
+nlohmann::json handleBuildLoft(const nlohmann::json& job) {
+  if (!job.contains("loft")) return kernelFail("buildLoft is missing its loft", true);
+  TopoDS_Shape shape;
+  std::string error;
+  try {
+    if (!buildLoftLocal(job["loft"], shape, error)) return kernelFail(error, false);
+  } catch (const Standard_Failure& failure) {
+    return kernelFail(failure.what() ? failure.what() : "OCCT failed", true);
+  }
+  if (!kernelShapeIsValid(shape, 20000)) return kernelFail("The loft came out invalid", true);
+  nlohmann::json positions, normals, indices;
+  if (!kernelTessellateIndexed(shape, positions, normals, indices, 0.06, 0.25, sharedCorners())) {
+    return kernelFail("native tessellation failed", true);
+  }
+  return {
+    { "ok", true },
+    { "positions", positions },
+    { "normals", normals },
+    { "indices", indices },
+    { "cadBrep", kernelExportBrep(shape) },
+    { "quality", "exact" },
+    { "key", job.value("key", "") },
+  };
+}
 
 nlohmann::json handleSketchExtrude(const nlohmann::json& job) {
   if (!job.contains("plane") || !job.contains("loops") || !job["loops"].is_array() || job["loops"].empty()) {

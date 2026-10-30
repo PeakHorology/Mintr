@@ -642,6 +642,7 @@ export function geometryMeshForShape(shape: WorkplaneShape): MeshData | null {
       break;
     case "gridfinityBin":
     case "gridfinityBaseplate":
+    case "loft":
       // Kernel mesh not built yet: the footprint box matches the viewport stand-in.
       geometry = new THREE.BoxGeometry(width, height, depth);
       break;

@@ -54,6 +54,7 @@ export function EditorModeTabs({
         type="button"
         role="tab"
         aria-selected={toolbarMode === "geometry"}
+        data-lesson-target="geometry"
         data-sage-label="Geometry"
         onClick={() => onToolbarModeChange("geometry")}
         onContextMenu={geometryHelp.onContextMenu}
@@ -297,6 +298,7 @@ export function EditorTopBar({
             {logo}
           </div>
         )}
+        <SageSection />
         <div className="editor-file-group" aria-label="File">
           <div className="toolbar-section-label">File</div>
           <div className="toolbar-section-tools">
@@ -339,7 +341,6 @@ export function EditorTopBar({
 
       <div className="editor-top-bar-right">
         {rightTools ? <div className="editor-top-bar-tools editor-top-bar-tools--modify">{rightTools}</div> : null}
-        <SageSection />
         <div className="editor-file-group" aria-label="Settings">
           <div className="toolbar-section-label">Settings</div>
           <div className="toolbar-section-tools">

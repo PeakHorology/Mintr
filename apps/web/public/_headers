@@ -1,0 +1,17 @@
+# Headers for the web version of Mintr (app.mintr3d.com on Cloudflare Pages or Netlify).
+# The desktop app ignores this file; it sends the same isolation headers itself (electron/desktopMain.cjs).
+
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Built files carry a content hash in their name, so they can be kept for a year.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The engines keep their names between releases: check for a new one each visit.
+/*.wasm
+  Cache-Control: public, max-age=0, must-revalidate

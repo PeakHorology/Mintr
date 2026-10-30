@@ -375,6 +375,35 @@ export function ToolbarIntersectionIcon(props: IconProps) {
   );
 }
 
+export function ToolbarShrinkWrapIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <circle cx="8" cy="14.5" r="3.2" />
+      <rect x="12.6" y="6" width="6" height="6" rx="0.8" />
+      <path d="M5.2 12.6 12.4 5.4h6.4l2.4 2.4v4.6L11.4 17.4l-3.6.3-3-1.6z" strokeDasharray="2.2 1.6" />
+    </CadGlyph>
+  );
+}
+
+export function ToolbarSmoothIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <rect x="4" y="5" width="16" height="14" rx="0.8" strokeDasharray="2.2 1.6" />
+      <path d="M12 7.2c3.8 0 6 2.2 6 5s-2.6 4.6-6 4.6-6-1.6-6-4.6 2.2-5 6-5z" />
+    </CadGlyph>
+  );
+}
+
+export function ToolbarLoftIcon(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <ellipse cx="12" cy="5.5" rx="4.5" ry="1.8" />
+      <path d="M4 18.5h16" />
+      <path d="M7.5 5.5C7 10 4.5 14 4 18.5M16.5 5.5C17 10 19.5 14 20 18.5" strokeDasharray="2.2 1.6" />
+    </CadGlyph>
+  );
+}
+
 export function ToolbarAlignIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>

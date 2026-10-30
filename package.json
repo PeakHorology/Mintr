@@ -1,6 +1,6 @@
 {
   "name": "peakcad",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "license": "GPL-3.0-or-later",
   "author": "PeakHorologyLLC",
@@ -17,6 +17,8 @@
     "build": "next build apps/web",
     "preexport": "npm run copy:occt && npm run stage:legal",
     "export": "node scripts/static-export.mjs",
+    "preview:web": "node scripts/serve-web.mjs",
+    "deploy:web": "node scripts/deploy-web.mjs",
     "verify:static-worker-assets": "node scripts/verify-static-worker-assets.mjs",
     "start": "next start apps/web",
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",

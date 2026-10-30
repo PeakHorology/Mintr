@@ -1,6 +1,7 @@
 import type { ManifoldToplevel } from "manifold-3d";
 import { ADDITION, Brush, Evaluator, HOLLOW_INTERSECTION, INTERSECTION, SUBTRACTION, type CSGOperation } from "three-bvh-csg";
 import * as THREE from "three";
+import { ConvexHull } from "three/examples/jsm/math/ConvexHull.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { shapeUsesImportedMesh } from "@/lib/gridfinity";
 import { getManifoldRuntime } from "@/lib/manifoldRuntime";
@@ -24,6 +25,7 @@ import {
   coneUnitBaseScale,
   coneUnitTopScale,
   fallbackSolidColor,
+  groupedChildrenDisplayScale,
   mirroredAxisCount,
   mirrorSign,
   normalizeDegrees,
@@ -46,7 +48,8 @@ import {
   viewportCadDisplayEdges,
   withCsgMeta,
 } from "@/lib/csgTree";
-import type { CsgOp } from "@/types/sketchforge";
+import type { CsgOp, SmoothCrease, SmoothSpec, SmoothTug } from "@/types/sketchforge";
+import { buildSmoothNet, clampSmoothLevel, finishSmooth, meshExtent, polygonize, type PolyMesh, type SmoothNet } from "@/lib/smoothSubdivision";
 import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape } from "@/lib/cadBakeMetadata";
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { meshDataToTransfer, runManifoldBooleanInWorker } from "@/lib/manifoldBooleanClient";
@@ -3087,7 +3090,7 @@ export function bakeSolidAsGroupMesh(solid: WorkplaneShape): WorkplaneShape | nu
 export async function evaluateCsgOpOnOperands(
   operands: WorkplaneShape[],
   op: CsgOp,
-  options?: { skipOcct?: boolean },
+  options?: SmoothBuildOptions & { skipOcct?: boolean },
 ): Promise<WorkplaneShape | null> {
   const selection = await ensureExactSketchOperands(expandBooleanHoleCutters(
     operands.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked),
@@ -3135,6 +3138,9 @@ export async function evaluateCsgOpOnOperands(
     );
   }
 
+  if (op === "hull") return shrinkWrapMeshShape(selection);
+  if (op === "smooth") return smoothMeshShape(selection, options?.smooth ?? { level: 2 }, options);
+
   if (op === "intersect") {
     if (!skipOcct) {
       const occt = await occtBooleanMeshShape(selection, "intersect");
@@ -3149,6 +3155,228 @@ export async function evaluateCsgOpOnOperands(
   }
 
   return null;
+}
+
+/** Triangles of the tightest convex skin around every corner of the solids, faces out. */
+export function convexHullPositions(solids: WorkplaneShape[]): number[] | null {
+  const points: THREE.Vector3[] = [];
+  for (const shape of solids) {
+    for (const [x, y, z] of meshForShape(shape).vertices) points.push(new THREE.Vector3(x, y, z));
+  }
+  if (points.length < 4) return null;
+  const hull = new ConvexHull().setFromPoints(points);
+  const positions: number[] = [];
+  for (const face of hull.faces) {
+    let edge = face.edge;
+    do {
+      const point = edge.head().point;
+      positions.push(point.x, point.y, point.z);
+      edge = edge.next;
+    } while (edge !== face.edge);
+  }
+  return positions.length >= 36 ? positions : null;
+}
+
+/**
+ * Shrink Wrap: one convex skin around the solids, then the holes cut through it.
+ * The parts stay inside as the body's children, so it stays editable.
+ */
+export async function shrinkWrapMeshShape(selection: WorkplaneShape[]): Promise<WorkplaneShape | null> {
+  const active = selection.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked);
+  const solids = active.filter((shape) => !shape.hole).map(solidThreadShape);
+  const holes = active.filter((shape) => shape.hole);
+  if (solids.length === 0) return null;
+  const positions = convexHullPositions(solids);
+  if (!positions) return null;
+  const wrapped = meshPositionsToGroupShape(solids, solids, positions, "grouped-hull");
+  if (!wrapped) return null;
+  let body = wrapped;
+  if (holes.length > 0) {
+    const skin: WorkplaneShape = { ...wrapped, id: createLocalId("hull-skin"), groupedShapes: undefined, csg: undefined };
+    const cut = await evaluateCsgOpOnOperands([skin, ...holes], "subtract", { skipOcct: true });
+    if (cut?.importedMesh) body = cut;
+  }
+  return withCsgMeta({
+    ...body,
+    id: wrapped.id,
+    name: "Shrink wrap",
+    hole: false,
+    color: solids[0].color,
+    groupedBaseWidth: body.width,
+    groupedBaseDepth: body.depth,
+    groupedBaseHeight: body.height,
+    groupedShapes: selection.map((shape) => cloneAsGroupChild(shape, body.x, body.z, body.elevation ?? 0)),
+  }, "hull", 1, false);
+}
+
+export type SmoothBuildOptions = {
+  /** Smooth settings with the pulled points in world space. */
+  smooth?: SmoothSpec;
+  /** A quick build while something is being dragged: a lower triangle cap, and pulls that no longer fit are kept for the real build. */
+  draft?: boolean;
+  onNotice?: (message: string) => void;
+};
+
+/** A first pull brings its neighbours along: a quarter of the part's size, in half millimetres. */
+export function defaultSmoothSoftRadius(extent: number) {
+  return Math.max(0.5, Math.round(extent * 0.25 * 2) / 2);
+}
+
+/** Triangles a Smooth body may have; a level that would make more is lowered for that build. */
+export function smoothTriangleCap(draft = false) {
+  return draft ? 60_000 : Math.min(hardwareProfile().booleanTriangleLimit, 300_000);
+}
+
+/** A point in a group's frame (like its children: centred in x and z, up from the bottom) to world space. */
+export function groupPointToWorld(group: WorkplaneShape, [px, py, pz]: Vec3): Vec3 {
+  const scale = groupedChildrenDisplayScale(group);
+  const local = new THREE.Vector3(
+    px * scale.x * mirrorSign(group.mirrorX),
+    (py * scale.y - group.height / 2) * mirrorSign(group.mirrorY),
+    pz * scale.z * mirrorSign(group.mirrorZ),
+  ).applyQuaternion(quaternionForShape(group));
+  return [group.x + local.x, (group.elevation ?? 0) + group.height / 2 + local.y, group.z + local.z];
+}
+
+/** The body's Smooth settings with its pulled points moved to world space. */
+export function smoothSpecToWorld(body: WorkplaneShape): SmoothSpec {
+  const spec = body.smooth ?? { level: 2 };
+  return mapSmoothSpecPoints(spec, (p) => groupPointToWorld(body, p));
+}
+
+function mapSmoothSpecPoints(spec: SmoothSpec, map: (p: Vec3) => Vec3): SmoothSpec {
+  const tugs = (list: SmoothTug[]) => list.map((tug) => ({ ...tug, at: map(tug.at), to: map(tug.to), ...(tug.from ? { from: map(tug.from) } : {}) }));
+  const creases = (list: SmoothCrease[]) => list.map((crease) => ({ ...crease, a: map(crease.a), b: map(crease.b) }));
+  return {
+    ...spec,
+    tugs: spec.tugs && tugs(spec.tugs),
+    creases: spec.creases && creases(spec.creases),
+    keepFaces: spec.keepFaces?.map(map),
+    parked: spec.parked && { ...spec.parked, tugs: tugs(spec.parked.tugs), creases: creases(spec.parked.creases) },
+  };
+}
+
+/** World-space Smooth settings into a freshly built body's frame: it is unturned and unscaled, so the frame is a plain offset. */
+function worldSmoothSpecToBody(body: WorkplaneShape, spec: SmoothSpec): SmoothSpec {
+  return mapSmoothSpecPoints(spec, (p) => [p[0] - body.x, p[1] - (body.elevation ?? 0), p[2] - body.z]);
+}
+
+/** Joined solids as flat faces, then the Smooth net with the pulls applied, all in world space. */
+export async function smoothNetForShapes(selection: WorkplaneShape[], spec: SmoothSpec): Promise<{ smooth: SmoothNet; base: PolyMesh; solids: WorkplaneShape[]; holes: WorkplaneShape[] } | null> {
+  const active = selection.filter((shape) => !shape.suppressed && !shape.csg?.suppressed && !shape.locked);
+  const solids = active.filter((shape) => !shape.hole).map(solidThreadShape);
+  const holes = active.filter((shape) => shape.hole);
+  if (solids.length === 0) return null;
+  const joined = solids.length === 1
+    ? bakeSolidAsGroupMesh(solids[0])
+    : await evaluateCsgOpOnOperands(solids, "union", { skipOcct: true });
+  if (!joined) return null;
+  const mesh = meshForShape(joined);
+  const soup: number[] = [];
+  for (const [a, b, c] of mesh.faces) {
+    soup.push(...mesh.vertices[a], ...mesh.vertices[b], ...mesh.vertices[c]);
+  }
+  const base = polygonize(soup);
+  if (!base) return null;
+  const smooth = buildSmoothNet(base, {
+    keepBottomFlat: spec.keepBottomFlat !== false,
+    keepEdges: spec.keepEdges === true,
+    detail: spec.detail ?? 0,
+    tugs: spec.tugs ?? [],
+    creases: spec.creases ?? [],
+    keepFaces: spec.keepFaces ?? [],
+  });
+  return { smooth, base, solids, holes };
+}
+
+/**
+ * Smooth: the solids joined and rounded off into one soft body, then the holes cut
+ * through it so they stay exact. The parts stay inside as the body's children.
+ */
+export async function smoothMeshShape(selection: WorkplaneShape[], spec: SmoothSpec, options?: SmoothBuildOptions): Promise<WorkplaneShape | null> {
+  const built = await smoothNetForShapes(selection, spec);
+  if (!built) return null;
+  const { smooth, solids, holes } = built;
+  const wanted = Math.max(1, Math.min(3, Math.round(spec.level)));
+  const level = clampSmoothLevel(smooth.net, wanted, smoothTriangleCap(options?.draft));
+  if (level < wanted && !options?.draft) options?.onNotice?.(`Smoothness lowered to ${level} to keep the model responsive.`);
+  if (smooth.heldBack > 0 && !options?.draft) {
+    options?.onNotice?.(`${smooth.heldBack} pulled ${smooth.heldBack === 1 ? "point was" : "points were"} on a face kept flat and ${smooth.heldBack === 1 ? "was" : "were"} removed.`);
+  }
+  if (smooth.dropped > 0 && !options?.draft) {
+    options?.onNotice?.(`${smooth.dropped} pulled ${smooth.dropped === 1 ? "point no longer fits" : "points no longer fit"} the changed parts and ${smooth.dropped === 1 ? "was" : "were"} removed.`);
+  }
+  const { positions, normals } = finishSmooth(smooth.net, smooth.tags, level);
+  const skin = meshPositionsToGroupShape(solids, solids, positions, "grouped-smooth", undefined, normals);
+  if (!skin) return null;
+  let body = skin;
+  if (holes.length > 0) {
+    const cutter: WorkplaneShape = { ...skin, id: createLocalId("smooth-skin"), groupedShapes: undefined, csg: undefined };
+    const cut = await evaluateCsgOpOnOperands([cutter, ...holes], "subtract", { skipOcct: true });
+    if (cut?.importedMesh) body = cut;
+  }
+  // A drag keeps the pulls that do not fit right now, so the final build still has them.
+  const kept = options?.draft ? spec.tugs ?? [] : [...smooth.applied, ...smooth.resting];
+  const detail = spec.detail ?? 0;
+  const creases = options?.draft ? spec.creases ?? [] : [...smooth.creasesApplied, ...(spec.creases ?? []).filter((crease) => crease.detail > detail)];
+  return withCsgMeta({
+    ...body,
+    id: skin.id,
+    name: "Smooth",
+    hole: false,
+    color: solids[0].color,
+    groupedBaseWidth: body.width,
+    groupedBaseDepth: body.depth,
+    groupedBaseHeight: body.height,
+    groupedShapes: selection.map((shape) => cloneAsGroupChild(shape, body.x, body.z, body.elevation ?? 0)),
+    smooth: worldSmoothSpecToBody(body, { ...spec, softRadius: spec.softRadius ?? defaultSmoothSoftRadius(meshExtent(smooth.net)), tugs: kept, creases }),
+  }, "smooth", 1, false);
+}
+
+/** Rebuild a Smooth body from its own parts with new settings (pulls in world space), keeping its identity. */
+export async function rebuildSmoothBody(body: WorkplaneShape, worldSpec: SmoothSpec, options?: SmoothBuildOptions): Promise<WorkplaneShape | null> {
+  const children = restoreGroupedChildren(body, { preserveIds: true });
+  const built = await smoothMeshShape(children, worldSpec, options);
+  if (!built) return null;
+  return {
+    ...built,
+    id: body.id,
+    name: body.name,
+    color: body.color,
+    locked: body.locked,
+    hidden: body.hidden,
+    groupedShapes: children.map((child) => cloneAsGroupChild(child, built.x, built.z, built.elevation ?? 0, true)),
+    csg: { ...(built.csg ?? { op: "smooth" }), op: "smooth", version: (body.csg?.version ?? 0) + 1 },
+  };
+}
+
+/** A body for the live view while points are dragged: the smooth mesh in, the parts re-anchored to it. */
+export function smoothPreviewBody(body: WorkplaneShape, worldChildren: WorkplaneShape[], positions: number[], normals: number[], worldSpec: SmoothSpec): WorkplaneShape | null {
+  const solids = worldChildren.filter((child) => !child.hole);
+  const preview = meshPositionsToGroupShape(solids.length ? solids : worldChildren, solids.length ? solids : worldChildren, positions, "smooth-preview", undefined, normals);
+  if (!preview) return null;
+  return {
+    ...body,
+    x: preview.x,
+    z: preview.z,
+    elevation: preview.elevation,
+    width: preview.width,
+    depth: preview.depth,
+    height: preview.height,
+    size: preview.size,
+    rotation: 0,
+    rotationX: 0,
+    rotationZ: 0,
+    mirrorX: undefined,
+    mirrorY: undefined,
+    mirrorZ: undefined,
+    importedMesh: preview.importedMesh,
+    groupedBaseWidth: preview.width,
+    groupedBaseDepth: preview.depth,
+    groupedBaseHeight: preview.height,
+    groupedShapes: worldChildren.map((child) => cloneAsGroupChild(child, preview.x, preview.z, preview.elevation ?? 0, true)),
+    smooth: worldSmoothSpecToBody(preview, worldSpec),
+  };
 }
 
 /** Exact OCCT boolean when every operand has B-Rep; Manifold remains the progressive fallback. */
@@ -3486,7 +3714,7 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
 }
 
 /** Re-evaluate a CSG body from world-space children; preserves body + child ids. */
-export type RemeshCsgOptions = { skipOcct?: boolean; draft?: boolean };
+export type RemeshCsgOptions = { skipOcct?: boolean; draft?: boolean; onNotice?: (message: string) => void };
 
 export async function remeshCsgGroupFromWorldChildren(
   body: WorkplaneShape,
@@ -3549,7 +3777,12 @@ export async function remeshCsgGroupFromWorldChildren(
   const bakedChildren = activeChildren.map(solidThreadShape);
   const skipOcct = Boolean(options?.draft) || options?.skipOcct === true;
   const evaluate = async () => {
-    let next = await evaluateCsgOpOnOperands(bakedChildren, op, { skipOcct });
+    let next = await evaluateCsgOpOnOperands(bakedChildren, op, {
+      skipOcct,
+      draft: options?.draft,
+      onNotice: options?.onNotice,
+      smooth: op === "smooth" ? smoothSpecToWorld(body) : undefined,
+    });
     if (!next?.importedMesh) {
       const solids = bakedChildren.filter((shape) => !shape.hole);
       next = concatenatedImportedMeshShape(solids)
@@ -3585,8 +3818,10 @@ export async function remeshCsgGroupFromWorldChildren(
     groupedShapes: worldChildren.map((child) =>
       cloneAsGroupChild(solidThreadShape(child), g.x, g.z, g.elevation ?? 0, true),
     ),
+    // A Smooth or Shrink Wrap body stays one, even if this build had to fall back to a plain mesh.
+    smooth: op === "smooth" ? g.smooth ?? body.smooth : undefined,
     csg: {
-      op: g.csg?.op ?? op,
+      op: op === "smooth" || op === "hull" ? op : g.csg?.op ?? op,
       version: (body.csg?.version ?? 0) + 1,
       suppressed: body.csg?.suppressed,
     },
