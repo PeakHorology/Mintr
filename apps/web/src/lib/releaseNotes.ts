@@ -38,6 +38,20 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.3.1",
+    items: [
+    ] = [
+      "A group made into a hole stays a hole after Mintr rebuilds it, so Tinkercad designs that cut with grouped holes come over with their cuts.",
+      "In the browser, a hole made of many crossing parts (a ring of window bars) now cuts, and parts with many small cuts can still be cut and grouped again afterwards.",
+      "A hole the same size as a part's side, such as one trimming the top of a round wall, cuts cleanly instead of leaving thin shards behind.",
+      "Round holes such as a torus keep their smooth curve when cut alongside many straight parts, instead of coming out in coarse bands.",
+      "When a Tinkercad design uses a mesh imported into Tinkercad, Mintr says an imported shape was left out, since Tinkercad keeps those files on its own servers.",
+      "Tinkercad roof shapes come over in exactly the right place, so small roof holes that trim the corners of other parts cut them off as they do in Tinkercad.",
+      "The Send to Mintr button in Import is now a mint button with a grip, so it is easy to see and drag to your bookmarks bar.",
+      "In dark mode, the box in Import for dropping STL, STEP, SVG and 3MF files is dark too, so its text is easy to read.",
+    ],
+  },
+  {
     version: "1.3.0",
     items: [
       "New Loft shape in the Shapes panel: pick a bottom and a top outline (circle, square or polygon), set the top size, add a twist, or make it hollow for a vase or sleeve.",

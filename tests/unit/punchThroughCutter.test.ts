@@ -54,6 +54,19 @@ function deepBoreTriangles(mesh: MeshData, hole: WorkplaneShape) {
 }
 
 describe("punchThroughCutter", () => {
+  it("widens a hole a hair when its side sits on the part's side, so the cut leaves no shards", () => {
+    // A cylinder hole the same size as a round part, trimming its top (a Tinkercad basket rim).
+    const solid = shape({ id: "solid", hole: false, width: 64, depth: 64, size: 64, height: 10 });
+    const trim = shape({ id: "trim", hole: true, width: 64, depth: 64, size: 64, elevation: 8.5, height: 20 });
+    const cutter = punchThroughCutter(trim, [solid]);
+    expect(cutter.width).toBeCloseTo(64.04, 6);
+    expect(cutter.depth).toBeCloseTo(64.04, 6);
+    expect(cutter.elevation).toBe(8.5);
+    // A hole well inside the part keeps its exact size.
+    const bore = shape({ id: "bore", hole: true, width: 8, depth: 8, size: 8, elevation: 2, height: 4 });
+    expect(punchThroughCutter(bore, [solid])).toBe(bore);
+  });
+
   it("extends a hole whose ends sit on the solid, without widening it", () => {
     const solid = shape({ id: "solid", hole: false });
     const hole = shape({ id: "hole", hole: true, width: 8, depth: 8, size: 8 });

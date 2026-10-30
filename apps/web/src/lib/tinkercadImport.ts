@@ -42,6 +42,8 @@ type PresetMapping = {
   kind: ShapeKind;
   /** The preset's own size before the matrix scales it: X, Y (up), Z. */
   size: [number, number, number];
+  /** How far the preset's own front-to-back middle sits from its origin, when not on it. */
+  depthOffset?: number;
   /** Settings of the kind, given how much the matrix stretched the preset on X, Y and Z. */
   extra?: (scale: [number, number, number]) => Partial<WorkplaneShape>;
 };
@@ -92,7 +94,8 @@ function mapPreset(params: Record<string, unknown>): PresetMapping | null {
     case "pyramid":
       return { kind: "pyramid", size: [20, 20, 20], extra: () => ({ sides: Math.max(3, Math.round(num(params.side, 4))) }) };
     case "roof":
-      return { kind: "roof", size: [20, 20, 20] };
+      // Tinkercad's roof runs from its origin to 20 mm along its own depth, not either side of it.
+      return { kind: "roof", size: [20, 20, 20], depthOffset: 10 };
     case "halfCylinder":
       return { kind: "roundRoof", size: [20, 10, 20] };
     case "wedge":
@@ -169,7 +172,7 @@ function leafShape(node: TinkercadNode, world: THREE.Matrix4, preset: PresetMapp
   const height = preset.size[1] * scale[1];
   const depth = preset.size[2] * scale[2];
   // Mintr turns a shape about its centre: the preset's local centre, carried into the world.
-  const center = new THREE.Vector3(0, preset.size[1] / 2, 0).applyMatrix4(mintr);
+  const center = new THREE.Vector3(0, preset.size[1] / 2, preset.depthOffset ?? 0).applyMatrix4(mintr);
   const color = colorHex(node.tags);
   const hole = isHole(node);
   return sceneShape({
@@ -263,7 +266,8 @@ function convertNode(
   }
   const preset = node.dataType === "preset" && node.params ? mapPreset(node.params) : null;
   if (!preset) {
-    skipped.push(nodeLabel(node, typeof node.params?.id === "string" ? node.params.id : "Shape"));
+    // An imported mesh lives on Tinkercad's servers, not in the design, and its id is a hash.
+    skipped.push(nodeLabel(node, node.dataType === "import" ? "Imported shape" : typeof node.params?.id === "string" ? node.params.id : "Shape"));
     return null;
   }
   return leafShape(node, world, preset);

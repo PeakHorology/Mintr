@@ -187,6 +187,11 @@ export function curveSidesForShape(shape: CurveSideSource | null, quality: Displ
 
 const COARSE_BOOLEAN_ANGULAR = 0.32;
 
+/** True when Draft would build this shape with fewer facets: a round shape not yet baked to a mesh. */
+export function tessellatesByQuality(shape: CurveSideSource & { importedMesh?: unknown }, quality: DisplayQuality = getActiveDisplayQuality()) {
+  return !shape.importedMesh && curveSidesOf(shape, quality) > 0;
+}
+
 function curvedSidesInTree(shape: CurveSideSource | null | undefined, quality: DisplayQuality): number {
   if (!shape) return 0;
   let sides = curveSidesOf(shape, quality);

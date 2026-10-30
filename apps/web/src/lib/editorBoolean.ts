@@ -650,6 +650,12 @@ export function paddedCutterShape(shape: WorkplaneShape): WorkplaneShape {
 
 /** Faces closer than this are the same skin. A mesh boolean then leaves a sliver. */
 const FLUSH_CUT_FACE_MM = 0.05;
+/**
+ * How far a hole's sides grow when they sit on a part's outer side, as when a cylinder hole the
+ * same size as a round part trims its top. Coincident side walls leave the kernel thin shards to
+ * argue over; a few hundredths of a millimetre, far below a printer's reach, settles them.
+ */
+const FLUSH_CUT_SIDE_GROW_MM = 0.02;
 
 const AXIAL_CUTTER_KINDS = new Set<WorkplaneShape["kind"]>([
   "box",
@@ -714,12 +720,20 @@ export function punchThroughCutter(hole: WorkplaneShape, solids: WorkplaneShape[
   const holeV = extentAlong(hole, bitangent);
   let growMin = 0;
   let growMax = 0;
+  let flushSide = false;
   for (const solid of solids) {
     if (solid.hole || solid.hidden) continue;
-    if (!rangesOverlap(holeU, extentAlong(solid, tangent)) || !rangesOverlap(holeV, extentAlong(solid, bitangent))) {
+    const solidU = extentAlong(solid, tangent);
+    const solidV = extentAlong(solid, bitangent);
+    if (!rangesOverlap(holeU, solidU) || !rangesOverlap(holeV, solidV)) {
       continue;
     }
     const solidAxis = extentAlong(solid, axis);
+    if (rangesOverlap(holeAxis, solidAxis) && [
+      [holeU.min, solidU.min], [holeU.max, solidU.max], [holeV.min, solidV.min], [holeV.max, solidV.max],
+    ].some(([a, b]) => Math.abs(a - b) <= FLUSH_CUT_FACE_MM)) {
+      flushSide = true;
+    }
     const overshoot = faceHoleOvershootMm(Math.max(hole.height, solidAxis.max - solidAxis.min));
     if (Math.abs(holeAxis.min - solidAxis.min) <= FLUSH_CUT_FACE_MM && holeAxis.max > solidAxis.min + FLUSH_CUT_FACE_MM) {
       growMin = Math.max(growMin, overshoot);
@@ -728,14 +742,20 @@ export function punchThroughCutter(hole: WorkplaneShape, solids: WorkplaneShape[
       growMax = Math.max(growMax, overshoot);
     }
   }
+  // A thread keeps its exact pitch diameter.
+  const side = flushSide && hole.kind !== "thread" ? FLUSH_CUT_SIDE_GROW_MM * 2 : 0;
+  const widened = side > 0
+    ? { width: shapeWidth(hole) + side, depth: shapeDepth(hole) + side, size: Math.max(shapeWidth(hole), shapeDepth(hole)) + side }
+    : {};
   if (growMin === 0 && growMax === 0) {
-    return hole;
+    return side > 0 ? { ...hole, ...widened } : hole;
   }
   const height = hole.height + growMin + growMax;
   const shift = (growMax - growMin) / 2;
   const center = new THREE.Vector3(hole.x, (hole.elevation ?? 0) + hole.height / 2, hole.z).addScaledVector(axis, shift);
   const grown = {
     ...hole,
+    ...widened,
     x: center.x,
     z: center.z,
     elevation: center.y - height / 2,
@@ -2084,7 +2104,10 @@ export async function manifoldBooleanMeshShape(selection: WorkplaneShape[], opti
       }
     }
 
-    const group = meshPositionsToGroupShape(selection, solids, positions, options.idPrefix ?? "grouped-manifold-cut");
+    // Manifold's result is already sealed. Its zero-area slivers (where many cutters cross) hold the
+    // surface together, so the weld's degenerate-triangle pass would open cracks and leave a body
+    // no later cut can use.
+    const group = meshPositionsToGroupShape(selection, solids, positions, options.idPrefix ?? "grouped-manifold-cut", { skipWeld: true });
     const usable = isUsableBooleanGroup(group, sourceMesh.faces.length);
     const changedEnough = sourceCutTriangles > 0 || !looksLikeUnchangedBooleanResult(group, sourceMesh.faces.length, true);
     if (!usable || !changedEnough) {
@@ -2164,9 +2187,12 @@ export async function manifoldUnionMeshShape(selection: WorkplaneShape[]): Promi
   // tessellated near 0.001 mm, so that weld snaps unrelated vertices and stretches
   // triangles across screws, teeth, and curved faces.
   const importedOperands = solids.some((shape) => Boolean(shape.importedMesh));
+  const staggeredUnion = solidsForUnion !== solids;
   const unionCleanup: BooleanCleanupOptions = {
-    staggeredUnion: solidsForUnion !== solids,
+    staggeredUnion,
     unifyCoplanar: !importedOperands,
+    // Meshes in, sealed mesh out: nothing to weld, and the weld would open cracks (see the cut).
+    skipWeld: importedOperands && !staggeredUnion,
   };
 
   const prepared = tessellateForBoolean(solidsForUnion, () => {
@@ -3593,7 +3619,42 @@ export function expandSketchHoleCuttersIfPossible(shape: WorkplaneShape): Workpl
 }
 
 function expandBooleanHoleCutters(shapes: WorkplaneShape[]): WorkplaneShape[] {
-  return shapes.flatMap((shape) => (shape.hole ? expandSketchHoleCuttersIfPossible(shape) : [shape]));
+  return shapes.flatMap((shape) => {
+    if (!shape.hole) return [shape];
+    const parts = holeGroupPartCutters(shape);
+    return parts ? parts.flatMap(expandSketchHoleCuttersIfPossible) : expandSketchHoleCuttersIfPossible(shape);
+  });
+}
+
+/**
+ * True when a union in this tree joins four or more plain shapes. Manifold staggers and then
+ * flattens those (see manifoldUnionMeshShape), and the result is not always sealed enough to cut
+ * with. Other unions come out sealed and stay one cutter, keeping the cut at full detail.
+ */
+function hasStaggeredUnion(group: WorkplaneShape): boolean {
+  const children = (group.groupedShapes ?? []).filter((child) => !child.suppressed && !child.csg?.suppressed);
+  const op = group.csg?.op ?? inferCsgOp(group);
+  const solids = children.filter((child) => !child.hole);
+  if (op === "union" && solids.length >= 4 && solids.every((child) => !child.importedMesh && !child.groupedShapes?.length)) return true;
+  return children.some((child) => Boolean(child.groupedShapes?.length) && hasStaggeredUnion(child));
+}
+
+/**
+ * A hole group of solids, as one cutter per part. Cutting by each part is the same as cutting by
+ * their union, and the parts are clean solids. Only used when the group's own mesh came from a
+ * mesh fallback: a union of many crossing parts (a ring of window bars) can come out as a mesh
+ * no kernel will cut with. An exact group mesh is kept as one cutter.
+ */
+function holeGroupPartCutters(group: WorkplaneShape): WorkplaneShape[] | null {
+  if (!group.groupedShapes?.length || shapeHasExactBrepSource(group) || !hasStaggeredUnion(group)) return null;
+  if ((group.csg?.op ?? inferCsgOp(group)) !== "union") return null;
+  const parts = restoreGroupedChildren(group, { preserveIds: true })
+    .filter((child) => !child.suppressed && !child.csg?.suppressed);
+  if (parts.length === 0 || parts.some((child) => child.hole)) return null;
+  return parts.flatMap((part) => {
+    const nested = part.groupedShapes?.length ? holeGroupPartCutters({ ...part, hole: true }) : null;
+    return nested ?? [{ ...solidThreadShape(part), hole: true }];
+  });
 }
 
 async function ensureExactSketchOperands(shapes: WorkplaneShape[]): Promise<WorkplaneShape[]> {
@@ -3804,6 +3865,9 @@ export async function remeshCsgGroupFromWorldChildren(
     color: body.color,
     locked: body.locked,
     hidden: body.hidden,
+    // A group made into a hole stays a hole: its parts combine, then the whole cuts its parent.
+    hole: body.hole,
+    solidColor: body.solidColor,
     // Keep recipes so the editor can re-apply fillet/chamfer after remesh.
     // Geometry (cadBrep / display edges) is invalid until re-applied.
     edgeTreatments: body.edgeTreatments,

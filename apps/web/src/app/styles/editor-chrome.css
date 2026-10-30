@@ -2810,8 +2810,9 @@
   gap: 8px;
   padding: 17px 14px;
   color: var(--ink-strong);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(244, 248, 251, 0.96));
-  border: 1.5px dashed rgba(93, 124, 150, 0.62);
+  /* Theme colours, so dark mode gets a dark box its light text shows on. */
+  background: linear-gradient(180deg, var(--control-surface), color-mix(in srgb, var(--control-surface) 94%, var(--ink-muted)));
+  border: 1.5px dashed color-mix(in srgb, var(--ink-muted) 70%, transparent);
   border-radius: var(--radius-sm);
   text-align: center;
 }
@@ -4904,15 +4905,36 @@
   font-weight: 650;
 }
 
+/* Mint and raised, so it reads as something to pick up against the white panel. */
 .import-tinkercad-bookmark {
-  padding: 6px 12px;
-  color: var(--on-accent, #fff);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 7px 14px 7px 10px;
+  color: #fff;
   font-size: var(--text-sm);
   font-weight: 800;
   text-decoration: none;
-  background: var(--accent);
+  background: var(--mintr);
   border-radius: var(--radius-sm);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.18);
   cursor: grab;
+}
+
+.import-tinkercad-bookmark::before {
+  content: "⠿";
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+.import-tinkercad-bookmark:hover {
+  background: color-mix(in srgb, var(--mintr) 88%, #000);
+}
+
+.import-tinkercad-bookmark:active {
+  cursor: grabbing;
 }
 
 .import-tinkercad-copy {

@@ -192,7 +192,7 @@ export type BooleanCleanupOptions = {
    * Does not planarize, so stepped unions keep their real height.
    */
   unifyCoplanar?: boolean;
-  /** Native OCCT already produced a display mesh; skip the main-thread weld. */
+  /** The kernel already produced a sealed mesh (native OCCT, or Manifold); skip the main-thread weld. */
   skipWeld?: boolean;
 };
 

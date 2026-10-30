@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { restoreGroupedChildren } from "@/lib/editorBoolean";
+import { remeshCsgGroup, restoreGroupedChildren } from "@/lib/editorBoolean";
 import {
   readTinkercadClipboard,
   readTinkercadHash,
@@ -10,6 +10,7 @@ import {
   type TinkercadPayload,
 } from "@/lib/tinkercadImport";
 import { tinkercadBookmarkletHref } from "@/lib/tinkercadBookmarklet";
+import { meshForShape } from "@/lib/editorShapeMesh";
 
 // A real design from Tinkercad's editor (rootNode.toJSON()): a 20 mm box with a cylinder hole
 // 10 mm wide and 21 mm tall through it, grouped. The group sits at (-28, 9), the parts at (37, -2)
@@ -189,5 +190,103 @@ describe("Tinkercad shapes", () => {
     expect(bundle).toMatchObject({ name: "Tie" });
     expect(bundle.csg?.op).toBe("assemble");
     expect(restoreGroupedChildren(bundle).map((child) => child.kind)).toEqual(["roof", "pyramid"]);
+  });
+});
+
+describe("Tinkercad hole groups", () => {
+  // The user's basket cage: four crossing cylinders grouped and made a hole, cutting a tube.
+  const design = JSON.parse(readFileSync(path.join(__dirname, "../fixtures/tinkercad-basket-cage.json"), "utf8")) as TinkercadPayload;
+  const [cage] = tinkercadToShapes(design).shapes;
+
+  it("brings a group made into a hole over as a hole", () => {
+    const holeGroups = cage.groupedShapes!.filter((child) => child.groupedShapes?.length && child.hole);
+    expect(holeGroups).toHaveLength(3);
+    const tube = cage.groupedShapes!.find((child) => child.csg?.op === "subtract")!
+      .groupedShapes!.find((child) => child.groupedShapes?.length)!;
+    const windows = tube.groupedShapes!.find((child) => child.groupedShapes?.length)!;
+    expect(windows).toMatchObject({ hole: true });
+    expect(windows.csg?.op).toBe("union");
+  });
+
+  it("keeps a hole group a hole when Mintr builds it", async () => {
+    const holeGroup = cage.groupedShapes!.find((child) => child.groupedShapes?.length && child.hole)!;
+    const built = await remeshCsgGroup(restoreGroupedChildren({ ...cage, groupedShapes: [holeGroup] }, { preserveIds: true })[0]);
+    expect(built?.importedMesh).toBeTruthy();
+    expect(built).toMatchObject({ hole: true });
+  });
+});
+
+describe("Tinkercad cones wider at the top", () => {
+  // The user's 8 quadrant basket bevels the inside of its rim with an upside-down cone hole:
+  // 31.25 mm at the bottom, 32.15 mm at the top. Cut too wide, it shaves the wall paper-thin.
+  const design = JSON.parse(readFileSync(path.join(__dirname, "../fixtures/tinkercad-basket-8-quadrant.json"), "utf8")) as TinkercadPayload;
+  const find = (shape: ReturnType<typeof tinkercadToShapes>["shapes"][number]): typeof shape | null => {
+    if (shape.kind === "cone" && shape.hole) return shape;
+    for (const child of shape.groupedShapes?.length ? restoreGroupedChildren(shape, { preserveIds: true }) : []) {
+      const hit = find(child);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const bevel = tinkercadToShapes(design).shapes.map(find).find(Boolean)!;
+
+  it("cuts with the cone at its real size", () => {
+    expect(bevel).toMatchObject({ baseRadius: 31.25, topRadius: 32.15 });
+    const { vertices } = meshForShape(bevel);
+    const ys = vertices.map((vertex) => vertex[1]);
+    const bottom = Math.min(...ys);
+    const top = Math.max(...ys);
+    const ring = (y: number) => Math.max(...vertices.filter((vertex) => Math.abs(vertex[1] - y) < 1e-6)
+      .map((vertex) => Math.hypot(vertex[0] - bevel.x, vertex[2] - bevel.z)));
+    expect(ring(bottom)).toBeCloseTo(31.25, 2);
+    expect(ring(top)).toBeCloseTo(32.15, 2);
+  });
+});
+
+describe("Tinkercad imported meshes", () => {
+  // The user's working plate: three copies of a mesh imported into Tinkercad, which stays on
+  // Tinkercad's servers, and a torus hole that rounds the edge of each pocket.
+  const design = JSON.parse(readFileSync(path.join(__dirname, "../fixtures/tinkercad-working-plate.json"), "utf8")) as TinkercadPayload;
+  const { shapes, skipped } = tinkercadToShapes(design);
+
+  it("names them plainly when leaving them out", () => {
+    expect(skipped).toEqual(["Imported shape", "Imported shape", "Imported shape"]);
+  });
+
+  it("keeps the torus that rounds each pocket", () => {
+    const tori: string[] = [];
+    const walk = (shape: (typeof shapes)[number]) => {
+      if (shape.kind === "torus") tori.push(shape.id);
+      if (shape.groupedShapes?.length) restoreGroupedChildren(shape, { preserveIds: true }).forEach(walk);
+    };
+    shapes.forEach(walk);
+    expect(tori).toHaveLength(3);
+  });
+});
+
+describe("Tinkercad roofs", () => {
+  // The user's baskets trim the ends of their dividers with small roof holes. Tinkercad's roof
+  // runs 20 mm from its origin along its own depth, so this one covers X 92 to 95 and trims the
+  // whole 2 mm divider (X 93 to 95), flush with its outer face.
+  const design: TinkercadPayload = {
+    v: 1,
+    name: "Trimmed divider",
+    root: {
+      matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      dataType: null,
+      children: [{
+        matrix: [0, 0.1, 0, 0, 0, 0, 0.2, 0, 0.15, 0, 0, 0, 92, -20.75, 0, 1],
+        tags: { volumePolarity: -1 },
+        dataType: "preset",
+        params: { id: "roof" },
+      }],
+    },
+  };
+
+  it("sits where Tinkercad puts it", () => {
+    const [roof] = tinkercadToShapes(design).shapes;
+    const xs = meshForShape(roof).vertices.map((vertex) => vertex[0]);
+    expect(Math.min(...xs)).toBeCloseTo(92, 4);
+    expect(Math.max(...xs)).toBeCloseTo(95, 4);
   });
 });

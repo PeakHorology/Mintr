@@ -4,6 +4,7 @@ import {
   resolveIcosahedronDetail,
   resolveShapeSides,
   resolveShapeSteps,
+  tessellatesByQuality,
 } from "@/lib/displayTessellation";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import type { DisplayQuality, WorkplaneShape } from "@/types/sketchforge";
@@ -113,7 +114,9 @@ export function booleanWorkingQuality(
   shapes: WorkplaneShape[],
   quality: DisplayQuality = getActiveDisplayQuality(),
 ): DisplayQuality {
-  const count = shapes.filter((shape) => !shape.hidden && !shape.construction).length;
+  // Draft only saves facets on round shapes, so only they count: a ring of 120 straight window
+  // bars should not leave the torus beside them with 16 bands.
+  const count = shapes.filter((shape) => !shape.hidden && !shape.construction && tessellatesByQuality(shape, quality)).length;
   const tris = displayTriangleTotal(shapes, quality);
   if (count >= LIVE_OCCT_BOOLEAN_OPERANDS || tris > BOOLEAN_WORKING_TRIANGLE_BUDGET) return "draft";
   if (quality === "smooth") return "standard";

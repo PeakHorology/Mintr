@@ -97,14 +97,15 @@ export function boxMesh(shape: WorkplaneShape): MeshData {
   };
 }
 
-export function cylinderMesh(shape: WorkplaneShape, sides = 96, topRadiusScale = 1): MeshData {
+/** A cylinder, or a cone when the rings are scaled: each scale is a fraction of the footprint. */
+export function cylinderMesh(shape: WorkplaneShape, sides = 96, topRadiusScale = 1, baseRadiusScale = 1): MeshData {
   const width = shapeWidth(shape);
   const depth = shapeDepth(shape);
   const height = shape.height;
   const vertices: Vec3[] = [[0, 0, 0], [0, height, 0]];
   for (let i = 0; i < sides; i += 1) {
     const angle = (i / sides) * Math.PI * 2;
-    vertices.push([(Math.cos(angle) * width) / 2, 0, (Math.sin(angle) * depth) / 2]);
+    vertices.push([(Math.cos(angle) * width * baseRadiusScale) / 2, 0, (Math.sin(angle) * depth * baseRadiusScale) / 2]);
     vertices.push([(Math.cos(angle) * width * topRadiusScale) / 2, height, (Math.sin(angle) * depth * topRadiusScale) / 2]);
   }
   const faces: [number, number, number][] = [];
@@ -114,12 +115,14 @@ export function cylinderMesh(shape: WorkplaneShape, sides = 96, topRadiusScale =
     const t0 = b0 + 1;
     const b1 = 2 + next * 2;
     const t1 = b1 + 1;
-    faces.push([0, b1, b0]);
-    if (topRadiusScale > 0) {
-      faces.push([1, t0, t1]);
+    if (baseRadiusScale <= 0) {
+      // Point at the bottom: a cone standing on its tip.
+      faces.push([1, t0, t1], [b0, t1, t0]);
+    } else if (topRadiusScale > 0) {
+      faces.push([0, b1, b0], [1, t0, t1]);
       faces.push([b0, b1, t1], [b0, t1, t0]);
     } else {
-      faces.push([b0, b1, t0]);
+      faces.push([0, b1, b0], [b0, b1, t0]);
     }
   }
   return { name: sanitizeName(shape.name), vertices, faces };
@@ -675,7 +678,7 @@ export function meshForShape(shape: WorkplaneShape): MeshData {
     (shape.kind === "cylinder" || shape.kind === "tube" || shape.kind === "ring" || shape.kind === "torus"
       ? cylinderMesh(shape, resolveShapeSides(shape.kind === "torus" ? "cylinder" : shape.kind, shape.sides) ?? 192)
       : shape.kind === "cone"
-        ? cylinderMesh(shape, resolveShapeSides(shape.kind, shape.sides) ?? 192, shape.baseRadius ? (shape.topRadius ?? 0) / shape.baseRadius : 0)
+        ? cylinderMesh(shape, resolveShapeSides(shape.kind, shape.sides) ?? 192, coneUnitTopScale(shape), coneUnitBaseScale(shape))
         : shape.kind === "sphere" || shape.kind === "halfSphere"
           ? sphereMesh(shape)
           : shape.kind === "pyramid"
