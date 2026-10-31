@@ -38,9 +38,16 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.3.2",
+    items: [
+      "The toolbar fits smaller screens and browser windows. When room runs short it first tightens up, with File as icons, and only then moves the least-used tools into More, so Arrange, Modify and Combine stay in reach.",
+      "Pad/Pocket follows curves smoothly. A fillet, a slot end or the hollow of a crescent pads and pockets as a real curve instead of flat facets, and sharp corners stay sharp. Turn off Smooth curves to keep the facets.",
+      "A pad or pocket on a face with a long, gentle curve keeps the curve instead of turning it into one straight edge.",
+    ],
+  },
+  {
     version: "1.3.1",
     items: [
-    ] = [
       "A group made into a hole stays a hole after Mintr rebuilds it, so Tinkercad designs that cut with grouped holes come over with their cuts.",
       "In the browser, a hole made of many crossing parts (a ring of window bars) now cuts, and parts with many small cuts can still be cut and grouped again afterwards.",
       "A hole the same size as a part's side, such as one trimming the top of a round wall, cuts cleanly instead of leaving thin shards behind.",

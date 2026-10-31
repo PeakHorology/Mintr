@@ -4419,7 +4419,8 @@ button.lesson-target-hot {
   inset: 0 0 auto 0;
   z-index: var(--z-overlay);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  /* The mins come from useToolbarFit: equal sides when both fit, otherwise a crowded side borrows room. */
+  grid-template-columns: minmax(var(--top-left-min, 0px), 1fr) auto minmax(var(--top-right-min, 0px), 1fr);
   align-items: stretch;
   gap: 8px;
   height: var(--editor-toolbar-height);
@@ -4515,7 +4516,8 @@ button.lesson-target-hot {
   grid-column: 1 / -1;
   grid-row: 1;
   top: calc(100% - 1px);
-  left: 50%;
+  /* Hangs under the title, which moves off centre when one side borrows room (set by useToolbarFit). */
+  left: var(--top-title-center, 50%);
   z-index: 2;
   display: flex;
   transform: translateX(-50%);
@@ -4666,6 +4668,66 @@ button.lesson-target-hot {
   border-color: var(--control-border-accent);
   box-shadow: inset 0 1px 2px rgba(4, 4, 4, 0.14);
   transform: scale(var(--motion-press-scale));
+}
+
+.editor-file-action-icon {
+  display: none;
+}
+
+/*
+ * Tighter top bar, switched on by useToolbarFit only when every tool would not fit at full size.
+ * It follows the room the bar really has, so it behaves the same in a browser, the app, and at any zoom.
+ */
+/* Tools never squash; when room runs out they move into "More tools" instead. */
+.editor-top-bar .editor-top-bar-tools .toolbar-section,
+.editor-top-bar .editor-top-bar-tools .toolbar-icon {
+  flex: none;
+}
+
+.editor-top-bar.is-compact .editor-top-bar-left,
+.editor-top-bar.is-compact .editor-top-bar-right {
+  gap: 4px;
+}
+
+.editor-top-bar.is-compact .toolbar-overflow-cluster {
+  gap: 4px;
+}
+
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-icon svg,
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-icon .toolbar-sprite-icon,
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-icon .vector-toolbar-sprite-icon,
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-icon .toolbar-command-icon,
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-icon .toolbar-user-art-icon {
+  width: 26px;
+  height: 26px;
+}
+
+.editor-top-bar.is-compact .editor-top-bar-tools .toolbar-section-label,
+.editor-top-bar.is-compact .editor-file-group .toolbar-section-label {
+  padding-left: 4px;
+  padding-right: 4px;
+  letter-spacing: 0.08em;
+}
+
+.editor-top-bar.is-compact .editor-file-action {
+  width: 32px;
+  padding: 0;
+}
+
+.editor-top-bar.is-compact .editor-file-action-icon {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.editor-top-bar.is-compact .editor-file-action-text {
+  display: none;
 }
 
 .editor-file-group .toolbar-icon {

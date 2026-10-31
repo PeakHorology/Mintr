@@ -28,7 +28,10 @@ function anchorElement(tool: string) {
   const section = sectionName
     ? document.querySelector<HTMLElement>(`.toolbar-section[aria-label="${sectionName}"]`)
     : null;
-  return section?.parentElement?.querySelector<HTMLElement>('[aria-label="More tools"]') ?? section;
+  const more = section?.parentElement?.querySelector<HTMLElement>('[aria-label="More tools"]');
+  if (more || section) return more ?? section;
+  // The whole section went into "More tools" on a narrow screen.
+  return document.querySelector<HTMLElement>('.editor-top-bar-tools--modify button[aria-label="More tools"]');
 }
 function toolbarAnchor(tool: string, width: number): Anchor {
   const margin = 12;

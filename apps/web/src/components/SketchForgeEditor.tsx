@@ -1653,6 +1653,7 @@ export function SketchForgeEditor({
     inset: number;
     cornerRadius: number;
     depth: number;
+    smooth: boolean;
     separate: boolean;
     joinThrough: boolean;
     busy: boolean;
@@ -2648,6 +2649,7 @@ export function SketchForgeEditor({
           ? faceSession.cornerRadius
           : Math.min(faceSession.cornerRadius, faceCornerLimit),
         depth: faceSession.depth,
+        smooth: faceSession.smooth,
       };
     return faceDraftsToBuild(faceSession.kept, current);
   }, [
@@ -2659,6 +2661,7 @@ export function SketchForgeEditor({
     faceSession?.prepared,
     faceSession?.selectedFaceId,
     faceSession?.inset,
+    faceSession?.smooth,
   ]);
   const faceBuilds = useMemo(() => {
     const session = faceSession;
@@ -7688,6 +7691,7 @@ export function SketchForgeEditor({
       inset: 0,
       cornerRadius: 0,
       depth: 2,
+      smooth: true,
       separate: false,
       joinThrough: false,
       busy: true,
@@ -7739,6 +7743,7 @@ export function SketchForgeEditor({
           faceCornerRadiusLimit(selected.points, selected.origin, selected.normal, session.inset),
         ),
         depth: session.depth,
+        smooth: session.smooth,
       }
       : null;
     const drafts = joinedFaceDrafts(
@@ -7843,6 +7848,7 @@ export function SketchForgeEditor({
       inset: session.inset,
       cornerRadius,
       depth: session.depth,
+      smooth: session.smooth,
     };
     const built = buildFaceBody({ host, face, ...draft });
     if (!built.shape) {
@@ -13663,6 +13669,7 @@ export function SketchForgeEditor({
                 inset: current.inset,
                 cornerRadius: current.cornerRadius,
                 depth: current.depth,
+                smooth: current.smooth,
               };
               if (buildFaceBody({ host, face: leaving, ...draft }).shape) {
                 kept = rememberFaceDraft(kept, draft);
@@ -13804,6 +13811,7 @@ export function SketchForgeEditor({
                   })()}
                   separate={faceSession.separate}
                   joinThrough={faceSession.joinThrough}
+                  smooth={faceSession.smooth}
                   depthHeld={(() => {
                     const inward = faceBuilds.filter((entry) => entry.draft.direction === "in");
                     return inward.length > 0 && inward.every((entry) => entry.draft.passThrough);
@@ -13821,6 +13829,7 @@ export function SketchForgeEditor({
                   onDepthChange={(depth) => setFaceSession((current) => current ? { ...current, depth, error: null } : current)}
                   onSeparateChange={(separate) => setFaceSession((current) => current ? { ...current, separate } : current)}
                   onJoinThroughChange={(joinThrough) => setFaceSession((current) => current ? { ...current, joinThrough, error: null } : current)}
+                  onSmoothChange={(smooth) => setFaceSession((current) => current ? { ...current, smooth, error: null } : current)}
                   onAnotherFace={keepFaceForAnother}
                   onCreate={applyFace}
                   onCancel={cancelFace}

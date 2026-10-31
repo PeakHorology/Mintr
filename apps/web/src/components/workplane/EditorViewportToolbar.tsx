@@ -42,6 +42,7 @@ import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import type { CadModifierKind } from "@/lib/cadModifierTypes";
 import { formatHotkeyBinding, HOTKEYS_CHANGED_EVENT, loadHotkeyBindings, type HotkeyActionId, type HotkeyBindings } from "@/lib/hotkeys";
 import { useChromePresence } from "@/lib/chromePresence";
+import { TOOLBAR_NEED_EVENT } from "@/components/workplane/toolbarFit";
 
 type ToolbarMode = "geometry" | "sketch";
 
@@ -57,6 +58,11 @@ type ToolDef = {
   disabledReason?: string;
   /** Sage guide key, when the label is shared with another tool. */
   sageKey?: string;
+  /**
+   * When the toolbar runs short of room, lower numbers move into "More tools" first.
+   * 1 = has a shortcut or is rarely used, 5 = core tool. Defaults to 3.
+   */
+  priority?: number;
 };
 
 type ToolSection = {
@@ -65,10 +71,10 @@ type ToolSection = {
   tools: ToolDef[];
 };
 
-const ICON_PX = 32;
+/** Border plus padding around a section's icons. */
 const SECTION_CHROME_PX = 8;
-const SECTION_GAP_PX = 6;
-const MORE_SLOT_PX = 32;
+
+type ClusterMetrics = { icon: number; gap: number };
 
 /** Live hotkey bindings so toolbar tooltips reflect any user remaps. */
 function useHotkeyBindings(): HotkeyBindings {
@@ -146,7 +152,13 @@ function sectionLabelWidth(host: HTMLElement, title: string): number {
   return width;
 }
 
-function clusterWidth(sections: ToolSection[], visible: Set<string>, labelWidth: (title: string) => number, includeMore: boolean): number {
+function clusterWidth(
+  sections: ToolSection[],
+  visible: Set<string>,
+  labelWidth: (title: string) => number,
+  includeMore: boolean,
+  metrics: ClusterMetrics,
+): number {
   let width = 0;
   let groups = 0;
   let shown = 0;
@@ -156,12 +168,12 @@ function clusterWidth(sections: ToolSection[], visible: Set<string>, labelWidth:
     const count = section.tools.filter((tool) => visible.has(tool.label)).length;
     shown += count;
     if (count === 0) continue;
-    const icons = SECTION_CHROME_PX + count * ICON_PX;
+    const icons = SECTION_CHROME_PX + count * metrics.icon;
     width += Math.max(icons, labelWidth(section.title));
     groups += 1;
   }
-  if (groups > 1) width += (groups - 1) * SECTION_GAP_PX;
-  if (includeMore && shown < total) width += (groups > 0 ? SECTION_GAP_PX : 0) + MORE_SLOT_PX;
+  if (groups > 1) width += (groups - 1) * metrics.gap;
+  if (includeMore && shown < total) width += (groups > 0 ? metrics.gap : 0) + metrics.icon;
   return width;
 }
 
@@ -180,21 +192,40 @@ function availableClusterWidth(host: HTMLElement): number {
   return Math.max(0, column.clientWidth - used - gap * gapCount);
 }
 
-function pickVisibleLabels(sections: ToolSection[], availablePx: number, labelWidth: (title: string) => number): string[] {
+/** Icon and gap sizes as drawn, so the compact top bar is measured as it really is. */
+function clusterMetrics(host: HTMLElement): ClusterMetrics {
+  const icon = host.querySelector<HTMLElement>(".toolbar-icon")?.getBoundingClientRect().width;
+  const style = getComputedStyle(host);
+  return {
+    icon: icon && icon > 0 ? icon : 42,
+    gap: Number.parseFloat(style.columnGap || style.gap) || 6,
+  };
+}
+
+function pickVisibleLabels(
+  sections: ToolSection[],
+  availablePx: number,
+  labelWidth: (title: string) => number,
+  metrics: ClusterMetrics,
+): string[] {
   const tools = sections.flatMap((section) => section.tools);
   const labels = tools.map((tool) => tool.label);
-  const all = new Set(labels);
-  if (clusterWidth(sections, all, labelWidth, false) <= availablePx) {
+  const visible = new Set(labels);
+  // A pixel of slack for rounding, so a tool is never pushed out by a fraction.
+  availablePx += 1;
+  if (clusterWidth(sections, visible, labelWidth, false, metrics) <= availablePx) {
     return labels;
   }
-  const visible = new Set(labels);
-  for (let index = labels.length - 1; index >= 0; index -= 1) {
-    if (clusterWidth(sections, visible, labelWidth, true) <= availablePx) break;
-    if (tools[index]?.active) continue;
-    visible.delete(labels[index]);
-  }
-  for (let index = labels.length - 1; index >= 0 && clusterWidth(sections, visible, labelWidth, true) > availablePx; index -= 1) {
-    visible.delete(labels[index]);
+  // Lowest priority goes first; among equals, the later tool. A tool in use stays out as long as it can.
+  const dropOrder = tools
+    .map((tool, index) => ({ tool, index }))
+    .sort((a, b) =>
+      Number(Boolean(a.tool.active)) - Number(Boolean(b.tool.active))
+      || (a.tool.priority ?? 3) - (b.tool.priority ?? 3)
+      || b.index - a.index);
+  for (const { tool } of dropOrder) {
+    if (clusterWidth(sections, visible, labelWidth, true, metrics) <= availablePx) break;
+    visible.delete(tool.label);
   }
   return labels.filter((label) => visible.has(label));
 }
@@ -220,16 +251,40 @@ function OverflowToolRow({
     if (!host) {
       return;
     }
+    const labelCache = new Map<string, number>();
+    const labelWidth = (title: string) => {
+      let width = labelCache.get(title);
+      if (width === undefined) {
+        width = sectionLabelWidth(host, title);
+        labelCache.set(title, width);
+      }
+      return width;
+    };
     const measure = () => {
-      const labelWidth = (title: string) => sectionLabelWidth(host, title);
-      const next = pickVisibleLabels(sections, availableClusterWidth(host), labelWidth);
+      const metrics = clusterMetrics(host);
+      const all = new Set(tools.map((tool) => tool.label));
+      // Tell the top bar how much room every tool would take, so it can tighten up or share space.
+      const need = String(Math.ceil(clusterWidth(sections, all, labelWidth, false, metrics)));
+      const key = tools.map((tool) => tool.label).join("|");
+      if (host.dataset.need !== need || host.dataset.key !== key) {
+        host.dataset.need = need;
+        host.dataset.key = key;
+        host.dispatchEvent(new Event(TOOLBAR_NEED_EVENT, { bubbles: true }));
+      }
+      const next = pickVisibleLabels(sections, availableClusterWidth(host), labelWidth, metrics);
       setVisibleLabels((current) => (current.length === next.length && current.every((label, index) => label === next[index]) ? current : next));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(host);
     const column = host.closest(".editor-top-bar-left, .editor-top-bar-right");
-    if (column instanceof HTMLElement && column !== host) observer.observe(column);
+    if (column instanceof HTMLElement && column !== host) {
+      observer.observe(column);
+      // The File group and the others beside the tools change size too (Save as, the tighter top bar).
+      for (const child of Array.from(column.children)) {
+        if (child instanceof HTMLElement && !child.contains(host)) observer.observe(child);
+      }
+    }
     return () => observer.disconnect();
     // tools is rebuilt each render; fingerprint captures layout-relevant changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -374,8 +429,8 @@ export function EditorModeStrip({
           title: "History",
           accent: "history",
           tools: [
-            { label: "Undo", description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: Boolean(canUndo), shortcut: shortcutLabel(hotkeys, "undo") },
-            { label: "Redo", description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: Boolean(canRedo), shortcut: shortcutLabel(hotkeys, "redo") },
+            { label: "Undo", priority: 5, description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: Boolean(canUndo), shortcut: shortcutLabel(hotkeys, "undo") },
+            { label: "Redo", priority: 5, description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: Boolean(canRedo), shortcut: shortcutLabel(hotkeys, "redo") },
           ],
         },
         ...((onCopy || onPaste)
@@ -384,10 +439,10 @@ export function EditorModeStrip({
             accent: "clipboard" as const,
             tools: [
               ...(onCopy
-                ? [{ label: "Copy", description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: Boolean(canCopy), shortcut: shortcutLabel(hotkeys, "copy") }]
+                ? [{ label: "Copy", priority: 1, description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: Boolean(canCopy), shortcut: shortcutLabel(hotkeys, "copy") }]
                 : []),
               ...(onPaste
-                ? [{ label: "Paste", description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: Boolean(canPaste), shortcut: shortcutLabel(hotkeys, "paste") }]
+                ? [{ label: "Paste", priority: 1, description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: Boolean(canPaste), shortcut: shortcutLabel(hotkeys, "paste") }]
                 : []),
             ],
           }]
@@ -532,59 +587,59 @@ export function EditorViewportToolbar({
     title: "History",
     accent: "history",
     tools: [
-      { label: "Undo", description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: canUndo, shortcut: shortcutLabel(hotkeys, "undo"), disabledReason: "Nothing to undo" },
-      { label: "History", description: TOOL_DESCRIPTIONS.history, icon: ToolbarHistoryIcon, action: onHistory, enabled: true, active: historyActive },
-      { label: "Redo", description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: canRedo, shortcut: shortcutLabel(hotkeys, "redo"), disabledReason: "Nothing to redo" },
+      { label: "Undo", priority: 5, description: TOOL_DESCRIPTIONS.undo, icon: ToolbarUndoIcon, action: onUndo, enabled: canUndo, shortcut: shortcutLabel(hotkeys, "undo"), disabledReason: "Nothing to undo" },
+      { label: "History", priority: 4, description: TOOL_DESCRIPTIONS.history, icon: ToolbarHistoryIcon, action: onHistory, enabled: true, active: historyActive },
+      { label: "Redo", priority: 5, description: TOOL_DESCRIPTIONS.redo, icon: ToolbarRedoIcon, action: onRedo, enabled: canRedo, shortcut: shortcutLabel(hotkeys, "redo"), disabledReason: "Nothing to redo" },
     ],
   };
   const clipboardSection: ToolSection = {
     title: "Clipboard",
     accent: "clipboard",
     tools: [
-      { label: "Copy", description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "copy"), disabledReason: "Select a shape first" },
-      { label: "Paste", description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: hasClipboard, shortcut: shortcutLabel(hotkeys, "paste"), disabledReason: "Nothing to paste" },
-      { label: "Duplicate", description: TOOL_DESCRIPTIONS.duplicate, icon: ToolbarDuplicateIcon, action: onDuplicate, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicate"), disabledReason: "Select a shape first" },
-      { label: "Duplicate and repeat", description: TOOL_DESCRIPTIONS.duplicateRepeat, icon: ToolbarDuplicateRepeatIcon, action: onDuplicateAndRepeat, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicateRepeat"), disabledReason: "Select a shape first" },
-      { label: "Delete", description: TOOL_DESCRIPTIONS.delete, icon: ToolbarTrashIcon, action: onDelete, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "delete"), disabledReason: "Select a shape first" },
+      { label: "Copy", priority: 1, description: TOOL_DESCRIPTIONS.copy, icon: ToolbarCopyIcon, action: onCopy, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "copy"), disabledReason: "Select a shape first" },
+      { label: "Paste", priority: 1, description: TOOL_DESCRIPTIONS.paste, icon: ToolbarPasteIcon, action: onPaste, enabled: hasClipboard, shortcut: shortcutLabel(hotkeys, "paste"), disabledReason: "Nothing to paste" },
+      { label: "Duplicate", priority: 2, description: TOOL_DESCRIPTIONS.duplicate, icon: ToolbarDuplicateIcon, action: onDuplicate, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicate"), disabledReason: "Select a shape first" },
+      { label: "Duplicate and repeat", priority: 2, description: TOOL_DESCRIPTIONS.duplicateRepeat, icon: ToolbarDuplicateRepeatIcon, action: onDuplicateAndRepeat, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "duplicateRepeat"), disabledReason: "Select a shape first" },
+      { label: "Delete", priority: 1, description: TOOL_DESCRIPTIONS.delete, icon: ToolbarTrashIcon, action: onDelete, enabled: hasSelection, shortcut: shortcutLabel(hotkeys, "delete"), disabledReason: "Select a shape first" },
     ],
   };
   const combineSection: ToolSection = {
     title: "Combine",
     accent: "combine",
     tools: [
-      { label: "Group", description: TOOL_DESCRIPTIONS.group, icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup, shortcut: shortcutLabel(hotkeys, "group"), disabledReason: "Select two or more shapes to group" },
-      { label: "Tie", description: TOOL_DESCRIPTIONS.assembly, icon: ToolbarAssemblyIcon, action: onAssemble, enabled: canGroup, disabledReason: "Select two or more shapes to tie together" },
-      { label: "Ungroup", description: TOOL_DESCRIPTIONS.ungroup, icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup, shortcut: shortcutLabel(hotkeys, "ungroup"), disabledReason: "Select a grouped shape to ungroup" },
-      { label: "Intersect", description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select two or more overlapping shapes" },
-      { label: "Shrink Wrap", description: TOOL_DESCRIPTIONS.shrinkWrap, icon: ToolbarShrinkWrapIcon, action: onShrinkWrap, enabled: canShrinkWrap, disabledReason: "Select two or more solids to wrap" },
+      { label: "Group", priority: 5, description: TOOL_DESCRIPTIONS.group, icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup, shortcut: shortcutLabel(hotkeys, "group"), disabledReason: "Select two or more shapes to group" },
+      { label: "Tie", priority: 2, description: TOOL_DESCRIPTIONS.assembly, icon: ToolbarAssemblyIcon, action: onAssemble, enabled: canGroup, disabledReason: "Select two or more shapes to tie together" },
+      { label: "Ungroup", priority: 3, description: TOOL_DESCRIPTIONS.ungroup, icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup, shortcut: shortcutLabel(hotkeys, "ungroup"), disabledReason: "Select a grouped shape to ungroup" },
+      { label: "Intersect", priority: 3, description: TOOL_DESCRIPTIONS.intersect, icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect, disabledReason: "Select two or more overlapping shapes" },
+      { label: "Shrink Wrap", priority: 1, description: TOOL_DESCRIPTIONS.shrinkWrap, icon: ToolbarShrinkWrapIcon, action: onShrinkWrap, enabled: canShrinkWrap, disabledReason: "Select two or more solids to wrap" },
       // A loft is printed, so laser designs leave it out.
-      ...(laserTools ? [] : [{ label: "Loft", description: TOOL_DESCRIPTIONS.loftSketches, icon: ToolbarLoftIcon, action: onLoft, enabled: canLoft, disabledReason: "Select two or more flat outlines stacked at different heights" }]),
+      ...(laserTools ? [] : [{ label: "Loft", priority: 1, description: TOOL_DESCRIPTIONS.loftSketches, icon: ToolbarLoftIcon, action: onLoft, enabled: canLoft, disabledReason: "Select two or more flat outlines stacked at different heights" }]),
     ],
   };
   const modifySection: ToolSection = {
     title: "Modify",
     accent: "modify",
     tools: [
-      { label: "Chamfer", description: TOOL_DESCRIPTIONS.chamfer, icon: ToolbarChamferIcon, action: onChamfer, enabled: canEdgeModify, active: edgeModifierKind === "chamfer", shortcut: shortcutLabel(hotkeys, "chamfer"), disabledReason: "Select a single unlocked shape first" },
-      { label: "Fillet", description: TOOL_DESCRIPTIONS.fillet, icon: ToolbarFilletIcon, action: onFillet, enabled: canEdgeModify, active: edgeModifierKind === "fillet", shortcut: shortcutLabel(hotkeys, "fillet"), disabledReason: "Select a single unlocked shape first" },
-      { label: "Push Pull", description: TOOL_DESCRIPTIONS.pushPull, icon: ToolbarPushPullIcon, action: onPushPull, enabled: canEdgeModify, active: pushPullActive, disabledReason: "Select a single unlocked shape first" },
-      { label: "Pad/Pocket", description: TOOL_DESCRIPTIONS.face, icon: ToolbarHollowIcon, action: onFace, enabled: canEdgeModify, active: faceActive, disabledReason: "Select a single unlocked shape first" },
-      { label: "Split", description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canSplit || splitActive, active: splitActive, disabledReason: canEdgeModify ? "Gridfinity bins stay in one piece" : "Select a single unlocked shape first" },
-      { label: "Smooth", description: TOOL_DESCRIPTIONS.smoothBody, icon: ToolbarSmoothIcon, action: onSmooth, enabled: canSmooth, disabledReason: "Select an unlocked solid to smooth", sageKey: "smooth shape" },
+      { label: "Chamfer", priority: 5, description: TOOL_DESCRIPTIONS.chamfer, icon: ToolbarChamferIcon, action: onChamfer, enabled: canEdgeModify, active: edgeModifierKind === "chamfer", shortcut: shortcutLabel(hotkeys, "chamfer"), disabledReason: "Select a single unlocked shape first" },
+      { label: "Fillet", priority: 5, description: TOOL_DESCRIPTIONS.fillet, icon: ToolbarFilletIcon, action: onFillet, enabled: canEdgeModify, active: edgeModifierKind === "fillet", shortcut: shortcutLabel(hotkeys, "fillet"), disabledReason: "Select a single unlocked shape first" },
+      { label: "Push Pull", priority: 4, description: TOOL_DESCRIPTIONS.pushPull, icon: ToolbarPushPullIcon, action: onPushPull, enabled: canEdgeModify, active: pushPullActive, disabledReason: "Select a single unlocked shape first" },
+      { label: "Pad/Pocket", priority: 3, description: TOOL_DESCRIPTIONS.face, icon: ToolbarHollowIcon, action: onFace, enabled: canEdgeModify, active: faceActive, disabledReason: "Select a single unlocked shape first" },
+      { label: "Split", priority: 3, description: TOOL_DESCRIPTIONS.split, icon: ToolbarSplitIcon, action: onSplit, enabled: canSplit || splitActive, active: splitActive, disabledReason: canEdgeModify ? "Gridfinity bins stay in one piece" : "Select a single unlocked shape first" },
+      { label: "Smooth", priority: 2, description: TOOL_DESCRIPTIONS.smoothBody, icon: ToolbarSmoothIcon, action: onSmooth, enabled: canSmooth, disabledReason: "Select an unlocked solid to smooth", sageKey: "smooth shape" },
       // Works with nothing selected: click Texture, then the part. A printed finish, so not in laser designs.
-      ...(laserTools ? [] : [{ label: "Texture", description: TOOL_DESCRIPTIONS.texture, icon: ToolbarTextureIcon, action: onTexture, enabled: true, active: textureActive }]),
+      ...(laserTools ? [] : [{ label: "Texture", priority: 1, description: TOOL_DESCRIPTIONS.texture, icon: ToolbarTextureIcon, action: onTexture, enabled: true, active: textureActive }]),
     ],
   };
   const arrangeSection: ToolSection = {
     title: "Arrange",
     accent: "arrange",
     tools: [
-      { label: "Align", description: TOOL_DESCRIPTIONS.align, icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode, shortcut: shortcutLabel(hotkeys, "align"), disabledReason: "Select two or more shapes to align" },
-      { label: "Snap", description: TOOL_DESCRIPTIONS.snap, icon: ToolbarSnapGridIcon, action: onSnap, enabled: true, active: snapActive },
-      { label: "Lay flat", description: TOOL_DESCRIPTIONS.layFlat, icon: ToolbarLayFlatIcon, action: onLayFlat, enabled: true, active: layFlatActive },
-      { label: "Mirror", description: TOOL_DESCRIPTIONS.mirror, icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode, shortcut: shortcutLabel(hotkeys, "mirror"), disabledReason: "Select a shape first" },
-      { label: "Circular pattern", description: TOOL_DESCRIPTIONS.pattern, icon: ToolbarCircularPatternIcon, action: onCircularPattern, enabled: canCircularPattern || circularPatternActive, active: circularPatternActive, shortcut: shortcutLabel(hotkeys, "pattern"), disabledReason: "Select an unlocked shape first" },
-      { label: "Linear pattern", description: TOOL_DESCRIPTIONS.linearPattern, icon: ToolbarLinearPatternIcon, action: onLinearPattern, enabled: canLinearPattern || linearPatternActive, active: linearPatternActive, disabledReason: "Select an unlocked shape first" },
+      { label: "Align", priority: 5, description: TOOL_DESCRIPTIONS.align, icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode, shortcut: shortcutLabel(hotkeys, "align"), disabledReason: "Select two or more shapes to align" },
+      { label: "Snap", priority: 3, description: TOOL_DESCRIPTIONS.snap, icon: ToolbarSnapGridIcon, action: onSnap, enabled: true, active: snapActive },
+      { label: "Lay flat", priority: 3, description: TOOL_DESCRIPTIONS.layFlat, icon: ToolbarLayFlatIcon, action: onLayFlat, enabled: true, active: layFlatActive },
+      { label: "Mirror", priority: 5, description: TOOL_DESCRIPTIONS.mirror, icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode, shortcut: shortcutLabel(hotkeys, "mirror"), disabledReason: "Select a shape first" },
+      { label: "Circular pattern", priority: 4, description: TOOL_DESCRIPTIONS.pattern, icon: ToolbarCircularPatternIcon, action: onCircularPattern, enabled: canCircularPattern || circularPatternActive, active: circularPatternActive, shortcut: shortcutLabel(hotkeys, "pattern"), disabledReason: "Select an unlocked shape first" },
+      { label: "Linear pattern", priority: 3, description: TOOL_DESCRIPTIONS.linearPattern, icon: ToolbarLinearPatternIcon, action: onLinearPattern, enabled: canLinearPattern || linearPatternActive, active: linearPatternActive, disabledReason: "Select an unlocked shape first" },
     ],
   };
 
@@ -594,14 +649,14 @@ export function EditorViewportToolbar({
       accent: "laser",
       tools: laserTools.crystal
         ? [
-          { label: "Fit in crystal", description: TOOL_DESCRIPTIONS.fitCrystal, icon: ToolbarFitCrystalIcon, action: laserTools.onFitCrystal, enabled: laserTools.canFitCrystal, disabledReason: "Add a model first" },
-          { label: "Trace logo", description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
+          { label: "Fit in crystal", priority: 5, description: TOOL_DESCRIPTIONS.fitCrystal, icon: ToolbarFitCrystalIcon, action: laserTools.onFitCrystal, enabled: laserTools.canFitCrystal, disabledReason: "Add a model first" },
+          { label: "Trace logo", priority: 3, description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
         ]
         : [
-          { label: "Box maker", description: TOOL_DESCRIPTIONS.boxMaker, icon: ToolbarBoxMakerIcon, action: laserTools.onBoxMaker, enabled: true },
-          { label: "Trace logo", description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
-          { label: "Flat parts", description: TOOL_DESCRIPTIONS.flatParts, icon: ToolbarFlatPartsIcon, action: laserTools.onFlatParts, enabled: laserTools.canFlatParts, disabledReason: "Select one 3D part" },
-          { label: "Nest", description: TOOL_DESCRIPTIONS.nest, icon: ToolbarNestIcon, action: laserTools.onNest, enabled: laserTools.canNest, disabledReason: "Add a part to cut first" },
+          { label: "Box maker", priority: 3, description: TOOL_DESCRIPTIONS.boxMaker, icon: ToolbarBoxMakerIcon, action: laserTools.onBoxMaker, enabled: true },
+          { label: "Trace logo", priority: 3, description: TOOL_DESCRIPTIONS.traceLogo, icon: ToolbarTraceLogoIcon, action: laserTools.onTraceLogo, enabled: true },
+          { label: "Flat parts", priority: 4, description: TOOL_DESCRIPTIONS.flatParts, icon: ToolbarFlatPartsIcon, action: laserTools.onFlatParts, enabled: laserTools.canFlatParts, disabledReason: "Select one 3D part" },
+          { label: "Nest", priority: 4, description: TOOL_DESCRIPTIONS.nest, icon: ToolbarNestIcon, action: laserTools.onNest, enabled: laserTools.canNest, disabledReason: "Add a part to cut first" },
         ],
     }
     : null;

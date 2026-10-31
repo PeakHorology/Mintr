@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { ToolbarSageIcon, ToolbarSettingsIcon } from "@/components/icons";
+import { BookOpen, Save } from "lucide-react";
+import { ToolbarExportIcon, ToolbarImportIcon, ToolbarSageIcon, ToolbarSettingsIcon } from "@/components/icons";
 import { FullscreenButton } from "@/components/workplane/FullscreenButton";
 import { useSageActive, useSageToggle } from "@/components/workplane/Sage";
 import { useSageEnabled } from "@/lib/sagePreference";
 import { PeakTipButton, PeakTooltip, usePeakContextHelp, usePeakTooltip } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
+import { useToolbarFit } from "@/components/workplane/toolbarFit";
 
 type ToolbarMode = "geometry" | "sketch";
 type SketchFocusMode = "2d" | "3d";
@@ -270,9 +272,11 @@ export function EditorTopBar({
   const homeRef = useRef<HTMLButtonElement>(null);
   const { open: homeTipOpen, tooltipProps: homeTipProps, hide: hideHomeTip } = usePeakTooltip();
   const homeHelp = usePeakContextHelp("Home", TOOL_DESCRIPTIONS.home);
+  const headerRef = useRef<HTMLElement>(null);
+  const compact = useToolbarFit(headerRef, toolbarMode);
 
   return (
-    <header className="editor-top-bar">
+    <header ref={headerRef} className={`editor-top-bar${compact ? " is-compact" : ""}`}>
       <div className="editor-top-bar-left">
         {onHome ? (
           <button
@@ -303,25 +307,30 @@ export function EditorTopBar({
           <div className="toolbar-section-label">File</div>
           <div className="toolbar-section-tools">
             <PeakTipButton className="editor-file-action" label="Import…" description={TOOL_DESCRIPTIONS.import} data-toolbar-tool="Import" onClick={onImport}>
-              Import…
+              <ToolbarImportIcon className="editor-file-action-icon" />
+              <span className="editor-file-action-text">Import…</span>
             </PeakTipButton>
             {hasMatchingSavedFile && onSaveProject ? (
               <PeakTipButton className="editor-file-action" label="Save" description={TOOL_DESCRIPTIONS.saveProject} shortcut="Ctrl + S" onClick={onSaveProject}>
-                Save
+                <Save className="editor-file-action-icon" strokeWidth={1.9} aria-hidden="true" />
+                <span className="editor-file-action-text">Save</span>
               </PeakTipButton>
             ) : null}
             {!hasMatchingSavedFile && onSaveProjectAs ? (
               <PeakTipButton className="editor-file-action" label="Save as…" description={TOOL_DESCRIPTIONS.saveProjectAs} shortcut="Ctrl + Shift + S" onClick={onSaveProjectAs}>
-                Save as…
+                <Save className="editor-file-action-icon" strokeWidth={1.9} aria-hidden="true" />
+                <span className="editor-file-action-text">Save as…</span>
               </PeakTipButton>
             ) : null}
             {onSaveAsGuide ? (
               <PeakTipButton className="editor-file-action" label="Make a guide…" description={TOOL_DESCRIPTIONS.saveAsGuide} onClick={onSaveAsGuide}>
-                Make a guide…
+                <BookOpen className="editor-file-action-icon" strokeWidth={1.9} aria-hidden="true" />
+                <span className="editor-file-action-text">Make a guide…</span>
               </PeakTipButton>
             ) : null}
             <PeakTipButton className="editor-file-action" label="Export…" description={TOOL_DESCRIPTIONS.export} shortcut="Ctrl + E" data-toolbar-tool="Export" data-lesson-target="export" onClick={onExport}>
-              Export…
+              <ToolbarExportIcon className="editor-file-action-icon" />
+              <span className="editor-file-action-text">Export…</span>
             </PeakTipButton>
           </div>
         </div>

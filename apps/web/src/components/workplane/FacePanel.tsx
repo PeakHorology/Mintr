@@ -16,6 +16,7 @@ export function FacePanel({
   maxDepth,
   separate,
   joinThrough,
+  smooth,
   depthHeld,
   faceChosen,
   keptCount,
@@ -30,6 +31,7 @@ export function FacePanel({
   onDepthChange,
   onSeparateChange,
   onJoinThroughChange,
+  onSmoothChange,
   onAnotherFace,
   onCreate,
   onCancel,
@@ -44,6 +46,8 @@ export function FacePanel({
   maxDepth: number;
   separate: boolean;
   joinThrough: boolean;
+  /** Curves in the face's outline build smooth, not as straight facets. */
+  smooth: boolean;
   /** Join through is driving these pockets, so Depth is not the stop. */
   depthHeld: boolean;
   faceChosen: boolean;
@@ -59,6 +63,7 @@ export function FacePanel({
   onDepthChange: (value: number) => void;
   onSeparateChange: (value: boolean) => void;
   onJoinThroughChange: (value: boolean) => void;
+  onSmoothChange: (value: boolean) => void;
   onAnotherFace: () => void;
   onCreate: () => void;
   onCancel: () => void;
@@ -173,6 +178,15 @@ export function FacePanel({
             : "Each pocket goes to its depth and stops one inset short of the far side, so the inset is the wall. The bar between two pockets stays."}
         </span>
       </div>
+      <label className="edge-modifier-check">
+        <input
+          type="checkbox"
+          checked={smooth}
+          disabled={locked}
+          onChange={(event) => onSmoothChange(event.currentTarget.checked)}
+        />
+        <span>Smooth curves (off keeps the flat facets)</span>
+      </label>
       <label className="edge-modifier-check">
         <input
           type="checkbox"

@@ -52,6 +52,7 @@
 #include <Bnd_Box.hxx>
 #include <Extrema_ExtPS.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
+#include <GCPnts_TangentialDeflection.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom_Plane.hxx>
 #include <GeomAbs_CurveType.hxx>
@@ -1392,6 +1393,30 @@ nlohmann::json sampleWirePoints(const TopoDS_Face& face) {
   return points;
 }
 
+// Face outlines feed Pad/Pocket and Push Pull, which build solids from them, so a curve is
+// sampled finely: no more than 0.02 mm off the true curve and no more than 6 degrees of turn
+// between points. The old 0.35 mm chord left a small fillet or a crescent's hollow as a few
+// flat facets. Fine samples also let Pad/Pocket tell a sampled curve from a real corner.
+constexpr double kFaceOutlineAngle = 0.105;
+constexpr double kFaceOutlineSag = 0.02;
+
+std::vector<gp_Pnt> sampleFaceOutlineEdge(const BRepAdaptor_Curve& curve) {
+  std::vector<gp_Pnt> sampled;
+  try {
+    GCPnts_TangentialDeflection discret(curve, kFaceOutlineAngle, kFaceOutlineSag, 2);
+    const int count = discret.NbPoints();
+    sampled.reserve(static_cast<std::size_t>(count));
+    for (int p = 1; p <= count; ++p) sampled.push_back(discret.Value(p));
+  } catch (...) {
+    sampled.clear();
+  }
+  if (sampled.size() >= 2) return sampled;
+  GCPnts_QuasiUniformDeflection fallback(curve, 0.35);
+  if (!fallback.IsDone()) return {};
+  for (int p = 1; p <= fallback.NbPoints(); ++p) sampled.push_back(fallback.Value(p));
+  return sampled;
+}
+
 // Ordered outer loop of a face: edges walked in wire order, each edge sampled
 // in the walk direction (reversed edges flipped), shared corners emitted once,
 // and no repeated closing point. Push Pull draws this as the face outline and
@@ -1407,13 +1432,8 @@ nlohmann::json sampleOuterWirePoints(const TopoDS_Face& face) {
   for (BRepTools_WireExplorer exp(wire, face); exp.More(); exp.Next()) {
     const TopoDS_Edge edge = exp.Current();
     BRepAdaptor_Curve curve(edge);
-    GCPnts_QuasiUniformDeflection discret(curve, 0.35);
-    if (!discret.IsDone()) continue;
-    const int count = discret.NbPoints();
-    if (count < 2) continue;
-    std::vector<gp_Pnt> sampled;
-    sampled.reserve(static_cast<std::size_t>(count));
-    for (int p = 1; p <= count; ++p) sampled.push_back(discret.Value(p));
+    std::vector<gp_Pnt> sampled = sampleFaceOutlineEdge(curve);
+    if (sampled.size() < 2) continue;
     bool reversed = edge.Orientation() == TopAbs_REVERSED;
     if (haveLast) {
       // Trust the geometry over the flag: join whichever end touches the walk.

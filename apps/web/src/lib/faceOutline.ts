@@ -3,7 +3,8 @@
 export type FaceVec2 = { x: number; z: number };
 export type FaceVec3 = { x: number; y: number; z: number };
 
-const COLINEAR = 0.035;
+/** A point this close to the straight line through its neighbours, in mm, is only a sampling joint. */
+const STRAIGHT_TOLERANCE = 0.005;
 
 function sub2(a: FaceVec2, b: FaceVec2): FaceVec2 {
   return { x: a.x - b.x, z: a.z - b.z };
@@ -50,17 +51,42 @@ export function ensureCcw(loop: FaceVec2[]): FaceVec2[] {
 }
 
 /** Drop points that sit on a straight edge so a sampled rectangle stays four corners. */
-export function simplifyColinear(loop: FaceVec2[], minCross = COLINEAR): FaceVec2[] {
+/**
+ * Drops points that sit on a straight run between their neighbours (a joint left by sampling).
+ * Each point is measured against the last point kept, so the run of small turns along a
+ * gentle curve is kept: only points within `tolerance` mm of a straight line go.
+ */
+export function simplifyColinear(loop: FaceVec2[], tolerance = STRAIGHT_TOLERANCE): FaceVec2[] {
   if (loop.length < 4) return loop;
-  const kept: FaceVec2[] = [];
+  // Start at the sharpest turn, which is always kept.
+  let start = 0;
+  let sharpest = -1;
   for (let index = 0; index < loop.length; index += 1) {
     const previous = loop[(index - 1 + loop.length) % loop.length];
     const current = loop[index];
     const next = loop[(index + 1) % loop.length];
     const inbound = norm2(sub2(current, previous));
     const outbound = norm2(sub2(next, current));
-    const cross = inbound.x * outbound.z - inbound.z * outbound.x;
-    if (Math.abs(cross) < minCross && dot2(inbound, outbound) > 0) continue;
+    const bend = 1 - dot2(inbound, outbound);
+    if (bend > sharpest) {
+      sharpest = bend;
+      start = index;
+    }
+  }
+  const ordered = [...loop.slice(start), ...loop.slice(0, start)];
+  const kept: FaceVec2[] = [ordered[0]];
+  for (let index = 1; index < ordered.length; index += 1) {
+    const last = kept[kept.length - 1];
+    const current = ordered[index];
+    const next = ordered[(index + 1) % ordered.length];
+    const chord = sub2(next, last);
+    const chordLength = len2(chord);
+    if (chordLength > 1e-9) {
+      const offset = sub2(current, last);
+      const off = Math.abs(chord.x * offset.z - chord.z * offset.x) / chordLength;
+      const along = dot2(offset, chord) / chordLength;
+      if (off < tolerance && along > 0 && along < chordLength) continue;
+    }
     kept.push(current);
   }
   return kept.length >= 3 ? kept : loop;

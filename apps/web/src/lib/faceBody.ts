@@ -7,7 +7,9 @@ import {
   type FaceVec2,
   type FaceVec3,
 } from "@/lib/faceOutline";
-import { shapeFromSketchProfile } from "@/lib/sketchProfileShape";
+import { smoothFaceLoop } from "@/lib/faceOutlineCurves";
+import { circleFromClosedPath, shapeFromSketchProfile } from "@/lib/sketchProfileShape";
+import { orderedSketchPaths } from "@/lib/sketch/profiles";
 import type { SketchPlane, SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 
 export type FaceDirection = "out" | "in";
@@ -26,6 +28,8 @@ export type FaceDraft = {
   inset: number;
   cornerRadius: number;
   depth: number;
+  /** Turn the sampled curves in the face's outline back into smooth curves. Off builds straight facets. */
+  smooth?: boolean;
 };
 
 /** Keep a face that was already set, replacing an older pass on that same face. */
@@ -45,6 +49,7 @@ export function faceDraftsToBuild(kept: readonly FaceDraft[], current: FaceDraft
     inset: current.inset,
     cornerRadius: current.cornerRadius,
     depth: current.depth,
+    smooth: current.smooth,
   };
   return rememberFaceDraft(kept, current).map((draft) => ({ ...draft, ...shared }));
 }
@@ -192,13 +197,13 @@ function projectWorld(points: FaceVec3[], origin: FaceVec3, u: FaceVec3, v: Face
   });
 }
 
-function profileFromLoop(loop: FaceVec2[], plane: SketchPlane, reference: FaceVec2[]): SketchProfile {
+function profileFromLoop(loop: FaceVec2[], plane: SketchPlane, reference: FaceVec2[], smooth: boolean): SketchProfile {
   const points = loop.map((point, index) => ({
     id: `face-p-${index}`,
     x: point.x,
     z: point.z,
   }));
-  return {
+  const lines: SketchProfile = {
     points,
     segments: points.map((point, index) => ({
       id: `face-s-${index}`,
@@ -209,6 +214,12 @@ function profileFromLoop(loop: FaceVec2[], plane: SketchPlane, reference: FaceVe
     sketchPlane: plane,
     faceReferenceLoops: [reference.map((point) => ({ x: point.x, z: point.z }))],
   };
+  if (!smooth) return lines;
+  // A whole round face already builds as a true cylinder from the straight samples.
+  const path = orderedSketchPaths(lines).find((entry) => entry.closed);
+  if (path && circleFromClosedPath(path)) return lines;
+  const curves = smoothFaceLoop(loop, (kind, index) => (kind === "point" ? `face-p-${index}` : `face-s-${index}`));
+  return curves ? { ...lines, points: curves.points, segments: curves.segments } : lines;
 }
 
 export function buildFaceBody(input: {
@@ -224,6 +235,8 @@ export function buildFaceBody(input: {
   openPlanes?: readonly FacePlane[];
   /** Stop one inset short of the far side so the inset is the wall there too. */
   keepFarWall?: boolean;
+  /** Smooth the sampled curves in the outline (see FaceDraft). */
+  smooth?: boolean;
 }): FaceBodyResult {
   const origin = input.face.origin;
   const axes = faceAxes(input.face.normal);
@@ -278,7 +291,7 @@ export function buildFaceBody(input: {
     uAxis: u,
     hostShapeId: input.host.id,
   };
-  const built = shapeFromSketchProfile(profileFromLoop(profileLoop, plane, reference), depth, null, { cutIntoFace: false });
+  const built = shapeFromSketchProfile(profileFromLoop(profileLoop, plane, reference, Boolean(input.smooth)), depth, null, { cutIntoFace: false });
   if (!built) return { shape: null, error: NARROW, notice, depth };
   built.name = inward ? "Pocket" : "Pad";
   built.color = input.host.color;
