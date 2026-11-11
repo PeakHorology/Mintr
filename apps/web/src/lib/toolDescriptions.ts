@@ -94,7 +94,7 @@ export const TOOL_DESCRIPTIONS = {
   // Shapes
   box: "Add a rectangular box solid.",
   cylinder: "Add a cylinder solid.",
-  thread: "Add a screw, rod, nut, or tapped hole. Metric, inch, and pipe sizes are included.",
+  thread: "Add a screw, rod or nut. Metric, inch, and pipe sizes are included. For a hole the screw threads into, use Threaded Hole.",
   loft: "Add a loft: one outline at the bottom, another at the top, and a smooth solid between them. Try a square base with a round top, add a twist, or make it hollow.",
   gear: "Add an involute gear. Tooth count and module set the size, so two gears with the same module mesh.",
   gridfinityBin: "Add a Gridfinity bin on the 42 mm grid. Set units, height, lip, dividers, magnets, scoop, and open sides.",
@@ -110,6 +110,15 @@ export const TOOL_DESCRIPTIONS = {
   torus: "Add a torus (donut) solid.",
   tube: "Add a ring / tube solid.",
   shapePolygon: "Add a regular polygon prism.",
+  wedge: "Add a wedge: a ramp from a full height down to nothing.",
+  plate: "Add a flat plate with rounded corners. Set the corner radius. The edges stay square top and bottom.",
+  slotShape: "Add a slot: straight sides and round ends. Make it a hole for adjustable mounts and strap slots.",
+  starShape: "Add a star. Set how many points it has and how deep they go.",
+  heart: "Add a heart.",
+  paraboloid: "Add a paraboloid: a smooth dome that comes to a soft point.",
+  qrCode: "Add a QR code. Type a link or any text and it stays scannable at any size. Leave a clear margin round it when you place it.",
+  screwHole: "Add a hole for any screw Threads makes: metric, UNC, UNF, pipe or a custom size. Threaded cuts a thread for the screw to bite into; Slides through leaves room for the screw, plain, counterbored for a socket head, or countersunk for a flat head.",
+  nutPocket: "Add a hexagon pocket sized to hold a nut for any screw Threads makes, metric or inch, with a little room to push it in.",
 } as const;
 
 export type ToolDescriptionKey = keyof typeof TOOL_DESCRIPTIONS;

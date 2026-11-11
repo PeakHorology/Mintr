@@ -53,12 +53,13 @@ export function defaultThreadClearance(printerKind?: "filament" | "resin") {
 
 /**
  * One pitch of tooth: `depth` is the tooth height as a share of the pitch, and `points`
- * trace the height (0 root, 1 crest) along the pitch, straight between points.
+ * trace the height (0 root, 1 crest) along the pitch, straight between points. A curved tooth
+ * keeps its `curve` too, for the exact build; the print mesh uses the points.
  */
-type ToothShape = { depth: number; points: Array<[number, number]> };
+type ToothShape = { depth: number; points: Array<[number, number]>; curve?: (u: number) => number };
 
 function sampledTooth(depth: number, samples: number, height: (u: number) => number): ToothShape {
-  return { depth, points: Array.from({ length: samples }, (_, index) => [index / samples, height(index / samples)]) };
+  return { depth, curve: height, points: Array.from({ length: samples }, (_, index) => [index / samples, height(index / samples)]) };
 }
 
 /** Distance from the nearest root (0) to the crest (1) along one pitch. */
@@ -205,7 +206,8 @@ type ThreadBand = {
 };
 
 function bandRadius(band: ThreadBand, angle: number, y: number) {
-  const phase = y / band.pitch - (band.hand * angle) / (Math.PI * 2);
+  // A right-hand thread climbs as it turns from +X toward -Z, the right-hand rule about +Y.
+  const phase = y / band.pitch + (band.hand * angle) / (Math.PI * 2);
   const r = band.tooth ? band.minorR + band.toothDepth * toothHeight(band.tooth, phase) : band.minorR;
   if (!band.limit) return r;
   const limit = band.limit(y);
@@ -225,7 +227,7 @@ function buildThreadBand(builder: SolidBuilder, band: ThreadBand) {
     const angle = (side / sides) * Math.PI * 2;
     const heights = [0, height, ...(band.extraHeights ?? [])];
     if (band.tooth) {
-      const start = (band.hand * angle) / (Math.PI * 2);
+      const start = -(band.hand * angle) / (Math.PI * 2);
       const firstTurn = Math.floor(-start) - 1;
       const lastTurn = Math.ceil(height / pitch - start) + 1;
       for (let turn = firstTurn; turn <= lastTurn; turn += 1) {
@@ -294,6 +296,102 @@ function chamferHeights(from: number, to: number, pitch: number) {
   for (let y = from; y < to; y += step) heights.push(y);
   heights.push(to);
   return heights;
+}
+
+/** What the engine needs to build a thread exactly, in the same numbers the print mesh uses. */
+export type ExactThreadPlan = {
+  role: ThreadRole;
+  plain: boolean;
+  hand: "right" | "left";
+  pitch: number;
+  majorR: number;
+  minorR: number;
+  toothDepth: number;
+  /** Threaded length, or the nut's thickness. */
+  length: number;
+  /** The tooth from root to root: [share of pitch, share of depth]. Smooth teeth run as a curve. */
+  tooth: { points: Array<[number, number]>; smooth: boolean };
+  chamferBottom: number;
+  chamferTop: number;
+  /** How far a hole or nut widens past the crest at each face. */
+  mouth: number;
+  head?: { kind: ThreadHead; across: number; height: number };
+  nutAcross?: number;
+  /** Full height of the part, head included. */
+  height: number;
+};
+
+/** The tooth as it rises off the root and falls back, without the root flats the core already gives. */
+function exactToothOutline(profile: ThreadProfile): ExactThreadPlan["tooth"] {
+  const tooth = TOOTH_SHAPES[profile] ?? TOOTH_SHAPES.v;
+  if (profile === "v" || profile === "trapezoid") return { points: tooth.points.map(([u, h]) => [u, h]), smooth: false };
+  // Whitworth and round are true curves: sampled finely from root to root and run through as one.
+  // Sampled from the curve itself, not the print mesh's straight segments, which would wiggle.
+  const height = (u: number) => (tooth.curve ? tooth.curve(u) : toothHeight(tooth, u));
+  const samples = 48;
+  const points: Array<[number, number]> = [];
+  for (let index = 0; index <= samples; index += 1) {
+    const u = index / samples;
+    points.push([u, height(u)]);
+  }
+  let first = points.findIndex(([, h]) => h > 1e-3);
+  let last = points.length - 1 - [...points].reverse().findIndex(([, h]) => h > 1e-3);
+  first = Math.max(0, first - 1);
+  last = Math.min(points.length - 1, last + 1);
+  // Round has no root flat: stop a hair short of each root so neighbouring turns never touch.
+  const kept = points.slice(first, last + 1);
+  if (kept[0][0] === 0) kept[0] = [0.01, height(0.01)];
+  if (kept[kept.length - 1][0] === 1) kept[kept.length - 1] = [0.99, height(0.99)];
+  return { points: kept, smooth: true };
+}
+
+/**
+ * The exact version of {@link buildMetricThreadedCylinder}: the same sizes, fit, chamfers, head
+ * and nut, for the engine to build as a true solid.
+ */
+export function exactThreadPlan(params: ResolvedThreadParams, height: number, options: ThreadMeshOptions = {}): ExactThreadPlan {
+  const part: ThreadMeshPart = options.part ?? "screw";
+  const role: ThreadRole = options.role ?? (part === "shaft" ? "rod" : part === "threads" ? "bore" : "rod");
+  const head: ThreadHead = options.head ?? "cylinder";
+  const profile: ThreadProfile = options.profile ?? "v";
+  const tooth = TOOTH_SHAPES[profile] ?? TOOTH_SHAPES.v;
+  const internal = role === "bore" || role === "nut";
+  const pitch = Math.max(0.15, params.pitch);
+  const clearance = internal ? effectiveThreadClearance(options.clearance ?? 0, pitch, profile) : 0;
+  const majorR = Math.max(0.35, params.majorDiameter / 2) + clearance;
+  const toothDepth = Math.min(tooth.depth * pitch, majorR * 0.45);
+  const minorR = Math.max(0.2, majorR - toothDepth);
+  const shank = Math.max(pitch * 1.05, height);
+  const headSize = threadHeadSize(params.majorDiameter, head);
+  const base = {
+    role,
+    plain: part === "shaft",
+    hand: params.handedness === "left" ? "left" as const : "right" as const,
+    pitch,
+    majorR,
+    minorR,
+    toothDepth,
+    tooth: exactToothOutline(profile),
+  };
+  if (role === "nut") {
+    const nutHeight = Math.max(pitch, height);
+    const mouth = Math.min(options.chamfer ?? 0, nutHeight * 0.3, majorR * 0.45);
+    return { ...base, length: nutHeight, chamferBottom: 0, chamferTop: 0, mouth: mouth > 0.05 ? mouth : 0, nutAcross: threadNutSize(params.majorDiameter).across, height: nutHeight };
+  }
+  const chamfer = Math.max(0, Math.min(options.chamfer ?? 0, shank * 0.3, minorR * 0.8));
+  const bottom = chamfer > 0.05 ? chamfer : 0;
+  if (role === "bore") {
+    return { ...base, length: shank, chamferBottom: 0, chamferTop: 0, mouth: bottom, height: shank };
+  }
+  return {
+    ...base,
+    length: shank,
+    chamferBottom: bottom,
+    chamferTop: role === "screw" ? 0 : bottom,
+    mouth: 0,
+    ...(role === "screw" ? { head: { kind: head, across: headSize.across, height: headSize.height } } : {}),
+    height: role === "screw" ? shank + headSize.height : shank,
+  };
 }
 
 /**

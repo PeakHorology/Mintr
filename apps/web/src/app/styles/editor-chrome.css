@@ -3794,36 +3794,6 @@
   pointer-events: none;
 }
 
-.sketch-create-menu {
-  position: absolute;
-  top: calc(var(--editor-viewport-toolbar-height) + var(--editor-mode-notch-height) + 8px);
-  left: 50%;
-  z-index: calc(var(--z-overlay) + 2);
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  min-width: min(248px, calc(100% - 28px));
-  padding: 6px;
-  color: var(--ink);
-  background: var(--glass-surface-strong);
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--elevation-lg);
-  transform: translateX(-50%);
-  animation: chrome-fade-in 160ms ease;
-}
-
-.sketch-create-menu::before {
-  content: "";
-  position: absolute;
-  top: 18px;
-  bottom: 18px;
-  left: 50%;
-  width: 1px;
-  background: var(--control-border-strong);
-  pointer-events: none;
-}
-
 .sketch-palette {
   position: absolute;
   top: calc(var(--editor-viewport-toolbar-height) + 10px);
@@ -4390,8 +4360,58 @@
   line-height: 1.4;
 }
 
+/* Settings → Machines: fit test, under Kerf. */
+.fit-test {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+
+.fit-test-add {
+  justify-self: start;
+  padding: 0;
+  color: var(--accent-text);
+  font-size: var(--text-xs);
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: none;
+}
+
+.fit-test-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fit-test-slots button {
+  min-width: 32px;
+  padding: 4px 6px;
+  color: var(--ink);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--tile-hover);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.fit-test-slots button:hover,
+.fit-test-slots button:focus-visible {
+  background: var(--wash);
+}
+
+.fit-test-slots button.active {
+  color: var(--ink-strong);
+  border-color: var(--accent-text);
+  background: var(--wash);
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .machine-choice button {
+  .machine-choice button,
+  .fit-test-slots button {
     transition: none;
   }
 }
@@ -4946,4 +4966,72 @@
   background: none;
   border: 0;
   cursor: pointer;
+}
+
+/* Settings → Machines: each machine's settings in its own panel, so the 3D printer and
+   laser (and their slicer, sheet and checks) never run together. */
+.machine-group {
+  display: grid;
+  margin-top: 22px;
+  padding: 0 18px 6px;
+  border: 1px solid var(--modal-border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--modal-text) 3%, transparent);
+}
+
+.machine-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 -18px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--modal-border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: color-mix(in srgb, var(--modal-text) 5%, transparent);
+}
+
+.machine-group-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  color: var(--accent-text);
+  border-radius: var(--radius-md);
+  background: var(--wash);
+}
+
+.machine-group-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.machine-group-title strong {
+  color: var(--modal-text);
+  font-size: var(--text-xl);
+}
+
+.machine-group-title span {
+  color: var(--modal-muted);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+/* Sections inside a machine (Overhangs, Slicer, Sheet…) read as parts of it, not peers. */
+.machine-group .workspace-section-heading {
+  padding-top: 22px;
+  padding-bottom: 8px;
+}
+
+.machine-group .workspace-section-heading strong {
+  color: var(--accent-text);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.machine-group > :last-child {
+  border-bottom: 0;
 }

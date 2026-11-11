@@ -10,6 +10,7 @@ import {
 import { applyNativeSketchExtrudeMesh, serializeSketchExtrudeJob } from "@/lib/sketchExtrusionSolid";
 import { applyGridfinityKernelMesh, serializeGridfinityBuildJob } from "@/lib/gridfinityShape";
 import { applyLoftKernelMesh, serializeLoftJob } from "@/lib/loftShape";
+import { applyGeneratedRevolveMesh, serializeGeneratedRevolveJob } from "@/lib/generatedRevolve";
 import type { SketchDoc } from "@/lib/sketch/types";
 import type { SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 
@@ -61,7 +62,14 @@ export type OcctKernelLoftRequest = {
   shape: WorkplaneShape;
 };
 
+/** Build a generated turned shape's exact solid: the desktop engine when it is there, else the worker. */
+export type OcctKernelGeneratedRevolveRequest = {
+  type: "generatedRevolve";
+  shape: WorkplaneShape;
+};
+
 export type OcctKernelRequest =
+  | OcctKernelGeneratedRevolveRequest
   | OcctKernelLoftRequest
   | OcctKernelBooleanRequest
   | OcctKernelExportRequest
@@ -169,6 +177,11 @@ function nativeJobFor(request: OcctKernelRequest, requestId: number): NativeKern
     if (!payload) return null;
     return { id: requestId, ...payload };
   }
+  if (request.type === "generatedRevolve") {
+    const payload = serializeGeneratedRevolveJob(request.shape);
+    if (!payload) return null;
+    return { id: requestId, ...payload };
+  }
   return null;
 }
 
@@ -236,7 +249,22 @@ function nativeReplyToResult(request: OcctKernelRequest, reply: NativeKernelRepl
     if (!reply.positions || !reply.indices || !cadBrep || !key) return null;
     return applyLoftKernelMesh(request.shape, reply.positions, reply.normals, reply.indices, cadBrep, key);
   }
+  if (request.type === "generatedRevolve") {
+    const cadBrep = reply.cadBrep ?? reply.brep ?? "";
+    if (!reply.positions || !reply.indices || !cadBrep) return null;
+    return applyGeneratedRevolveMesh(request.shape, reply.positions, reply.normals, reply.indices, cadBrep);
+  }
   return null;
+}
+
+/**
+ * An Exact thread is a true spiral, which takes the engine far longer than ordinary parts: a
+ * few seconds on the desktop, several times that as WebAssembly in the browser, more on an awkward
+ * size it has to slice twice. A job carrying one gets more time before it is given up on.
+ */
+export function nativeJobTimeoutMs(job: NativeKernelJob, base = cadModifierRequestTimeoutMs()) {
+  const solids = (job as { solids?: Array<{ kind?: string }> }).solids;
+  return Array.isArray(solids) && solids.some((solid) => solid?.kind === "thread") ? Math.max(base * 4, 120_000) : base;
 }
 
 /**
@@ -252,7 +280,7 @@ async function tryNativeKernel(request: OcctKernelRequest, requestId: number): P
   if (!job) return { hit: false, value: null };
   let reply: NativeKernelReply | null;
   try {
-    reply = plainNativeReply(await api.request(job, cadModifierRequestTimeoutMs()));
+    reply = plainNativeReply(await api.request(job, nativeJobTimeoutMs(job)));
   } catch {
     return { hit: false, value: null };
   }
@@ -298,6 +326,7 @@ export async function runOcctKernelInWorker(request: OcctKernelSketchExtrudeRequ
 export async function runOcctKernelInWorker(request: OcctKernelSketchSweepRequest): Promise<SweepShapeResult | null>;
 export async function runOcctKernelInWorker(request: OcctKernelGridfinityRequest): Promise<WorkplaneShape | null>;
 export async function runOcctKernelInWorker(request: OcctKernelLoftRequest): Promise<WorkplaneShape | null>;
+export async function runOcctKernelInWorker(request: OcctKernelGeneratedRevolveRequest): Promise<WorkplaneShape | null>;
 export async function runOcctKernelInWorker(request: OcctKernelRequest): Promise<unknown> {
   const requestId = nextRequestId;
   nextRequestId += 1;

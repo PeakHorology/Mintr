@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState, type MutableRefObject } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
+import { useMemo, useRef, useState, type MutableRefObject } from "react";
+import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { listedShapeAssets, searchShapeAssets, shapeSectionsFor, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { beginShapeAssetDrag, endShapeAssetDrag, applyTransparentDragImage } from "@/lib/shapeAssetDrag";
 import { PeakTipButton, usePeakContextHelp } from "@/components/workplane/ToolNameTooltip";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
@@ -26,6 +26,15 @@ const SHAPE_DESCRIPTIONS: Record<string, string> = {
   torus: TOOL_DESCRIPTIONS.torus,
   tube: TOOL_DESCRIPTIONS.tube,
   polygon: TOOL_DESCRIPTIONS.shapePolygon,
+  wedge: TOOL_DESCRIPTIONS.wedge,
+  plate: TOOL_DESCRIPTIONS.plate,
+  slot: TOOL_DESCRIPTIONS.slotShape,
+  star: TOOL_DESCRIPTIONS.starShape,
+  heart: TOOL_DESCRIPTIONS.heart,
+  paraboloid: TOOL_DESCRIPTIONS.paraboloid,
+  "qr-code": TOOL_DESCRIPTIONS.qrCode,
+  "screw-hole": TOOL_DESCRIPTIONS.screwHole,
+  "nut-pocket": TOOL_DESCRIPTIONS.nutPocket,
 };
 
 function ShapeToolButton({
@@ -47,7 +56,7 @@ function ShapeToolButton({
       className="shape-sidebar-item"
       type="button"
       draggable
-      data-lesson-target={shape.kind}
+      data-lesson-target={shape.generated?.form ?? shape.kind}
       aria-label={`Add ${shape.name}`}
       onContextMenu={onContextMenu}
       onClick={() => {
@@ -136,13 +145,34 @@ export function ShapeSidebar({
   laserDesign?: boolean;
 }) {
   const [objectListOpen, setObjectListOpen] = useState(false);
-  const [shapeGroup, setShapeGroup] = useState<"solid" | "part">("solid");
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const touchShapeStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const suppressNextShapeClickRef = useRef(false);
 
   const addShape = (shape: ShapeAsset) => {
     onAddShape(shape);
   };
+
+  const listed = useMemo(() => listedShapeAssets(laserDesign), [laserDesign]);
+  const searching = query.trim().length > 0;
+  const matches = useMemo(() => (searching ? searchShapeAssets(listed, query) : listed), [listed, query, searching]);
+  const sections = shapeSectionsFor(laserDesign);
+
+  const clearSearch = () => {
+    setQuery("");
+    searchRef.current?.focus();
+  };
+
+  const renderTile = (shape: ToolbarShapeAsset) => (
+    <ShapeToolButton
+      key={shape.id}
+      shape={shape}
+      onAdd={addShape}
+      touchShapeStartRef={touchShapeStartRef}
+      suppressNextShapeClickRef={suppressNextShapeClickRef}
+    />
+  );
 
   // Newest objects at the top of the list.
   const objectEntries = [...shapes].reverse();
@@ -199,25 +229,34 @@ export function ShapeSidebar({
         </button>
       </div>
       {objectListOpen ? null : (
-        <div className="shape-rail-modes shape-rail-groups" role="tablist" aria-label="Solids or parts">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={shapeGroup === "solid"}
-            className={shapeGroup === "solid" ? "active" : ""}
-            onClick={() => setShapeGroup("solid")}
-          >
-            Solids
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={shapeGroup === "part"}
-            className={shapeGroup === "part" ? "active" : ""}
-            onClick={() => setShapeGroup("part")}
-          >
-            Parts
-          </button>
+        <div className="shape-search">
+          <Search size={15} strokeWidth={2.25} aria-hidden="true" />
+          <input
+            ref={searchRef}
+            type="text"
+            value={query}
+            placeholder="Find a shape"
+            aria-label="Find a shape"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (query) {
+                  setQuery("");
+                } else {
+                  event.currentTarget.blur();
+                }
+              }
+            }}
+          />
+          {query ? (
+            <button type="button" className="shape-search-clear" aria-label="Clear search" onClick={clearSearch}>
+              <X size={14} strokeWidth={2.5} aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -275,17 +314,31 @@ export function ShapeSidebar({
           </div>
         </aside>
       ) : (
-        <aside className="shape-sidebar" aria-label={shapeGroup === "solid" ? "Solids" : "Parts"}>
+        <aside className="shape-sidebar" aria-label="Shapes">
           <div className="shape-sidebar-list">
-            {toolbarShapeAssets.filter((shape) => shape.group === shapeGroup && !(laserDesign && shape.printOnly)).map((shape) => (
-              <ShapeToolButton
-                key={shape.id}
-                shape={shape}
-                onAdd={addShape}
-                touchShapeStartRef={touchShapeStartRef}
-                suppressNextShapeClickRef={suppressNextShapeClickRef}
-              />
-            ))}
+            {searching ? (
+              matches.length === 0 ? (
+                <div className="shape-sidebar-empty">
+                  <p>No shape matches “{query.trim()}”.</p>
+                  <button type="button" onClick={clearSearch}>Show all shapes</button>
+                </div>
+              ) : (
+                <section className="shape-sidebar-section" aria-label="Matching shapes">
+                  {matches.map(renderTile)}
+                </section>
+              )
+            ) : (
+              sections.map((section) => {
+                const inSection = listed.filter((shape) => shape.section === section);
+                if (inSection.length === 0) return null;
+                return (
+                  <section key={section} className="shape-sidebar-section" aria-label={section}>
+                    <h3>{section}</h3>
+                    {inSection.map(renderTile)}
+                  </section>
+                );
+              })
+            )}
           </div>
         </aside>
       )}

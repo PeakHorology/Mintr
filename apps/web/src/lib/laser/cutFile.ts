@@ -1,6 +1,7 @@
 import type { ManifoldToplevel, SimplePolygon, Vec2 } from "manifold-3d";
 import type { MeshData } from "@/lib/editorShapeMesh";
 import type { CutFileStyle } from "@/lib/laserMachine";
+import { arcBulge, fitPath } from "@/lib/laser/arcFit";
 
 /**
  * Cut files for a laser: each part's outline as seen from above, marked cut, score
@@ -176,6 +177,18 @@ function boundsOf(points: readonly Vec2[]) {
   return { minX, minY, maxX, maxY };
 }
 
+/** A part's outline from above in bed millimetres, holes as inner loops; empty for a part seen edge on. */
+export function footprintOutline(runtime: ManifoldToplevel, mesh: MeshData): Vec2[][] {
+  const triangles = footprintTriangles(mesh);
+  if (triangles.length === 0) return [];
+  const outline = new runtime.CrossSection(triangles, "Positive");
+  const simple = outline.simplify(0.005);
+  outline.delete();
+  const loops = simple.toPolygons().map((loop) => loop.map(([x, y]) => [x, y] as Vec2)).filter((loop) => loop.length >= 3 && Math.abs(shoelace(loop)) > 1e-6);
+  simple.delete();
+  return loops;
+}
+
 /** Lays out every part's lines and areas. Needs Manifold for the outlines. */
 export function buildCutLayout(runtime: ManifoldToplevel, parts: readonly CutPart[], options: CutLayoutOptions = {}): CutLayout {
   const kerf = Math.max(0, options.kerfMm ?? 0);
@@ -254,7 +267,17 @@ function escapeXml(text: string) {
 }
 
 function pathData(points: readonly Vec2[], closed: boolean, shiftX: number, shiftY: number) {
-  const parts = points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${round(x - shiftX)} ${round(y - shiftY)}`);
+  const fitted = fitPath(points, closed);
+  if (!fitted) return "";
+  const at = ([x, y]: Vec2) => `${round(x - shiftX)} ${round(y - shiftY)}`;
+  const parts = [`M${at(fitted.start)}`];
+  fitted.segments.forEach((segment, index) => {
+    // Z draws the last straight piece of a closed loop, and an arc still has to reach the start itself.
+    if (closed && segment.kind === "line" && index === fitted.segments.length - 1) return;
+    parts.push(segment.kind === "line"
+      ? `L${at(segment.to)}`
+      : `A${round(segment.radius)} ${round(segment.radius)} 0 0 ${segment.sweep ? 1 : 0} ${at(segment.to)}`);
+  });
   return `${parts.join(" ")}${closed ? " Z" : ""}`;
 }
 
@@ -345,12 +368,24 @@ export function cutLayoutDxf(layout: CutLayout): string {
     pair(62, DXF_COLOR[job]);
     pair(66, 1);
     pair(70, closed ? 1 : 0);
-    for (const [x, y] of points) {
-      pair(0, "VERTEX");
-      pair(8, LASER_JOB_LABEL[job].toUpperCase());
-      pair(10, round(x - bounds.minX));
-      pair(20, round(bounds.maxY - y));
-      pair(30, 0);
+    const fitted = fitPath(points, closed);
+    if (fitted) {
+      const vertex = ([x, y]: Vec2, bulge: number) => {
+        pair(0, "VERTEX");
+        pair(8, LASER_JOB_LABEL[job].toUpperCase());
+        pair(10, round(x - bounds.minX));
+        pair(20, round(bounds.maxY - y));
+        pair(30, 0);
+        // The file's y runs the other way from the stored points, so an arc's direction flips.
+        if (bulge !== 0) pair(42, Number((-bulge).toFixed(6)));
+      };
+      let from = fitted.start;
+      fitted.segments.forEach((segment, index) => {
+        vertex(from, segment.kind === "arc" ? arcBulge(segment) : 0);
+        from = segment.to;
+        // A closed polyline joins back to its first point by itself.
+        if (!closed && index === fitted.segments.length - 1) vertex(from, 0);
+      });
     }
     pair(0, "SEQEND");
     pair(8, LASER_JOB_LABEL[job].toUpperCase());

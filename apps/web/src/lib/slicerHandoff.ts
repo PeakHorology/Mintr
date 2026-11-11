@@ -76,7 +76,7 @@ export function preferenceFromPath(filePath: string): SlicerPreference | null {
 
 function captionFor(choice: { launch: boolean; format: SlicerFormat; name: string }) {
   if (!choice.launch) {
-    return "No slicer is selected. This downloads a 3MF. Pick a slicer below, or set one in Settings → Printing.";
+    return "No slicer is selected. This downloads a 3MF. Pick a slicer below, or set one in Settings → Machines.";
   }
   if (choice.format === "stl") {
     return `Writes an STL and opens it in ${choice.name}, so it is treated as geometry rather than a slicer project.`;

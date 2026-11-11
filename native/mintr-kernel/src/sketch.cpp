@@ -16,6 +16,7 @@
 #include <Standard_Failure.hxx>
 #include <GProp_GProps.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <Geom_BezierCurve.hxx>
 #include <TColgp_Array1OfPnt.hxx>
@@ -372,6 +373,84 @@ nlohmann::json handleBuildLoft(const nlohmann::json& job) {
     { "cadBrep", kernelExportBrep(shape) },
     { "quality", "exact" },
     { "key", job.value("key", "") },
+  };
+}
+
+namespace {
+
+bool revolvePoint(const nlohmann::json& value, gp_Pnt& out) {
+  if (!value.is_array() || value.size() < 2 || !value[0].is_number() || !value[1].is_number()) return false;
+  out = gp_Pnt(value[0].get<double>(), value[1].get<double>(), 0.0);
+  return true;
+}
+
+} // namespace
+
+// A generated turned shape (Threaded Hole, Paraboloid): its half outline, [radius, height] from
+// the axis at the bottom round to the axis at the top, in the X / Y plane, closed back down the
+// axis and spun a full turn round Y. Steps are straight, or cubic curves when they carry c1 and
+// c2. scaleZ stretches a round part to an oval footprint. Same solid as the browser engine turns.
+nlohmann::json handleBuildRevolve(const nlohmann::json& job) {
+  if (!job.contains("revolve") || !job["revolve"].is_object()) return kernelFail("buildRevolve is missing its outline", true);
+  const nlohmann::json& revolve = job["revolve"];
+  gp_Pnt start;
+  if (!revolvePoint(revolve.value("start", nlohmann::json()), start) || !revolve.contains("steps") || !revolve["steps"].is_array()) {
+    return kernelFail("buildRevolve outline is malformed", true);
+  }
+  TopoDS_Shape shape;
+  try {
+    BRepBuilderAPI_MakeWire wire;
+    gp_Pnt from = start;
+    auto addLine = [&](const gp_Pnt& to) {
+      if (from.Distance(to) < 1e-7) return true;
+      BRepBuilderAPI_MakeEdge edge(from, to);
+      if (!edge.IsDone()) return false;
+      wire.Add(edge.Edge());
+      from = to;
+      return true;
+    };
+    for (const auto& step : revolve["steps"]) {
+      gp_Pnt to;
+      if (!revolvePoint(step.value("to", nlohmann::json()), to)) return kernelFail("buildRevolve step is malformed", true);
+      gp_Pnt c1;
+      gp_Pnt c2;
+      if (revolvePoint(step.value("c1", nlohmann::json()), c1) && revolvePoint(step.value("c2", nlohmann::json()), c2)) {
+        TColgp_Array1OfPnt poles(1, 4);
+        poles.SetValue(1, from);
+        poles.SetValue(2, c1);
+        poles.SetValue(3, c2);
+        poles.SetValue(4, to);
+        Handle(Geom_BezierCurve) curve = new Geom_BezierCurve(poles);
+        BRepBuilderAPI_MakeEdge edge(curve);
+        if (!edge.IsDone()) return kernelFail("buildRevolve curve failed", true);
+        wire.Add(edge.Edge());
+        from = to;
+      } else if (!addLine(to)) {
+        return kernelFail("buildRevolve line failed", true);
+      }
+    }
+    if (!addLine(start) || !wire.IsDone()) return kernelFail("buildRevolve outline does not close", true);
+    BRepBuilderAPI_MakeFace face(wire.Wire(), true);
+    if (!face.IsDone()) return kernelFail("buildRevolve outline is not flat", true);
+    BRepPrimAPI_MakeRevol turned(face.Face(), gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), 2.0 * 3.14159265358979323846);
+    turned.Build();
+    if (!turned.IsDone() || turned.Shape().IsNull()) return kernelFail("buildRevolve could not turn the outline", true);
+    shape = kernelScale(turned.Shape(), 1.0, 1.0, std::max(1e-6, revolve.value("scaleZ", 1.0)));
+  } catch (const Standard_Failure& failure) {
+    return kernelFail(failure.what() ? failure.what() : "OCCT failed", true);
+  }
+  if (!kernelShapeIsValid(shape, 20000)) return kernelFail("The turned shape came out invalid", true);
+  nlohmann::json positions, normals, indices;
+  if (!kernelTessellateIndexed(shape, positions, normals, indices, 0.05, 0.2, sharedCorners())) {
+    return kernelFail("native tessellation failed", true);
+  }
+  return {
+    { "ok", true },
+    { "positions", positions },
+    { "normals", normals },
+    { "indices", indices },
+    { "cadBrep", kernelExportBrep(shape) },
+    { "quality", "exact" },
   };
 }
 

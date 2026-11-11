@@ -205,7 +205,10 @@
   /* Wide enough that the longest tool label ("Dimension") still fits on one line at
      the 11px floor rather than ellipsing. */
   --editor-tool-sidebar-width: 88px;
-  --shape-sidebar-width: 148px;
+  /* Two shape cards side by side with room for a full name under each picture. */
+  --shape-sidebar-width: 212px;
+  --shape-tile-height: 92px;
+  --shape-tile-icon: 52px;
   --shape-rail-tab-width: 22px;
   --object-list-width: 188px;
   --object-list-tab-width: 28px;
@@ -213,6 +216,15 @@
   --chrome-right: 0px;
   /* Match editor viewport captures used for project/folder thumbnails. */
   --project-preview-aspect: 16 / 9;
+}
+
+/* A small screen keeps two columns but gives the workplane more room back. */
+@media (max-width: 980px), (max-height: 640px) {
+  :root {
+    --shape-sidebar-width: 180px;
+    --shape-tile-height: 80px;
+    --shape-tile-icon: 44px;
+  }
 }
 
 [data-theme="dark"] {
@@ -3506,7 +3518,6 @@ body[data-lesson-prompt="hole"] button[data-lesson-target="hole"],
 body[data-lesson-prompt="group"] button[data-lesson-target="group"],
 body[data-lesson-prompt="geometry"] button[data-lesson-target="geometry"],
 body[data-lesson-prompt="sketch"] button[data-lesson-target="sketch"],
-body[data-lesson-prompt="new-sketch"] button[data-lesson-target="new-sketch"],
 body[data-lesson-prompt="circle"] button[data-lesson-target="circle"],
 body[data-lesson-prompt="extrude"] button[data-lesson-target="extrude"],
 body[data-lesson-prompt="cut"] button[data-lesson-target="cut"],

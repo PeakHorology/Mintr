@@ -139,6 +139,7 @@ export function WorkspaceSettingsModal({
   onTutorialsHiddenChange,
   onOpenTutorial,
   initialSection,
+  onAddFitTest,
 }: {
   workspace: WorkspaceSettings;
   snap: GridSize;
@@ -159,6 +160,8 @@ export function WorkspaceSettingsModal({
   onOpenTutorial?: (tutorialId: string) => void;
   /** The tab to open on, such as Machines from a laser design's label. */
   initialSection?: WorkspaceSettingsSection;
+  /** In a laser design: adds a fit test to the design and closes settings. */
+  onAddFitTest?: () => void;
 }) {
   const [leaving, setLeaving] = useState(false);
   const leaveTimerRef = useRef<number | null>(null);
@@ -179,7 +182,7 @@ export function WorkspaceSettingsModal({
   const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>(initialSection ?? (sketchGuides ? "sketch" : "general"));
   const sageEnabled = useSageEnabled();
   const machines = useMachineChoice();
-  // Someone with only a laser has no printer to set up, unless this design is a 3D print.
+  // Printer settings show under Machines for 3D printer or Both, or in a 3D print design.
   const showPrinting = machines !== "laser" || (context === "project" && workspace.designKind === "print");
   const cardRef = useRef<HTMLDivElement | null>(null);
   // A tool picked from Sage's search opens in the Sage tab; the nonce reopens it even if picked twice.
@@ -489,15 +492,9 @@ export function WorkspaceSettingsModal({
               </button>
             ) : null}
             <button className={activeSection === "machines" ? "active" : ""} aria-current={activeSection === "machines" ? "page" : undefined} onClick={() => setActiveSection("machines")}>
-              <LaserIcon size={18} />
+              {machines === "laser" ? <LaserIcon size={18} /> : <Printer3dIcon size={18} />}
               <span>Machines</span>
             </button>
-            {showPrinting ? (
-              <button className={activeSection === "printing" ? "active" : ""} aria-current={activeSection === "printing" ? "page" : undefined} onClick={() => setActiveSection("printing")}>
-                <Printer3dIcon size={18} />
-                <span>Printing</span>
-              </button>
-            ) : null}
             <button className={activeSection === "files" ? "active" : ""} aria-current={activeSection === "files" ? "page" : undefined} onClick={() => setActiveSection("files")}>
               <FolderDown size={18} />
               <span>Files</span>
@@ -823,14 +820,14 @@ export function WorkspaceSettingsModal({
                 </>
               ) : null}
 
-              {activeSection === "machines" ? <MachineSettings workspace={workspace} patchWorkspace={patchWorkspace} context={context} /> : null}
-
-              {activeSection === "printing" ? (
-                <>
-                  <div className="workspace-section-heading">
-                    <strong>Printing</strong>
-                    <span>Choose the process and the machine, see the build volume, and mark faces that need support or walls that are too thin.</span>
-                  </div>
+              {activeSection === "machines" ? (
+                <MachineSettings
+                  workspace={workspace}
+                  patchWorkspace={patchWorkspace}
+                  context={context}
+                  onAddFitTest={onAddFitTest ? () => { onAddFitTest(); onClose(); } : undefined}
+                  printerSettings={showPrinting ? (
+                    <>
                   <WorkspaceSelect
                     label="Process"
                     tip={SETTING_TIPS.printerProcess}
@@ -1043,8 +1040,11 @@ export function WorkspaceSettingsModal({
                     onChange={(showTrappedResin) => patchWorkspace({ showTrappedResin })}
                   />
                   <SlicerSettingsFields />
-                </>
+                    </>
+                  ) : null}
+                />
               ) : null}
+
 
               {activeSection === "sketch" && sketchGuides ? (
                 <>

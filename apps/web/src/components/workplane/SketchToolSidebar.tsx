@@ -34,6 +34,7 @@ import {
   SketchConstraintSymmetryIcon,
   SketchConstraintTangentIcon,
   SketchConstraintVerticalIcon,
+  SketchAngleDimensionIcon,
   SketchDimensionIcon,
   SketchRectPatternIcon,
   SketchTrimIcon,
@@ -83,6 +84,7 @@ const SKETCH_COACH: Partial<Record<SketchCoachKey, { title: string; body: string
   stroke: { title: "Lineweight", body: "Set how thick a line is drawn. The shape stays the same." },
   measure: { title: "Measure", body: "Click two points to read the distance between them." },
   dimension: { title: "Dimension", body: "Click a line, then type the length you want it to keep." },
+  "dimension-angle": { title: "Angle", body: "Click two lines to keep the angle between them." },
   image: { title: "Image", body: "Add a picture onto the sketch to trace over." },
   "constrain-coincident": { title: "Coincident", body: "Click two points so they stay together." },
   "constrain-h": { title: "Horizontal", body: "Click a line, or two points, to keep them horizontal." },
@@ -375,6 +377,7 @@ export function SketchFinishToolbar({
 
 const PEAKCAD_PRO_SKETCH_TOOLS = new Set<SketchTool>([
   "dimension",
+  "dimension-angle",
   "constrain-h",
   "constrain-v",
   "constrain-equal",
@@ -478,6 +481,9 @@ export function SketchUtilitySidebar({
           <div className="editor-tool-sidebar-list">
             <SketchToolButton label="Dimension" description="Add a driving length dimension (Fusion D)." active={sketchTool === "dimension"} hoverKey="dimension" onHoverTool={onHoverTool} onClick={() => onSketchTool("dimension")}>
               <SketchDimensionIcon />
+            </SketchToolButton>
+            <SketchToolButton label="Angle" description="Keep the angle between two lines." active={sketchTool === "dimension-angle"} hoverKey="dimension-angle" onHoverTool={onHoverTool} onClick={() => onSketchTool("dimension-angle")}>
+              <SketchAngleDimensionIcon />
             </SketchToolButton>
           </div>
         </section>
@@ -768,6 +774,9 @@ export function SketchRibbon({
           <div className="sketch-ribbon-tools">
             <RibbonTool label="Dimension" description="Add a driving length dimension." active={sketchTool === "dimension"} hoverKey="dimension" onHoverTool={onHoverTool} onClick={() => onSketchTool("dimension")}>
               <SketchDimensionIcon />
+            </RibbonTool>
+            <RibbonTool label="Angle" description="Keep the angle between two lines." active={sketchTool === "dimension-angle"} hoverKey="dimension-angle" onHoverTool={onHoverTool} onClick={() => onSketchTool("dimension-angle")}>
+              <SketchAngleDimensionIcon />
             </RibbonTool>
             <RibbonTool label="Coincident" description="Join two points so they stay together." active={sketchTool === "constrain-coincident"} hoverKey="constrain-coincident" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-coincident")}>
               <SketchConstraintCoincidentIcon />

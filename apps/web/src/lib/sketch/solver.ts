@@ -7,6 +7,7 @@ import type {
   SketchSolveResult,
 } from "./types";
 import { cloneSketchDoc } from "./migrate";
+import { solveSimultaneously, type SimultaneousSolve, type SimultaneousSolveOptions } from "./simultaneousSolver";
 
 type PointVar = { id: string; x: number; z: number; fixed: boolean };
 
@@ -249,14 +250,21 @@ function applyDimension(doc: SketchDoc, dim: SketchDimension, points: Map<string
     // flip it) and every later tangency would divide by that radius.
     if (Number.isFinite(targetR) && targetR > 0) circle.radius = Math.max(0.01, targetR);
   } else if (dim.kind === "angular" && dim.entityIds.length >= 2) {
-    // Soft-align second line angle relative to first
+    // Turn the second line to the angle, on the side it already sits, measured from a shared corner outwards.
     const l1 = lineEndpoints(doc, dim.entityIds[0], points);
     const l2 = lineEndpoints(doc, dim.entityIds[1], points);
     if (!l1 || !l2) return 0;
-    const a1 = Math.atan2(l1.b.z - l1.a.z, l1.b.x - l1.a.x);
-    const target = a1 + (dim.value * Math.PI) / 180;
-    const len2 = Math.hypot(l2.b.x - l2.a.x, l2.b.z - l2.a.z) || 1;
-    error += placeLine(l2.a, l2.b, Math.cos(target), Math.sin(target), len2);
+    const firstFlip = l1.b === l2.a || l1.b === l2.b ? -1 : 1;
+    const secondFlip = l2.b === l1.a || l2.b === l1.b ? -1 : 1;
+    const a1 = Math.atan2((l1.b.z - l1.a.z) * firstFlip, (l1.b.x - l1.a.x) * firstFlip);
+    const ux = Math.cos(a1);
+    const uz = Math.sin(a1);
+    const vx = (l2.b.x - l2.a.x) * secondFlip;
+    const vz = (l2.b.z - l2.a.z) * secondFlip;
+    const side = ux * vz - uz * vx < 0 ? -1 : 1;
+    const target = a1 + side * (Math.abs(dim.value) * Math.PI) / 180;
+    const len2 = Math.hypot(vx, vz) || 1;
+    error += placeLine(l2.a, l2.b, Math.cos(target) * secondFlip, Math.sin(target) * secondFlip, len2);
   }
   return error;
 }
@@ -382,249 +390,10 @@ function projectSymmetricPair(
   return applyExact(a, ax, az) + applyExact(b, bx.x, bx.z);
 }
 
-function constraintDofWeight(kind: string): number {
-  switch (kind) {
-    case "fix":
-      return 2;
-    case "coincident":
-      return 2;
-    case "horizontal":
-    case "vertical":
-    case "midpoint":
-    case "concentric":
-      return 1;
-    case "parallel":
-    case "perpendicular":
-    case "equal":
-    case "tangent":
-    case "symmetry":
-      return 1;
-    default:
-      return 1;
-  }
-}
-
-function dimensionDofWeight(kind: string): number {
-  if (kind === "angular") return 1;
-  if (kind === "radius" || kind === "diameter") return 1;
-  return 1;
-}
-
-/** A driving length this far from its geometry means the solver did not satisfy it (mm). */
-const DIMENSION_SATISFIED_TOLERANCE = 1e-3;
-
-/**
- * Ids of driving linear dimensions the solved geometry does not actually match.
- *
- * DOF counting alone cannot detect this: a sketch can have spare degrees of freedom and still
- * have abandoned a hard dimension, which used to be reported as a clean "under-defined".
- */
-function unsatisfiedDrivingDimensionIds(doc: SketchDoc, points: Map<string, PointVar>): string[] {
-  const unsatisfied: string[] = [];
-  for (const dim of doc.dimensions) {
-    if (!dim.driving || dim.kind !== "linear") continue;
-    let a: PointVar | undefined;
-    let b: PointVar | undefined;
-    if (dim.pointIds && dim.pointIds.length >= 2) {
-      a = points.get(dim.pointIds[0]);
-      b = points.get(dim.pointIds[1]);
-    } else if (dim.entityIds[0]) {
-      const line = lineEndpoints(doc, dim.entityIds[0], points);
-      if (line) {
-        a = line.a;
-        b = line.b;
-      }
-    }
-    if (!a || !b) continue;
-    const actual = Math.hypot(b.x - a.x, b.z - a.z);
-    if (Math.abs(actual - dim.value) > DIMENSION_SATISFIED_TOLERANCE) {
-      unsatisfied.push(dim.id);
-    }
-  }
-  return unsatisfied;
-}
-
-const GEOMETRY_TOLERANCE = 1e-3;
-
-function lineVector(ends: { a: PointVar; b: PointVar }) {
-  return { x: ends.b.x - ends.a.x, z: ends.b.z - ends.a.z, len: Math.hypot(ends.b.x - ends.a.x, ends.b.z - ends.a.z) };
-}
-
-/** How far the geometry still is from a constraint, in millimetres. Zero when it already holds. */
-function constraintResidual(doc: SketchDoc, constraint: { kind: string; entityIds: string[]; pointIds?: string[] }, points: Map<string, PointVar>): number {
-  if (constraint.kind === "fix") return 0;
-  if (constraint.kind === "parallel" || constraint.kind === "perpendicular" || constraint.kind === "equal") {
-    if (constraint.entityIds.length < 2) return 0;
-    const l1 = lineEndpoints(doc, constraint.entityIds[0], points);
-    const l2 = lineEndpoints(doc, constraint.entityIds[1], points);
-    if (!l1 || !l2) return 0;
-    const v1 = lineVector(l1);
-    const v2 = lineVector(l2);
-    if (v1.len < 1e-9 || v2.len < 1e-9) return 0;
-    if (constraint.kind === "equal") return Math.abs(v1.len - v2.len);
-    const cross = v1.x * v2.z - v1.z * v2.x;
-    const dot = v1.x * v2.x + v1.z * v2.z;
-    const sin = Math.abs(cross) / (v1.len * v2.len);
-    const cos = Math.abs(dot) / (v1.len * v2.len);
-    return (constraint.kind === "parallel" ? sin : cos) * v2.len;
-  }
-  if (constraint.kind === "midpoint") {
-    const line = constraint.entityIds[0] ? lineEndpoints(doc, constraint.entityIds[0], points) : null;
-    const midPoint = constraint.pointIds?.[0] ? points.get(constraint.pointIds[0]) : null;
-    if (!line || !midPoint) return 0;
-    return Math.hypot(midPoint.x - (line.a.x + line.b.x) / 2, midPoint.z - (line.a.z + line.b.z) / 2);
-  }
-  if (constraint.kind === "concentric") {
-    const ids = constraint.entityIds
-      .map((id) => {
-        const circle = doc.entities.find((e) => e.id === id && e.kind === "circle");
-        return circle && circle.kind === "circle" ? circle.centerId : id;
-      })
-      .filter((id) => points.has(id));
-    if (ids.length < 2) return 0;
-    const a = points.get(ids[0])!;
-    const b = points.get(ids[1])!;
-    return Math.hypot(a.x - b.x, a.z - b.z);
-  }
-  if (constraint.kind === "tangent") {
-    return tangentResidual(doc, constraint.entityIds, points);
-  }
-  if (constraint.kind === "symmetry") {
-    return symmetryResidual(doc, constraint, points);
-  }
-  if (constraint.kind === "horizontal" || constraint.kind === "vertical") {
-    const line = constraint.entityIds[0] ? lineEndpoints(doc, constraint.entityIds[0], points) : null;
-    if (line) {
-      return constraint.kind === "horizontal"
-        ? Math.abs(line.a.z - line.b.z)
-        : Math.abs(line.a.x - line.b.x);
-    }
-    if (constraint.pointIds && constraint.pointIds.length >= 2) {
-      const a = points.get(constraint.pointIds[0]);
-      const b = points.get(constraint.pointIds[1]);
-      if (!a || !b) return 0;
-      return constraint.kind === "horizontal" ? Math.abs(a.z - b.z) : Math.abs(a.x - b.x);
-    }
-    return 0;
-  }
-  if (constraint.kind === "coincident") {
-    const ids = [...(constraint.pointIds ?? []), ...constraint.entityIds.filter((id) => points.has(id))];
-    const pts = ids.map((id) => points.get(id)).filter((point): point is PointVar => Boolean(point));
-    if (pts.length < 2) return 0;
-    const ax = pts.reduce((sum, point) => sum + point.x, 0) / pts.length;
-    const az = pts.reduce((sum, point) => sum + point.z, 0) / pts.length;
-    return Math.max(...pts.map((point) => Math.hypot(point.x - ax, point.z - az)));
-  }
-  return 0;
-}
-
-function tangentResidual(doc: SketchDoc, entityIds: string[], points: Map<string, PointVar>): number {
-  if (entityIds.length < 2) return 0;
-  const a = doc.entities.find((e) => e.id === entityIds[0]);
-  const b = doc.entities.find((e) => e.id === entityIds[1]);
-  if (!a || !b) return 0;
-  const line = a.kind === "line" ? a : b.kind === "line" ? b : null;
-  const circle = a.kind === "circle" ? a : b.kind === "circle" ? b : null;
-  if (line && circle && circle.kind === "circle") {
-    const ends = lineEndpoints(doc, line.id, points);
-    const center = points.get(circle.centerId);
-    if (!ends || !center) return 0;
-    const v = lineVector(ends);
-    if (v.len < 1e-9) return 0;
-    const dist = Math.abs(((center.x - ends.a.x) * (-v.z) + (center.z - ends.a.z) * v.x) / v.len);
-    return Math.abs(dist - circle.radius);
-  }
-  if (a.kind === "circle" && b.kind === "circle") {
-    const c1 = points.get(a.centerId);
-    const c2 = points.get(b.centerId);
-    if (!c1 || !c2) return 0;
-    return Math.abs(Math.hypot(c2.x - c1.x, c2.z - c1.z) - (a.radius + b.radius));
-  }
-  return 0;
-}
-
-function symmetryResidual(
-  doc: SketchDoc,
-  constraint: { entityIds: string[]; pointIds?: string[] },
-  points: Map<string, PointVar>,
-): number {
-  const axis = lineEndpoints(doc, constraint.entityIds[constraint.entityIds.length - 1], points);
-  if (!axis) return 0;
-  const ax = axis.b.x - axis.a.x;
-  const az = axis.b.z - axis.a.z;
-  const len2 = ax * ax + az * az || 1;
-  const reflect = (x: number, z: number) => {
-    const t = ((x - axis.a.x) * ax + (z - axis.a.z) * az) / len2;
-    const projX = axis.a.x + ax * t;
-    const projZ = axis.a.z + az * t;
-    return { x: 2 * projX - x, z: 2 * projZ - z };
-  };
-  const pairIds = (constraint.pointIds && constraint.pointIds.length >= 2)
-    ? constraint.pointIds.slice(0, 2)
-    : constraint.entityIds.slice(0, 2);
-  const pointOf = (id: string) => points.get(id) ?? null;
-  const pA = pointOf(pairIds[0]);
-  const pB = pointOf(pairIds[1]);
-  if (pA && pB) {
-    const mirrored = reflect(pA.x, pA.z);
-    return Math.hypot(pB.x - mirrored.x, pB.z - mirrored.z);
-  }
-  const l1 = lineEndpoints(doc, pairIds[0], points);
-  const l2 = lineEndpoints(doc, pairIds[1], points);
-  if (!l1 || !l2) return 0;
-  const ra = reflect(l1.a.x, l1.a.z);
-  const rb = reflect(l1.b.x, l1.b.z);
-  return Math.hypot(l2.a.x - ra.x, l2.a.z - ra.z) + Math.hypot(l2.b.x - rb.x, l2.b.z - rb.z);
-}
-
-function unsatisfiedConstraintIds(
-  doc: SketchDoc,
-  points: Map<string, PointVar>,
-  constraints: Array<{ id: string; kind: string; entityIds: string[]; pointIds?: string[] }>,
-): string[] {
-  return constraints
-    .filter((constraint) => constraintResidual(doc, constraint, points) > GEOMETRY_TOLERANCE)
-    .map((constraint) => constraint.id);
-}
-
-function estimateDof(doc: SketchDoc, points: Map<string, PointVar>, _lastError: number): { dof: number; status: SketchDefinitionStatus; conflicts: string[] } {
-  const freeVars = [...points.values()].filter((p) => !p.fixed).length * 2;
-  const circleDof = doc.entities.filter((e) => e.kind === "circle" && !e.fixed).length;
-  const totalVars = freeVars + circleDof;
-  const activeConstraints = doc.constraints.filter((c) => !c.suppressed);
-  const drivingDims = doc.dimensions.filter((d) => d.driving);
-  const removed =
-    activeConstraints.reduce((sum, c) => sum + constraintDofWeight(c.kind), 0)
-    + drivingDims.reduce((sum, d) => sum + dimensionDofWeight(d.kind), 0);
-  const dof = Math.max(0, totalVars - removed);
-  const conflicts: string[] = [];
-  if (points.size === 0 && doc.entities.every((e) => e.kind !== "circle")) {
-    return { dof: 0, status: "empty", conflicts };
-  }
-  if (removed > totalVars + 2) {
-    conflicts.push("Too many constraints or dimensions for the available degrees of freedom.");
-    return { dof: 0, status: "over-constrained", conflicts };
-  }
-  // A pull that did not land is an unsolved sketch, not an over-constrained one.
-  // Fully defined is reserved for geometry that actually matches every constraint.
-  const unsatisfiedConstraints = unsatisfiedConstraintIds(doc, points, activeConstraints);
-  const unsatisfied = [...unsatisfiedConstraints, ...unsatisfiedDrivingDimensionIds(doc, points)];
-  if (unsatisfied.length) {
-    return { dof, status: "unsolved", conflicts: unsatisfied.slice(0, 8) };
-  }
-  if (dof === 0) return { dof: 0, status: "fully-defined", conflicts };
-  return { dof, status: "under-defined", conflicts };
-}
-
-/**
- * Constraint solve. Geometric constraints and driving dimensions snap in one step.
- * A sketch is fully defined only when that snap actually landed.
- */
-export function solveSketchDoc(input: SketchDoc, iterations = 40): SketchSolveResult {
+/** The old one-rule-at-a-time solve: each rule snaps in turn until they all settle. */
+function solveStepwise(input: SketchDoc, iterations: number): SketchDoc {
   const doc = cloneSketchDoc(input);
   const points = getPoints(doc);
-
-  // Fix entities marked fixed
   for (const c of doc.constraints) {
     if (c.kind === "fix" && !c.suppressed) {
       for (const id of c.entityIds) {
@@ -633,25 +402,72 @@ export function solveSketchDoc(input: SketchDoc, iterations = 40): SketchSolveRe
       }
     }
   }
-
-  // Prefer stable order: fix/coincident first (already applied), then geometric, then dims in solveOnce.
-  let lastError = 0;
   for (let i = 0; i < iterations; i += 1) {
-    lastError = solveOnce(doc, points);
-    if (lastError < 1e-5) break;
+    if (solveOnce(doc, points) < 1e-5) break;
   }
-
-  // Write back points + circle radii already mutated on entities
   doc.entities = doc.entities.map((entity) => {
     if (entity.kind !== "point") return entity;
     const p = points.get(entity.id);
     if (!p) return entity;
-    return { ...entity, x: p.x, z: p.z, fixed: p.fixed || entity.fixed } satisfies SketchPointEntity;
+    return { ...entity, x: p.x, z: p.z } satisfies SketchPointEntity;
   });
+  return doc;
+}
 
-  const { dof, status, conflicts } = estimateDof(doc, points, lastError);
-  const profiles = closedProfilesFromDoc(doc);
-  return { doc, status, dof, conflicts, profiles };
+/** The sketch with the simultaneous answer written in. Points held by a Fix rule are marked fixed. */
+function withSolvedGeometry(input: SketchDoc, solved: SimultaneousSolve): SketchDoc {
+  const doc = cloneSketchDoc(input);
+  doc.entities = doc.entities.map((entity) => {
+    if (entity.kind === "point") {
+      const point = solved.points.get(entity.id);
+      if (!point) return entity;
+      return { ...entity, x: point.x, z: point.z, fixed: point.fixed || entity.fixed } satisfies SketchPointEntity;
+    }
+    if (entity.kind === "circle") {
+      const radius = solved.radii.get(entity.id);
+      return radius === undefined || radius === entity.radius ? entity : { ...entity, radius };
+    }
+    return entity;
+  });
+  return doc;
+}
+
+function definitionOf(doc: SketchDoc, solved: SimultaneousSolve): { status: SketchDefinitionStatus; dof: number; conflicts: string[] } {
+  if (!doc.entities.some((entity) => entity.kind === "point" || entity.kind === "circle")) {
+    return { status: "empty", dof: 0, conflicts: [] };
+  }
+  if (solved.unsatisfied.length) {
+    // Rules that repeat each other and do not hold are too many rules; a rule nothing can move to meet needs a fix.
+    const fighting = solved.unsatisfied.some((id) => solved.redundant.includes(id));
+    const conflicts = fighting
+      ? [...new Set([...solved.unsatisfied, ...solved.redundant])]
+      : solved.unsatisfied;
+    return { status: fighting ? "over-constrained" : "unsolved", dof: solved.dof, conflicts: conflicts.slice(0, 8) };
+  }
+  return { status: solved.dof === 0 ? "fully-defined" : "under-defined", dof: solved.dof, conflicts: [] };
+}
+
+export type SolveSketchOptions = Pick<SimultaneousSolveOptions, "holdPointIds">;
+
+/**
+ * Constraint solve. Every constraint and driving dimension is solved together, moving the
+ * drawing as little as it can. A sketch is fully defined only when nothing is left free to move
+ * and every rule holds.
+ */
+export function solveSketchDoc(input: SketchDoc, iterations = 40, options: SolveSketchOptions = {}): SketchSolveResult {
+  let solved = solveSimultaneously(input, { holdPointIds: options.holdPointIds, iterations: Math.max(iterations, 60) });
+  let doc = withSolvedGeometry(input, solved);
+  if (solved.unsatisfied.length) {
+    // A sketch the simultaneous solve could not settle gets the old step-by-step pass too, and keeps whichever lands closer.
+    const stepwise = solveStepwise(input, iterations);
+    const check = solveSimultaneously(stepwise, { iterations: 0 });
+    if (check.worst < solved.worst) {
+      solved = check;
+      doc = withSolvedGeometry(stepwise, check);
+    }
+  }
+  const { status, dof, conflicts } = definitionOf(doc, solved);
+  return { doc, status, dof, conflicts, profiles: closedProfilesFromDoc(doc) };
 }
 
 export function setDrivingDimensionValue(doc: SketchDoc, dimensionId: string, value: number): SketchSolveResult {
@@ -691,4 +507,46 @@ export function addRadiusDimension(
     driving: true,
   });
   return solveSketchDoc(next);
+}
+
+/** The angle in degrees from the first line to the second, measured the short way (0–180). */
+export function angleBetweenSketchLines(doc: SketchDoc, firstLineId: string, secondLineId: string): number | null {
+  const points = getPoints(doc);
+  const first = lineEndpoints(doc, firstLineId, points);
+  const second = lineEndpoints(doc, secondLineId, points);
+  if (!first || !second) return null;
+  const ux = first.b.x - first.a.x;
+  const uz = first.b.z - first.a.z;
+  let vx = second.b.x - second.a.x;
+  let vz = second.b.z - second.a.z;
+  if (Math.hypot(ux, uz) < 1e-9 || Math.hypot(vx, vz) < 1e-9) return null;
+  // Lines that meet are measured from their shared corner outwards.
+  const shared = [first.a, first.b].find((point) => point === second.a || point === second.b);
+  const firstOut = shared === first.b ? { x: -ux, z: -uz } : { x: ux, z: uz };
+  if (shared === second.b) {
+    vx = -vx;
+    vz = -vz;
+  }
+  const angle = (Math.atan2(firstOut.x * vz - firstOut.z * vx, firstOut.x * vx + firstOut.z * vz) * 180) / Math.PI;
+  return Math.abs(angle);
+}
+
+export function addAngularDimension(doc: SketchDoc, firstLineId: string, secondLineId: string, value: number): SketchSolveResult {
+  const next = cloneSketchDoc(doc);
+  next.dimensions.push({
+    id: `d-${Math.random().toString(36).slice(2, 10)}`,
+    kind: "angular",
+    entityIds: [firstLineId, secondLineId],
+    value,
+    driving: true,
+  });
+  return solveSketchDoc(next);
+}
+
+/** A dimension in plain words: "Length 20.00 mm", "Angle 30.0°". */
+export function sketchDimensionText(dimension: Pick<SketchDimension, "kind" | "value" | "driving">) {
+  const text = dimension.kind === "angular"
+    ? `Angle ${Math.abs(dimension.value).toFixed(1)}°`
+    : `${dimension.kind === "radius" ? "Radius" : dimension.kind === "diameter" ? "Diameter" : "Length"} ${dimension.value.toFixed(2)} mm`;
+  return dimension.driving ? text : `${text} (measured)`;
 }

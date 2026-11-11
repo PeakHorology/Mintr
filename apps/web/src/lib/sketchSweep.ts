@@ -207,6 +207,8 @@ function shapeFromSolid(
     sketchDoc,
     sketchId: existing?.sketchId ?? sketchDoc.id,
     sketchFinish: "sweep",
+    values: existing?.values,
+    drivenBy: existing?.drivenBy,
     sketchSweep: { ...spec, holeSegmentIds: spec.holeSegmentIds ?? [] },
     sketchPlane: resolveSketchPlane(profile.sketchPlane ?? doc?.plane),
   } satisfies WorkplaneShape);
@@ -330,6 +332,8 @@ export function applyNativeSketchSweepMesh(
     sketchDoc,
     sketchId: existing?.sketchId ?? sketchDoc.id,
     sketchFinish: "sweep",
+    values: existing?.values,
+    drivenBy: existing?.drivenBy,
     sketchSweep: { ...spec, holeSegmentIds: spec.holeSegmentIds ?? [] },
     sketchPlane: resolveSketchPlane(profile.sketchPlane ?? doc?.plane),
   });

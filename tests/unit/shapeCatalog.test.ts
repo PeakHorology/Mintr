@@ -1,6 +1,9 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ShapeAsset } from "@/types/sketchforge";
-import { makeShapeFromAsset, sceneShape, toolbarShapeAssets } from "@/lib/shapeCatalog";
+import { LASER_SHAPE_SECTIONS, SHAPE_SECTIONS, listedShapeAssets, makeShapeFromAsset, sceneShape, searchShapeAssets, shapeSectionsFor, toolbarShapeAssets } from "@/lib/shapeCatalog";
 
 describe("shape catalog", () => {
   it("exposes the current primitive kinds in the toolbar catalog", () => {
@@ -16,20 +19,62 @@ describe("shape catalog", () => {
   });
 
   it("keeps generated parts off the solids tab", () => {
-    const parts = toolbarShapeAssets.filter((asset) => asset.group === "part").map((asset) => asset.kind);
+    const parts = toolbarShapeAssets.filter((asset) => asset.group === "part" && !asset.generated).map((asset) => asset.kind);
     const solids = toolbarShapeAssets.filter((asset) => asset.group === "solid").map((asset) => asset.kind);
 
     expect(parts).toEqual(["text", "thread", "gear", "gridfinityBin", "gridfinityBaseplate"]);
+    expect(toolbarShapeAssets.filter((asset) => asset.group === "part" && asset.generated).map((asset) => asset.id)).toEqual(["qr-code", "screw-hole", "nut-pocket"]);
     expect(solids).not.toEqual(expect.arrayContaining(parts));
     expect(solids).toContain("box");
     expect(solids).not.toContain("text");
   });
 
-  it("does not expose removed decorative shapes in the toolbar catalog", () => {
-    const kinds = toolbarShapeAssets.map((asset) => asset.kind);
+  it("gives every shape an icon and a heading the list shows", () => {
+    for (const asset of toolbarShapeAssets) {
+      expect(SHAPE_SECTIONS).toContain(asset.section);
+      expect(existsSync(join(fileURLToPath(new URL("../../apps/web/public/", import.meta.url)), asset.menuIcon))).toBe(true);
+    }
+    expect([...LASER_SHAPE_SECTIONS].sort()).toEqual([...SHAPE_SECTIONS].sort());
+  });
 
-    expect(kinds).not.toContain("star");
-    expect(kinds).not.toContain("heart");
+  it("lists the everyday shapes first and keeps each heading small enough to scan", () => {
+    const bySection = (section: string) => toolbarShapeAssets.filter((asset) => asset.section === section).map((asset) => asset.name);
+
+    expect(SHAPE_SECTIONS[0]).toBe("Basic");
+    expect(bySection("Basic")).toEqual(["Box", "Cylinder", "Sphere", "Cone", "Pyramid", "Wedge", "Triangle", "Polygon"]);
+    expect(bySection("Rounded")).toEqual(["Ring", "Torus", "Half Sphere", "Round Roof", "Paraboloid", "Loft"]);
+    expect(bySection("Flat")).toEqual(["Rounded Plate", "Slot", "Star", "Heart"]);
+    expect(bySection("Screws and nuts")).toEqual(["Threads", "Threaded Hole", "Nut Pocket"]);
+    for (const section of SHAPE_SECTIONS) {
+      expect(bySection(section).length).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it("puts flat shapes first and leaves print-only parts out of a laser design", () => {
+    expect(shapeSectionsFor(false)).toBe(SHAPE_SECTIONS);
+    expect(shapeSectionsFor(true)[0]).toBe("Flat");
+
+    const laser = listedShapeAssets(true).map((asset) => asset.id);
+    expect(laser).not.toContain("thread");
+    expect(laser).not.toContain("screw-hole");
+    expect(laser).not.toContain("gridfinity-bin");
+    expect(laser).not.toContain("loft");
+    expect(laser).toContain("gear");
+    expect(laser).toContain("qr-code");
+    expect(listedShapeAssets(false)).toHaveLength(toolbarShapeAssets.length);
+  });
+
+  it("finds shapes by name, heading or everyday word", () => {
+    const names = (query: string) => searchShapeAssets(toolbarShapeAssets, query).map((asset) => asset.name);
+
+    expect(names("")).toHaveLength(toolbarShapeAssets.length);
+    expect(names("star")).toEqual(["Star"]);
+    expect(names("hex")).toEqual(["Polygon", "Nut Pocket"]);
+    expect(names("DONUT")).toEqual(["Torus"]);
+    expect(names("gridfinity")).toEqual(["Gridfinity Bin", "Gridfinity Baseplate"]);
+    expect(names("threaded hole")).toEqual(["Threaded Hole"]);
+    expect(names("tapped")).toContain("Threaded Hole");
+    expect(names("zzz")).toEqual([]);
   });
 
   it("creates placed shapes from toolbar assets", () => {

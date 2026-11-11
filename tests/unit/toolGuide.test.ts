@@ -85,7 +85,7 @@ describe("every-tool guide", () => {
         shape.id = `guide-${asset.id}`;
         live.push(shape);
       }
-      commit(`${asset.name} added`, { label: `Add a ${asset.name.toLowerCase()}`, included: true, cue: asset.kind });
+      commit(`${asset.name} added`, { label: `Add a ${asset.name.toLowerCase()}`, included: true, cue: asset.generated?.form ?? asset.kind });
     }
 
     const cylinder = makeShapeFromAsset(cylinderAsset);
@@ -164,5 +164,6 @@ describe("every-tool guide", () => {
     const opened = parsePeakcadDocument(JSON.stringify(document));
     expect(opened.guide?.steps).toHaveLength(steps.length);
     expect(opened.history?.length).toBe(history.length);
-  });
+  // It builds every shape on the menu, so it grows with the menu.
+  }, 20000);
 });

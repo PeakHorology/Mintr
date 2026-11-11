@@ -61,7 +61,9 @@ function signedPolygonArea(points: readonly { x: number; z: number }[]) {
 
 /** Detect a circle from a closed polyline (uniform radius about centroid). */
 export function circleFromPoints(points: readonly { x: number; z: number }[]) {
-  if (points.length < 8) return null;
+  // Corner points alone say little: a rounded rectangle's eight sit close to one circle, and an
+  // octagon's exactly on it. Both were swapped for a cylinder. Enough sides, filling the circle, are round.
+  if (points.length < 12) return null;
   const cx = points.reduce((s, p) => s + p.x, 0) / points.length;
   const cz = points.reduce((s, p) => s + p.z, 0) / points.length;
   const radii = points.map((p) => Math.hypot(p.x - cx, p.z - cz));
@@ -69,6 +71,7 @@ export function circleFromPoints(points: readonly { x: number; z: number }[]) {
   if (mean < 0.05) return null;
   const maxDev = Math.max(...radii.map((r) => Math.abs(r - mean)));
   if (maxDev > mean * 0.04 + 0.05) return null;
+  if (Math.abs(signedPolygonArea(points)) < Math.PI * mean * mean * 0.92) return null;
   return { radius: mean, centerX: cx, centerZ: cz };
 }
 

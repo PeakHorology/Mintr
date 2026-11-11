@@ -36,7 +36,8 @@ export const SETTING_TIPS = {
   laserBrand: "The maker of your laser. The next menu lists that maker's machines.",
   laser: "The laser you cut on. Its work area is drawn on the workplane of laser designs, and parts past it are marked.",
   laserType: "Diode and CO2 lasers cut wood and acrylic. Infrared (fiber) lasers mark metal and engrave very finely. UV lasers mark glass, plastic and gems without heat.",
-  kerf: "How much material the beam burns away, in millimetres. Mintr allows for it so parts fit as drawn. Measure yours by cutting a 20 mm square and measuring how much smaller it came out.",
+  kerf: "How much material the beam burns away, in millimetres. Mintr allows for it so parts fit as drawn. The fit test below finds it for you: cut it, push the key into each slot, and pick the number by the one it fits snugly.",
+  nestGap: "The space Nest leaves between parts, in millimetres. Parts are packed by their real outlines, so small parts can fill the holes in big ones.",
   cutFileStyle: "The software that runs your laser. Mintr marks what to cut, score and engrave in the way that software reads best.",
   showLaserBed: "Draw the laser's work area on the workplane of laser designs.",
   laserMaterial: "The sheet you cut from. New parts in a laser design start at its thickness, and joints are sized to it. K9 crystal engraves a 3D model inside a glass block or ball.",
@@ -48,7 +49,7 @@ export const SETTING_TIPS = {
 export type SettingTipKey = keyof typeof SETTING_TIPS;
 
 export type SettingsSectionId =
-  | "general" | "appearance" | "measurement" | "workplane" | "sketch" | "machines" | "printing" | "files" | "fonts"
+  | "general" | "appearance" | "measurement" | "workplane" | "sketch" | "machines" | "files" | "fonts"
   | "hotkeys" | "tools" | "tutorials" | "models" | "updates" | "help" | "about";
 
 /** Tab names in the Settings window, in their order. */
@@ -59,7 +60,6 @@ export const SETTINGS_SECTION_LABEL: Record<SettingsSectionId, string> = {
   workplane: "Workplane",
   sketch: "Sketch",
   machines: "Machines",
-  printing: "Printing",
   files: "Files",
   fonts: "Fonts",
   hotkeys: "Keyboard shortcuts",
@@ -100,16 +100,16 @@ export const SETTING_GUIDES: readonly SettingGuide[] = [
   { key: "sheetThickness", title: "Sheet thickness", section: "machines" },
   { key: "crystalSize", title: "Crystal size", section: "machines" },
   { key: "crystalMargin", title: "Crystal margin", section: "machines" },
-  { key: "printerProcess", title: "Printing process", section: "printing" },
-  { key: "printerBrand", title: "Printer brand", section: "printing" },
-  { key: "printer", title: "Printer", section: "printing" },
-  { key: "showPrinterBed", title: "Show printer bed", section: "printing" },
-  { key: "overhang", title: "Overhang angle", section: "printing" },
-  { key: "showOverhangStripes", title: "Show overhangs", section: "printing" },
-  { key: "nozzle", title: "Nozzle or minimum wall", section: "printing" },
-  { key: "showThinWalls", title: "Show thin walls", section: "printing" },
-  { key: "showSmallHoles", title: "Show small holes", section: "printing" },
-  { key: "showTrappedResin", title: "Show trapped resin", section: "printing" },
+  { key: "printerProcess", title: "Printing process", section: "machines" },
+  { key: "printerBrand", title: "Printer brand", section: "machines" },
+  { key: "printer", title: "Printer", section: "machines" },
+  { key: "showPrinterBed", title: "Show printer bed", section: "machines" },
+  { key: "overhang", title: "Overhang angle", section: "machines" },
+  { key: "showOverhangStripes", title: "Show overhangs", section: "machines" },
+  { key: "nozzle", title: "Nozzle or minimum wall", section: "machines" },
+  { key: "showThinWalls", title: "Show thin walls", section: "machines" },
+  { key: "showSmallHoles", title: "Show small holes", section: "machines" },
+  { key: "showTrappedResin", title: "Show trapped resin", section: "machines" },
   { key: "downloadFolder", title: "Download folder", section: "files" },
   { key: "hideTutorials", title: "Hide tutorials", section: "tutorials" },
   { key: "sageEnabled", title: "Show Sage", section: "tools" },

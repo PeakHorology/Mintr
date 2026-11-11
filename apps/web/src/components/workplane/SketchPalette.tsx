@@ -1,6 +1,6 @@
 "use client";
 
-import { CONSTRAINT_LABELS, type SketchDefinitionStatus, type SketchDoc } from "@/lib/sketch";
+import { CONSTRAINT_LABELS, sketchDimensionText, type SketchDefinitionStatus, type SketchDoc } from "@/lib/sketch";
 
 const STATUS_LABEL: Record<SketchDefinitionStatus, string> = {
   empty: "Empty sketch",
@@ -95,8 +95,7 @@ export function SketchPalette({
             {doc.dimensions.map((dimension) => (
               <li key={dimension.id}>
                 <span>
-                  {dimension.kind} {dimension.value.toFixed(2)}
-                  {dimension.driving ? "" : " (driven)"}
+                  {sketchDimensionText(dimension)}
                 </span>
               </li>
             ))}

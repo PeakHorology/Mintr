@@ -894,6 +894,8 @@ export function shapeFromSketchProfile(
     sketchPlane: cloneSketchPlane(plane),
     sketchFinish: "extrude",
     sketchRevolveAxis: undefined,
+    values: existing?.values,
+    drivenBy: existing?.drivenBy,
   } satisfies WorkplaneShape);
   // Workplane rect/circle → analytic box/cylinder for exact STEP (face-hosted stays mesh).
   return promoteWorkplaneSketchToPrimitive(

@@ -80,6 +80,7 @@ import {
   coneUnitTopScale,
   shapeDepth,
   shapeWidth,
+  threadedHoleSpec,
   withHoleMode,
   workplaneShapesEqual,
 } from "@/lib/workplaneShapes";
@@ -240,6 +241,10 @@ import {
 } from "@/lib/sketchDrawShapes";
 import { resolveSketchRevolveAxis, shapeFromSketchRevolve, type SketchRevolveAxis } from "@/lib/sketchRevolve";
 import { shapeFromSketchSweep } from "@/lib/sketchSweep";
+import { rebuildSketchedShape } from "@/lib/sketchRebuild";
+import { buildGeneratedShape } from "@/lib/generatedShapes";
+import { withExactGeneratedShape } from "@/lib/generatedExact";
+import { planValues } from "@/components/workplane/valueDrivenPatches";
 import { planSketchSweep, resolveSketchSweep, sweepChainHit, sweepSpec, type SweepChain } from "@/lib/sketch/sweepPlan";
 import {
   buildStepExportPreflight,
@@ -364,6 +369,8 @@ import {
   resolveEditableSketchShape,
   setCornerAngle,
   setDrivingDimensionValue,
+  addAngularDimension,
+  angleBetweenSketchLines,
   shapeHasEditableSketch,
   omitCurveStandIns,
   curveStandInOwner,
@@ -408,7 +415,6 @@ import { EditorTopBar, SketchFocusTabs } from "@/components/workplane/EditorTopB
 import { SageProvider } from "@/components/workplane/Sage";
 import type { BlueprintExportFormat } from "@/lib/blueprintExport";
 import { EditorModeStrip, EditorViewportToolbar } from "@/components/workplane/EditorViewportToolbar";
-import { SketchCreateMenu } from "@/components/workplane/SketchCreateMenu";
 import {
   hasLessonCoachBeenDismissed,
   isLessonProjectId,
@@ -427,10 +433,11 @@ import { applyGuideDraft, readGuideAuthor, readGuideDraft, shrinkPicture, writeG
 import { buildPeakcadDocument, packMintrGuideText, serializeMintrGuide } from "@/lib/peakcadDocument";
 import { readCustomFonts } from "@/lib/customFontStore";
 import { crystalReach, CUT_FILE_STYLES, isCrystalDesign, isLaserDesign, laserMachineName, materialById, materialLabel, sheetThickness } from "@/lib/laserMachine";
-import { buildCutLayout, cutLayoutDxf, cutLayoutSvg, lengthLabel } from "@/lib/laser/cutFile";
+import { buildCutLayout, cutLayoutDxf, cutLayoutSvg, footprintOutline, lengthLabel } from "@/lib/laser/cutFile";
+import { nestOutlines, overlappingGroups, placePoint } from "@/lib/laser/shapeNest";
+import { fitTestKerfs, fitTestLayout } from "@/lib/laser/fitTest";
 import { detectLaserApps, laserAppFor, openInLaserApp, type LaserApp } from "@/lib/laser/laserAppHandoff";
 import { boxPanels, layOutPanels, placedOutline, type BoxSpec } from "@/lib/laser/boxMaker";
-import { nestParts } from "@/lib/laser/nest";
 import { BoxMakerDialog } from "@/components/workplane/BoxMakerDialog";
 import { FlatPartsDialog, type FlatPartsChoice } from "@/components/workplane/FlatPartsDialog";
 import { TraceLogoDialog, type TracedLogo } from "@/components/workplane/TraceLogoDialog";
@@ -535,6 +542,7 @@ const SKETCH_MULTI_POINT_TOOLS = new Set<SketchTool>([
   "constrain-midpoint",
 ]);
 const SKETCH_MULTI_SEGMENT_TOOLS = new Set<SketchTool>([
+  "dimension-angle",
   "constrain-equal",
   "constrain-parallel",
   "constrain-perp",
@@ -673,7 +681,7 @@ export type EdgeFeatureRevertOption = {
   createdAt: number;
   removesNewerCount: number;
 };
-const SCREW_STAYS_SOLID_NOTICE = "Screws stay solid. Use Make matching tapped hole to cut its thread into a part.";
+const SCREW_STAYS_SOLID_NOTICE = "Screws stay solid. Use Make matching hole to cut its thread into a part.";
 
 export type ManifoldSolid = ReturnType<ManifoldToplevel["Manifold"]["cube"]>;
 export type GroupBuildResult = {
@@ -3548,7 +3556,7 @@ export function SketchForgeEditor({
   }, [commitShapes, invalidateCadModifierSession, selectedEdgeFeatureCount, selectedEdgeHistoryOptions, selectedShape]);
 
   const commitSketchProfile = useCallback(
-    (next: SketchProfile, message?: string, docOverride?: SketchDoc | null) => {
+    (next: SketchProfile, message?: string, docOverride?: SketchDoc | null, holdPointIds?: string[]) => {
       const snapshot = cloneSketchProfile(next);
       const current = sketchHistoryRef.current;
       const currentIndex = Math.min(sketchHistoryIndexRef.current, Math.max(0, current.length - 1));
@@ -3559,7 +3567,8 @@ export function SketchForgeEditor({
       // express construction or projected geometry or analytic curves, so rebuilding destroyed all
       // of it. Host face linkage, constraints and settings ride along on the doc.
       const baseDoc = docOverride ?? mergeProfileIntoDoc(sketchDoc, snapshot);
-      const solved = solveSketchDoc(baseDoc);
+      // Points the user just put somewhere stay there; the rules move the rest.
+      const solved = solveSketchDoc(baseDoc, undefined, { holdPointIds });
       setSketchDoc(solved.doc);
       setSketchSolveStatus(solved.status);
       setSketchDof(solved.dof);
@@ -3728,31 +3737,18 @@ export function SketchForgeEditor({
         return;
       }
       const solved = setDrivingDimensionValue(shape.sketchDoc, dimensionId, value);
-      const profile = sketchDocToProfile(solved.doc);
-      profile.sketchPlane = shape.sketchPlane ?? profile.sketchPlane;
-      const rebuilt = shapeFromSketchProfile(profile, shape.height, {
-        ...shape,
-        sketchDoc: solved.doc,
-        sketchId: shape.sketchId ?? solved.doc.id,
-      }, {
-        cutIntoFace: Boolean(shape.hole && isFaceHostedSketch(shape.sketchPlane, shape.sketchProfile?.faceReferenceLoops)),
-      });
-      if (!rebuilt) {
-        setNotice("Could not rebuild sketch after dimension change");
-        return;
-      }
-      rebuilt.sketchDoc = solved.doc;
-      rebuilt.hole = shape.hole;
-      rebuilt.color = shape.color;
       flushSync(() => {
         setNotice("Building sketch…");
       });
       await new Promise<void>((resolve) => {
         window.setTimeout(resolve, 0);
       });
-      const exact = await withExactSketchExtrusionSolid(rebuilt, shape.height, {
-        cutIntoFace: Boolean(shape.hole && isFaceHostedSketch(shape.sketchPlane, shape.sketchProfile?.faceReferenceLoops)),
-      });
+      const rebuild = await rebuildSketchedShape(shape, solved.doc, { exact: true });
+      if (!rebuild.ok) {
+        setNotice(rebuild.message);
+        return;
+      }
+      const exact = rebuild.shape;
       const owner = findCsgBodyOwningLeaf(shapesRef.current, exact.id);
       if (owner) {
         const sourceFingerprint = projectShapesFingerprint(shapesRef.current);
@@ -3967,9 +3963,10 @@ export function SketchForgeEditor({
       setSketchEditOffer(null);
       return;
     }
-    setSketchFacePickMode(false);
+    // Nothing to sketch on yet, so cancelling leaves Sketch altogether.
+    changeToolbarMode("geometry");
     setNotice("Sketch cancelled");
-  }, [sketchEditOffer]);
+  }, [changeToolbarMode, sketchEditOffer]);
 
   const abandonSketchSession = useCallback((nextMode: ToolbarMode) => {
     setSketchActive(false);
@@ -4168,6 +4165,7 @@ export function SketchForgeEditor({
       erase: "Erase: drag over points and lines to remove them",
       measure: "Measure: choose two points",
       dimension: "Dimension: click a line, a circle, or two points",
+      "dimension-angle": "Angle: click two lines",
       trim: "Trim: click the piece to remove. It cuts at the nearest intersection",
       fillet: "Select a corner to fillet",
       chamfer: "Select a corner to chamfer",
@@ -4278,6 +4276,25 @@ export function SketchForgeEditor({
         setSketchTool("select");
         setSketchSelection(null);
       }
+      return;
+    }
+
+    if (sketchTool === "dimension-angle") {
+      if (segmentIds.length < 2) return;
+      const angle = angleBetweenSketchLines(sketchDoc, segmentIds[0], segmentIds[1]);
+      if (angle === null) {
+        setNotice("Angle: click two straight lines");
+        setSketchSelection(null);
+        return;
+      }
+      const solved = addAngularDimension(sketchDoc, segmentIds[0], segmentIds[1], angle);
+      setSketchDoc(solved.doc);
+      setSketchSolveStatus(solved.status);
+      setSketchDof(solved.dof);
+      setSketchConflicts(solved.conflicts);
+      commitSketchProfile(sketchDocToProfile(solved.doc), `Driving angle ${angle.toFixed(1)}°`, solved.doc);
+      setSketchTool("select");
+      setSketchSelection(null);
       return;
     }
 
@@ -5312,7 +5329,7 @@ export function SketchForgeEditor({
         };
       }),
     };
-    commitSketchProfile(next, moving.size > 1 ? "Outline moved" : "Sketch point moved");
+    commitSketchProfile(next, moving.size > 1 ? "Outline moved" : "Sketch point moved", null, [...moving]);
   }, [commitSketchProfile, sketchProfile]);
 
   const moveSketchHandle = useCallback((id: string, handle: "in" | "out", position: { x: number; z: number }) => {
@@ -6154,6 +6171,29 @@ export function SketchForgeEditor({
     };
   }, [flushProjectShapesSync]);
 
+  /**
+   * A generated part appears at once as a quick mesh; its exact solid swaps in when ready, as the
+   * same undo step. Skipped if the part changed in the meantime: that change settles its own.
+   */
+  const settleGeneratedExact = useCallback(async (built: WorkplaneShape) => {
+    const exact = await withExactGeneratedShape(built);
+    if (exact === built || !exact.cadBrep) return;
+    const current = shapesRef.current.find((shape) => shape.id === built.id);
+    if (!current || current.importedMesh !== built.importedMesh || current.generated !== built.generated) return;
+    const placed: WorkplaneShape = { ...exact, x: current.x, z: current.z, elevation: current.elevation, rotation: current.rotation, rotationX: current.rotationX, rotationZ: current.rotationZ, hole: current.hole, color: current.color, name: current.name };
+    const next = shapesRef.current.map((shape) => (shape.id === built.id ? placed : shape));
+    shapesRef.current = next;
+    setShapes(next);
+    const entries = historyRef.current;
+    const index = historyIndexRef.current;
+    if (entries[index]) {
+      const nextEntries = entries.slice();
+      nextEntries[index] = editorHistoryEntry(next, selectedIdsRef.current);
+      historyRef.current = nextEntries;
+    }
+    syncProjectShapes(next);
+  }, [syncProjectShapes]);
+
   const addShape = useCallback(
     (asset: ShapeAsset, point?: { x: number; z: number; elevation?: number }) => {
       const x = point?.x ?? 0;
@@ -6179,8 +6219,9 @@ export function SketchForgeEditor({
       const settings = workspaceSettingsRef.current;
       const nextShape = makeShapeFromAsset(asset, place, settings.displayQuality, sheetThickness(settings) ?? undefined);
       commitShapes([...shapesRef.current, nextShape], nextShape.id, `${asset.name} added`);
+      if (nextShape.generated) void settleGeneratedExact(nextShape);
     },
-    [commitShapes],
+    [commitShapes, settleGeneratedExact],
   );
 
   const recordShapeRepeatActions = useCallback((entries: Array<{ shapeId: string; delta: ShapeRepeatDelta; before?: WorkplaneShape }>) => {
@@ -6270,6 +6311,58 @@ export function SketchForgeEditor({
         return;
       }
 
+      // A threaded screw hole is a Threads tapped hole: its thread and depth rebuild as threads do
+      // (below). Only a change to its own settings, such as Hole, rebuilds it from those.
+      const threadedGenerated = previous?.kind === "thread" && !cleanedPatch.generated;
+      if (previous?.generated && !threadedGenerated) {
+        const spec = cleanedPatch.generated ?? previous.generated;
+        const sizeChanged = typeof cleanedPatch.width === "number" || typeof cleanedPatch.depth === "number" || typeof cleanedPatch.size === "number" || typeof cleanedPatch.height === "number";
+        const meshOutOfSync = Boolean(previous.importedMesh && (
+          Math.abs(previous.height - previous.importedMesh.baseHeight) > 1e-4
+          || Math.abs(shapeWidth(previous) - previous.importedMesh.baseWidth) > 1e-4
+          || Math.abs(shapeDepth(previous) - previous.importedMesh.baseDepth) > 1e-4
+        ));
+        if (cleanedPatch.generated || sizeChanged || (bakeTransform && meshOutOfSync)) {
+          const merged = { ...previous, ...cleanedPatch };
+          // A fillet can shrink a part: a filleted star is narrower than its outline. The outline grows by
+          // as much as the finished part did, so the size typed is the size that comes out.
+          const outline = previous.featureBase;
+          const built = buildGeneratedShape(spec, {
+            width: outline ? shapeWidth(outline) + shapeWidth(merged) - shapeWidth(previous) : shapeWidth(merged),
+            depth: outline ? shapeDepth(outline) + shapeDepth(merged) - shapeDepth(previous) : shapeDepth(merged),
+            height: outline ? outline.height + merged.height - previous.height : merged.height,
+          }, merged);
+          if (!built) {
+            setNotice(spec.form === "qr" ? "That text is too long for a QR code" : "Could not rebuild that shape");
+            return;
+          }
+          if (projectInteractionActiveRef.current) {
+            // A live drag: no history entry per tick, and the exact solid waits for the drop.
+            setShapes((current) => {
+              const next = current.map((shape) => (shape.id === id ? built : shape));
+              interactionHistoryChangedRef.current = true;
+              shapesRef.current = next;
+              return next;
+            });
+            return;
+          }
+          commitShapes(shapesRef.current.map((shape) => (shape.id === id ? built : shape)), selectedIds, `${previous.name} updated`);
+          void (async () => {
+            await settleGeneratedExact(built);
+            const settled = shapesRef.current.find((shape) => shape.id === id);
+            if (!settled || !hasPartSteps(settled)) return;
+            if (settled.features?.length && stepsCanReplay(settled.features)) {
+              // The part is already its new size, so its steps replay on it as part of the same undo step.
+              const base: WorkplaneShape = { ...settled, features: undefined, featureBase: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined };
+              await replayPartStepsRef.current(id, settled.features, `${previous.name} updated`, base, { resized: true });
+            } else {
+              await reapplyEdgeTreatmentsRef.current(settled);
+            }
+          })();
+          return;
+        }
+      }
+
       if (previous?.kind === "thread") {
         const designationFromPatch = cleanedPatch.threadSpec?.designation as MetricThreadDesignation | undefined;
         const threadSpecDriven = Boolean(cleanedPatch.threadSpec);
@@ -6334,6 +6427,15 @@ export function SketchForgeEditor({
             });
             const nextShape = canonicalizeShape({
               ...built,
+              // A threaded screw hole stays a screw hole, so it can be switched back, and keeps its name.
+              // Its stored size follows the thread, keeping the head it had.
+              generated: (() => {
+                const hole = built.threadSpec ? threadedHoleSpec(built.threadSpec) : undefined;
+                return previous.generated?.form === "screwHole" && hole?.form === "screwHole"
+                  ? { ...hole, head: previous.generated.head }
+                  : previous.generated;
+              })(),
+              name: previous.generated ? previous.name : built.name,
               x: typeof cleanedPatch.x === "number" ? cleanedPatch.x : previous.x,
               z: typeof cleanedPatch.z === "number" ? cleanedPatch.z : previous.z,
               elevation: typeof cleanedPatch.elevation === "number" ? cleanedPatch.elevation : previous.elevation,
@@ -6460,6 +6562,96 @@ export function SketchForgeEditor({
     },
     [commitShapes, selectedIds],
   );
+
+  /**
+   * Mintr Pro: put back a top-level part whose values (or the settings that follow them) changed,
+   * with every setting and sketch size the values now give, as one undo step.
+   */
+  const applyValues = useCallback(async (nextBody: WorkplaneShape, message: string) => {
+    const plan = planValues(nextBody);
+    if (plan.errors.length > 0) setNotice(plan.errors[0]);
+    const startFingerprint = projectShapesFingerprint(shapesRef.current);
+    const sceneMoved = () => projectShapesFingerprint(shapesRef.current) !== startFingerprint;
+    const keepValues = (shape: WorkplaneShape, from: WorkplaneShape): WorkplaneShape => ({ ...shape, values: from.values, drivenBy: from.drivenBy });
+
+    if (plan.body.sketchDoc) {
+      const rebuild = await rebuildSketchedShape({ ...nextBody, ...cleanShapePatch(plan.body.patch) }, plan.body.sketchDoc, { exact: true });
+      if (!rebuild.ok) {
+        setNotice(rebuild.message);
+        return;
+      }
+      if (sceneMoved()) {
+        setNotice("The design changed while Mintr worked that out. Change the value again.");
+        return;
+      }
+      const rebuilt = keepValues(rebuild.shape, nextBody);
+      commitShapes(shapesRef.current.map((entry) => (entry.id === rebuilt.id ? rebuilt : entry)), rebuilt.id, message);
+      if (hasPartSteps(rebuilt)) await reapplyEdgeTreatmentsRef.current(rebuilt);
+      return;
+    }
+
+    const current = shapesRef.current.find((entry) => entry.id === nextBody.id);
+    if (!current) return;
+    if (plan.children.size === 0 && nextBody.groupedShapes === current.groupedShapes) {
+      // The same path as a typed size, so resizes, threads and a part's steps follow too.
+      const changed: Record<string, unknown> = {};
+      for (const key of new Set([...Object.keys(current), ...Object.keys(nextBody)])) {
+        const field = key as keyof WorkplaneShape;
+        if (field !== "id" && nextBody[field] !== current[field]) changed[key] = nextBody[field];
+      }
+      updateShape(nextBody.id, { ...(changed as Partial<WorkplaneShape>), ...plan.body.patch });
+      setNotice(message);
+      return;
+    }
+
+    let body: WorkplaneShape = bumpCsgVersion({
+      ...nextBody,
+      ...cleanShapePatch(plan.body.patch),
+      groupedShapes: (nextBody.groupedShapes ?? []).map((child) => {
+        const change = plan.children.get(child.id);
+        return change && Object.keys(change.patch).length ? canonicalizeShape({ ...child, ...cleanShapePatch(change.patch) }) : child;
+      }),
+    });
+    const sketchChildren = [...plan.children].filter(([, change]) => change.sketchDoc);
+    if (sketchChildren.length) {
+      // A sketched part inside rebuilds from its sketch, in the plate's frame, then joins the group again.
+      for (const [childId, change] of sketchChildren) {
+        const world = restoreGroupedChildren(body, { preserveIds: true }).find((child) => child.id === childId);
+        if (!world || !change.sketchDoc) continue;
+        const rebuild = await rebuildSketchedShape(world, change.sketchDoc, { exact: true });
+        if (!rebuild.ok) {
+          setNotice(rebuild.message);
+          return;
+        }
+        const raw = body.groupedShapes?.find((child) => child.id === childId);
+        const updated = await updateCsgLeafAndRemesh(body, childId, raw ? keepValues(rebuild.shape, raw) : rebuild.shape);
+        body = updated.body;
+      }
+      if (sceneMoved()) {
+        setNotice("The design changed while Mintr worked that out. Change the value again.");
+        return;
+      }
+      commitShapes(shapesRef.current.map((entry) => (entry.id === body.id ? body : entry)), body.id, message);
+      if (hasPartSteps(body)) await reapplyEdgeTreatmentsRef.current(body);
+      return;
+    }
+
+    if ((body.csg?.op ?? inferCsgOp(body)) === "assemble") {
+      const clean = markCsgClean({
+        ...body,
+        importedMesh: undefined,
+        csg: { op: "assemble", version: (body.csg?.version ?? 0) + 1, suppressed: body.csg?.suppressed },
+      });
+      commitShapes(shapesRef.current.map((entry) => (entry.id === clean.id ? clean : entry)), clean.id, message);
+      return;
+    }
+    const next = shapesRef.current.map((entry) => (entry.id === body.id ? body : entry));
+    shapesRef.current = next;
+    setShapes(next);
+    pendingFeatureRemeshRef.current = { bodyId: body.id, message };
+    await flushPendingFeatureRemesh();
+  }, [commitShapes, flushPendingFeatureRemesh, setNotice, updateShape]);
+
 
   const deleteSelected = useCallback(() => {
     if (!hasSelection) {
@@ -9687,8 +9879,8 @@ export function SketchForgeEditor({
     if (selectedShapes.length !== 1 || !selectedShape) return;
     const mate = matchingThreadPart(selectedShape, workspaceSettingsRef.current.printerKind);
     if (!mate) return;
-    commitShapes([...shapes, mate], [mate.id], `Made a matching ${mate.threadSpec?.designation ?? ""} tapped hole`);
-    setNotice("Matching tapped hole added on the same axis. Move it into your part, then Group.");
+    commitShapes([...shapes, mate], [mate.id], `Made a matching ${mate.threadSpec?.designation ?? ""} threaded hole`);
+    setNotice("Matching Threaded Hole added on the same axis. Move it into your part, then Group.");
   }, [commitShapes, selectedShape, selectedShapes.length, shapes]);
 
   /** Replace a baseplate that overhangs the printer bed with tabbed pieces laid out around its centre. */
@@ -10445,19 +10637,9 @@ export function SketchForgeEditor({
         const value = typeof params.value === "number" ? params.value : Number.NaN;
         if (!dimensionId || !Number.isFinite(value) || value <= 0) throw new Error("Provide dimensionId and a positive value");
         const solved = setDrivingDimensionValue(target.sketchDoc, dimensionId, value);
-        const profile = sketchDocToProfile(solved.doc);
-        profile.sketchPlane = target.sketchPlane ?? profile.sketchPlane;
-        const rebuilt = shapeFromSketchProfile(profile, target.height, {
-          ...target,
-          sketchDoc: solved.doc,
-          sketchId: target.sketchId ?? solved.doc.id,
-        }, {
-          cutIntoFace: Boolean(target.hole && isFaceHostedSketch(target.sketchPlane, target.sketchProfile?.faceReferenceLoops)),
-        });
-        if (!rebuilt) throw new Error("Could not rebuild sketch after dimension change");
-        rebuilt.sketchDoc = solved.doc;
-        rebuilt.hole = target.hole;
-        rebuilt.color = target.color;
+        const rebuild = await rebuildSketchedShape(target, solved.doc);
+        if (!rebuild.ok) throw new Error(rebuild.message);
+        const rebuilt = rebuild.shape;
         const owner = findCsgBodyOwningLeaf(currentShapes(), target.id);
         if (owner) {
           const remeshGen = remeshGenerationRef.current + 1;
@@ -11227,6 +11409,40 @@ export function SketchForgeEditor({
     setNotice(`Made ${made.length} panels. Save the cut file to cut them, or use Nest to pack them on the bed.`);
   }, [clearOfOtherParts, commitShapes]);
 
+  /** Fit test: a comb of slots, each numbered with the kerf it tests, and a key to push into them. */
+  const addFitTest = useCallback(() => {
+    const settings = workspaceSettingsRef.current;
+    const thickness = settings.materialThickness;
+    const layout = fitTestLayout(fitTestKerfs(settings.laserType), settings.kerfMm);
+    const part = (outline: [number, number][], name: string) => {
+      const ids = outline.map(() => createLocalId("fit-point"));
+      const shape = shapeFromSketchProfile({
+        // A sketch's z runs the other way to the workplane's.
+        points: outline.map(([x, z], index) => ({ id: ids[index], x, z: -z, mode: "corner" as const })),
+        segments: ids.map((id, index) => ({ id: createLocalId("fit-edge"), startId: id, endId: ids[(index + 1) % ids.length], kind: "line" as const })),
+        images: [],
+      }, thickness);
+      return shape ? canonicalizeShape({ ...shape, id: createLocalId("fit-test"), name, color: BOX_PANEL_COLOR }) : null;
+    };
+    const comb = part(layout.comb, "Fit test comb");
+    const key = part(layout.key, "Fit test key");
+    const textAsset = toolbarShapeAssets.find((asset) => asset.kind === "text");
+    if (!comb || !key || !textAsset) {
+      setNotice("Could not make the fit test");
+      return;
+    }
+    const labels = layout.labels.map((label) => ({
+      ...makeShapeFromAsset(textAsset, { x: label.x, z: label.z }, settings.displayQuality, thickness),
+      name: `Fit test ${label.text}`,
+      text: label.text,
+      width: label.width,
+      depth: label.depth,
+      laserJob: "engrave" as const,
+    }));
+    const made = clearOfOtherParts([comb, key, ...labels]);
+    commitShapes([...shapesRef.current, ...made], made.map((shape) => shape.id), "Added a fit test");
+  }, [clearOfOtherParts, commitShapes]);
+
   /** Trace logo: the traced outlines become one sheet-thick part, each piece with its own holes. */
   const makeTracedLogo = useCallback((logo: TracedLogo) => {
     const points: SketchProfile["points"] = [];
@@ -11384,18 +11600,18 @@ export function SketchForgeEditor({
         setNotice(`${source.name} left nothing to cut. It may be thinner than the sheet.`);
         return;
       }
-      const result = nestParts(
-        parts.map((part, index) => ({ id: String(index), width: part.width, depth: part.height })),
+      // Each part lies with its top toward the back, then is packed by its outline, turned where that fits better.
+      const lying = ([u, v]: readonly [number, number], height: number): [number, number] => [u, height - v];
+      const result = nestOutlines(
+        runtime,
+        parts.map((part, index) => ({ id: String(index), loops: part.polygons.map((polygon) => polygon.map((point) => lying(point, part.height))) })),
         { width: settings.laserWidth, depth: settings.laserDepth },
-        Math.max(2, settings.kerfMm * 10),
+        settings.nestGapMm,
       );
       const made: WorkplaneShape[] = [];
       for (const placement of result.placements) {
         const part = parts[Number(placement.id)];
-        // Each part lies with its top toward the back, or turned a quarter where the bed fits it better.
-        const toBed = ([u, v]: readonly [number, number]): [number, number] => placement.turned
-          ? [placement.minX + v, placement.minZ + u]
-          : [placement.minX + u, placement.minZ + (part.height - v)];
+        const toBed = (point: readonly [number, number]) => placePoint(lying(point, part.height), placement);
         const points: SketchProfile["points"] = [];
         const segments: SketchProfile["segments"] = [];
         for (const polygon of part.polygons) {
@@ -11426,52 +11642,67 @@ export function SketchForgeEditor({
     }
   }, [clearOfOtherParts, commitShapes]);
 
-  /** Nest: packs the parts on the laser bed, turning them a quarter where that fits better. */
-  const nestLaserParts = useCallback(() => {
+  /**
+   * Nest: packs the parts on the laser bed by their real outlines, the gap from the
+   * machine settings apart, turning them where that fits better. Parts that overlap,
+   * such as engraving on a plate, move together.
+   */
+  const nestLaserParts = useCallback(async () => {
     const source = (hasSelection ? selectedShapes : shapes).filter((shape) => !shape.hole && !shape.hidden && !shape.locked && !isConstructionShape(shape));
     if (source.length === 0) {
       setNotice(hasSelection ? "Select unlocked parts to nest" : "Add a part to nest first");
       return;
     }
-    const footprint = (shape: WorkplaneShape) => {
-      const { vertices } = meshForShape(shape);
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minZ = Infinity;
-      let maxZ = -Infinity;
-      for (const [x, , z] of vertices) {
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minZ = Math.min(minZ, z);
-        maxZ = Math.max(maxZ, z);
-      }
-      return { minX, maxX, minZ, maxZ };
-    };
+    setNotice("Nesting…");
+    let runtime;
+    try {
+      runtime = await getManifoldRuntime();
+    } catch {
+      setNotice("Could not load the geometry engine to nest");
+      return;
+    }
     const settings = workspaceSettingsRef.current;
-    const boxes = new Map(source.map((shape) => [shape.id, footprint(shape)]));
-    const result = nestParts(
-      source.map((shape) => {
-        const box = boxes.get(shape.id)!;
-        return { id: shape.id, width: box.maxX - box.minX, depth: box.maxZ - box.minZ };
-      }),
-      { width: settings.laserWidth, depth: settings.laserDepth },
-      Math.max(2, settings.kerfMm * 10),
-    );
-    const placements = new Map(result.placements.map((placement) => [placement.id, placement]));
-    const moved = new Set<string>();
+    const gap = settings.nestGapMm;
+    const outlined: { shape: WorkplaneShape; loops: [number, number][][] }[] = [];
+    const flat: string[] = [];
+    for (const shape of source) {
+      let loops: [number, number][][] = [];
+      try {
+        loops = footprintOutline(runtime, meshForShape(shape));
+      } catch {
+        loops = [];
+      }
+      if (loops.length === 0) flat.push(shape.name);
+      else outlined.push({ shape, loops });
+    }
+    // Parts whose outlines overlap stay together, so engraving stays on its plate.
+    const groups = overlappingGroups(runtime, outlined.map((entry) => entry.loops));
+    // A part tipped over turns differently about the up axis, so it keeps the way it lies.
+    const upright = (shape: WorkplaneShape) => Math.abs(cleanRotationDegrees(shape.rotationX ?? 0)) < 1e-6 && Math.abs(cleanRotationDegrees(shape.rotationZ ?? 0)) < 1e-6;
+    const items = groups.map((group, index) => ({
+      id: String(index),
+      loops: group.loops,
+      canTurn: group.members.every((member) => upright(outlined[member].shape)),
+    }));
+    const result = nestOutlines(runtime, items, { width: settings.laserWidth, depth: settings.laserDepth }, gap);
+    const moves = new Map<string, (typeof result.placements)[number]>();
+    for (const placement of result.placements) {
+      for (const member of groups[Number(placement.id)].members) moves.set(outlined[member].shape.id, placement);
+    }
+    // Each part turns about the bed's centre and moves with its group; a part turns about its own position, so that moves too.
     const next = shapesRef.current.map((shape) => {
-      const placement = placements.get(shape.id);
+      const placement = moves.get(shape.id);
       if (!placement) return shape;
-      // Turn first, then move by where the turned part's footprint lands.
-      const turned = placement.turned ? { ...shape, rotation: cleanRotationDegrees((shape.rotation ?? 0) + 90) } : shape;
-      const box = placement.turned ? footprint(turned) : boxes.get(shape.id)!;
-      moved.add(shape.id);
-      return { ...turned, x: turned.x + (placement.minX - box.minX), z: turned.z + (placement.minZ - box.minZ) };
+      const [x, z] = placePoint([shape.x, shape.z], placement);
+      const rotation = placement.quarterTurns === 0 ? shape.rotation : cleanRotationDegrees((shape.rotation ?? 0) + 90 * placement.quarterTurns);
+      return { ...shape, x, z, rotation };
     });
-    commitShapes(next, [...moved], `Nested ${moved.size} part${moved.size === 1 ? "" : "s"}`);
+    const count = moves.size;
+    commitShapes(next, [...moves.keys()], `Nested ${count} part${count === 1 ? "" : "s"}`);
     const extra = result.sheets > 1 ? ` They need ${result.sheets} sheets; the rest are laid out beside the bed.` : "";
     const big = result.tooBig.length > 0 ? ` ${result.tooBig.length === 1 ? "One part is" : `${result.tooBig.length} parts are`} bigger than the bed.` : "";
-    setNotice(`Packed ${moved.size} part${moved.size === 1 ? "" : "s"} on the bed.${extra}${big}`);
+    const skipped = flat.length > 0 ? ` ${flat.join(", ")} had no outline from above, so stayed put.` : "";
+    setNotice(`Packed ${count} part${count === 1 ? "" : "s"} on the bed, ${Number(gap.toFixed(2))} mm apart.${extra}${big}${skipped}`);
   }, [commitShapes, hasSelection, selectedShapes, shapes]);
   /** A laser design's cut file: every part's outline, marked cut, score or engrave, at true size. */
   const saveCutFile = useCallback(async (format: "svg" | "dxf", openIn?: LaserApp | null) => {
@@ -13071,8 +13302,8 @@ export function SketchForgeEditor({
         {sketchFacePickMode && !sketchActive ? (
           <div className="sketch-revolve-prompt sketch-face-prompt phase-confirm" role="status">
             <div className="sketch-revolve-prompt-copy">
-              <strong>Click a face</strong>
-              <span>Click the face you want to draw on. A flat plate opens for the sketch.</span>
+              <strong>Where do you want to sketch?</strong>
+              <span>Click a face of a part, or anywhere on the workplane.</span>
             </div>
             <div className="sketch-revolve-prompt-actions">
               <button type="button" className="cancel" onClick={cancelSketchFacePick}>Cancel</button>
@@ -13382,12 +13613,8 @@ export function SketchForgeEditor({
             />
             {toolbarMode === "sketch" && !sketchActive ? (
               <>
-              <SketchCreateMenu
-                canEditSketch={shapeHasEditableSketch(selectedShape)}
-                newSketchSelected={sketchFacePickMode}
-                onNewSketch={beginSketchFacePick}
-                onEditSketch={beginEditSelectedSketch}
-              />
+              {/* Entering Sketch goes straight to picking a place; only a part that already
+                  has a sketch asks whether to edit it or start a new one. */}
               {sketchEditOffer ? (
                 <div className="sketch-revolve-prompt phase-confirm" role="dialog" aria-label="Edit sketch">
                   <div className="sketch-revolve-prompt-copy">
@@ -13452,6 +13679,7 @@ export function SketchForgeEditor({
           settingsOpen={settingsOpen && !(toolbarMode === "sketch" && sketchActive && sketchFocusMode === "2d")}
           settingsSection={settingsSection}
           onSettingsClose={() => setSettingsOpen(false)}
+          onAddFitTest={laserDesignOpen && !isCrystalDesign(workspaceSettings) ? addFitTest : undefined}
           applyFlash={cadApplyFlash}
           sketchGuides={sketchActive ? {
             showGuides: sketchDoc.settings.showConstruction,
@@ -13543,7 +13771,8 @@ export function SketchForgeEditor({
           onSelectShape={historyBrowse !== null && historyBrowse !== historyIndex ? () => setHistoryBrowse(null) : selectShape}
           onInteractionActiveChange={updateProjectInteractionActive}
           onEditSketch={shapeHasEditableSketch(selectedShape) ? beginEditSelectedSketch : undefined}
-          onEditSketchDimension={resolveEditableSketchShape(
+          onApplyValues={workspaceSettings.peakcadPro ? (body, message) => { void applyValues(body, message); } : undefined}
+          onEditSketchDimension={workspaceSettings.peakcadPro && resolveEditableSketchShape(
             activeFeatureId && selectedShape?.groupedShapes
               ? selectedShape.groupedShapes.find((child) => child.id === activeFeatureId) ?? selectedShape
               : selectedShape,
@@ -14299,6 +14528,7 @@ export function SketchForgeEditor({
           onMakeDefault={makeSketchWorkspaceDefault}
           onClose={() => setSettingsOpen(false)}
           initialSection={settingsSection}
+          onAddFitTest={laserDesignOpen && !isCrystalDesign(workspaceSettings) ? addFitTest : undefined}
           sketchGuides={{
             showGuides: sketchDoc.settings.showConstruction,
             drawAsGuides: sketchDoc.settings.constructionMode,

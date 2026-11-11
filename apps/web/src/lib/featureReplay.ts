@@ -223,6 +223,8 @@ export function placeReplayedShape(rebuilt: WorkplaneShape, live: WorkplaneShape
     hole: live.hole,
     locked: live.locked,
     hidden: live.hidden,
+    values: live.values,
+    drivenBy: live.drivenBy,
     x: rebuilt.x + shift[0],
     z: rebuilt.z + shift[2],
     elevation: elevation + shift[1],

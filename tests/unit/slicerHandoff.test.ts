@@ -47,7 +47,7 @@ describe("slicer handoff", () => {
 
   it("downloads a 3MF when slicer handoff is off or nothing is installed", () => {
     expect(resolveSlicerChoice({ mode: "off" }, [orca]).label).toBe("Download 3MF");
-    expect(resolveSlicerChoice({ mode: "off" }, [orca]).caption).toContain("Settings → Printing");
+    expect(resolveSlicerChoice({ mode: "off" }, [orca]).caption).toContain("Settings → Machines");
     expect(resolveSlicerChoice({ mode: "auto" }, []).launch).toBe(false);
   });
 

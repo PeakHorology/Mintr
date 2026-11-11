@@ -1,4 +1,4 @@
-import type { WorkplaneShape } from "@/types/sketchforge";
+import type { GeneratedSpec, WorkplaneShape } from "@/types/sketchforge";
 
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { gearFootprint, gearSpecKey, moduleForSpan, normalizeGearSpec } from "@/lib/gearProfile";
@@ -395,6 +395,18 @@ function dropStaleGridfinityBrep(next: WorkplaneShape, key: string) {
   next.cadDisplayEdgesVersion = undefined;
 }
 
+/** The Threaded Hole settings for a tapped hole's thread: a plain hole with no head recess, as it was. */
+export function threadedHoleSpec(thread: NonNullable<WorkplaneShape["threadSpec"]>): GeneratedSpec {
+  const custom = thread.designation === "Custom" || thread.series === "custom";
+  return {
+    form: "screwHole",
+    size: custom ? "Custom" : thread.designation,
+    head: "none",
+    threaded: true,
+    ...(custom ? { diameter: thread.majorDiameter, pitch: thread.pitch } : {}),
+  };
+}
+
 export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
   const next: WorkplaneShape = {
     ...shape,
@@ -405,6 +417,11 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
     mirrorY: shape.mirrorY || undefined,
     mirrorZ: shape.mirrorZ || undefined,
   };
+  // Tapped holes are Threaded Holes now, whether made by an older Threads or by a matching screw.
+  const tappedSpec = shape.kind === "thread" && !shape.generated ? shape.threadSpec : undefined;
+  if (tappedSpec && (tappedSpec.role === "bore" || (!tappedSpec.role && (tappedSpec.style === "hole" || tappedSpec.part === "threads")))) {
+    next.generated = threadedHoleSpec(tappedSpec);
+  }
   if (shape.kind === "cone") {
     // Grow only when the larger ring fits on neither axis. A Length or Width
     // edit scales the radii and may leave an ellipse; inflating both axes
@@ -552,9 +569,13 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.importedMesh === b.importedMesh &&
     a.imagePlate === b.imagePlate &&
     a.sketchProfile === b.sketchProfile &&
+    a.sketchDoc === b.sketchDoc &&
     a.edgeTreatments === b.edgeTreatments &&
     a.features === b.features &&
     a.featureBase === b.featureBase &&
+    a.generated === b.generated &&
+    a.values === b.values &&
+    a.drivenBy === b.drivenBy &&
     a.surfaceTexture === b.surfaceTexture &&
     a.laserJob === b.laserJob &&
     a.edgeTreatmentHistory === b.edgeTreatmentHistory &&

@@ -9,6 +9,8 @@ import {
 import {
   buildMetricThreadedCylinder,
   DEFAULT_THREAD_CLEARANCE,
+  exactThreadPlan,
+  type ExactThreadPlan,
   defaultThreadClearance,
   DEFAULT_THREAD_SIDES,
   MAX_THREAD_CLEARANCE,
@@ -46,6 +48,8 @@ export type ThreadShapeSpec = {
   series?: ThreadSeries;
   profile?: ThreadProfile;
   chamfer?: number;
+  /** Built as a true helical solid for Group, cuts and STEP. */
+  exact?: boolean;
   length?: number;
 };
 
@@ -106,6 +110,7 @@ function normalizeThreadSpec(input?: Partial<ThreadShapeSpec> | WorkplaneShape["
     series: custom ? "custom" : listed.series,
     profile: input?.profile === "trapezoid" || input?.profile === "round" || input?.profile === "whitworth" ? input.profile : "v",
     chamfer: Math.max(0, Math.min(2, input?.chamfer ?? 0.3)),
+    exact: input?.exact === true ? true : undefined,
     length: input?.length,
   };
 }
@@ -118,12 +123,13 @@ function shapeNameForSpec(spec: ThreadShapeSpec, fallback?: string) {
     && !fallback.startsWith("Rod ")
     && !fallback.startsWith("Screw ")
     && !fallback.startsWith("Nut ")
-    && !fallback.startsWith("Tapped hole ");
+    && !fallback.startsWith("Tapped hole ")
+    && !fallback.startsWith("Threaded Hole ");
   if (keepCustomName) return fallback;
   const size = spec.designation;
   if (spec.part === "shaft") return `Shaft ${size}`;
   if (spec.role === "nut") return `Nut ${size}`;
-  if (spec.role === "bore") return `Tapped hole ${size}`;
+  if (spec.role === "bore") return `Threaded Hole ${size}`;
   if (spec.role === "screw") return `Screw ${size}`;
   return `Rod ${size}`;
 }
@@ -150,6 +156,7 @@ export function createThreadShape(options: {
     series: prior?.series,
     profile: prior?.profile,
     chamfer: prior?.chamfer,
+    exact: prior?.exact,
     length: prior?.length ?? options.height ?? options.base?.height,
   });
   const length = Math.max(0.5, spec.length ?? options.height ?? options.base?.height ?? DEFAULT_THREAD_HEIGHT);
@@ -215,6 +222,7 @@ export function createThreadShape(options: {
       profile: spec.profile,
       chamfer: spec.chamfer,
       length,
+      exact: spec.exact,
     },
     importedMesh: {
       positions: Array.from(mesh.positions),
@@ -396,7 +404,7 @@ export function matchingThreadPart(shape: WorkplaneShape, printerKind?: "filamen
     point: { x: center.x, z: center.z, elevation: center.y - length / 2 },
     base: {
       id: createLocalId("thread"),
-      name: `Tapped hole ${spec.designation}`,
+      name: "Threaded Hole",
       color: "#b8c2cc",
       sides: shape.sides,
       rotation: shape.rotation,
@@ -414,6 +422,7 @@ export function matchingThreadPart(shape: WorkplaneShape, printerKind?: "filamen
         series: spec.series,
         profile: spec.profile,
         chamfer: spec.chamfer,
+        exact: spec.exact,
         style: "hole",
         part: "threads",
         role: "bore",
@@ -421,6 +430,32 @@ export function matchingThreadPart(shape: WorkplaneShape, printerKind?: "filamen
         length,
       },
     },
+  });
+}
+
+/**
+ * The exact thread the engine builds for a thread set to Exact: the same sizes, fit, chamfers,
+ * head and hand as its print mesh. Null for a thread left Print-ready.
+ */
+export function exactThreadPlanForShape(shape: WorkplaneShape): ExactThreadPlan | null {
+  const spec = shape.threadSpec;
+  if (shape.kind !== "thread" || !spec?.exact) return null;
+  const length = Math.max(0.5, spec.length ?? shape.height);
+  const params = resolveThreadParams({
+    designation: findMetricThread(spec.designation)?.designation,
+    majorDiameter: spec.majorDiameter,
+    pitch: spec.pitch,
+    length,
+    side: spec.role === "bore" || spec.role === "nut" ? "internal" : "external",
+    handedness: spec.hand,
+  });
+  return exactThreadPlan(params, length, {
+    clearance: spec.role === "bore" || spec.role === "nut" ? clampThreadClearance(spec.clearance) : 0,
+    part: spec.part,
+    role: spec.role,
+    head: spec.head,
+    chamfer: spec.chamfer,
+    profile: spec.profile,
   });
 }
 

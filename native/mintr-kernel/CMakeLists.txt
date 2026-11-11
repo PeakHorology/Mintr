@@ -16,6 +16,7 @@ set(MINTR_KERNEL_SOURCES
   src/split.cpp
   src/print.cpp
   src/recipe.cpp
+  src/thread.cpp
 )
 
 # The browser build: the same engine as WebAssembly, entered through wasm.cpp

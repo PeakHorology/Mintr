@@ -375,12 +375,13 @@ export function ToolbarIntersectionIcon(props: IconProps) {
   );
 }
 
+/** A block and a ball under one skin of film, pinched where it stretches between them. */
 export function ToolbarShrinkWrapIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
-      <circle cx="8" cy="14.5" r="3.2" />
-      <rect x="12.6" y="6" width="6" height="6" rx="0.8" />
-      <path d="M5.2 12.6 12.4 5.4h6.4l2.4 2.4v4.6L11.4 17.4l-3.6.3-3-1.6z" strokeDasharray="2.2 1.6" />
+      <rect x="4" y="10" width="7" height="8" rx="0.8" fill="currentColor" stroke="none" opacity="0.28" />
+      <circle cx="16.5" cy="10.5" r="4" fill="currentColor" stroke="none" opacity="0.28" />
+      <path d="M3.1 10.7v6.6a1.6 1.6 0 0 0 1.6 1.6h5.6a1.6 1.6 0 0 0 1.6-1.6q1.78-2.84 6.22-2.17a4.9 4.9 0 0 0-4.62-8.51Q11.95 10.06 10.3 9.1H4.7a1.6 1.6 0 0 0-1.6 1.6z" />
     </CadGlyph>
   );
 }
@@ -445,13 +446,11 @@ export function ToolbarSplitIcon(props: IconProps) {
   );
 }
 
-/** A block whose front face carries a diamond knurl. */
+/** A block in profile with ribs raised along its top face: surface relief on a part. */
 export function ToolbarTextureIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
-      <path d="M4 6h16v13H4z" />
-      <path d="M4 12.5 10.5 6M4 19l13-13M10.5 19 20 9.5M17 19l3-3" />
-      <path d="M10.5 6 20 15.5M4 6l13 13M4 12.5 10.5 19" />
+      <path d="M3.5 18V9.5a2.125 1.8 0 0 1 4.25 0a2.125 1.8 0 0 1 4.25 0a2.125 1.8 0 0 1 4.25 0a2.125 1.8 0 0 1 4.25 0V18a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z" />
     </CadGlyph>
   );
 }
@@ -659,6 +658,15 @@ export function SketchDimensionIcon(props: IconProps) {
       <path d="M10 34V14M38 34V14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
       <path d="M10 24h28" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
       <path d="M14 20l-4 4 4 4M34 20l4 4-4 4" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </SketchGlyphIcon>
+  );
+}
+
+export function SketchAngleDimensionIcon(props: IconProps) {
+  return (
+    <SketchGlyphIcon {...props}>
+      <path d="M10 38h28M10 38l18-24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M24 38a14 14 0 0 0-5.6-11.2" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
     </SketchGlyphIcon>
   );
 }

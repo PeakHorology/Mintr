@@ -1019,8 +1019,8 @@ function appendLine(points: SketchPoint[], segments: SketchSegment[], to: { x: n
   segments.push({ id: createLocalId("sketch-segment"), startId, endId, kind: "line" });
 }
 
-/** Rounded rectangle from corner drag; corner radius scales with the shorter side. */
-export function roundedRectangleSketchGeometry(origin: { x: number; z: number }, corner: { x: number; z: number }): Pick<SketchProfile, "points" | "segments"> | null {
+/** Rounded rectangle from corner drag; corner radius scales with the shorter side unless given. */
+export function roundedRectangleSketchGeometry(origin: { x: number; z: number }, corner: { x: number; z: number }, cornerRadius?: number): Pick<SketchProfile, "points" | "segments"> | null {
   const width = Math.abs(corner.x - origin.x);
   const depth = Math.abs(corner.z - origin.z);
   if (width < 0.5 || depth < 0.5) return null;
@@ -1028,7 +1028,7 @@ export function roundedRectangleSketchGeometry(origin: { x: number; z: number },
   const maxX = Math.max(origin.x, corner.x);
   const minZ = Math.min(origin.z, corner.z);
   const maxZ = Math.max(origin.z, corner.z);
-  const radius = Math.min(width, depth) * 0.22;
+  const radius = cornerRadius ?? Math.min(width, depth) * 0.22;
   const points: SketchPoint[] = [];
   const segments: SketchSegment[] = [];
 
@@ -1112,11 +1112,12 @@ export function starSketchGeometry(
   center: { x: number; z: number },
   tip: { x: number; z: number },
   tips = DEFAULT_SKETCH_STAR_POINTS,
+  innerRatio = 0.382,
 ): Pick<SketchProfile, "points" | "segments"> | null {
   const count = Math.max(3, Math.min(16, Math.round(tips)));
   const outer = Math.hypot(tip.x - center.x, tip.z - center.z);
   if (outer < 0.25) return null;
-  const inner = outer * 0.382;
+  const inner = outer * innerRatio;
   const startAngle = Math.atan2(tip.z - center.z, tip.x - center.x);
   const verts: Array<{ x: number; z: number }> = [];
   for (let index = 0; index < count * 2; index += 1) {

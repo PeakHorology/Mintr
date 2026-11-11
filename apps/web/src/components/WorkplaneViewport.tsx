@@ -123,6 +123,7 @@ import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
 import { xrayAxisBounds, xrayClipping, xraySpanCenter, type XrayAxis, type XraySpan } from "@/lib/xraySection";
+import { clearSectionCaps, measureSectionAt, rebuildSectionCaps, sectionCapPlane, updateSectionCaps } from "@/lib/xrayCaps";
 import type { SketchForgeMcpViewFace } from "@/lib/sketchforgeMcpProtocol";
 import {
   cameraFacingTiltAxis,
@@ -296,6 +297,7 @@ function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
       kind: asset.kind as ShapeAsset["kind"],
       color: asset.color,
       hole: asset.hole,
+      generated: asset.generated,
     };
   } catch {
     return null;
@@ -349,6 +351,8 @@ export type WorkplaneViewportProps = {
   onSceneReady?: () => void;
   onEditSketch?: () => void;
   onEditSketchDimension?: (dimensionId: string, value: number) => void;
+  /** Mintr Pro: a top-level part changed in its values or what follows them. */
+  onApplyValues?: (nextBody: WorkplaneShape, message: string) => void;
   canSeparateParts?: boolean;
   onSeparateParts?: () => void;
   onMakeMatchingThread?: () => void;
@@ -386,6 +390,8 @@ export type WorkplaneViewportProps = {
   /** The Settings tab to open on. */
   settingsSection?: SettingsSectionId;
   onSettingsClose?: () => void;
+  /** Machine settings' fit test: adds the comb and key to the design. */
+  onAddFitTest?: () => void;
   modifierActive?: boolean;
   /** When true, keep the object selection outline visible while a modifier tool is active. */
   modifierPreserveSelection?: boolean;
@@ -519,6 +525,8 @@ export type ThreeState = {
   helperLayer: THREE.Group;
   modifierLayer: THREE.Group;
   xrayLayer: THREE.Group;
+  /** X-ray's filled, hatched cut faces. */
+  sectionCapLayer: THREE.Group;
   printLayer: THREE.Group;
   printShapes: WorkplaneShape[];
   showPrinterBed: boolean;
@@ -2654,6 +2662,7 @@ export function WorkplaneViewport({
   onSceneReady,
   onEditSketch,
   onEditSketchDimension,
+  onApplyValues,
   canSeparateParts = false,
   onSeparateParts,
   onMakeMatchingThread,
@@ -2686,6 +2695,7 @@ export function WorkplaneViewport({
   settingsOpen = false,
   settingsSection,
   onSettingsClose,
+  onAddFitTest,
   modifierActive = false,
   modifierPreserveSelection = false,
   modifierPreviewActive = false,
@@ -2758,8 +2768,11 @@ export function WorkplaneViewport({
   const [xrayAxis, setXrayAxis] = useState<XrayAxis>("y");
   const [xrayPosition, setXrayPosition] = useState(10);
   const [xrayKeepLow, setXrayKeepLow] = useState(true);
-  const [xrayShowPlane, setXrayShowPlane] = useState(true);
+  // The filled cut shows where the plane is, so the sheet starts hidden.
+  const [xrayShowPlane, setXrayShowPlane] = useState(false);
   const [xrayControlsOpen, setXrayControlsOpen] = useState(false);
+  const [sectionMeasureLabel, setSectionMeasureLabel] = useState<{ left: number; top: number; text: string } | null>(null);
+  const sectionMeasureShownRef = useRef(false);
   const [cameraControlsCollapsed, setCameraControlsCollapsed] = useState(false);
   const [inspectorPanelOpen, setInspectorPanelOpen] = useState(true);
   const [assetDragOver, setAssetDragOver] = useState(false);
@@ -3853,6 +3866,7 @@ export function WorkplaneViewport({
       disposeChildren(state.modifierLayer);
       stopXraySweep(state);
       disposeChildren(state.xrayLayer);
+      clearSectionCaps(state.sectionCapLayer);
       disposeChildren(state.printLayer);
       state.renderer.dispose();
       host.replaceChildren();
@@ -5066,6 +5080,12 @@ export function WorkplaneViewport({
   const tryCycleStackedSelection = useCallback(
     (clientX: number, clientY: number) => {
       const picked = pickShapesAt(clientX, clientY);
+      // A click on empty space never cycles: it clears the selection, even right after a
+      // click on stacked parts (otherwise it kept swapping between them).
+      if (picked.length === 0) {
+        lastStackClickRef.current = null;
+        return false;
+      }
       const last = lastStackClickRef.current;
       const hits = picked.length >= 2 ? picked : last?.hits ?? picked;
       const recent = Boolean(last && performance.now() - last.time <= 700);
@@ -5812,6 +5832,27 @@ export function WorkplaneViewport({
     ],
   );
 
+  /** In X-ray, the wall or gap under the pointer on the cut, with its size beside the pointer. */
+  const showSectionMeasure = useCallback((state: ThreeState, point: { x: number; y: number } | null) => {
+    const result = point ? xraySectionMeasure(state, point.x, point.y) : measureSectionAt(state.sectionCapLayer, null);
+    if (!result) {
+      if (sectionMeasureShownRef.current) {
+        sectionMeasureShownRef.current = false;
+        setSectionMeasureLabel(null);
+        state.needsRender = true;
+      }
+      return;
+    }
+    sectionMeasureShownRef.current = true;
+    state.needsRender = true;
+    const rect = state.renderer.domElement.getBoundingClientRect();
+    setSectionMeasureLabel({
+      left: point!.x - rect.left + 16,
+      top: point!.y - rect.top + 16,
+      text: `${result.kind === "wall" ? "Wall" : "Gap"} ${result.length.toFixed(2)} mm`,
+    });
+  }, []);
+
   const scheduleShapeHover = useCallback((clientX: number, clientY: number) => {
     shapeHoverPointRef.current = { x: clientX, y: clientY };
     if (shapeHoverFrameRef.current !== null) return;
@@ -5824,15 +5865,17 @@ export function WorkplaneViewport({
           shapeHoverIdRef.current = null;
           if (state) showShapeHoverOutline(state, null);
         }
+        if (state) showSectionMeasure(state, null);
         return;
       }
+      showSectionMeasure(state, point);
       const id = pickShapesAt(point.x, point.y)[0] ?? null;
       const next = id && !selectedIdsRef.current.includes(id) ? id : null;
       if (next === shapeHoverIdRef.current) return;
       shapeHoverIdRef.current = next;
       showShapeHoverOutline(state, next);
     });
-  }, [pickShapesAt]);
+  }, [pickShapesAt, showSectionMeasure]);
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -6074,10 +6117,11 @@ export function WorkplaneViewport({
       shapeHoverIdRef.current = null;
       showShapeHoverOutline(threeRef.current, null);
     }
+    if (threeRef.current) showSectionMeasure(threeRef.current, null);
     if (modifierActiveRef.current) clearModifierEdgeHover();
     if (pushPullActiveRef.current && !pushPullDragRef.current) onPushPullHoverRef.current?.(null);
     if (sketchFacePickModeRef.current) clearSketchFaceHover();
-  }, [clearModifierEdgeHover, clearSketchFaceHover]);
+  }, [clearModifierEdgeHover, clearSketchFaceHover, showSectionMeasure]);
 
   const handleLostPointerCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (textureDragRef.current === event.pointerId) {
@@ -6976,6 +7020,11 @@ export function WorkplaneViewport({
             }
           />
           {marqueeRect ? <div className="selection-marquee" style={marqueeRect} /> : null}
+          {sectionMeasureLabel && xrayEnabled ? (
+            <div className="ruler-label xray-measure-label" style={{ left: sectionMeasureLabel.left, top: sectionMeasureLabel.top }}>
+              {sectionMeasureLabel.text}
+            </div>
+          ) : null}
           {objectSnapGuide && threeRef.current ? (
             <svg className="object-snap-guides" aria-hidden="true">
               {objectSnapGuide.guides.map((guide, index) => {
@@ -7138,6 +7187,7 @@ export function WorkplaneViewport({
           onSnapChange={setSnap}
           onMakeDefault={makeWorkspaceDefault}
           onClose={() => onSettingsClose?.()}
+          onAddFitTest={onAddFitTest}
           sketchGuides={sketchGuides}
           initialSection={settingsSection}
         />
@@ -7171,6 +7221,7 @@ export function WorkplaneViewport({
             }}
             onEditSketch={onEditSketch}
             onEditSketchDimension={onEditSketchDimension}
+            onApplyValues={onApplyValues}
             canSeparateParts={canSeparateParts}
             onSeparateParts={onSeparateParts}
             onMakeMatchingThread={onMakeMatchingThread}
@@ -7208,7 +7259,8 @@ function resolveHostSize(host: HTMLElement) {
 }
 
 function createThreeScene(host: HTMLDivElement): ThreeState {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: shouldPreserveDrawingBufferForLocalAutomation() });
+  // Stencil is for X-ray's filled cut faces; three.js leaves it off unless asked.
+  const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: "high-performance", preserveDrawingBuffer: shouldPreserveDrawingBufferForLocalAutomation() });
   renderer.setPixelRatio(resolvePixelRatio(window.devicePixelRatio || 1));
   renderer.shadowMap.autoUpdate = false;
   renderer.domElement.addEventListener("webglcontextlost", (event) => {
@@ -7285,10 +7337,14 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
   modifierLayer.name = "EdgeModifier";
   const xrayLayer = new THREE.Group();
   xrayLayer.name = "XrayCuttingPlane";
+  const sectionCapLayer = new THREE.Group();
+  sectionCapLayer.name = "XraySectionCaps";
   const printLayer = new THREE.Group();
   printLayer.name = "Printer";
   printLayer.renderOrder = 6;
-  scene.add(workplaneLayer, shapeLayer, printLayer, helperLayer, modifierLayer, xrayLayer);
+  scene.add(workplaneLayer, shapeLayer, printLayer, helperLayer, modifierLayer, xrayLayer, sectionCapLayer);
+  // Cut faces follow their parts as they move, every frame, after the scene's matrices are worked out.
+  scene.onBeforeRender = (renderer, _scene, camera) => updateSectionCaps(sectionCapLayer, camera, renderer);
 
   const raycaster = new THREE.Raycaster();
   raycaster.params.Line = { threshold: 1.15 };
@@ -7335,6 +7391,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     helperLayer,
     modifierLayer,
     xrayLayer,
+    sectionCapLayer,
     printLayer,
     printShapes: [],
     showPrinterBed: true,
@@ -7359,7 +7416,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
       axis: "y" as const,
       position: 40,
       keepLow: true,
-      showPlane: true,
+      showPlane: false,
       planeSize: Math.max(WORKPLANE_WIDTH, WORKPLANE_DEPTH) * 1.15,
       bounds: { min: -4, max: 24 },
     },
@@ -8838,7 +8895,17 @@ function pauseShapeSettle(object: THREE.Object3D) {
   object.position.y = restY + NEW_SOLID_SETTLE_MM;
 }
 
-function startShapeSettle(state: ThreeState, object: THREE.Object3D) {
+/** How far above its resting place a dropping shape still is, or 0 if it is not dropping. */
+function remainingSettleLift(object: THREE.Object3D) {
+  if (!object.userData.settling && !object.userData.pendingSettle) return 0;
+  const restY = object.userData.settleRestY;
+  if (typeof restY !== "number") return 0;
+  const lift = object.position.y - restY;
+  return lift > 0.01 ? Math.min(lift, NEW_SOLID_SETTLE_MM) : 0;
+}
+
+/** Drops a new shape onto its place. `fromLift` picks the drop up part-way, from that height. */
+function startShapeSettle(state: ThreeState, object: THREE.Object3D, fromLift = NEW_SOLID_SETTLE_MM) {
   if (prefersReducedMotion()) {
     if (typeof object.userData.settleRestY === "number") object.position.y = object.userData.settleRestY;
     clearShapeSettle(object);
@@ -8851,9 +8918,11 @@ function startShapeSettle(state: ThreeState, object: THREE.Object3D) {
   delete object.userData.pendingSettle;
   object.userData.settling = true;
   object.userData.settleRestY = restY;
-  object.position.y = restY + NEW_SOLID_SETTLE_MM;
+  // Where on the ease-out curve the shape is at that height, so the drop carries on smoothly.
+  const lift = Math.max(0, Math.min(NEW_SOLID_SETTLE_MM, fromLift));  const startT = 1 - (lift / NEW_SOLID_SETTLE_MM) ** (1 / 5);
+  object.position.y = restY + lift;
   object.updateMatrixWorld(true);
-  const started = performance.now();
+  const started = performance.now() - startT * NEW_SOLID_SETTLE_MS;
   const tick = (now: number) => {
     if (!object.parent) {
       clearShapeSettle(object);
@@ -9276,6 +9345,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   const newSolids: THREE.Object3D[] = [];
   const riseSolids: THREE.Object3D[] = [];
   const combineSolids: THREE.Object3D[] = [];
+  const carriedSettles: { object: THREE.Object3D; lift: number }[] = [];
   const previewActive = state.modifierPreviewActive;
   visibleShapes.forEach((shape) => {
     const showEdges = selected.has(shape.id);
@@ -9317,6 +9387,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
     }
 
     let outgoing: THREE.Object3D | null = null;
+    let settleCarry = 0;
     if (wipe) {
       outgoing = held ?? (existing && existing.userData.renderFingerprint !== fingerprint ? existing : null);
       if (held) {
@@ -9334,6 +9405,7 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
         existingById.delete(shape.id);
       }
     } else if (existing) {
+      settleCarry = remainingSettleLift(existing);
       if (previewActive && !held) {
         stashPreviewHold(state, existing, shape.id);
         existingById.delete(shape.id);
@@ -9356,10 +9428,15 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
     keepIds.add(shape.id);
     if (outgoing && wipe) {
       startEdgeWipe(state, outgoing, object, wipe.polylines);
-    } else if (!existing && !held && !shape.construction && (!shape.hole || shape.id === SKETCH_EXTRUDE_PREVIEW_ID)) {
+    } else if (!existing && !held && !shape.construction) {
       if (pendingScaleIntro?.ids.has(shape.id)) combineSolids.push(object);
-      else if (shape.sketchFinish === "extrude" || shape.sketchFinish === "revolve") riseSolids.push(object);
-      else newSolids.push(object);
+      // A drawn sketch rises out of its outline. Shapes from the menu (a star, a slot) are
+      // built from an outline too, but they drop in like every other shape.
+      else if ((shape.sketchFinish === "extrude" || shape.sketchFinish === "revolve") && !shape.generated) riseSolids.push(object);
+      else if (!shape.hole || shape.id === SKETCH_EXTRUDE_PREVIEW_ID || shape.generated) newSolids.push(object);
+    } else if (settleCarry > 0) {
+      // Rebuilt part-way through its drop (its exact shape just arrived): finish the drop.
+      carriedSettles.push({ object, lift: settleCarry });
     }
   });
 
@@ -9395,6 +9472,10 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
       startShapeSettle(state, object);
     });
   }
+  carriedSettles.forEach(({ object, lift }) => {
+    object.userData.settleRestY = object.position.y;
+    startShapeSettle(state, object, lift);
+  });
   // When the finished part replaces the extrude preview, it is already standing: no second rise.
   const previewHandoff = previewWasShown && !visibleShapes.some((shape) => shape.id === SKETCH_EXTRUDE_PREVIEW_ID);
   if (!initialSync && !previewHandoff) {
@@ -9611,6 +9692,7 @@ function syncXrayCut(state: ThreeState) {
   applyToLayer(state.modifierLayer);
   applyToLayer(state.printLayer);
   syncXrayHelper(state);
+  rebuildSectionCaps(state.sectionCapLayer, state.shapeLayer, active ? state.clippingPlane : null, state.xray.planeSize, state.renderer.getPixelRatio());
   markShadowsDirty(state);
   state.needsRender = true;
 }
@@ -10180,6 +10262,30 @@ function isDrawn(object: THREE.Object3D) {
  * What the ray meets on the parts' real surfaces, nearest first. Large meshes normally answer
  * clicks with their outer box to stay quick; that would hide every point inside it.
  */
+function heldInHoleOrGhost(object: THREE.Object3D) {
+  for (let current: THREE.Object3D | null = object; current; current = current.parent) {
+    if (current.userData.hole || current.userData.construction) return true;
+  }
+  return false;
+}
+
+/** The wall or gap on the X-ray cut under a screen point, unless a part in front hides the cut there. */
+function xraySectionMeasure(state: ThreeState, clientX: number, clientY: number) {
+  const layer = state.sectionCapLayer;
+  const plane = sectionCapPlane(layer);
+  if (!plane || state.xraySweep) return measureSectionAt(layer, null);
+  pointerWorldRay(state, clientX, clientY);
+  const ray = state.raycaster.ray;
+  const onPlane = ray.intersectPlane(plane, new THREE.Vector3());
+  if (!onPlane) return measureSectionAt(layer, null);
+  const reach = onPlane.distanceTo(ray.origin) - 1e-3;
+  // Only what is left after the cut can hide it; the cut-away half is not drawn.
+  const hidden = surfaceHits(state).some(
+    (hit) => hit.distance < reach && plane.distanceToPoint(hit.point) > 1e-3 && !heldInHoleOrGhost(hit.object),
+  );
+  return measureSectionAt(layer, hidden ? null : onPlane);
+}
+
 function surfaceHits(state: ThreeState) {
   const hits: THREE.Intersection[] = [];
   state.shapeLayer.traverse((object) => {
@@ -11778,6 +11884,7 @@ function syncAssetPlacementPreview(
     !preview
     || preview.userData.sheetThickness !== sheetThickness
     || preview.userData.assetKind !== asset.kind
+    || preview.userData.assetId !== asset.id
     || preview.userData.assetColor !== asset.color
     || preview.userData.assetHole !== Boolean(asset.hole);
 
@@ -11797,6 +11904,7 @@ function syncAssetPlacementPreview(
     preview.name = ASSET_PLACEMENT_PREVIEW_NAME;
     preview.userData.sheetThickness = sheetThickness;
     preview.userData.assetKind = asset.kind;
+    preview.userData.assetId = asset.id;
     preview.userData.assetColor = asset.color;
     preview.userData.assetHole = Boolean(asset.hole);
     preview.userData.previewHeight = draft.height;

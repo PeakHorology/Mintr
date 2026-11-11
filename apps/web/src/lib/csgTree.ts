@@ -771,6 +771,9 @@ export function filterCoplanarDisplayEdges(
           for (const index of bucket) {
             const tri = triangles[index];
             if (Math.abs(tri.nx * mx + tri.ny * my + tri.nz * mz - tri.d) > COPLANAR_SPAN_TOL) continue;
+            // Only the faces at the edge itself. On a curved part many nearby facets lie close to
+            // the midpoint's plane, and testing each one's span froze the window on exact threads.
+            if (!pointOnDisplayTri(mx, my, mz, tri, tri.nx, tri.ny, tri.nz)) continue;
             if (seen.some(([nx, ny, nz]) => Math.abs(nx * tri.nx + ny * tri.ny + nz * tri.nz) >= COPLANAR_EDGE_DOT)) continue;
             seen.push([tri.nx, tri.ny, tri.nz]);
             const px = tri.ny * tz - tri.nz * ty;

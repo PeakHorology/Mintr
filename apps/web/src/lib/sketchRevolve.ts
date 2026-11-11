@@ -368,6 +368,8 @@ export function shapeFromSketchRevolve(
     })(),
     sketchId: existing?.sketchId ?? existing?.sketchDoc?.id,
     sketchFinish: "revolve",
+    values: existing?.values,
+    drivenBy: existing?.drivenBy,
     sketchRevolveAxis: {
       x1: axis.start.x,
       z1: axis.start.z,

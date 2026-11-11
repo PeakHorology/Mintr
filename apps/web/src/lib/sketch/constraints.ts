@@ -46,24 +46,6 @@ export function removeConstraint(doc: SketchDoc, constraintId: string): SketchDo
   };
 }
 
-export function suppressConstraint(doc: SketchDoc, constraintId: string, suppressed = true): SketchDoc {
-  return {
-    ...doc,
-    constraints: doc.constraints.map((c) => (c.id === constraintId ? { ...c, suppressed } : c)),
-  };
-}
-
-/** Apply constraints between two selected curve entities (manual tool). */
-export function applyConstraintBetween(
-  doc: SketchDoc,
-  kind: SketchConstraintKind,
-  entityA: string,
-  entityB?: string,
-): SketchDoc {
-  const entityIds = entityB ? [entityA, entityB] : [entityA];
-  return addConstraints(doc, [createConstraint(kind, entityIds)]);
-}
-
 export const CONSTRAINT_LABELS: Record<SketchConstraintKind, string> = {
   coincident: "Coincident",
   horizontal: "Horizontal",

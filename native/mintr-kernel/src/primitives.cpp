@@ -1,5 +1,6 @@
 #include "primitives.hpp"
 #include "occtio.hpp"
+#include "thread.hpp"
 #include "recipe.hpp"
 #include "sketch.hpp"
 
@@ -652,6 +653,16 @@ bool buildKernelSolid(const nlohmann::json& solid, TopoDS_Shape& out) {
     // The shape box sits on the body, which can bulge a little past its outlines.
     const double height = solid.value("height", 0.0);
     out = kernelPlaced(centerOnY(kernelRecenterToLocalMeshFrame(built), height), solid, height);
+    return true;
+  }
+  if (solid.value("kind", "") == "thread" && solid.contains("thread")) {
+    // A thread set to Exact: built from its settings each time, so a moved or lengthened
+    // cutter needs nothing stored.
+    TopoDS_Shape built;
+    std::string error;
+    if (!buildThreadLocal(solid["thread"], built, error)) return false;
+    const double height = solid.value("height", 0.0);
+    out = kernelPlaced(centerOnY(built, height), solid, height);
     return true;
   }
   TopoDS_Shape local;

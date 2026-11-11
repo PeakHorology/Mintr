@@ -38,6 +38,7 @@ export type SketchTool =
   | "erase"
   | "measure"
   | "dimension"
+  | "dimension-angle"
   | "trim"
   | "fillet"
   | "chamfer"
@@ -816,7 +817,7 @@ export function SketchWorkspace({
   const showSketchPrinterBed = printerBed.showBed && isDefaultSketchPlane(profile.sketchPlane ?? defaultSketchPlane());
   const [snap, setSnap] = useState<GridSize>(() => normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
   const [snapOpen, setSnapOpen] = useState(false);
-  const [dimensionDialog, setDimensionDialog] = useState<{ id: string; value: number } | null>(null);
+  const [dimensionDialog, setDimensionDialog] = useState<{ id: string; value: number; angle?: boolean } | null>(null);
 
   // Stay aligned with the live 3D workplane Snap Grid / workspace settings.
   useEffect(() => {
@@ -1628,7 +1629,14 @@ export function SketchWorkspace({
         })()
       : null;
   const labelOffset = 22 * screenUnit;
-  const sideCallouts = selectedSideCallouts(displayProfile, paths, selected, pointById, drawnCircles);
+  // A dragged or picked point shows the lengths of the lines that meet at it, beside its angle.
+  const focusPointId = pointerAction?.kind === "move-point" ? pointerAction.pointId : selected?.kind === "point" ? selected.id : null;
+  const sideCallouts = focusPointId && !isCircleStandIn(focusPointId)
+    ? displayProfile.segments
+      .filter((segment) => segment.startId === focusPointId || segment.endId === focusPointId)
+      .map((segment) => lineSideCallout(displayProfile, paths, segment.id, pointById))
+      .filter((entry): entry is SideCallout => entry !== null)
+    : selectedSideCallouts(displayProfile, paths, selected, pointById, drawnCircles);
   const cornerMarks = sketchCornerMarks(displayProfile).filter((mark) => {
     if (isCircleStandIn(mark.pointId)) return false;
     if (showMeasurements) return true;
@@ -2605,7 +2613,7 @@ export function SketchWorkspace({
           {showDimensions && dimensions.length > 0 ? (
             <g className="sketch-driving-dimensions">
               {dimensions.map((dimension) => {
-                const label = `${dimension.value.toFixed(2)}`;
+                const label = dimension.kind === "angular" ? `${Math.abs(dimension.value).toFixed(1)}°` : `${dimension.value.toFixed(2)}`;
                 const pill = dimensionPillSize(label, screenUnit, 18);
                 let x = dimension.labelOffset?.x ?? 0;
                 let z = dimension.labelOffset?.z ?? 0;
@@ -2624,6 +2632,17 @@ export function SketchWorkspace({
                     z = circle.cz - labelOffset;
                   }
                 }
+                if (dimension.kind === "angular" && dimension.entityIds.length >= 2) {
+                  // Between the two lines, nearer where they meet.
+                  const middles = dimension.entityIds.slice(0, 2).map((id) => {
+                    const segment = displayProfile.segments.find((entry) => entry.id === id);
+                    return segment ? segmentDimension(segment, pointById)?.midpoint : undefined;
+                  });
+                  if (middles[0] && middles[1]) {
+                    x = (middles[0].x + middles[1].x) / 2;
+                    z = (middles[0].z + middles[1].z) / 2;
+                  }
+                }
                 if (dimension.pointIds && dimension.pointIds.length >= 2) {
                   const a = pointById.get(dimension.pointIds[0]);
                   const b = pointById.get(dimension.pointIds[1]);
@@ -2637,11 +2656,15 @@ export function SketchWorkspace({
                     key={dimension.id}
                     className={dimension.driving ? "driving" : "driven"}
                     transform={`translate(${x} ${z})`}
+                    onPointerDown={(event) => {
+                      // A press on a size label is for editing it, not for starting a box select on the sketch.
+                      if (event.button === 0 && onEditDimension && dimension.driving) event.stopPropagation();
+                    }}
                     onDoubleClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
                       if (!onEditDimension || !dimension.driving) return;
-                      setDimensionDialog({ id: dimension.id, value: dimension.value });
+                      setDimensionDialog({ id: dimension.id, value: Math.abs(dimension.value), angle: dimension.kind === "angular" });
                     }}
                   >
                     <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
@@ -2701,13 +2724,16 @@ export function SketchWorkspace({
       {dimensionDialog ? (
         <InlineValueDialog
           title="Edit dimension"
-          fields={[{ key: "value", label: "Dimension value", value: String(dimensionDialog.value), unit: "mm", min: 0 }]}
+          fields={[{ key: "value", label: dimensionDialog.angle ? "Angle" : "Dimension value", value: String(Number(dimensionDialog.value.toFixed(2))), unit: dimensionDialog.angle ? "°" : "mm", min: 0 }]}
           confirmLabel="Apply"
           onCancel={() => setDimensionDialog(null)}
           onConfirm={(values) => {
-            const value = Number.parseFloat(values.value ?? "");
+            const text = (values.value ?? "").trim();
+            const value = Number.parseFloat(text);
             const { id } = dimensionDialog;
             setDimensionDialog(null);
+            // Apply on the number as shown changes nothing; the size keeps its exact value.
+            if (text === String(Number(dimensionDialog.value.toFixed(2)))) return;
             if (Number.isFinite(value) && value > 0) onEditDimension?.(id, value);
           }}
         />

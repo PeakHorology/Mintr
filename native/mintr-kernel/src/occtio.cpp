@@ -354,11 +354,19 @@ bool facetPointsIntoSolid(
   }
 }
 
-// Faces that join smoothly share one patch, so a fillet and the faces it blends
-// into are oriented by one inside/outside test instead of one per face. Same
-// rule as orientSolidNormals in the browser: neighbouring facets within about
-// 73 degrees, corners matched to a thousandth of a millimetre.
-std::vector<int> smoothFacePatches(const TopoDS_Shape& meshed) {
+// Which way round each face's facets sit compared with its neighbours'. Two facets
+// on the outside of a solid run along the edge they share in opposite directions,
+// so faces joined by edges form one piece that a single inside/outside test
+// orients: a face running a shared edge the same way as its neighbour is the
+// other way round to it. One test per piece instead of one per smooth patch
+// keeps a part with hundreds of faces (a long exact thread) quick to mesh.
+// Corners are matched to a thousandth of a millimetre, as in orientSolidNormals.
+struct FaceSide {
+  int piece;
+  bool turned;
+};
+
+std::vector<FaceSide> faceSides(const TopoDS_Shape& meshed) {
   struct CornerKey {
     long long x, y, z;
     bool operator<(const CornerKey& other) const {
@@ -369,26 +377,43 @@ std::vector<int> smoothFacePatches(const TopoDS_Shape& meshed) {
   };
   struct Owner {
     int face;
-    gp_Vec facet;
+    bool forward;
+  };
+  struct EdgeUse {
+    int count;
+    Owner first;
+    Owner second;
   };
   std::vector<int> parent;
-  const auto find = [&parent](int index) {
+  // Whether a face is turned compared with its parent.
+  std::vector<char> turnedFromParent;
+  const auto find = [&](int index) {
+    bool turned = false;
     int root = index;
-    while (parent[static_cast<size_t>(root)] != root) root = parent[static_cast<size_t>(root)];
+    while (parent[static_cast<size_t>(root)] != root) {
+      turned = turned != (turnedFromParent[static_cast<size_t>(root)] != 0);
+      root = parent[static_cast<size_t>(root)];
+    }
+    // Path compression: point straight at the root, keeping each face's turn.
+    bool remaining = turned;
     while (parent[static_cast<size_t>(index)] != root) {
       const int next = parent[static_cast<size_t>(index)];
+      const bool own = turnedFromParent[static_cast<size_t>(index)] != 0;
       parent[static_cast<size_t>(index)] = root;
+      turnedFromParent[static_cast<size_t>(index)] = remaining ? 1 : 0;
+      remaining = remaining != own;
       index = next;
     }
-    return root;
+    return std::make_pair(root, turned);
   };
   const auto key = [](const gp_Pnt& point) {
     return CornerKey{ std::llround(point.X() * 1000.0), std::llround(point.Y() * 1000.0), std::llround(point.Z() * 1000.0) };
   };
-  std::map<std::pair<CornerKey, CornerKey>, Owner> edgeOwner;
+  std::map<std::pair<CornerKey, CornerKey>, EdgeUse> edges;
   int faceIndex = 0;
   for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next(), ++faceIndex) {
     parent.push_back(faceIndex);
+    turnedFromParent.push_back(0);
     const TopoDS_Face face = TopoDS::Face(exp.Current());
     TopLoc_Location loc;
     Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
@@ -400,26 +425,37 @@ std::vector<int> smoothFacePatches(const TopoDS_Shape& meshed) {
       tri->Triangle(i).Get(n1, n2, n3);
       if (reverse) std::swap(n2, n3);
       const gp_Pnt points[3] = { tri->Node(n1).Transformed(trsf), tri->Node(n2).Transformed(trsf), tri->Node(n3).Transformed(trsf) };
-      gp_Vec facet = gp_Vec(points[0], points[1]).Crossed(gp_Vec(points[0], points[2]));
-      if (facet.Magnitude() < 1e-12) continue;
-      facet.Normalize();
+      if (gp_Vec(points[0], points[1]).Crossed(gp_Vec(points[0], points[2])).Magnitude() < 1e-12) continue;
       for (int slot = 0; slot < 3; ++slot) {
         const CornerKey a = key(points[slot]);
         const CornerKey b = key(points[(slot + 1) % 3]);
-        const auto edge = a < b ? std::make_pair(a, b) : std::make_pair(b, a);
-        const auto found = edgeOwner.find(edge);
-        if (found == edgeOwner.end()) {
-          edgeOwner.emplace(edge, Owner{ faceIndex, facet });
-          continue;
-        }
-        if (found->second.face != faceIndex && facet.Dot(found->second.facet) > 0.3) {
-          parent[static_cast<size_t>(find(faceIndex))] = find(found->second.face);
-        }
+        const bool forward = a < b;
+        EdgeUse& use = edges[forward ? std::make_pair(a, b) : std::make_pair(b, a)];
+        if (use.count == 0) use.first = Owner{ faceIndex, forward };
+        else if (use.count == 1) use.second = Owner{ faceIndex, forward };
+        ++use.count;
       }
     }
   }
-  for (int index = 0; index < faceIndex; ++index) parent[static_cast<size_t>(index)] = find(index);
-  return parent;
+  // Only an edge with exactly two facets on it joins two faces; where solids touch along an
+  // edge, more meet there and say nothing about which way round each solid is.
+  for (const auto& [edge, use] : edges) {
+    if (use.count != 2 || use.first.face == use.second.face) continue;
+    const auto [mine, mineTurned] = find(use.second.face);
+    const auto [theirs, theirsTurned] = find(use.first.face);
+    if (mine == theirs) continue;
+    // Same direction along the edge: the two faces are turned from each other.
+    const bool apart = use.first.forward == use.second.forward;
+    parent[static_cast<size_t>(mine)] = theirs;
+    turnedFromParent[static_cast<size_t>(mine)] = (mineTurned != theirsTurned) != apart ? 1 : 0;
+  }
+  std::vector<FaceSide> sides;
+  sides.reserve(static_cast<size_t>(faceIndex));
+  for (int index = 0; index < faceIndex; ++index) {
+    const auto [root, turned] = find(index);
+    sides.push_back({ root, turned });
+  }
+  return sides;
 }
 
 bool faceNormalAt(const TopoDS_Face& face, const gp_Pnt& point, gp_Dir& normal) {
@@ -483,12 +519,64 @@ bool kernelTessellateIndexed(
   std::vector<char> nodeReady;
   // Where each triangulation node already went in the output, for shared corners.
   std::vector<int> emitted;
-  // Built on first use: most patches are decided by the first test.
+  // Built on first use: most pieces are decided by the first test.
   std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
   bool classifierTried = false;
-  const std::vector<int> patchOf = smoothFacePatches(meshed);
-  // Per patch: -1 not tested yet, otherwise whether its facets point into the solid.
-  std::vector<int> patchFlip(patchOf.size(), -1);
+  const std::vector<FaceSide> sides = faceSides(meshed);
+  // Per piece: whether its unturned faces point into the solid. One probe now decides a whole
+  // piece, so each piece votes with the largest facet of up to three of its faces; a sliver
+  // facet or a wall thinner than the probe step can then only be outvoted.
+  std::vector<int> pieceFlip(sides.size(), 0);
+  {
+    std::vector<int> votes(sides.size(), 0);
+    std::vector<int> flipVotes(sides.size(), 0);
+    int probeFace = -1;
+    for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next()) {
+      ++probeFace;
+      const FaceSide& side = sides[static_cast<size_t>(probeFace)];
+      if (votes[static_cast<size_t>(side.piece)] >= 3) continue;
+      const TopoDS_Face face = TopoDS::Face(exp.Current());
+      TopLoc_Location loc;
+      Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+      if (tri.IsNull()) continue;
+      const gp_Trsf trsf = loc.Transformation();
+      const bool reverse = face.Orientation() == TopAbs_REVERSED;
+      double bestArea = 0.0;
+      gp_Pnt best[3];
+      gp_Vec bestFacet;
+      for (int i = 1; i <= tri->NbTriangles(); ++i) {
+        int n1, n2, n3;
+        tri->Triangle(i).Get(n1, n2, n3);
+        if (reverse) std::swap(n2, n3);
+        const gp_Pnt a = tri->Node(n1).Transformed(trsf);
+        const gp_Pnt b = tri->Node(n2).Transformed(trsf);
+        const gp_Pnt c = tri->Node(n3).Transformed(trsf);
+        const gp_Vec facet = gp_Vec(a, b).Crossed(gp_Vec(a, c));
+        if (facet.Magnitude() <= bestArea) continue;
+        bestArea = facet.Magnitude();
+        best[0] = a;
+        best[1] = b;
+        best[2] = c;
+        bestFacet = facet;
+      }
+      if (bestArea < 1e-12) continue;
+      if (!classifierTried) {
+        classifierTried = true;
+        try {
+          classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
+        } catch (...) {
+          classifier.reset();
+        }
+      }
+      if (!classifier) break;
+      const bool into = facetPointsIntoSolid(*classifier, best[0], best[1], best[2], bestFacet.Normalized());
+      votes[static_cast<size_t>(side.piece)] += 1;
+      if (into != side.turned) flipVotes[static_cast<size_t>(side.piece)] += 1;
+    }
+    for (size_t piece = 0; piece < sides.size(); ++piece) {
+      pieceFlip[piece] = votes[piece] > 0 && flipVotes[piece] * 2 > votes[piece] ? 1 : 0;
+    }
+  }
   int faceIndex = -1;
   for (TopExp_Explorer exp(meshed, TopAbs_FACE); exp.More(); exp.Next()) {
     ++faceIndex;
@@ -516,19 +604,8 @@ bool kernelTessellateIndexed(
       if (facet.Magnitude() < 1e-12) continue;
       facet.Normalize();
       if (!flipDecided) {
-        int& patch = patchFlip[static_cast<size_t>(patchOf[static_cast<size_t>(faceIndex)])];
-        if (patch < 0) {
-          if (!classifierTried) {
-            classifierTried = true;
-            try {
-              classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape);
-            } catch (...) {
-              classifier.reset();
-            }
-          }
-          patch = classifier && facetPointsIntoSolid(*classifier, a, b, c, facet) ? 1 : 0;
-        }
-        flipFace = patch == 1;
+        const FaceSide& side = sides[static_cast<size_t>(faceIndex)];
+        flipFace = (pieceFlip[static_cast<size_t>(side.piece)] == 1) != side.turned;
         flipDecided = true;
       }
       const int nodes[3] = { n1, n2, n3 };

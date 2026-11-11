@@ -112,7 +112,34 @@ export type ShapeAsset = {
   kind: ShapeKind;
   color: string;
   hole?: boolean;
+  /** A shape built from settings by lib/generatedShapes.ts. */
+  generated?: GeneratedSpec;
 };
+
+/** The same sizes Threads offers, so a screw hole or nut pocket can match any thread. */
+export const SCREW_SIZES = [
+  "M1", "M1.2", "M1.6", "M2", "M2.5", "M3", "M4", "M5", "M6", "M8", "M10",
+  "M12", "M14", "M16", "M18", "M20", "M24", "M30", "M36",
+] as const;
+export type ScrewSize = (typeof SCREW_SIZES)[number];
+/**
+ * Any size Threads offers: a metric size, a UNC, UNF or pipe thread id, or "Custom", whose
+ * diameter (and pitch, for a tapped hole) the spec carries.
+ */
+export type ScrewThreadSize = ScrewSize | (string & {});
+export type ScrewHead = "none" | "counterbore" | "countersink";
+
+/** The settings a generated shape is rebuilt from when it changes. */
+export type GeneratedSpec =
+  | { form: "plate"; cornerRadius: number }
+  | { form: "slot" }
+  | { form: "star"; points: number; inner: number }
+  | { form: "heart" }
+  | { form: "paraboloid" }
+  /** `threaded`: a tapped hole the screw bites into, as Threads makes. Otherwise it slides through. */
+  | { form: "screwHole"; size: ScrewThreadSize; head: ScrewHead; threaded?: boolean; diameter?: number; pitch?: number }
+  | { form: "nutPocket"; size: ScrewThreadSize; diameter?: number }
+  | { form: "qr"; text: string };
 
 export type GridSize = "Off" | "0.1 mm" | "0.25 mm" | "0.5 mm" | "1.0 mm" | "2.0 mm" | "5.0 mm";
 export type MeasurementAccuracy = 1 | 2 | 3;
@@ -175,6 +202,8 @@ export type WorkplaneWorkspaceSettings = {
   laserDepth: number;
   /** Width the beam burns away, in millimetres. */
   kerfMm: number;
+  /** Space Nest leaves between parts, in millimetres. */
+  nestGapMm: number;
   /** Sheet material id. "custom" keeps the thickness below. */
   materialPreset: string;
   materialThickness: number;
@@ -498,6 +527,16 @@ export type CsgBodyMeta = {
   suppressed?: boolean;
 };
 
+/** A named value on a part. `expression` may use other values: `wall * 2`. */
+export type ShapeValue = {
+  name: string;
+  expression: string;
+  /** Optional range and note, so a shared design can be changed with sliders. */
+  min?: number;
+  max?: number;
+  note?: string;
+};
+
 export type WorkplaneShape = {
   id: string;
   name: string;
@@ -604,6 +643,15 @@ export type WorkplaneShape = {
    * rebuilds this from its pieces instead, so a group never stores one.
    */
   featureBase?: WorkplaneShape;
+  /** Built from settings: changing them, or the part's size, rebuilds it instead of stretching it. */
+  generated?: GeneratedSpec;
+  /**
+   * Mintr Pro: named values for this part (`wall = 2`). Sizes on the part, and on the parts
+   * grouped inside it, can be written in terms of them.
+   */
+  values?: ShapeValue[];
+  /** Mintr Pro: settings worked out from values, by inspector label (`{ Width: "length / 2" }`). */
+  drivenBy?: Record<string, string>;
   /** A finish on the part: the body stays exact, and the textured triangles are rebuilt from it. */
   surfaceTexture?: SurfaceTexture;
   /** In a laser design, what the laser does along this part: cut through (the default), score a line, or engrave its area. */
@@ -644,6 +692,11 @@ export type WorkplaneShape = {
     chamfer?: number;
     /** Threaded length, or nut thickness. The shape height includes a screw head. */
     length?: number;
+    /**
+     * Exact: Group, cuts and STEP files use a true helical solid. Otherwise (Print-ready) they use
+     * the print mesh, which is quicker and prints the same.
+     */
+    exact?: boolean;
   };
   threadFeatures?: ThreadFeature[];
   threadHistory?: ThreadHistoryEntry[];

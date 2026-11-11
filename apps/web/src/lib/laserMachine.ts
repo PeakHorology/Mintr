@@ -81,6 +81,9 @@ export const DEFAULT_KERF_MM: Record<LaserType, number> = {
 
 export const MIN_KERF_MM = 0;
 export const MAX_KERF_MM = 1;
+export const DEFAULT_NEST_GAP_MM = 2;
+export const MIN_NEST_GAP_MM = 0;
+export const MAX_NEST_GAP_MM = 50;
 
 export const CUT_FILE_STYLES: readonly { id: CutFileStyle; label: string; description: string }[] = [
   { id: "lightburn", label: "LightBurn", description: "Lines coloured by job: red cuts, blue scores, black engraves. LightBurn puts each colour on its own layer." },
@@ -122,6 +125,8 @@ export type LaserSettings = {
   laserWidth: number;
   laserDepth: number;
   kerfMm: number;
+  /** Space Nest leaves between parts. */
+  nestGapMm: number;
   materialPreset: string;
   materialThickness: number;
   cutFileStyle: CutFileStyle;
@@ -137,6 +142,7 @@ export const LASER_SETTING_KEYS = [
   "laserWidth",
   "laserDepth",
   "kerfMm",
+  "nestGapMm",
   "materialPreset",
   "materialThickness",
   "cutFileStyle",
@@ -151,6 +157,7 @@ export const DEFAULT_LASER_SETTINGS: LaserSettings = {
   laserWidth: 498,
   laserDepth: 319,
   kerfMm: DEFAULT_KERF_MM.diode,
+  nestGapMm: DEFAULT_NEST_GAP_MM,
   materialPreset: DEFAULT_MATERIAL_ID,
   materialThickness: 3,
   cutFileStyle: "xtool",
@@ -205,6 +212,7 @@ export function normalizeLaserSettings(value: Partial<Record<keyof LaserSettings
     laserWidth: custom ? clamp(finite(input.laserWidth, fallback.laserWidth), MIN_LASER_BED, MAX_LASER_BED) : preset.width,
     laserDepth: custom ? clamp(finite(input.laserDepth, fallback.laserDepth), MIN_LASER_BED, MAX_LASER_BED) : preset.depth,
     kerfMm: Number(clamp(finite(input.kerfMm, fallback.kerfMm), MIN_KERF_MM, MAX_KERF_MM).toFixed(3)),
+    nestGapMm: Number(clamp(finite(input.nestGapMm, fallback.nestGapMm ?? DEFAULT_NEST_GAP_MM), MIN_NEST_GAP_MM, MAX_NEST_GAP_MM).toFixed(2)),
     materialPreset: material.id,
     // Choosing a material sets its usual thickness; a measured one is kept.
     materialThickness: Number(clamp(finite(input.materialThickness, material.thickness), MIN_SHEET_MM, MAX_SHEET_MM).toFixed(2)),

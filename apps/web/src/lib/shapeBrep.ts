@@ -45,6 +45,8 @@ export const NATIVE_FACETED_KINDS: ReadonlySet<WorkplaneShape["kind"]> = new Set
 ]);
 
 export function shapeSupportsExactNativeBrep(shape: WorkplaneShape): boolean {
+  // The engine builds an Exact thread from its settings.
+  if (shape.kind === "thread" && shape.threadSpec?.exact) return true;
   if (shape.importedMesh && (shape.kind === "mesh" || shape.kind === "thread")) return Boolean(shape.importedMesh.brepStep);
   return NATIVE_EXACT_KINDS.has(shape.kind);
 }

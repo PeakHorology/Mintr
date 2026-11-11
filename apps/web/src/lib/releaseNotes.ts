@@ -10,6 +10,10 @@ export type ReleaseNotes = {
 
 /** Feature lines drawn stronger in Settings → Updates and the update card. */
 export const FEATURED_RELEASE_NOTES: readonly string[] = [
+  "Threaded Hole makes the hole for a screw. Choose Threaded to cut a real thread for the screw to bite into, or Slides through for a plain hole, with a recess for a socket head or a cone for a flat head. Pick your screw's type and size: metric, inch (UNC and UNF), pipe, or a custom size.",
+  "X-ray shows the cut like a technical drawing: solid material is filled in and hatched with fine lines, holes and hollows stay open, and parts that touch are hatched in different directions so you can tell them apart. The see-through cutting plane starts hidden; Show plane brings it back.",
+  "Mintr Pro: name values for a part in the new Values card, like wall = 2, then use them in any size box or sketch size, such as wall * 2. Change the value and everything that uses it updates. Give a value a lowest and highest to get a slider for trying sizes. Parts in a group can use the group's values.",
+  "Laser cutting: curves go to the laser as true curves, for smoother edges and faster cuts. Nest packs parts by their real shape instead of the box around them, so small parts can sit inside the holes of big ones. Set the spacing with Gap in Machine settings.",
   "New Loft shape in the Shapes panel: pick a bottom and a top outline (circle, square or polygon), set the top size, add a twist, or make it hollow for a vase or sleeve.",
   "Shrink Wrap wraps the selected shapes in one tight skin, as if plastic were shrunk around them. Holes still cut through it, and the parts stay editable inside.",
   "Smooth, in Modify, lets you sculpt soft, flowing curves into a part. It starts on the part's exact shape, or rounds it all off if you choose. Click Edit points and drag a dot to push and pull the surface, holding Ctrl to pull straight in and out of it, then raise Smoothness for more points to refine it. Keep a face flat holds a face exactly as it is, such as a base or a face something mounts to. Mirror copies each pull to the other side, Alt-drag picks a box of points, and Make edge smooth or Make edge sharp rounds an edge or makes a crisp line. Ungroup brings the original parts back.",
@@ -37,6 +41,26 @@ export function noteIsFeatured(note: string): boolean {
 export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
+  {
+    version: "1.4.0",
+    items: [
+      "The Shapes bar is easier to find your way around: bigger pictures, full names, and one list in plain sections from Basic to Gridfinity. Type in the Find box at the top to jump straight to a shape. In a laser design the flat shapes come first.",
+      "New shapes: Rounded Plate, Slot, Star, Heart, Wedge, Paraboloid, Nut Pocket, Threaded Hole and QR Code. Most remember their settings, so you can change a star's points or a hole's screw size later. QR Code turns any link or text into a code you can print or engrave. Every new shape now drops gently into place.",
+      "Threaded Hole makes the hole for a screw. Choose Threaded to cut a real thread for the screw to bite into, or Slides through for a plain hole, with a recess for a socket head or a cone for a flat head. Pick your screw's type and size: metric, inch (UNC and UNF), pipe, or a custom size.",
+      "Nut Pocket makes a six-sided pocket that holds a nut, in all the same screw types and sizes. Inch screws get true inch holes, heads and nuts, not converted metric ones.",
+      "Threads now makes rods, screws and nuts; holes have moved to Threaded Hole. Tapped holes in older designs open as Threaded Holes, and Make matching hole on a screw adds one in the same size.",
+      "Threads can be Print-ready or Exact. Print-ready is the light version made for 3D printing, as before. Exact is a true spiral thread, for when you group it into a part or export a STEP file for other CAD software or machining; it takes a moment longer to group. Right-hand threads now turn the right way: before, a printed Right thread was actually left-handed.",
+      "X-ray shows the cut like a technical drawing: solid material is filled in and hatched with fine lines, holes and hollows stay open, and parts that touch are hatched in different directions so you can tell them apart. The see-through cutting plane starts hidden; Show plane brings it back.",
+      "X-ray points out problems: walls too thin to hatch are filled solid, and red cross-hatching marks where two parts overlap. Point at the cut to read how thick a wall is, or the gap to the next part.",
+      "Sketching is quicker to start: click Sketch, then click a face or the workplane. You are only asked whether to edit or start a new sketch when the part already has one. A point you drag stays where you drop it, and changing a size on a revolved part keeps it revolved.",
+      "Mintr Pro: name values for a part in the new Values card, like wall = 2, then use them in any size box or sketch size, such as wall * 2. Change the value and everything that uses it updates. Give a value a lowest and highest to get a slider for trying sizes. Parts in a group can use the group's values.",
+      "Mintr Pro sketching: sizes and rules are worked out together, so a shape set by several sizes at once settles in one go, and Mintr tells you when two rules conflict. A new Angle rule holds the angle between two lines. Sizes read in plain words, like Length 20.00 mm; double-click one to change it.",
+      "Laser cutting: curves go to the laser as true curves, for smoother edges and faster cuts. Nest packs parts by their real shape instead of the box around them, so small parts can sit inside the holes of big ones. Set the spacing with Gap in Machine settings.",
+      "Laser Fit test, in Machine settings: cut a small comb and key, pick the slot the key fits snugly, and Mintr allows for the width the laser burns away (kerf) so your joints fit.",
+      "Settings has one Machines tab for everything you make with: pick 3D printer or Both and your printer settings are right there, along with the laser if you have one.",
+      "Clicking empty space now always clears the selection. Before, clicking just beside parts that overlap could swap between them instead.",
+    ],
+  },
   {
     version: "1.3.2",
     items: [

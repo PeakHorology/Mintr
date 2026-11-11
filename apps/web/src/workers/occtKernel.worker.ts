@@ -4,6 +4,7 @@ import { evaluateOcctBooleanOnWorldShapesLocal, exportShapesToStepLocal } from "
 import { withExactSketchExtrusionSolidLocal } from "@/lib/sketchExtrusionSolid";
 import { shapeFromSketchSweepLocal } from "@/lib/sketchSweep";
 import { buildGridfinityShapeLocal } from "@/lib/gridfinityShape";
+import { withExactGeneratedRevolveLocal } from "@/lib/generatedExact";
 import type { OcctKernelRequest } from "@/lib/occtKernelClient";
 
 type WorkerRequest = OcctKernelRequest & { requestId: number };
@@ -38,6 +39,11 @@ async function handle(request: WorkerRequest) {
   }
   if (request.type === "gridfinity") {
     const value = await buildGridfinityShapeLocal(request.shape);
+    post({ requestId, type: "result", value });
+    return;
+  }
+  if (request.type === "generatedRevolve") {
+    const value = await withExactGeneratedRevolveLocal(request.shape);
     post({ requestId, type: "result", value });
     return;
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { LaserIcon, Printer3dIcon } from "@/components/icons";
 import { PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import { WorkspaceSelect, WorkspaceToggle } from "@/components/workplane/SettingsControls";
@@ -17,8 +17,10 @@ import {
   LASER_MATERIALS,
   materialById,
   MAX_KERF_MM,
+  MAX_NEST_GAP_MM,
   MAX_SHEET_MM,
   MIN_KERF_MM,
+  MIN_NEST_GAP_MM,
   MIN_SHEET_MM,
   saveMachineChoice,
   type LaserType,
@@ -39,6 +41,7 @@ import {
   saveCrystalSize,
   type CrystalSize,
 } from "@/lib/laser/crystal";
+import { fitTestKerfs, fitTestLabel } from "@/lib/laser/fitTest";
 import { SETTING_TIPS } from "@/lib/settingGuides";
 import type { WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -153,6 +156,54 @@ function CrystalSettings({
   );
 }
 
+/**
+ * Fit test: cut a comb and key, push the key into each slot, and click the number
+ * by the slot it fits snugly. That number is the kerf in hundredths of a millimetre.
+ */
+function FitTest({
+  workspace,
+  patchWorkspace,
+  onAdd,
+}: {
+  workspace: WorkplaneWorkspaceSettings;
+  patchWorkspace: (patch: Partial<WorkplaneWorkspaceSettings>) => void;
+  onAdd?: () => void;
+}) {
+  const kerfs = fitTestKerfs(workspace.laserType);
+  return (
+    <div className="fit-test">
+      <p className="machine-laser-type">
+        {onAdd
+          ? "Not sure of the kerf? Cut a fit test, push the key into each slot, and pick the number by the one it fits snugly."
+          : "Cut a fit test from a laser design, then pick the number by the slot the key fits snugly."}
+      </p>
+      {onAdd ? (
+        <button type="button" className="fit-test-add" onClick={onAdd}>
+          Add a fit test to this design
+        </button>
+      ) : null}
+      <div className="fit-test-slots" role="group" aria-label="Slot the key fit">
+        {kerfs.map((kerf) => {
+          const label = fitTestLabel(kerf);
+          const active = Math.abs(workspace.kerfMm - kerf) < 1e-6;
+          return (
+            <button
+              key={label}
+              type="button"
+              className={active ? "active" : undefined}
+              aria-pressed={active}
+              title={`Slot ${label} fit: kerf ${kerf.toFixed(2)} mm`}
+              onClick={() => patchWorkspace({ kerfMm: kerf })}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** A number box that only changes the setting when you leave it or press Enter. */
 function NumberSetting({
   label,
@@ -201,18 +252,40 @@ function NumberSetting({
   );
 }
 
+/** One machine's settings, set apart in a panel with its own header. */
+function MachineGroup({ icon, title, note, children }: { icon: ReactNode; title: string; note: string; children: ReactNode }) {
+  return (
+    <section className="machine-group" aria-label={`${title} settings`}>
+      <header className="machine-group-header">
+        <span className="machine-group-icon" aria-hidden="true">{icon}</span>
+        <span className="machine-group-title">
+          <strong>{title}</strong>
+          <span>{note}</span>
+        </span>
+      </header>
+      {children}
+    </section>
+  );
+}
+
 /**
- * Settings → Machines: what this person makes with, and their laser and the sheet
- * they cut. Printer settings stay under Printing.
+ * Settings → Machines: what this person makes with, then the settings for each machine:
+ * the 3D printer (passed in as `printerSettings`), and the laser and the sheet it cuts.
  */
 export function MachineSettings({
   workspace,
   patchWorkspace,
   context,
+  onAddFitTest,
+  printerSettings,
 }: {
   workspace: WorkplaneWorkspaceSettings;
   patchWorkspace: (patch: Partial<WorkplaneWorkspaceSettings>) => void;
   context: "project" | "app";
+  /** Set in a laser design, where a fit test can be added. */
+  onAddFitTest?: () => void;
+  /** The 3D printer settings, shown after the machine choice when there is a printer. */
+  printerSettings?: ReactNode;
 }) {
   const machines = useMachineChoice();
   const preset = laserPresetById(workspace.laserPreset);
@@ -251,16 +324,21 @@ export function MachineSettings({
             ? "New designs are laser cut. You can still start a 3D print design from New design."
             : "Each new design asks whether it is printed or laser cut."}
       </p>
+      {printerSettings ? (
+        <MachineGroup
+          icon={<Printer3dIcon size={22} />}
+          title="3D printer"
+          note="Your printer, its build size, print checks and slicer."
+        >
+          {printerSettings}
+        </MachineGroup>
+      ) : null}
       {machineHasLaser(machines) || laserDesign ? (
-        <>
-          <div className="workspace-section-heading">
-            <strong>Laser</strong>
-            <span>
-              {context === "project"
-                ? laserDesign ? "The laser this design is cut on." : "The laser for laser designs. This design is a 3D print design."
-                : "The laser new laser designs start with."}
-            </span>
-          </div>
+        <MachineGroup
+          icon={<LaserIcon size={22} />}
+          title="Laser"
+          note="Your laser, kerf and fit test, cut files, and the material you are working with."
+        >
           <WorkspaceSelect
             label="Brand"
             tip={SETTING_TIPS.laserBrand}
@@ -300,7 +378,9 @@ export function MachineSettings({
           ) : null}
           <div className="workspace-dimensions">
             <NumberSetting label="Kerf" tip={SETTING_TIPS.kerf} value={workspace.kerfMm} min={MIN_KERF_MM} max={MAX_KERF_MM} step={0.01} onCommit={(kerfMm) => patchWorkspace({ kerfMm })} />
+            <NumberSetting label="Gap" tip={SETTING_TIPS.nestGap} value={workspace.nestGapMm} min={MIN_NEST_GAP_MM} max={MAX_NEST_GAP_MM} step={0.5} onCommit={(nestGapMm) => patchWorkspace({ nestGapMm })} />
           </div>
+          <FitTest workspace={workspace} patchWorkspace={patchWorkspace} onAdd={onAddFitTest} />
           <WorkspaceSelect
             label="Cut files for"
             tip={SETTING_TIPS.cutFileStyle}
@@ -319,8 +399,8 @@ export function MachineSettings({
             onChange={(showLaserBed) => patchWorkspace({ showLaserBed })}
           />
           <div className="workspace-section-heading">
-            <strong>Sheet</strong>
-            <span>The material you cut from. New parts start at its thickness.</span>
+            <strong>Material</strong>
+            <span>What you cut or engrave. For a sheet, new parts start at its thickness.</span>
           </div>
           <WorkspaceSelect
             label="Material"
@@ -350,7 +430,7 @@ export function MachineSettings({
             />
           </div>
           )}
-        </>
+        </MachineGroup>
       ) : null}
     </>
   );

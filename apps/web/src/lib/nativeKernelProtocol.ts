@@ -5,7 +5,10 @@ import { gridfinityRecipeForShape, isGridfinityKind, type GridfinityRecipe } fro
 import { loftBuildPending, serializeLoftJob } from "@/lib/loftShape";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
+import { exactThreadPlanForShape } from "@/lib/threadShape";
+import type { ExactThreadPlan } from "@/lib/metricThreadSolid";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import type { RevolveOutline } from "@/lib/generatedRevolve";
 import type { LoftSection, WorkplaneShape } from "@/types/sketchforge";
 
 export type NativeKernelSolid = {
@@ -46,6 +49,8 @@ export type NativeKernelSolid = {
   children?: NativeKernelSolid[];
   /** Generator body (`kind: "recipe"`) the kernel builds from add / cut solids. */
   recipe?: GridfinityRecipe;
+  /** A thread set to Exact (`kind: "thread"`), built from these numbers. */
+  thread?: ExactThreadPlan;
   /** A loft (`kind: "loft"`) whose exact body is still being built: its outlines in mm. */
   loft?: { sections: LoftSection[]; smooth: boolean; wall: number };
 };
@@ -62,6 +67,8 @@ export type NativeKernelJob =
   | { id: number; type: "importStep"; fileName: string; step: string }
   | { id: number; type: "buildRecipe"; recipe: GridfinityRecipe; name?: string; key?: string }
   | { id: number; type: "buildLoft"; loft: { sections: LoftSection[]; smooth: boolean; wall: number }; name?: string; key?: string }
+  /** A generated turned shape (Threaded Hole, Paraboloid): its half outline spun round Y. */
+  | { id: number; type: "buildRevolve"; revolve: RevolveOutline }
   | { id: number; requestId: number; type: string; [key: string]: unknown };
 
 export type NativeKernelReply = {
@@ -279,6 +286,9 @@ export function toNativeKernelSolid(shape: WorkplaneShape): NativeKernelSolid | 
   // shape a newer fillet (cadBrep) wins over a STEP stored before it, and a box
   // or cylinder stays exact even when it still carries a STEP.
   if (storedStep && shape.groupedShapes?.length) return storedStep;
+  // A thread set to Exact is built by the engine from its settings, never from its print mesh.
+  const exactThread = !shape.cadBrep ? exactThreadPlanForShape(shape) : null;
+  if (exactThread) return { ...pose, height: exactThread.height, kind: "thread", thread: exactThread };
   if (shape.kind === "loft" && loftBuildPending(shape)) {
     // Resized or edited since the last build: the kernel lofts the outlines as they are now.
     const job = serializeLoftJob(shape);

@@ -116,11 +116,18 @@ const CUE_NAME: Record<string, string> = {
   torus: "Torus",
   tube: "Tube",
   wedge: "Wedge",
+  plate: "Rounded plate",
+  slot: "Slot",
+  star: "Star",
+  heart: "Heart",
+  paraboloid: "Paraboloid",
+  screwHole: "Screw hole",
+  nutPocket: "Nut pocket",
+  qr: "QR code",
   text: "Text",
   gear: "Gear",
   thread: "Thread",
   sketch: "Sketch",
-  "new-sketch": "New sketch",
   face: "the face",
   line: "Line",
   circle: "Circle",
@@ -138,6 +145,11 @@ export function guideCueName(cue: string) {
   return CUE_NAME[cue] ?? cue.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
 }
 
+/** A heart and a star are both meshes to the engine, but different parts to the person following along. */
+function shapeForm(shape: WorkplaneShape) {
+  return shape.generated?.form ?? shape.kind;
+}
+
 function roundMm(value: number | undefined) {
   const number = typeof value === "number" && Number.isFinite(value) ? value : 0;
   return Math.round(number / MATCH_MM) * MATCH_MM;
@@ -147,7 +159,7 @@ function shapeSignature(shape: WorkplaneShape): string {
   const sketch = sketchSignature(shape.sketchProfile);
   const children = (shape.groupedShapes ?? []).map(shapeSignature).sort().join("~");
   return [
-    shape.kind,
+    shapeForm(shape),
     shape.hole ? "h" : "s",
     roundMm(shape.width),
     roundMm(shape.depth),
@@ -263,6 +275,10 @@ function classifyChange(prev: readonly WorkplaneShape[], next: readonly Workplan
   }
   const prevIds = new Set(prev.map((shape) => shape.id));
   const added = next.filter((shape) => !prevIds.has(shape.id));
+  const generated = added.find((shape) => shape.generated);
+  if (generated?.generated) {
+    return { cue: generated.generated.form, included: true, label: `Add a ${generated.name.toLowerCase()}` };
+  }
   const primitive = added.find((shape) => !(shape.groupedShapes?.length) && shape.kind !== "mesh");
   if (primitive) {
     return { cue: primitive.kind, included: true, label: `Add a ${guideCueName(primitive.kind).toLowerCase()}` };
@@ -605,7 +621,7 @@ function shapeAtRunEnd(history: readonly EditorHistoryEntry[], run: { end: numbe
 
 function sizeRunSatisfied(shapes: readonly WorkplaneShape[], target: WorkplaneShape) {
   return shapes.some((shape) => (
-    shape.kind === target.kind
+    shapeForm(shape) === shapeForm(target)
     && Boolean(shape.hole) === Boolean(target.hole)
     && !shape.groupedShapes?.length
     && Math.abs(shapeWidth(shape) - shapeWidth(target)) <= MATCH_MM
@@ -616,7 +632,7 @@ function sizeRunSatisfied(shapes: readonly WorkplaneShape[], target: WorkplaneSh
 
 function shapeRole(shape: WorkplaneShape) {
   return [
-    shape.kind,
+    shapeForm(shape),
     shape.hole ? "h" : "s",
     roundMm(shapeWidth(shape)),
     roundMm(shapeDepth(shape)),
@@ -816,6 +832,9 @@ function soloPlacementStep(step: GuideStep, history: readonly EditorHistoryEntry
   return shapeRole(prev[0]) === shapeRole(next[0]) && !poseUntouched(prev[0], next[0]) && roundMm(prev[0].rotation) === roundMm(next[0].rotation);
 }
 
+/** A recorded Pad/Pocket cut. The Nut Pocket shape is added like any other shape, so it does not count. */
+const POCKET_LABEL = /(?<!nut )pocket/i;
+
 function pocketCut(prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]) {
   const host = [...prev].filter((shape) => !shape.hole).sort((left, right) => (
     shapeWidth(right) * shapeDepth(right) * right.height - shapeWidth(left) * shapeDepth(left) * left.height
@@ -834,7 +853,7 @@ function pocketCut(prev: readonly WorkplaneShape[], next: readonly WorkplaneShap
 }
 
 function recordedPocket(step: GuideStep, history: readonly EditorHistoryEntry[]) {
-  if (step.cue === "pad/pocket" || !/pocket/i.test(step.label)) return null;
+  if (step.cue === "pad/pocket" || !POCKET_LABEL.test(step.label)) return null;
   const prev = history[step.historyIndex - 1]?.shapes ?? [];
   const next = history[step.historyIndex]?.shapes ?? [];
   return pocketCut(prev, next);
@@ -938,11 +957,11 @@ export function proposeGuideSteps(history: readonly EditorHistoryEntry[], histor
     const next = history[index]?.shapes ?? [];
     const change = classifyChange(prev, next);
     const recorded = history[index]?.label?.trim();
-    const cut = recorded && /pocket/i.test(recorded) ? pocketCut(prev, next) : null;
+    const cut = recorded && POCKET_LABEL.test(recorded) ? pocketCut(prev, next) : null;
     const signature = sceneSignature(next);
     // Mintr's own names read better than editor notices ("Box added", "Moved"). A recorded notice is
     // kept where playback reads it (Align, Mirror, a pocket), or when there is nothing clearer.
-    const recordedMatters = Boolean(recorded && (/^(aligned |mirrored )/i.test(recorded) || /pocket/i.test(recorded)));
+    const recordedMatters = Boolean(recorded && (/^(aligned |mirrored )/i.test(recorded) || POCKET_LABEL.test(recorded)));
     const label = change.cue === "sketch"
       ? change.label
       : recordedMatters
@@ -1112,7 +1131,7 @@ export function describeGuideStep(
     return { title: step.label, body: changedMeasurement(prev, next) };
   }
   const addedIds = new Set(prev.map((shape) => shape.id));
-  const added = next.find((shape) => !addedIds.has(shape.id) && shape.kind === step.cue);
+  const added = next.find((shape) => !addedIds.has(shape.id) && shapeForm(shape) === step.cue);
   const run = sizeRunFor(history, steps, step);
   const sized = (run ? shapeAtRunEnd(history, run) : null) ?? added;
   const name = guideCueName(step.cue);
@@ -1366,20 +1385,23 @@ export function guidePrompt(input: {
       return { ...base, cue: "sketch", title: "Sketch", body: "Click Sketch." };
     }
     if (input.sketchingOffPart && face) {
-      return { ...base, cue: "face", title: "Sketch on the part", body: "This sketch is on the empty grid. Click Cancel, then New sketch, and click the face." };
+      return { ...base, cue: "face", title: "Sketch on the part", body: "This sketch is on the empty grid. Click Cancel, then click the face." };
     }
-    if (input.pickingFace || (input.sketchMode && face && !input.sketching)) {
+    if (input.pickingFace) {
       return {
         ...base,
-        cue: input.pickingFace ? "face" : "new-sketch",
-        title: input.pickingFace ? (face ? "Click the face" : "New sketch") : "New sketch",
-        body: input.pickingFace
-          ? (face ? "Click the face this sketch belongs on." : "Click the workplane.")
-          : "Click New sketch, then the face.",
+        cue: "face",
+        title: face ? "Click the face" : "Click the workplane",
+        body: face ? "Click the face this sketch belongs on." : "Click the workplane to start the sketch.",
       };
     }
     if (!input.sketching && !traced) {
-      return { ...base, cue: "new-sketch", title: "New sketch", body: "Click New sketch, then draw the mint outline." };
+      return {
+        ...base,
+        cue: "sketch",
+        title: "Sketch",
+        body: face ? "Click Sketch, then the face." : "Click Sketch, then the workplane.",
+      };
     }
     if (!traced) {
       return {
@@ -1545,11 +1567,11 @@ export function guidePrompt(input: {
   }
   const name = guideCueName(step.cue);
   const addedIds = new Set(prev.map((shape) => shape.id));
-  const added = next.find((shape) => !addedIds.has(shape.id) && shape.kind === step.cue);
+  const added = next.find((shape) => !addedIds.has(shape.id) && shapeForm(shape) === step.cue);
   const run = sizeRunFor(input.history, included, step);
   const sized = (run ? shapeAtRunEnd(input.history, run) : null) ?? added;
   if (sized?.hole && input.shapes.some((shape) => (
-    shape.kind === sized.kind
+    shapeForm(shape) === shapeForm(sized)
     && !shape.hole
     && !shape.groupedShapes?.length
     && Math.abs(shapeWidth(shape) - shapeWidth(sized)) <= MATCH_MM
