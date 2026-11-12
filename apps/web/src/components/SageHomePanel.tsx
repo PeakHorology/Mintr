@@ -80,7 +80,7 @@ export function SageHomePanel({
         search
       ) : (
         <div className="sage-home-bar">
-          <span className="sage-home-owl" aria-hidden="true">
+          <span className="sage-home-mark" aria-hidden="true">
             <ToolbarSageIcon width={26} height={26} />
           </span>
           <div className="sage-home-intro-copy">
@@ -194,7 +194,7 @@ export function SageSettingsSearch({
       }}
     >
       <label className="sage-home-search">
-        <span className="workspace-sage-owl" aria-hidden="true">
+        <span className="workspace-sage-mark" aria-hidden="true">
           <ToolbarSageIcon width={18} height={18} />
         </span>
         <input

@@ -8,6 +8,7 @@ import {
   clampCircularPatternCount,
   clampCircularPatternRadius,
   clampCircularPatternRotation,
+  clampCircularPatternTurn,
   defaultCircularPatternCenter,
   patternPolarAngle,
   patternRadius,
@@ -123,6 +124,20 @@ describe("circularPatternInstances", () => {
     expect(patternPolarAngle(center, instances[0])).toBeCloseTo(Math.PI / 2);
   });
 
+  it("turns the whole pattern, the original too, and keeps the copies evenly spaced", () => {
+    const source = box({ id: "a", x: 0, z: 20 });
+    const center = { x: 0, z: 0 };
+    const turned = circularPatternInstances([source], center, 4, { radius: 20, turn: 30 });
+    expect(turned[0].id).toBe("a");
+    expect(patternPolarAngle(center, turned[0])).toBeCloseTo(Math.PI / 6);
+    expect(patternPolarAngle(center, turned[1])).toBeCloseTo(Math.PI / 6 + Math.PI / 2);
+    for (const shape of turned) expect(patternRadius(center, shape)).toBeCloseTo(20);
+    // Each copy still faces the center.
+    expect(turned[0].rotation).toBeCloseTo(30);
+    expect(clampCircularPatternTurn(-30)).toBe(330);
+    expect(clampCircularPatternTurn(360)).toBe(0);
+  });
+
   it("seats instance bottoms on the pivot top elevation", () => {
     const source = box({ id: "a", x: 10, z: 0, elevation: 2, height: 8 });
     const instances = circularPatternInstances([source], { x: 0, z: 0 }, 3, {
@@ -177,8 +192,9 @@ describe("circularPatternInstances", () => {
     expect(circularPatternRadiusFromShape(box({ id: "box", x: 0, z: 0, width: 30, depth: 10, height: 30 }))).toBe(15);
   });
 
-  it("detects when patterned positions would clamp to ±110", () => {
+  it("only flags runaway positions, since the workplane can be any size", () => {
     expect(circularPatternWouldClamp({ x: 0, z: 0 }, 20, 6)).toBe(false);
-    expect(circularPatternWouldClamp({ x: 100, z: 0 }, 50, 8)).toBe(true);
+    expect(circularPatternWouldClamp({ x: 100, z: 0 }, 50, 8)).toBe(false);
+    expect(circularPatternWouldClamp({ x: 9990, z: 0 }, 50, 8)).toBe(true);
   });
 });

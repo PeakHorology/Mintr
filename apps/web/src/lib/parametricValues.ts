@@ -4,6 +4,10 @@ import type { ShapeValue, WorkplaneShape } from "@/types/sketchforge";
  * Mintr Pro's named values: `wall = 2`, `width = length / 2 + wall`. A small expression
  * language of numbers, names, + - * / ^, brackets, a few functions and mm/cm/in units.
  * Angles in sin/cos/tan are degrees, as everywhere else in Mintr.
+ *
+ * A plain number is in the workplane's unit (`unitMm`, millimeters per unit: 1 on a millimeter
+ * workplane, 25.4 on an inch one), and answers come out in that unit too. A number with its own
+ * unit ("12mm", "2in") keeps it. On a millimeter workplane this is exactly millimeters, as before.
  */
 
 export type ValueResult = { ok: true; value: number } | { ok: false; error: string };
@@ -110,7 +114,7 @@ export function isValueExpression(text: string): boolean {
   return tokens.some((token, index) => token.kind === "name" && !isUnitAfterNumber(tokens, index));
 }
 
-export function evaluateValueExpression(text: string, scope: ReadonlyMap<string, number>): ValueResult {
+export function evaluateValueExpression(text: string, scope: ReadonlyMap<string, number>, unitMm = 1): ValueResult {
   const tokens = tokenize(text);
   if (typeof tokens === "string") return { ok: false, error: tokens };
   if (tokens.length === 0) return { ok: false, error: "Type a number or a sum." };
@@ -170,7 +174,8 @@ export function evaluateValueExpression(text: string, scope: ReadonlyMap<string,
       const unit = tokens[index];
       if (unit?.kind === "name" && unit.name.toLowerCase() in UNITS) {
         index += 1;
-        return token.value * UNITS[unit.name.toLowerCase()];
+        const mm = token.value * UNITS[unit.name.toLowerCase()];
+        return unitMm === 1 ? mm : mm / unitMm;
       }
       return token.value;
     }
@@ -234,7 +239,7 @@ export type ResolvedValues = {
  * Work out a list of values. Each may use the outer values and the others in the list, in any
  * order; a value that leads back to itself is reported rather than looping.
  */
-export function resolveValues(values: readonly ShapeValue[] | undefined, outer: ReadonlyMap<string, number> = new Map()): ResolvedValues {
+export function resolveValues(values: readonly ShapeValue[] | undefined, outer: ReadonlyMap<string, number> = new Map(), unitMm = 1): ResolvedValues {
   const scope = new Map(outer);
   const own = new Map<string, number>();
   const errors = new Map<string, string>();
@@ -271,7 +276,7 @@ export function resolveValues(values: readonly ShapeValue[] | undefined, outer: 
     }
     state.set(name, "done");
     if (errors.has(name)) return;
-    const result = evaluateValueExpression(value.expression, scope);
+    const result = evaluateValueExpression(value.expression, scope, unitMm);
     if (!result.ok) {
       errors.set(name, result.error);
       return;
@@ -285,8 +290,20 @@ export function resolveValues(values: readonly ShapeValue[] | undefined, outer: 
 }
 
 /** The values a shape's own settings can use: its own list over the groups around it. */
-export function valueScopeFor(shape: WorkplaneShape, outer: ReadonlyMap<string, number> = new Map()) {
-  return resolveValues(shape.values, outer).scope;
+export function valueScopeFor(shape: WorkplaneShape, outer: ReadonlyMap<string, number> = new Map(), unitMm = 1) {
+  return resolveValues(shape.values, outer, unitMm).scope;
+}
+
+/**
+ * Why a value cannot be renamed to `name` here, or null when it can. Taking a name another value
+ * already has would quietly point every sum that used either one at the same value.
+ */
+export function valueRenameProblem(name: string, values: readonly ShapeValue[], outer?: ReadonlyMap<string, number>): string | null {
+  const problem = valueNameProblem(name);
+  if (problem) return problem;
+  if (values.some((value) => value.name === name)) return `There is already a value named “${name}”. Pick another name.`;
+  if (outer?.has(name)) return `A group around this part already has a value named “${name}”. Pick another name.`;
+  return null;
 }
 
 /**
@@ -319,7 +336,9 @@ export function renameInExpression(text: string, from: string, to: string): stri
   if (typeof tokens === "string" || !expressionNames(text).includes(from)) return text;
   return text.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (word, offset: number) => {
     if (word !== from) return word;
-    // Leave a unit after a number alone ("2in" with a value named in).
+    // A word glued to a number is part of it: the exponent in 1e2, or a unit in 2mm.
+    if (offset > 0 && /[0-9.]/.test(text[offset - 1])) return word;
+    // Leave a unit after a number alone ("2 in" with a value named in).
     const before = text.slice(0, offset).trimEnd();
     if (/[0-9.]$/.test(before) && word.toLowerCase() in UNITS) return word;
     return to;

@@ -12,10 +12,11 @@ import { createGearGeometry } from "@/lib/gearMesh";
 import { shapeUsesImportedMesh } from "@/lib/gridfinity";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { sphereTessellation } from "@/lib/sphereTessellation";
-import { DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments } from "@/lib/textFonts";
+import { CUSTOM_FONTS_EVENT, DEFAULT_TEXT_FONT, resolveTextFont, textFontCurveSegments, textGlyphFont } from "@/lib/textFonts";
 import {
   coneUnitBaseScale,
   coneUnitTopScale,
+  groupedChildrenDisplayScale,
   mirroredAxisCount,
   mirrorSign,
   resizedImportedMeshPositions,
@@ -377,26 +378,51 @@ export function createBooleanHollowCylinderGeometry(width: number, height: numbe
 
 const TEXT_LAYOUT_SIZE = 20;
 const textLayoutCache = new Map<string, { laidWidth: number; inkHeight: number }>();
+// A font added (or brought by a design) after text was measured with a stand-in font is measured again.
+const textLayoutWindow = (globalThis as { window?: Window }).window;
+if (textLayoutWindow && typeof textLayoutWindow.addEventListener === "function") {
+  textLayoutWindow.addEventListener(CUSTOM_FONTS_EVENT, () => textLayoutCache.clear());
+}
 
-function layoutTextGlyphs(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">, extrusion: number) {
-  const text = (shape.text ?? "TEXT").trim() || " ";
+/** The text a Text shape lays out: composed (é as one letter, not e + accent) and trimmed. */
+function layoutText(shape: Pick<WorkplaneShape, "text">) {
+  return (shape.text ?? "TEXT").normalize("NFC").trim() || " ";
+}
+
+type TextLayoutFields = Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments" | "textSlant">;
+
+function layoutTextGlyphs(shape: TextLayoutFields, extrusion: number) {
+  const text = layoutText(shape);
   const bevel = clampNumber(shape.bevel ?? 0, 0, 8);
+  // Slant leans each letter forward: x moves by y × tan(slant), as italic does.
+  const lean = Math.tan((clampNumber(shape.textSlant ?? 0, 0, 20) * Math.PI) / 180);
+  const shear = lean > 0 ? new THREE.Matrix4().makeShear(0, 0, lean, 0, 0, 0) : null;
   const fontName = shape.font ?? DEFAULT_TEXT_FONT;
   const font = resolveTextFont(fontName);
   const curveSegments = textFontCurveSegments(fontName);
   const glyphs = font.data.glyphs as Record<string, { ha?: number; o?: string } | undefined>;
-  const layoutScale = TEXT_LAYOUT_SIZE / font.data.resolution;
   const chars = Array.from(text);
   const pieces: { geometry: THREE.BufferGeometry; center: number }[] = [];
   let cursor = 0;
   let inkHeight = 1;
+  // Slanted letters lean past their advance, so the line is as wide as its ink reaches.
+  let inkLeft = 0;
+  let inkRight = 0;
 
   chars.forEach((char) => {
-    const glyph = glyphs[char] ?? glyphs["?"];
-    const advance = (glyph?.ha ?? font.data.resolution) * layoutScale;
+    // A letter the font lacks (é, ł, Ж, €) is borrowed from a built-in font that has it, in the
+    // drawing and the measuring alike; only a letter no font has becomes "?".
+    const own = glyphs[char];
+    const borrowed = own || char === " " ? null : textGlyphFont(fontName, char);
+    const glyphFont = borrowed ?? font;
+    const glyph = borrowed
+      ? (borrowed.data.glyphs as Record<string, { ha?: number; o?: string } | undefined>)[char]
+      : own ?? glyphs["?"];
+    const drawn = borrowed || own ? char : "?";
+    const advance = (glyph?.ha ?? glyphFont.data.resolution) * (TEXT_LAYOUT_SIZE / glyphFont.data.resolution);
     if (char !== " " && glyph?.o) {
-      const geometry = new TextGeometry(char, {
-        font,
+      const geometry = new TextGeometry(drawn, {
+        font: glyphFont,
         size: TEXT_LAYOUT_SIZE,
         depth: extrusion,
         curveSegments,
@@ -405,11 +431,14 @@ function layoutTextGlyphs(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" 
         bevelSize: bevel * 0.16,
         bevelSegments: Math.max(1, shape.segments ?? 0),
       });
+      if (shear) geometry.applyMatrix4(shear);
       geometry.computeBoundingBox();
       const box = geometry.boundingBox;
       if (box && geometry.getAttribute("position")?.count) {
         inkHeight = Math.max(inkHeight, box.max.y - box.min.y);
         pieces.push({ geometry, center: cursor + (box.min.x + box.max.x) / 2 });
+        inkLeft = Math.min(inkLeft, cursor + box.min.x);
+        inkRight = Math.max(inkRight, cursor + box.max.x);
       } else {
         geometry.dispose();
       }
@@ -417,13 +446,14 @@ function layoutTextGlyphs(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" 
     cursor += advance;
   });
 
-  return { laidWidth: Math.max(1, cursor), inkHeight, pieces };
+  const laidWidth = lean > 0 ? Math.max(cursor, inkRight) - inkLeft : cursor;
+  return { laidWidth: Math.max(1, laidWidth), inkHeight, pieces };
 }
 
 /** Advance width and cap height of the text, in the same units the mesh is fitted with. */
-export function textLayoutMetrics(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">) {
+export function textLayoutMetrics(shape: TextLayoutFields) {
   const bevel = clampNumber(shape.bevel ?? 0, 0, 8);
-  const key = `${shape.font ?? DEFAULT_TEXT_FONT}|${bevel}|${shape.segments ?? 0}|${(shape.text ?? "TEXT").trim() || " "}`;
+  const key = `${shape.font ?? DEFAULT_TEXT_FONT}|${bevel}|${shape.segments ?? 0}|${shape.textSlant ?? 0}|${layoutText(shape)}`;
   const cached = textLayoutCache.get(key);
   if (cached) return cached;
   const layout = layoutTextGlyphs(shape, 1);
@@ -438,13 +468,13 @@ function roundTextSize(value: number) {
 }
 
 /** Letter height that fills the shape when the line is `width` long. */
-export function matchedTextDepth(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">, width: number) {
+export function matchedTextDepth(shape: TextLayoutFields, width: number) {
   const { laidWidth, inkHeight } = textLayoutMetrics(shape);
   return roundTextSize((width * inkHeight) / laidWidth);
 }
 
 /** Line length that fills the shape when the letters are `depth` tall. */
-export function matchedTextWidth(shape: Pick<WorkplaneShape, "text" | "font" | "bevel" | "segments">, depth: number) {
+export function matchedTextWidth(shape: TextLayoutFields, depth: number) {
   const { laidWidth, inkHeight } = textLayoutMetrics(shape);
   return roundTextSize((depth * laidWidth) / Math.max(0.001, inkHeight));
 }
@@ -460,7 +490,7 @@ export function withMatchedTextFootprint(shape: WorkplaneShape, patch: Partial<W
   const previousDepth = shapeDepth(shape);
   const nextWidth = shapeWidth(next);
   const nextDepth = shapeDepth(next);
-  const contentChanged = patch.text !== undefined || patch.font !== undefined || patch.bevel !== undefined;
+  const contentChanged = patch.text !== undefined || patch.font !== undefined || patch.bevel !== undefined || "textSlant" in patch;
   const widthMoved = Math.abs(nextWidth - previousWidth) > 1e-4 || contentChanged;
   const depthMoved = Math.abs(nextDepth - previousDepth) > 1e-4;
   if (!widthMoved && !depthMoved) return patch;
@@ -658,17 +688,40 @@ export function geometryMeshForShape(shape: WorkplaneShape): MeshData | null {
   return geometry ? bufferGeometryToMeshData(sanitizeName(shape.name), geometry) : null;
 }
 
+/**
+ * The children that make up a group's material. Hidden and suppressed children are left out
+ * (the viewport skips them too). A hole child is a cutter, not material, so it is left out of a
+ * solid group even in a Tie, where the viewport still draws it striped; a hole group keeps its
+ * children because they are the cutter. A group of nothing but holes keeps them so it is not empty.
+ */
+export function groupMeshChildren(shape: WorkplaneShape): WorkplaneShape[] {
+  const active = (shape.groupedShapes ?? []).filter((child) => !child.hidden && !child.suppressed && !child.csg?.suppressed);
+  if (shape.hole) return active;
+  const solids = active.filter((child) => !child.hole);
+  return solids.length > 0 ? solids : active;
+}
+
 export function meshForShape(shape: WorkplaneShape): MeshData {
   if (shapeUsesImportedMesh(shape)) {
     return importedMeshForShape(shape);
   }
 
   if (shape.groupedShapes?.length) {
+    // Children live in the group's frame at the size they had when grouped; a resized group
+    // stretches them along its own axes, exactly as the viewport scales the group's content.
+    const scale = groupedChildrenDisplayScale(shape);
     const vertices: Vec3[] = [];
     const faces: [number, number, number][] = [];
-    shape.groupedShapes.filter((child) => !child.hidden).forEach((child) => {
+    groupMeshChildren(shape).forEach((child) => {
       const childMesh = meshForShape(child);
+      const offset = vertices.length;
       appendMeshData(vertices, faces, childMesh);
+      if (scale.x !== 1 || scale.y !== 1 || scale.z !== 1) {
+        for (let i = offset; i < vertices.length; i += 1) {
+          const [x, y, z] = vertices[i];
+          vertices[i] = [x * scale.x, y * scale.y, z * scale.z];
+        }
+      }
     });
     return transformMesh({ name: sanitizeName(shape.name), vertices, faces }, shape);
   }

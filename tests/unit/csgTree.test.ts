@@ -8,7 +8,6 @@ import {
   inferCsgOp,
   migrateShapeCsg,
   planarizeThinSolidPositions,
-  reorderCsgChild,
   replaceLeafInCsgTree,
   pickGroupToUngroup,
   setCsgChildSuppressed,
@@ -185,17 +184,12 @@ describe("csgTree", () => {
     expect(faceHoleCutDepthMm(10)).toBeLessThan(12);
   });
 
-  it("reorders and suppresses CSG children while bumping dirty version", () => {
+  it("suppresses CSG children while bumping dirty version", () => {
     const body = withCsgMeta({
       ...boxChild("body"),
       kind: "mesh" as const,
       groupedShapes: [boxChild("a"), boxChild("b"), boxChild("c", true)],
     }, "subtract");
-    const reordered = reorderCsgChild(body, "c", "up");
-    expect(reordered.groupedShapes?.map((child) => child.id)).toEqual(["a", "c", "b"]);
-    // Listing order cannot change what a node evaluates to, so it must not force a rebuild.
-    expect(reordered.csg?.dirty).toBeFalsy();
-    expect(reordered.csg?.version).toBe(body.csg?.version);
     const suppressed = setCsgChildSuppressed(body, "c", true);
     expect(suppressed.groupedShapes?.[2].suppressed).toBe(true);
     expect(suppressed.csg?.dirty).toBe(true);

@@ -430,32 +430,13 @@ export function faceSketchHoleCutterMm(typedMm: number, throughThicknessMm: numb
 }
 
 /**
- * Reorder a direct child of a CSG body (feature timeline move).
+ * Suppress or restore a direct child feature.
  *
- * This is a listing order only. A node applies its single op to the whole operand set at once —
- * subtract is every solid minus every hole, union and intersect are commutative — so no arrangement
- * of the children can change the evaluated result. It used to mark the body dirty and trigger a full
- * rebuild that could only reproduce the same mesh, at the risk of an exact body coming back faceted
- * if the exact path failed on that run. Genuine order-dependent history needs per-child ops and
- * sequential evaluation, which this tree does not have.
+ * The children of a body have no order of their own: a node applies its single op to the whole
+ * set at once (subtract is every solid minus every hole; union and intersect are commutative),
+ * so the tree lists them but never reorders them. Order-dependent history lives in a part's
+ * steps (`features`), which replay in sequence.
  */
-export function reorderCsgChild(
-  body: WorkplaneShape,
-  childId: string,
-  direction: "up" | "down",
-): WorkplaneShape {
-  const children = body.groupedShapes ?? [];
-  const index = children.findIndex((child) => child.id === childId);
-  if (index < 0) return body;
-  const target = direction === "up" ? index - 1 : index + 1;
-  if (target < 0 || target >= children.length) return body;
-  const next = children.slice();
-  const [item] = next.splice(index, 1);
-  next.splice(target, 0, item);
-  return { ...body, groupedShapes: next };
-}
-
-/** Suppress or restore a direct child feature. */
 export function setCsgChildSuppressed(
   body: WorkplaneShape,
   childId: string,

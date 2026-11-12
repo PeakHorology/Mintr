@@ -8,6 +8,11 @@ import {
 import { displayToMillimeters, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 
 /** Axis-aligned box as a triangle soup, sized w x h x d about the origin. */
+/** A box as an STL file has it: Z up, so the file's z is the height and its y the depth. */
+function zUpBoxSoup(width: number, height: number, depth: number) {
+  return boxSoup(width, depth, height);
+}
+
 function boxSoup(width: number, height: number, depth: number) {
   const x = width / 2;
   const y = height / 2;
@@ -100,7 +105,7 @@ describe("STL workplane units", () => {
     ["ft", FEET],
     ["stud", STUDS],
   ])("shows a 10 x 4 x 6 STL as 10 x 4 x 6 %s on that workplane", (label, unit) => {
-    const part = importedShapeFromStl("part.stl", asciiStl(boxSoup(10, 4, 6)), "keep-orientation", unit);
+    const part = importedShapeFromStl("part.stl", asciiStl(zUpBoxSoup(10, 4, 6)), "keep-orientation", unit);
     const shown = displayed(part, unit);
 
     expect(lengthDisplayUnit(unit).label).toBe(label);
@@ -110,7 +115,7 @@ describe("STL workplane units", () => {
   });
 
   it("stores an imported STL in the same unit as a native box of the same displayed size", () => {
-    const part = importedShapeFromStl("part.stl", asciiStl(boxSoup(10, 4, 6)), "keep-orientation", INCHES);
+    const part = importedShapeFromStl("part.stl", asciiStl(zUpBoxSoup(10, 4, 6)), "keep-orientation", INCHES);
 
     expect(part.width).toBeCloseTo(displayToMillimeters(10, INCHES), 4);
     expect(part.height).toBeCloseTo(displayToMillimeters(4, INCHES), 4);
@@ -128,7 +133,7 @@ describe("STL workplane units", () => {
   });
 
   it("keeps a millimetre workplane import at 1:1", () => {
-    const buffer = asciiStl(boxSoup(30, 12, 18));
+    const buffer = asciiStl(zUpBoxSoup(30, 12, 18));
     const part = importedShapeFromStl("part.stl", buffer, "keep-orientation", METRIC_MM);
     const unspecified = importedShapeFromStl("part.stl", buffer, "keep-orientation");
 
@@ -139,7 +144,7 @@ describe("STL workplane units", () => {
   });
 
   it("shows a 1 x 2 x 3 STL as 1 x 2 x 3 in on an inch workplane and seats it on the floor", () => {
-    const part = importedShapeFromStl("part.stl", asciiStl(boxSoup(1, 2, 3)), "keep-orientation", INCHES);
+    const part = importedShapeFromStl("part.stl", asciiStl(zUpBoxSoup(1, 2, 3)), "keep-orientation", INCHES);
     const ys = part.importedMesh!.positions.filter((_, index) => index % 3 === 1);
     const shown = displayed(part, INCHES);
 

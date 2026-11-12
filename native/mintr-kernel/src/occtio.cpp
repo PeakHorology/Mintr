@@ -8,6 +8,7 @@
 #include <Standard_Failure.hxx>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -175,7 +176,9 @@ TopoDS_Shape kernelRecenterToLocalMeshFrame(const TopoDS_Shape& shape) {
   if (!kernelBounds(shape, xmin, ymin, zmin, xmax, ymax, zmax)) return shape;
   const double cx = (xmin + xmax) / 2.0;
   const double cz = (zmin + zmax) / 2.0;
-  if (std::abs(cx) < 0.05 && std::abs(cz) < 0.05 && std::abs(ymin) < 0.05) return shape;
+  // Always exactly: the app places a stored solid by its exact bounds, so a solid left a
+  // few hundredths off centre here moved by that much every time it was grouped again.
+  if (std::abs(cx) < 1e-9 && std::abs(cz) < 1e-9 && std::abs(ymin) < 1e-9) return shape;
   gp_Trsf move;
   move.SetTranslation(gp_Vec(-cx, -ymin, -cz));
   return BRepBuilderAPI_Transform(shape, move, true).Shape();
@@ -214,13 +217,50 @@ TopoDS_Shape kernelScale(const TopoDS_Shape& shape, double sx, double sy, double
   return BRepBuilderAPI_GTransform(shape, gtrsf, true).Shape();
 }
 
+namespace {
+
+const char* const kStoredBrepOpen = "/* MINTR-BREP 1\n";
+const char* const kStoredBrepClose = "\nMINTR-BREP-END */\n";
+
+/** The engine's own copy of the solid, when this STEP came from kernelStoreStep. */
+bool readStoredBrep(const std::string& text, TopoDS_Shape& out) {
+  const std::size_t open = text.rfind(kStoredBrepOpen);
+  if (open == std::string::npos) return false;
+  const std::size_t start = open + std::strlen(kStoredBrepOpen);
+  const std::size_t close = text.find(kStoredBrepClose, start);
+  if (close == std::string::npos) return false;
+  TopoDS_Shape read;
+  try {
+    if (!kernelReadBrep(text.substr(start, close - start), read) || read.IsNull()) return false;
+  } catch (...) {
+    return false;
+  }
+  out = read;
+  return true;
+}
+
+} // namespace
+
 bool kernelReadStep(const std::string& text, TopoDS_Shape& out) {
+  if (readStoredBrep(text, out)) return true;
   std::istringstream in(text);
   STEPControl_Reader reader;
   if (reader.ReadStream("mintr", in) != IFSelect_RetDone) return false;
   reader.TransferRoots();
   out = reader.OneShape();
   return !out.IsNull();
+}
+
+std::string kernelStoreStep(const TopoDS_Shape& shape) {
+  std::string step = kernelExportStep(shape, false);
+  if (step.empty()) return step;
+  const std::string brep = kernelExportBrep(shape);
+  // A comment cannot hold its own end mark; such a copy is left out and STEP is read as before.
+  if (brep.empty() || brep.find("*/") != std::string::npos) return step;
+  // Inside the file, before its end line: a comment is allowed anywhere between entries.
+  const std::size_t end = step.rfind("END-ISO-10303-21;");
+  if (end == std::string::npos) return step;
+  return step.substr(0, end) + kStoredBrepOpen + brep + kStoredBrepClose + step.substr(end);
 }
 
 bool kernelReadBrep(const std::string& text, TopoDS_Shape& out) {
@@ -503,12 +543,82 @@ bool kernelTessellateIndexed(
     meshed = BRepBuilderAPI_Copy(shape).Shape();
     if (meshed.IsNull()) meshed = shape;
   }
-  for (int attempt = 0; attempt < 4; ++attempt) {
+  const auto meshAt = [&](double linearAt, double angularAt) {
     BRepTools::Clean(meshed);
-    BRepMesh_IncrementalMesh mesh(meshed, linearStep, false, angularStep, true);
+    BRepMesh_IncrementalMesh mesh(meshed, linearAt, false, angularAt, true);
     (void)mesh;
-    if (triangulationTriangles(meshed) <= 180000 || attempt == 3) break;
-    angularStep = std::min(options.maxAngular, angularStep * 1.75);
+    return static_cast<double>(triangulationTriangles(meshed));
+  };
+  const double target = options.targetTriangles;
+  bool matched = false;
+  if (target >= 12.0) {
+    const auto off = [&](double count) { return std::abs(std::log(std::max(1.0, count) / target)); };
+    const auto near = [&](double count) { return count <= target * 1.5 + 64.0 && count >= target / 1.5 - 64.0; };
+    double count = meshAt(linearStep, angularStep);
+    if (count > 0.0 && !near(count)) {
+      const bool coarser = count > target;
+      const double factor = coarser ? 1.6 : 1.0 / 1.6;
+      double bestLinear = linearStep, bestAngular = angularStep, bestCount = count;
+      double lastLinear = linearStep, lastAngular = angularStep;
+      for (int step = 0; step < 5; ++step) {
+        const double nextLinear = std::min(0.3, std::max(0.01, lastLinear * factor));
+        const double nextAngular = std::min(0.5, std::max(0.03, lastAngular * factor));
+        if (nextLinear == lastLinear && nextAngular == lastAngular) break;
+        lastLinear = nextLinear;
+        lastAngular = nextAngular;
+        const double next = meshAt(lastLinear, lastAngular);
+        if (next <= 0.0) break;
+        if (off(next) < off(bestCount)) {
+          bestLinear = lastLinear;
+          bestAngular = lastAngular;
+          bestCount = next;
+        }
+        if (near(next) || (coarser ? next <= target : next >= target)) break;
+      }
+      if (bestLinear != lastLinear || bestAngular != lastAngular) count = meshAt(bestLinear, bestAngular);
+      else count = bestCount;
+    }
+    // The triangle budget still wins over matching a very dense part.
+    matched = count > 0.0 && count <= 180000.0;
+  }
+  // Two cheap coarse meshes, at six and three times the angle, show how fast this part's count
+  // grows as the angle closes: about twice per halving for a cylinder, four times for a torus.
+  // From them, the count at the asked angle is foretold without meshing it. Only a fine angle
+  // on a part that showed its count is probed.
+  bool probeKept = false;
+  double probePower = 0.0;
+  if (!matched && options.shownTriangles >= 12.0 && angularStep < 0.2) {
+    const double coarseAngular = std::min(0.5, angularStep * 6.0);
+    const double probeAngular = std::min(0.5, angularStep * 3.0);
+    const double coarse = meshAt(linearStep, coarseAngular);
+    const double probe = meshAt(linearStep, probeAngular);
+    if (coarse > 0.0 && probe > 0.0 && probeAngular < coarseAngular) {
+      // Growth per halving of the angle, as a power: 1 for a cylinder, 2 for a torus.
+      const double power = std::clamp(std::log(probe / coarse) / std::log(coarseAngular / probeAngular), 0.5, 2.5);
+      const double foretold = probe * std::pow(probeAngular / angularStep, power);
+      if (foretold > options.shownTriangles * 4.0) {
+        probePower = power;
+        // What the parts showed, inside the budget. Not more, or a Group grouped again (which
+        // shows this result) would grow on every step; not less, or each part in it would get
+        // coarser on every step.
+        const double goal = std::min(options.shownTriangles, 150000.0);
+        const double opened = probeAngular * std::pow(probe / goal, 1.0 / power);
+        if (opened < probeAngular * 1.25 && opened > probeAngular / 1.25 && probe <= 180000.0) {
+          // The probe already is about right: keep its mesh.
+          angularStep = probeAngular;
+          probeKept = true;
+        } else {
+          angularStep = std::clamp(opened, angularStep, 0.5);
+        }
+      }
+    }
+  }
+  for (int attempt = 0; !matched && !probeKept && attempt < 4; ++attempt) {
+    const double count = meshAt(linearStep, angularStep);
+    if (count <= 180000.0 || attempt == 3) break;
+    // With the part's growth measured, step straight to inside the budget.
+    const double opening = probePower > 0.0 ? std::pow(count / 140000.0, 1.0 / probePower) : 1.75;
+    angularStep = std::min(options.maxAngular, angularStep * std::max(1.2, opening));
     linearStep = std::min(0.25, linearStep * 1.75);
   }
   positions = nlohmann::json::array();
@@ -696,6 +806,40 @@ double kernelArea(const TopoDS_Shape& shape) {
 
 namespace {
 
+bool exactBox(const TopoDS_Shape& shape, Bnd_Box& box) {
+  try {
+    BRepBndLib::AddOptimal(shape, box, false, false);
+  } catch (...) {
+    return false;
+  }
+  return !box.IsVoid();
+}
+
+/**
+ * A fuse that comes back well formed can still be wrong: OCCT can drop a part or keep the
+ * wrong side of a face and pass every check (a ball added to a Group of balls vanished, and
+ * half the ball it met went with it). A fuse holds all of each part, so it reaches as far as
+ * every part does and holds at least as much as the biggest one.
+ */
+bool fuseHoldsParts(const TopoDS_Shape& base, const TopTools_ListOfShape& tools, const TopoDS_Shape& out) {
+  Bnd_Box parts;
+  if (!exactBox(base, parts)) return true;
+  double biggest = kernelVolume(base);
+  for (TopTools_ListOfShape::Iterator it(tools); it.More(); it.Next()) {
+    if (!exactBox(it.Value(), parts)) return true;
+    biggest = std::max(biggest, kernelVolume(it.Value()));
+  }
+  Bnd_Box result;
+  if (!exactBox(out, result)) return false;
+  double ax0, ay0, az0, ax1, ay1, az1, bx0, by0, bz0, bx1, by1, bz1;
+  parts.Get(ax0, ay0, az0, ax1, ay1, az1);
+  result.Get(bx0, by0, bz0, bx1, by1, bz1);
+  const double reach = std::max(1e-4, std::sqrt(parts.SquareExtent()) * 1e-5);
+  if (bx0 > ax0 + reach || by0 > ay0 + reach || bz0 > az0 + reach) return false;
+  if (bx1 < ax1 - reach || by1 < ay1 - reach || bz1 < az1 - reach) return false;
+  return kernelVolume(out) >= biggest * (1.0 - 1e-6) - 1e-6;
+}
+
 double booleanSpan(const TopoDS_Shape& base, const TopTools_ListOfShape& tools) {
   Bnd_Box box;
   try {
@@ -749,7 +893,12 @@ bool kernelBoolean(KernelBooleanOp op, const TopoDS_Shape& base, const TopTools_
   const double scaled = std::clamp(booleanSpan(base, tools) * 1e-6, Precision::Confusion() * 10.0, 1e-3);
   std::string why;
   for (const double fuzzy : { 0.0, scaled, 0.04 }) {
-    if (booleanOnce(op, base, tools, fuzzy, out, why)) return true;
+    if (!booleanOnce(op, base, tools, fuzzy, out, why)) continue;
+    if (op == KernelBooleanOp::Fuse && !fuseHoldsParts(base, tools, out)) {
+      why = "the fuse lost part of a solid";
+      continue;
+    }
+    return true;
   }
   if (error) *error = why.empty() ? "boolean failed" : why;
   return false;

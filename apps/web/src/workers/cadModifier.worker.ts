@@ -2043,6 +2043,42 @@ function tessellateForCurve(cad: OcctKernel, shape: ShapeHandle, linearDeflectio
   return mesh;
 }
 
+/**
+ * Push Pull moves flat faces; it does not change the part's curves. Meshing the result at a fixed
+ * quality made a coarse part jump from hundreds of triangles to thousands, or a smooth one go
+ * coarse. This meshes it about as densely as the part already was: within half again either way,
+ * loosening or tightening both deflections a step at a time, a few steps at most.
+ */
+function tessellateNear(
+  cad: OcctKernel,
+  shape: ShapeHandle,
+  options: { linearDeflection: number; angularDeflection: number },
+  target: number | undefined,
+) {
+  const first = cad.tessellate(shape, options);
+  if (!target || !Number.isFinite(target) || target < 12 || !first.triangleCount) return first;
+  const off = (count: number) => Math.abs(Math.log(Math.max(1, count) / target));
+  const near = (count: number) => count <= target * 1.5 + 64 && count >= target / 1.5 - 64;
+  if (near(first.triangleCount)) return first;
+  const coarser = first.triangleCount > target;
+  let best = copyCadMesh(first);
+  let linear = options.linearDeflection;
+  let angular = options.angularDeflection;
+  for (let step = 0; step < 5; step += 1) {
+    const factor = coarser ? 1.6 : 1 / 1.6;
+    const nextLinear = Math.min(0.3, Math.max(0.01, linear * factor));
+    const nextAngular = Math.min(0.5, Math.max(0.03, angular * factor));
+    if (nextLinear === linear && nextAngular === angular) break;
+    linear = nextLinear;
+    angular = nextAngular;
+    const next = cad.tessellate(shape, { linearDeflection: linear, angularDeflection: angular });
+    if (!next.triangleCount) break;
+    if (off(next.triangleCount) < off(best.triangleCount)) best = copyCadMesh(next);
+    if (near(next.triangleCount) || (coarser ? next.triangleCount <= target : next.triangleCount >= target)) break;
+  }
+  return best;
+}
+
 function copyCadMesh(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; triangleCount: number }) {
   return {
     positions: new Float32Array(mesh.positions),
@@ -2700,7 +2736,7 @@ async function handleCadModifierRequest(request: CadModifierWorkerRequest) {
       try {
         result = applyPushPull(activeCad, baseShape, handle, face, request.distance);
         const options = tessellationOptions(request.quality, Math.abs(request.distance) || 1);
-        const mesh = displayCadMesh(activeCad, result, activeCad.tessellate(result, options));
+        const mesh = displayCadMesh(activeCad, result, tessellateNear(activeCad, result, options, request.matchTriangles));
         if (!mesh.triangleCount) throw new Error(pushPullFailCopy(request.distance, "empty"));
         const displayEdges = collectEdges(activeCad, result, 0).displayEdges;
         let brep = "";

@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode, SVGProps } from "react";
+import type { CsgOp, PartFeature, WorkplaneShape } from "@/types/sketchforge";
 
 type IconProps = SVGProps<SVGSVGElement>;
 type SpriteRect = {
@@ -251,18 +252,14 @@ export function ToolbarFullscreenIcon({ exit = false, ...props }: IconProps & { 
   );
 }
 
-/** Sage. Round-bodied owl with wide tufts, big ringed eyes, full folded wings, an outlined mint beak, and little feet. */
+/** Sage. A friendly brontosaurus looking back over its shoulder, tail sweeping to the ground, two mint spots. */
 export function ToolbarSageIcon(props: IconProps) {
   return (
     <CadGlyph {...props}>
-      <path d="M7 8.9L7.5 3.6L10.5 6.65Q12 7.2 13.5 6.65L16.5 3.6L17 8.9A6 7.57 0 1 1 7 8.9Z" />
-      <path d="M6.4 10.9C2.6 12.6 2.4 16.9 7 19.4C6.1 17.6 5.9 13.5 6.4 10.9ZM17.6 10.9C21.4 12.6 21.6 16.9 17 19.4C17.9 17.6 18.1 13.5 17.6 10.9Z" />
-      <circle cx="9.5" cy="10.8" r="2.1" strokeWidth="1.2" />
-      <circle cx="14.5" cy="10.8" r="2.1" strokeWidth="1.2" />
-      <circle cx="9.9" cy="11.1" r="0.6" fill="currentColor" stroke="none" />
-      <circle cx="14.9" cy="11.1" r="0.6" fill="currentColor" stroke="none" />
-      <path d="M10.2 12.9H13.8L12 16.4Z" fill="#2aa77e" strokeWidth="0.75" />
-      <path d="M9.4 21.8h1.4M13.2 21.8h1.4" />
+      <path d="M4.2 3.3C5.2 2.3 7.8 2.2 9.4 3.1C10.8 3.8 11 5.6 9.6 6.3C8.6 6.8 7.6 6.6 7 7.2C6.2 8.4 6.6 10.6 8 12C9.8 10.3 13 9.7 15.2 11.2C17.9 12.4 18.5 17.9 22.4 18.8Q23.3 19.6 22 20.1C20 20.2 17.4 18.6 14.8 17.8V20.8H11.8V18.4H7.8V20.8H4.8V15.6C3.3 13.4 2.5 10.4 2.7 7.6C2.8 5.8 3.2 4.3 4.2 3.3Z" />
+      <circle cx="7.7" cy="4.4" r="0.7" fill="currentColor" stroke="none" />
+      <circle cx="11.6" cy="13.5" r="0.95" fill="#2aa77e" stroke="none" />
+      <circle cx="14.4" cy="14.6" r="0.8" fill="#2aa77e" stroke="none" />
     </CadGlyph>
   );
 }
@@ -793,4 +790,171 @@ export function SketchRectPatternIcon(props: IconProps) {
       <rect x="28" y="28" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="2.4" opacity="0.55" />
     </SketchGlyphIcon>
   );
+}
+
+/*
+ * Parts tree glyphs. The toolbar's 24px stroke language drawn small beside a part's name, with
+ * one face tinted so a part reads as a solid in its own colour.
+ */
+
+/** A cube: the plain solid, and the fallback for any kind without a glyph of its own. */
+export function PartBoxGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M12 11.5 19.5 7.5v9L12 20.5z" fill="currentColor" stroke="none" opacity="0.22" />
+      <path d="M12 3.5 19.5 7.5v9L12 20.5 4.5 16.5v-9z" />
+      <path d="M4.5 7.5 12 11.5l7.5-4M12 11.5v9" />
+    </CadGlyph>
+  );
+}
+
+export function PartCylinderGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M5.5 6.5v11a6.5 2.5 0 0 0 13 0v-11a6.5 2.5 0 0 1-13 0z" fill="currentColor" stroke="none" opacity="0.22" />
+      <ellipse cx="12" cy="6.5" rx="6.5" ry="2.5" />
+      <path d="M5.5 6.5v11a6.5 2.5 0 0 0 13 0v-11" />
+    </CadGlyph>
+  );
+}
+
+export function PartSphereGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4 12a8 8 0 0 0 16 0a8 3 0 0 1-16 0z" fill="currentColor" stroke="none" opacity="0.22" />
+      <circle cx="12" cy="12" r="8" />
+      <path d="M4 12a8 3 0 0 0 16 0" />
+    </CadGlyph>
+  );
+}
+
+/** A point over a base: cones, pyramids, wedges and roofs. */
+export function PartConeGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M12 3.5 19 17.5a7 2.5 0 0 1-7 2.5z" fill="currentColor" stroke="none" opacity="0.22" />
+      <path d="M12 3.5 19 17.5a7 2.5 0 0 1-14 0z" />
+      <path d="M5 17.5a7 2.5 0 0 0 14 0" />
+    </CadGlyph>
+  );
+}
+
+/** A ring: torus, tube and ring. */
+export function PartRingGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M3.5 12a8.5 8.5 0 1 0 17 0a8.5 8.5 0 1 0-17 0zM8.5 12a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0z" fill="currentColor" fillRule="evenodd" stroke="none" opacity="0.22" />
+      <circle cx="12" cy="12" r="8.5" />
+      <circle cx="12" cy="12" r="3.5" />
+    </CadGlyph>
+  );
+}
+
+export function PartTextGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M5 7V5h14v2" />
+      <path d="M12 5v14" />
+      <path d="M9 19h6" />
+    </CadGlyph>
+  );
+}
+
+/** A closed outline on a plane: sketches, scribbles and lofts. */
+export function PartSketchGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4.5 16.5c0-5.5 3.5-9 7.5-9s7.5 3.5 7.5 9z" fill="currentColor" stroke="none" opacity="0.22" />
+      <path d="M4.5 16.5c0-5.5 3.5-9 7.5-9s7.5 3.5 7.5 9" />
+      <path d="M3 16.5h18" />
+      <circle cx="12" cy="7.5" r="1.4" fill="currentColor" stroke="none" />
+    </CadGlyph>
+  );
+}
+
+/** A few triangles: an imported or baked mesh. */
+export function PartMeshGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M9.5 5 15.5 11.5 4 18z" fill="currentColor" stroke="none" opacity="0.22" />
+      <path d="M4 18 9.5 5l6 6.5L20 18z" />
+      <path d="M9.5 5 15.5 11.5 4 18" />
+    </CadGlyph>
+  );
+}
+
+/** A tray with a grid: Gridfinity bins and baseplates. */
+export function PartBinGlyph(props: IconProps) {
+  return (
+    <CadGlyph {...props}>
+      <path d="M4 7h16v6H4z" fill="currentColor" stroke="none" opacity="0.22" />
+      <rect x="4" y="7" width="16" height="12" rx="1.5" />
+      <path d="M4 13h16M12 7v12" />
+    </CadGlyph>
+  );
+}
+
+/** A dashed cube: the tree before any part is in the design. */
+export function PartsTreeEmptyGlyph(props: IconProps) {
+  return (
+    <CadGlyph strokeWidth={1.5} {...props}>
+      <path d="M12 3.5 19.5 7.5v9L12 20.5 4.5 16.5v-9z" strokeDasharray="2.4 2" />
+      <path d="M4.5 7.5 12 11.5l7.5-4M12 11.5v9" strokeDasharray="2.4 2" />
+    </CadGlyph>
+  );
+}
+
+/** The glyph for a part in the Parts tree: its group kind, hole, or shape kind. */
+export function PartKindGlyph({ shape, op, ...props }: IconProps & { shape: WorkplaneShape; op: CsgOp | null }) {
+  if (op === "assemble") return <ToolbarAssemblyIcon {...props} />;
+  if (op === "intersect") return <ToolbarIntersectionIcon {...props} />;
+  if (op === "hull") return <ToolbarShrinkWrapIcon {...props} />;
+  if (op === "smooth") return <ToolbarSmoothIcon {...props} />;
+  if (op) return <ToolbarGroupIcon {...props} />;
+  if (shape.hole) return <ToolbarHoleIcon {...props} />;
+  if (shape.construction) return <PartSketchGlyph {...props} />;
+  switch (shape.kind) {
+    case "cylinder":
+    case "polygon":
+      return <PartCylinderGlyph {...props} />;
+    case "sphere":
+    case "halfSphere":
+    case "icosahedron":
+      return <PartSphereGlyph {...props} />;
+    case "cone":
+    case "pyramid":
+    case "wedge":
+    case "roof":
+    case "roundRoof":
+      return <PartConeGlyph {...props} />;
+    case "torus":
+    case "tube":
+    case "ring":
+      return <PartRingGlyph {...props} />;
+    case "text":
+      return <PartTextGlyph {...props} />;
+    case "sketch":
+    case "scribble":
+    case "loft":
+      return <PartSketchGlyph {...props} />;
+    case "mesh":
+      return shape.importedMesh?.brepStep || shape.cadBrep ? <PartBoxGlyph {...props} /> : <PartMeshGlyph {...props} />;
+    case "thread":
+      return <ToolbarThreadIcon {...props} />;
+    case "gear":
+      return <ToolbarSettingsIcon {...props} />;
+    case "gridfinityBin":
+    case "gridfinityBaseplate":
+      return <PartBinGlyph {...props} />;
+    default:
+      return <PartBoxGlyph {...props} />;
+  }
+}
+
+/** The glyph for a recorded step: the tool it was made with. */
+export function StepKindGlyph({ step, ...props }: IconProps & { step: PartFeature }) {
+  if (step.kind === "hollow") return <ToolbarHollowIcon {...props} />;
+  if (step.kind === "pushPull") return <ToolbarPushPullIcon {...props} />;
+  if (step.kind === "chamfer") return <ToolbarChamferIcon {...props} />;
+  return <ToolbarFilletIcon {...props} />;
 }

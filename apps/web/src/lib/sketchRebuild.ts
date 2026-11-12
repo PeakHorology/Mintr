@@ -51,6 +51,27 @@ export async function rebuildSketchedShape(
 }
 
 /**
+ * After Edit sketch → Finish: the newly built part keeps where the old one was moved and turned
+ * to, its lock, laser job, texture and steps, as a size change in the inspector does. Whether it
+ * is a hole, and its colour, come from the new finish.
+ */
+export function keepPartAfterSketchFinish(rebuilt: WorkplaneShape, existing: WorkplaneShape, options: { cutIntoFace?: boolean } = {}): WorkplaneShape {
+  const doc = rebuilt.sketchDoc ?? existing.sketchDoc;
+  if (!doc) return rebuilt;
+  let before: WorkplaneShape | null = null;
+  if (existing.sketchDoc && existing.sketchFinish !== "sweep") {
+    const profile = sketchDocToProfile(existing.sketchDoc);
+    profile.sketchPlane = existing.sketchPlane ?? profile.sketchPlane;
+    const stored = existing.sketchRevolveAxis;
+    before = existing.sketchFinish === "revolve"
+      ? stored ? shapeFromSketchRevolve(profile, { start: { x: stored.x1, z: stored.z1 }, end: { x: stored.x2, z: stored.z2 } }, existing) : null
+      : shapeFromSketchProfile(profile, existing.height, existing, { cutIntoFace: options.cutIntoFace });
+  }
+  const kept = keepPartState(rebuilt, existing, before, doc);
+  return { ...kept, hole: rebuilt.hole, color: rebuilt.color, solidColor: rebuilt.solidColor };
+}
+
+/**
  * A new sketch makes a new body, but it is still this part: where it was moved and turned to, its
  * finish and laser job, and its steps, which replay on the new body. `before` is the old sketch
  * built the same way, to tell how far the part has been moved since it was drawn.
@@ -77,6 +98,7 @@ function keepPartState(rebuilt: WorkplaneShape, shape: WorkplaneShape, before: W
     locked: shape.locked,
     hidden: shape.hidden,
     laserJob: shape.laserJob,
+    laserLink: shape.laserLink,
     surfaceTexture: shape.surfaceTexture,
     sketchDoc: doc,
     sketchPlane: shape.sketchPlane ?? rebuilt.sketchPlane,

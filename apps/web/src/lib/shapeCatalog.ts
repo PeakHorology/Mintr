@@ -4,6 +4,8 @@ import { isGridfinityKind } from "@/lib/gridfinity";
 import { GRIDFINITY_BASEPLATE_COLOR, GRIDFINITY_BIN_COLOR, createGridfinityShape } from "@/lib/gridfinityShape";
 import { buildGeneratedShape, defaultGeneratedSize } from "@/lib/generatedShapes";
 import { LOFT_COLOR, createLoftShape } from "@/lib/loftShape";
+import { manifoldRuntimeIfReady } from "@/lib/manifoldRuntime";
+import { TOOLBOX_LABEL_PLATE_COLOR, buildToolboxLabelSet } from "@/lib/toolboxLabel";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 import { createLocalId } from "@/lib/localIds";
 import { DEFAULT_TEXT_FONT } from "@/lib/textFonts";
@@ -71,6 +73,7 @@ export const toolbarShapeAssets: ToolbarShapeAsset[] = [
   { id: "heart", name: "Heart", src: "assets/peakcad/shape-icons/heart.png", menuIcon: "assets/peakcad/shape-icons/heart.png", kind: "mesh", color: "#d43f5e", group: "solid", section: "Flat", generated: { form: "heart" }, keywords: ["love"] },
   { id: "text", name: "Text", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "text", color: "#cf101b", group: "part", section: "Text and codes", keywords: ["letters", "words", "font", "label", "name"] },
   { id: "qr-code", name: "QR Code", src: "assets/peakcad/shape-icons/qr-code.png", menuIcon: "assets/peakcad/shape-icons/qr-code.png", kind: "mesh", color: "#2f3540", group: "part", section: "Text and codes", generated: { form: "qr", text: "https://mintr3d.com" }, keywords: ["link", "scan", "barcode"] },
+  { id: "toolbox-label", name: "Toolbox Label", src: "assets/peakcad/shape-icons/text.png", menuIcon: "assets/peakcad/shape-icons/text.png", kind: "mesh", color: TOOLBOX_LABEL_PLATE_COLOR, group: "part", section: "Text and codes", printOnly: true, toolboxLabel: true, keywords: ["tag", "drawer", "magnet", "magnetic", "tool box", "toolbox", "chest", "name"] },
   { id: "thread", name: "Threads", src: "assets/peakcad/shape-icons/thread.png", menuIcon: "assets/peakcad/shape-icons/thread.png", kind: "thread", color: "#d97813", group: "part", section: "Screws and nuts", printOnly: true, keywords: ["bolt", "screw", "nut", "lid", "cap"] },
   { id: "screw-hole", name: "Threaded Hole", src: "assets/peakcad/shape-icons/screw-hole.png", menuIcon: "assets/peakcad/shape-icons/screw-hole.png", kind: "mesh", color: "#8a8f98", hole: true, group: "part", section: "Screws and nuts", printOnly: true, generated: { form: "screwHole", size: "M3", head: "counterbore", threaded: true }, keywords: ["screw", "bolt", "tapped", "tap", "clearance", "thread", "countersink", "counterbore", "m3"] },
   { id: "nut-pocket", name: "Nut Pocket", src: "assets/peakcad/shape-icons/nut-pocket.png", menuIcon: "assets/peakcad/shape-icons/nut-pocket.png", kind: "mesh", color: "#8a8f98", hole: true, group: "part", section: "Screws and nuts", printOnly: true, generated: { form: "nutPocket", size: "M3" }, keywords: ["hex", "trap", "m3"] },
@@ -130,6 +133,21 @@ export function makeShapeFromAsset(
       laserJob: thin && asset.generated.form === "qr" ? "engrave" : undefined,
     });
     if (made) return made;
+  }
+  if (asset.toolboxLabel) {
+    // The editor loads Manifold as it opens; in the moment before, a plain plate stands in.
+    const runtime = manifoldRuntimeIfReady();
+    const made = runtime ? buildToolboxLabelSet(runtime, null, { id: createLocalId(asset.id), name: asset.name, x: point?.x ?? 0, z: point?.z ?? 0, elevation: point?.elevation ?? 0 }) : null;
+    if (made) return made;
+    const stand = buildGeneratedShape({ form: "plate", cornerRadius: 3 }, { width: 70, depth: 16, height: 3.5 }, {
+      id: createLocalId(asset.id),
+      name: asset.name,
+      color: asset.color,
+      x: point?.x ?? 0,
+      z: point?.z ?? 0,
+      elevation: point?.elevation ?? 0,
+    });
+    if (stand) return stand;
   }
   if (asset.kind === "loft") {
     return createLoftShape(point, { id: createLocalId(asset.id), color: asset.color });

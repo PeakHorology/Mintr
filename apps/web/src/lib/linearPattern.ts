@@ -10,9 +10,11 @@ export const LINEAR_PATTERN_DEFAULT_COUNT_Z = 1;
 export const LINEAR_PATTERN_DEFAULT_COUNT_Y = 1;
 export const LINEAR_PATTERN_MIN_SPACING = 0.1;
 export const LINEAR_PATTERN_MAX_SPACING = 160;
-export const LINEAR_PATTERN_POSITION_LIMIT = 110;
-const MIN_ELEVATION = 0;
-const MAX_ELEVATION = 180;
+/** Sanity limit on patterned positions (mm); see CIRCULAR_PATTERN_POSITION_LIMIT. */
+export const LINEAR_PATTERN_POSITION_LIMIT = 10000;
+// Parts may sit below the workplane (a sunk hole) or high above it; only runaway values are limited.
+const MIN_ELEVATION = -10000;
+const MAX_ELEVATION = 10000;
 
 export type LinearPatternCounts = {
   countX: number;
@@ -24,7 +26,27 @@ export type LinearPatternSpacing = {
   spacingX: number;
   spacingZ: number;
   spacingY?: number;
+  /**
+   * Degrees the rows and columns turn around the original, counterclockwise seen from above,
+   * so a row can run at any angle. The copies keep the original's own facing.
+   */
+  turn?: number;
 };
+
+/** The pattern turn, in whole degrees from 0 to 359. */
+export function clampLinearPatternTurn(degrees: number | undefined) {
+  if (typeof degrees !== "number" || !Number.isFinite(degrees)) return 0;
+  return ((Math.round(degrees) % 360) + 360) % 360;
+}
+
+/** A row and column offset turned by `turnDeg`, the same way a circular pattern turns. */
+function turnedOffset(dx: number, dz: number, turnDeg: number) {
+  if (turnDeg === 0) return { dx, dz };
+  const angle = (turnDeg * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return { dx: dx * cos + dz * sin, dz: -dx * sin + dz * cos };
+}
 
 export type LinearPatternOptions = {
   createId?: (sourceId: string, ix: number, iz: number, iy: number) => string;
@@ -147,11 +169,13 @@ export function linearPatternWouldClamp(
   const countZ = clampLinearPatternCount(counts.countZ ?? 1, LINEAR_PATTERN_DEFAULT_COUNT_Z);
   const spacingX = clampLinearPatternSpacing(spacing.spacingX);
   const spacingZ = clampLinearPatternSpacing(spacing.spacingZ);
+  const turn = clampLinearPatternTurn(spacing.turn);
   return sources.some((source) => {
     for (let ix = 0; ix < countX; ix += 1) {
       for (let iz = 0; iz < countZ; iz += 1) {
-        const x = source.x + ix * spacingX;
-        const z = source.z + iz * spacingZ;
+        const offset = turnedOffset(ix * spacingX, iz * spacingZ, turn);
+        const x = source.x + offset.dx;
+        const z = source.z + offset.dz;
         if (Math.abs(x) > LINEAR_PATTERN_POSITION_LIMIT || Math.abs(z) > LINEAR_PATTERN_POSITION_LIMIT) {
           return true;
         }
@@ -175,6 +199,7 @@ export function linearPatternInstances(
   const spacingX = clampLinearPatternSpacing(spacing.spacingX);
   const spacingZ = clampLinearPatternSpacing(spacing.spacingZ);
   const spacingY = clampLinearPatternSpacing(spacing.spacingY ?? linearPatternSuggestedSpacing(sources, "y"));
+  const turn = clampLinearPatternTurn(spacing.turn);
   const createId = options.createId ?? linearPatternCopyId;
   const results: WorkplaneShape[] = [];
 
@@ -185,11 +210,12 @@ export function linearPatternInstances(
           const keep = ix === 0 && iz === 0 && iy === 0;
           const id = keep ? source.id : createId(source.id, ix, iz, iy);
           const base = keep ? { ...source } : duplicateShapeForPattern(source, id);
+          const offset = turnedOffset(ix * spacingX, iz * spacingZ, turn);
           results.push({
             ...base,
             id,
-            x: clampPosition(clean(source.x + ix * spacingX)),
-            z: clampPosition(clean(source.z + iz * spacingZ)),
+            x: clampPosition(clean(source.x + offset.dx)),
+            z: clampPosition(clean(source.z + offset.dz)),
             elevation: clampElevation(clean((source.elevation ?? 0) + iy * spacingY)),
           });
         }

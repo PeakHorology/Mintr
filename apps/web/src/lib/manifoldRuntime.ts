@@ -1,6 +1,12 @@
 import type { ManifoldToplevel } from "manifold-3d";
 
 let manifoldRuntimePromise: Promise<ManifoldToplevel> | null = null;
+let manifoldRuntimeLoaded: ManifoldToplevel | null = null;
+
+/** The runtime if it has finished loading (the editor loads it when it opens), for work that cannot wait. */
+export function manifoldRuntimeIfReady(): ManifoldToplevel | null {
+  return manifoldRuntimeLoaded;
+}
 
 function manifoldAssetUrl(file: string) {
   if (typeof window === "undefined") {
@@ -25,6 +31,7 @@ export function getManifoldRuntime() {
       ),
     });
     runtime.setup();
+    manifoldRuntimeLoaded = runtime;
     return runtime;
   })().catch((error: unknown) => {
     manifoldRuntimePromise = null;
@@ -35,6 +42,7 @@ export function getManifoldRuntime() {
 
 export function clearManifoldRuntimeCache() {
   manifoldRuntimePromise = null;
+  manifoldRuntimeLoaded = null;
 }
 
 export function resetManifoldRuntimeForTests() {

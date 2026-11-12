@@ -806,6 +806,8 @@ export type OcctBooleanMeshResult = {
   quality: StepExportQuality;
   /** World-space B-Rep feature edges after unify, for a clean viewport outline. */
   displayEdges?: { points: number[] }[];
+  /** The exact solid's bounds [minX, minY, minZ, maxX, maxY, maxZ]; the stored STEP is centred on them. */
+  bounds?: number[];
 };
 
 /**

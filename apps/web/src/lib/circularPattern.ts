@@ -11,11 +11,15 @@ export const CIRCULAR_PATTERN_RADIUS_STEP = 0.1;
 export const CIRCULAR_PATTERN_ROTATION_STEPS = [0, 90, 180, 270] as const;
 export type CircularPatternRotationStep = (typeof CIRCULAR_PATTERN_ROTATION_STEPS)[number];
 const MIN_PATTERN_RADIUS = 1e-4;
-/** Workplane ±X/±Z clamp applied to patterned instance positions (mm). */
-export const CIRCULAR_PATTERN_POSITION_LIMIT = 110;
+/**
+ * Sanity limit on patterned positions (mm). Only runaway values reach it: the workplane can be any
+ * size, and clamping to a small box used to pull the original itself back on every edit.
+ */
+export const CIRCULAR_PATTERN_POSITION_LIMIT = 10000;
 const POSITION_LIMIT = CIRCULAR_PATTERN_POSITION_LIMIT;
-const MIN_ELEVATION = 0;
-const MAX_ELEVATION = 180;
+// Parts may sit below the workplane (a sunk hole) or high above it; only runaway values are limited.
+const MIN_ELEVATION = -10000;
+const MAX_ELEVATION = 10000;
 
 export type CircularPatternCenter = { x: number; z: number };
 
@@ -29,8 +33,19 @@ export type CircularPatternOptions = {
   seatElevation?: number;
   /** Extra yaw in degrees, snapped to 0 / 90 / 180 / 270. */
   rotationOffset?: number;
+  /**
+   * Degrees to turn the whole pattern around its center, the original included, as the arrow
+   * keys do by moving the original. Counterclockwise seen from above.
+   */
+  turn?: number;
   createId?: (sourceId: string, index: number) => string;
 };
+
+/** The whole-pattern turn, in whole degrees from 0 to 359. */
+export function clampCircularPatternTurn(degrees: number) {
+  if (!Number.isFinite(degrees)) return 0;
+  return ((Math.round(degrees) % 360) + 360) % 360;
+}
 
 function clampElevation(value: number) {
   return Math.max(MIN_ELEVATION, Math.min(MAX_ELEVATION, value));
@@ -231,6 +246,7 @@ export function circularPatternInstances(
     ? clampElevation(options.seatElevation)
     : null;
   const rotationOffset = clampCircularPatternRotation(options.rotationOffset ?? 0);
+  const turn = (clampCircularPatternTurn(options.turn ?? 0) * Math.PI) / 180;
   const results: WorkplaneShape[] = [];
 
   for (const source of sources) {
@@ -245,9 +261,9 @@ export function circularPatternInstances(
       continue;
     }
 
-    const baseAngle = naturalRadius < MIN_PATTERN_RADIUS
+    const baseAngle = turn + (naturalRadius < MIN_PATTERN_RADIUS
       ? 0
-      : patternPolarAngle(center, { x: source.x, z: source.z });
+      : patternPolarAngle(center, { x: source.x, z: source.z }));
     const step = (Math.PI * 2) / total;
     for (let index = 0; index < total; index += 1) {
       const id = index === 0 ? source.id : createId(source.id, index);

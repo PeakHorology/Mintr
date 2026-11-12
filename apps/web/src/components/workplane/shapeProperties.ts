@@ -70,7 +70,19 @@ import {
 } from "@/lib/stepQuality";
 import { resolveEditableSketchShape } from "@/lib/sketch";
 import { DEFAULT_TEXT_FONT, textFontOptions } from "@/lib/textFonts";
+import { matchedTextWidth } from "@/lib/editorShapeMesh";
 import { measureWorkplaneShape, type ShapeMeasure } from "@/lib/shapeMeasure";
+import {
+  TOOLBOX_LABEL_LETTER_COLOR,
+  TOOLBOX_LABEL_ORANGE,
+  TOOLBOX_LABEL_PLATE_COLOR,
+  autoMagnetCount,
+  hiddenPocketPauseHeight,
+  magnetFitProblem,
+  normalizeToolboxLabelSpec,
+  toolboxLabelPlateSizes,
+} from "@/lib/toolboxLabel";
+import type { ToolboxLabelMagnetSize, ToolboxLabelSpec } from "@/types/sketchforge";
 import type { GeneratedSpec, ScrewHead } from "@/types/sketchforge";
 import type {
   GridfinityBaseplateSpec,
@@ -134,6 +146,9 @@ export type TextPropertyConfig = {
   label: string;
   value: string;
   maxLength?: number;
+  /** One entry per line: Enter starts a new line, and the box commits when it loses focus. */
+  multiline?: boolean;
+  hint?: string;
   onChange: (value: string) => void;
 };
 
@@ -146,11 +161,19 @@ export type SelectPropertyConfig = {
   onChange: (value: string) => void;
 };
 
-export type ShapePropertyConfig = RangePropertyConfig | TextPropertyConfig | SelectPropertyConfig;
+/** A small title over the rows after it, for parts with many settings. */
+export type HeadingPropertyConfig = {
+  type: "heading";
+  label: string;
+};
+
+export type ShapePropertyConfig = RangePropertyConfig | TextPropertyConfig | SelectPropertyConfig | HeadingPropertyConfig;
 export type ShapeInspectorUpdateOptions = { resizeAxis?: "width" | "depth" | "height" };
 export type ShapeInspectorUpdate = (patch: Partial<WorkplaneShape>, options?: ShapeInspectorUpdateOptions) => void;
 export const TYPED_DIMENSION_MAX_MM = 2000;
 export const MAX_SHAPE_NAME_LENGTH = 48;
+/** Letters a Text shape holds (an emoji or accented letter counts as one). */
+export const MAX_TEXT_SHAPE_LETTERS = 24;
 
 export function withNameProperty(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate, properties: ShapePropertyConfig[]): ShapePropertyConfig[] {
   return [
@@ -437,6 +460,144 @@ export function generatedShapeProperties(
   }
 }
 
+const LABEL_COLORS: readonly [string, string][] = [
+  ["Black", TOOLBOX_LABEL_PLATE_COLOR],
+  ["White", TOOLBOX_LABEL_LETTER_COLOR],
+  ["Orange", TOOLBOX_LABEL_ORANGE],
+  ["Red", "#c62828"],
+  ["Blue", "#1f5fbf"],
+  ["Yellow", "#f2c230"],
+  ["Green", "#2e8b57"],
+  ["Grey", "#8a8f98"],
+];
+const MAGNET_SIZE_LABEL: Record<ToolboxLabelMagnetSize, string> = { "6x2": "6 × 2 mm", "8x3": "8 × 3 mm", "10x3": "10 × 3 mm", "12x3": "12 × 3 mm", custom: "Custom" };
+const POCKET_OPEN = "Open on the back";
+const POCKET_HIDDEN = "Hidden inside";
+
+/** A colour row: the named colours, plus the part's own if it is none of them. */
+function labelColorRow(label: string, value: string, onChange: (color: string) => void): SelectPropertyConfig {
+  const named = LABEL_COLORS.find(([, hex]) => hex.toLowerCase() === value.toLowerCase());
+  return {
+    type: "select",
+    label,
+    value: named ? named[0] : value,
+    options: [...LABEL_COLORS.map(([name]) => name), ...(named ? [] : [value])],
+    onChange: (choice) => onChange(LABEL_COLORS.find(([name]) => name === choice)?.[1] ?? choice),
+  };
+}
+
+/** A toolbox label's settings. Every change rebuilds the set from them. */
+export function toolboxLabelProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
+  const spec = normalizeToolboxLabelSpec(shape.toolboxLabel);
+  const apply = (patch: Partial<ToolboxLabelSpec>) => onUpdate({ toolboxLabel: normalizeToolboxLabelSpec({ ...spec, ...patch }) });
+  const plates = toolboxLabelPlateSizes(shape);
+  const plateWidth = Math.min(...plates.map((plate) => plate.width));
+  const plateHeight = Math.min(...plates.map((plate) => plate.height));
+  const problem = magnetFitProblem(spec, plateHeight);
+  const pause = hiddenPocketPauseHeight(spec);
+  const single = spec.labels.length === 1;
+  // Names that have their own letter height, each listed once.
+  const ownHeights = Array.from(new Map(spec.labels.filter((label) => label.letterHeight).map((label) => [label.text, label.letterHeight!])).entries());
+  const withoutOwn = Array.from(new Set(spec.labels.filter((label) => !label.letterHeight).map((label) => label.text)));
+  const setOwnHeight = (text: string, letterHeight: number | undefined) =>
+    apply({ labels: spec.labels.map((label) => (label.text === text ? { text: label.text, ...(letterHeight ? { letterHeight } : {}) } : label)) });
+  const PICK = "Pick a label";
+  return [
+    { type: "heading", label: "Text" },
+    {
+      type: "text",
+      label: "Labels",
+      value: spec.labels.map((label) => label.text).join("\n"),
+      maxLength: 8000,
+      multiline: true,
+      hint: "One drawer name per line. Press Enter for the next one.",
+      onChange: (value) => {
+        // A set needs letters; an emptied box keeps the labels it had. A name keeps its own
+        // letter height while it is still in the list.
+        const own = new Map(spec.labels.filter((label) => label.letterHeight).map((label) => [label.text, label.letterHeight]));
+        const labels = value.split("\n").map((text) => text.trim()).filter(Boolean).map((text) => ({ text, ...(own.get(text) ? { letterHeight: own.get(text) } : {}) }));
+        if (labels.length > 0) apply({ labels });
+      },
+    },
+    { type: "select", label: "All capitals", value: onOff(spec.allCaps), options: [...ON_OFF], onChange: (value) => apply({ allCaps: value === "On" }) },
+    { type: "select", label: "Font", value: spec.font, options: Array.from(new Set([...textFontOptions(), spec.font])), hint: "Fonts you add under Text work here too.", onChange: (font) => apply({ font }) },
+    { label: "Slant", value: spec.slant, min: 0, max: 20, step: 1, hint: "Leans the letters forward, in degrees.", onChange: (slant) => apply({ slant }) },
+    { label: "Letter height", value: spec.letterHeight, min: 2, max: 40, typedMax: 500, step: 0.5, hint: "How tall a capital letter is.", onChange: (letterHeight) => apply({ letterHeight }) },
+    ...(single
+      ? []
+      : [
+        ...ownHeights.map(([text, letterHeight]): RangePropertyConfig => ({
+          label: `${text} letter height`,
+          value: letterHeight,
+          min: 0,
+          max: 40,
+          typedMax: 500,
+          step: 0.5,
+          hint: "Set it to 0 to match the other labels.",
+          onChange: (next) => setOwnHeight(text, next > 0 ? next : undefined),
+        })),
+        ...(withoutOwn.length > 0
+          ? [{
+            type: "select" as const,
+            label: "Own letter height",
+            value: PICK,
+            options: [PICK, ...withoutOwn],
+            hint: "Give one label its own letter size, such as smaller letters for a long name.",
+            onChange: (text: string) => {
+              if (text !== PICK) setOwnHeight(text, spec.letterHeight);
+            },
+          }]
+          : []),
+      ]),
+    { label: "Letter spacing", value: spec.letterSpacing, min: -2, max: 10, step: 0.1, centerDetent: true, onChange: (letterSpacing) => apply({ letterSpacing }) },
+    { label: "Raise", value: spec.raise, min: 0.2, max: 5, typedMax: 20, step: 0.1, hint: "How far the letters stand above the plate.", onChange: (raise) => apply({ raise }) },
+    labelColorRow("Letter color", spec.letterColor, (letterColor) => apply({ letterColor })),
+    { type: "heading", label: "Plate" },
+    { label: "Plate thickness", value: spec.thickness, min: 1, max: 10, typedMax: 50, step: 0.1, onChange: (thickness) => apply({ thickness }) },
+    { label: "Padding at the sides", value: spec.padSides, min: 0, max: 30, typedMax: 200, step: 0.5, onChange: (padSides) => apply({ padSides }) },
+    { label: "Padding top and bottom", value: spec.padEnds, min: 0, max: 20, typedMax: 200, step: 0.5, onChange: (padEnds) => apply({ padEnds }) },
+    { label: "Corner radius", value: spec.cornerRadius, min: 0, max: Math.max(1, Math.min(20, plateHeight / 2)), step: 0.1, onChange: (cornerRadius) => apply({ cornerRadius }) },
+    { label: "Edge round", value: spec.edgeRound, min: 0, max: 1, step: 0.05, hint: "Rounds the plate's top edge. The bottom stays square so it sits flat.", onChange: (edgeRound) => apply({ edgeRound }) },
+    ...(single
+      ? []
+      : [
+        { type: "select" as const, label: "Same height for all", value: onOff(spec.sameHeight), options: [...ON_OFF], hint: "Every plate as tall as the tallest, so they line up on the drawers.", onChange: (value: string) => apply({ sameHeight: value === "On" }) },
+        { type: "select" as const, label: "Same width for all", value: onOff(spec.sameWidth), options: [...ON_OFF], hint: "Every plate as wide as the widest, with the name centred.", onChange: (value: string) => apply({ sameWidth: value === "On" }) },
+      ]),
+    labelColorRow("Plate color", spec.plateColor, (plateColor) => apply({ plateColor })),
+    { type: "heading", label: "Magnets" },
+    {
+      type: "select",
+      label: "Magnet size",
+      value: MAGNET_SIZE_LABEL[spec.magnetSize],
+      options: Object.values(MAGNET_SIZE_LABEL),
+      hint: problem ?? "Diameter × thickness of the round magnets you have. Pick Custom to type your own.",
+      onChange: (label) => apply({ magnetSize: (Object.keys(MAGNET_SIZE_LABEL) as ToolboxLabelMagnetSize[]).find((key) => MAGNET_SIZE_LABEL[key] === label) ?? spec.magnetSize }),
+    },
+    ...(spec.magnetSize === "custom"
+      ? [
+        { label: "Magnet diameter", value: spec.magnetDiameter, min: 2, max: 30, typedMax: 100, step: 0.1, onChange: (magnetDiameter: number) => apply({ magnetDiameter }) },
+        { label: "Magnet thickness", value: spec.magnetDepth, min: 0.5, max: 10, typedMax: 40, step: 0.1, onChange: (magnetDepth: number) => apply({ magnetDepth }) },
+      ]
+      : []),
+    { label: "Fit across", value: spec.fitAcross, min: 0, max: 0.6, step: 0.05, hint: "Extra room around each magnet. Raise it if they are tight, lower it if they fall out.", onChange: (fitAcross) => apply({ fitAcross }) },
+    { label: "Fit deep", value: spec.fitDeep, min: 0, max: 1, step: 0.05, hint: "Extra room under each magnet.", onChange: (fitDeep) => apply({ fitDeep }) },
+    { label: "Magnets per label", value: spec.magnetCount, min: 0, max: 12, step: 1, hint: spec.magnetCount === 0 ? (single ? `0 picks for you: one about every 50 mm, so ${autoMagnetCount(plateWidth)} here.` : "0 picks for you: one about every 50 mm of each label.") : undefined, onChange: (magnetCount) => apply({ magnetCount: Math.round(magnetCount) }) },
+    {
+      type: "select",
+      label: "Pocket",
+      value: spec.pocket === "hidden" ? POCKET_HIDDEN : POCKET_OPEN,
+      options: [POCKET_OPEN, POCKET_HIDDEN],
+      hint: problem && spec.pocket === "hidden"
+        ? problem
+        : spec.pocket === "hidden"
+          ? `Sealed inside. Pause the print at ${pause.toFixed(2)} mm, drop the magnets in, then carry on.`
+          : "Glue the magnets in after printing.",
+      onChange: (value) => apply({ pocket: value === POCKET_HIDDEN ? "hidden" : "open" }),
+    },
+  ];
+}
+
 export function getShapeProperties(
   shape: WorkplaneShape,
   onUpdate: ShapeInspectorUpdate,
@@ -446,6 +607,7 @@ export function getShapeProperties(
   if (shape.generated?.form === "screwHole" && shape.generated.threaded && shape.kind === "thread") {
     return threadedScrewHoleProperties(shape, shape.generated, onUpdate, printerKind);
   }
+  if (shape.toolboxLabel) return toolboxLabelProperties(shape, onUpdate);
   if (shape.generated) return generatedShapeProperties(shape, shape.generated, onUpdate, printerKind);
   if (shape.kind === "gridfinityBin") return gridfinityBinProperties(shape, onUpdate);
   if (shape.kind === "gridfinityBaseplate") return gridfinityBaseplateProperties(shape, onUpdate);
@@ -799,14 +961,30 @@ export function getShapeProperties(
         type: "text",
         label: "Text",
         value: shape.text ?? "TEXT",
+        maxLength: MAX_TEXT_SHAPE_LETTERS * 2,
+        hint: `Up to ${MAX_TEXT_SHAPE_LETTERS} letters. Longer text is cut to fit.`,
         onChange: (text) => {
-          const nextText = text.slice(0, 24) || " ";
-          const nextWidth = clamp(Math.max(46, nextText.length * 19), 46, 260);
+          // Cut by letters, not UTF-16 halves, so an emoji or accented letter is never split.
+          const nextText = Array.from(text.normalize("NFC")).slice(0, MAX_TEXT_SHAPE_LETTERS).join("") || " ";
+          // The letters keep the height they have; the line grows or shrinks to fit the new text.
+          const nextWidth = Math.max(MIN_SHAPE_SIZE, matchedTextWidth({ ...shape, text: nextText }, depth));
           onUpdate({ text: nextText, width: nextWidth, size: nextWidth });
         },
       },
       { type: "select", label: "Font", value: shape.font ?? DEFAULT_TEXT_FONT, options: fontChoices(shape.font ?? DEFAULT_TEXT_FONT), onChange: (font) => onUpdate({ font }) },
+      // Same sizes the handles in the 3D view change: Width runs along the line, Length is the letters' size.
+      { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
+      { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 320, onChange: setWidth },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 40, onChange: setHeight },
+      {
+        label: "Slant",
+        value: shape.textSlant ?? 0,
+        min: 0,
+        max: 20,
+        step: 1,
+        hint: "Leans the letters forward, like italic, in degrees.",
+        onChange: (textSlant) => onUpdate({ textSlant: textSlant === 0 ? undefined : textSlant }),
+      },
       {
         label: "Up/Down",
         value: shape.textCircumference ?? 0,

@@ -4,6 +4,7 @@ import {
   boundLinearPatternCounts,
   clampLinearPatternCount,
   clampLinearPatternSpacing,
+  clampLinearPatternTurn,
   linearPatternCopyId,
   linearPatternInstanceCount,
   linearPatternInstances,
@@ -142,6 +143,24 @@ describe("linearPatternInstances", () => {
       { spacingX: 12, spacingZ: 8, spacingY: 12 },
     );
     expect(instances.map((shape) => shape.elevation)).toEqual([1, 13, 25]);
+  });
+});
+
+describe("turning a linear pattern", () => {
+  it("turns the rows around the original, which stays put, and keeps each copy's facing", () => {
+    const source = box({ id: "src", x: 5, z: 5, rotation: 10 });
+    const turned = linearPatternInstances([source], { countX: 3, countZ: 1 }, { spacingX: 10, spacingZ: 10, turn: 90 });
+    expect(turned[0]).toMatchObject({ id: "src", x: 5, z: 5 });
+    // A row along +X, turned 90° counterclockwise seen from above, runs towards the back (-Z).
+    expect(turned[1].x).toBeCloseTo(5);
+    expect(turned[1].z).toBeCloseTo(-5);
+    expect(turned[2].z).toBeCloseTo(-15);
+    for (const shape of turned) expect(shape.rotation).toBe(10);
+    // No turn gives the plain grid.
+    const plain = linearPatternInstances([source], { countX: 2, countZ: 1 }, { spacingX: 10, spacingZ: 10, turn: 0 });
+    expect(plain[1]).toMatchObject({ x: 15, z: 5 });
+    expect(clampLinearPatternTurn(-90)).toBe(270);
+    expect(clampLinearPatternTurn(undefined)).toBe(0);
   });
 });
 

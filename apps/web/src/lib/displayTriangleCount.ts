@@ -97,8 +97,14 @@ export function isHeavyDisplayScene(shapes: WorkplaneShape[], quality: DisplayQu
   return displayTriangleTotal(shapes, quality) > HEAVY_DISPLAY_TRIANGLES;
 }
 
-/** Live OCCT fuse of many solids stays on the UI thread; skip it once the selection is this large. */
+/** From this many parts, Group meshes round parts at draft and skips the main-thread mesh boolean. */
 export const LIVE_OCCT_BOOLEAN_OPERANDS = 8;
+/**
+ * Most parts the browser joins exactly in one Group. The join runs on the Mintr engine in a
+ * worker, so it never freezes the page: 40 overlapping round parts take about 0.7 s, 40
+ * crossing tori about 4 s. Above this the Group is a mesh, as before.
+ */
+export const EXACT_GROUP_MAX_PARTS = 40;
 /** Tessellate worker/BVH operands at draft once the selection crosses this triangle budget. */
 export const BOOLEAN_WORKING_TRIANGLE_BUDGET = 40_000;
 /** Skip sync three-bvh-csg in the browser above this many display triangles. */
@@ -128,7 +134,7 @@ export function shouldSkipLiveOcctBoolean(
   shapes: WorkplaneShape[],
   quality: DisplayQuality = getActiveDisplayQuality(),
 ): boolean {
-  if (shapes.length > LIVE_OCCT_BOOLEAN_OPERANDS) return true;
+  if (shapes.length > EXACT_GROUP_MAX_PARTS) return true;
   return displayTriangleTotal(shapes, quality) > HEAVY_DISPLAY_TRIANGLES;
 }
 

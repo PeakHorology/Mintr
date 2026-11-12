@@ -39,6 +39,12 @@ export type ShapeNestResult = {
 export type ShapeNestOptions = {
   /** Grid square size in millimetres. Smaller packs closer but takes longer; by default it suits the bed. */
   cell?: number;
+  /**
+   * Outlines already on the bed that stay put, such as parts left out of the nest, in bed
+   * millimetres. Their squares on the first sheet, grown by half the gap, are taken first,
+   * so nested parts keep the gap from them too. Each is a part's loops, holes as inner loops.
+   */
+  obstacles?: readonly (readonly (readonly Vec2[])[])[];
 };
 
 /** A point turned q quarter turns the way a part's turn goes. */
@@ -133,25 +139,30 @@ type Raster = {
   area: number;
 };
 
-/**
- * Every grid square the loops touch or hold. A square is touched when an edge
- * passes through it; a square no edge passes through is wholly inside or wholly
- * outside, which its middle tells.
- */
-function rasterize(loops: readonly (readonly Vec2[])[], cell: number): Raster | null {
-  let minX = Infinity;
-  let minZ = Infinity;
-  let maxX = -Infinity;
-  let maxZ = -Infinity;
+type Box = { minX: number; minZ: number; maxX: number; maxZ: number };
+
+function boundsOf(loops: readonly (readonly Vec2[])[]): Box {
+  const box = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
   for (const loop of loops) {
     for (const [x, z] of loop) {
-      minX = Math.min(minX, x);
-      minZ = Math.min(minZ, z);
-      maxX = Math.max(maxX, x);
-      maxZ = Math.max(maxZ, z);
+      box.minX = Math.min(box.minX, x);
+      box.minZ = Math.min(box.minZ, z);
+      box.maxX = Math.max(box.maxX, x);
+      box.maxZ = Math.max(box.maxZ, z);
     }
   }
-  if (!Number.isFinite(minX) || maxX - minX <= 0 || maxZ - minZ <= 0) return null;
+  return box;
+}
+
+/**
+ * Every grid square the loops touch or hold, within the frame (by default the loops'
+ * own box); whatever lies outside the frame is left off. A square is touched when an
+ * edge passes through it; a square no edge passes through is wholly inside or wholly
+ * outside, which its middle tells.
+ */
+function rasterize(loops: readonly (readonly Vec2[])[], cell: number, frame: Box = boundsOf(loops)): Raster | null {
+  const { minX, minZ, maxX, maxZ } = frame;
+  if (!Number.isFinite(minX) || !Number.isFinite(minZ) || maxX - minX <= 0 || maxZ - minZ <= 0) return null;
   const width = Math.max(1, Math.ceil((maxX - minX) / cell - 1e-9));
   const height = Math.max(1, Math.ceil((maxZ - minZ) / cell - 1e-9));
   const edges: [number, number, number, number][] = [];
@@ -297,28 +308,41 @@ export function nestOutlines(
   const gridX = -bed.width / 2 - half;
   const gridZ = -bed.depth / 2 - half;
   const sheetStep = bed.width + Math.max(20, gap * 4);
+  // A part this close past the bed's size still counts as fitting.
+  const slack = 1e-6;
 
-  type Prepared = { id: string; turns: { quarterTurns: 0 | 1 | 2 | 3; raster: Raster }[]; area: number };
+  /** An outline grown by at least half the gap everywhere. */
+  const grow = (loops: Vec2[][]): Vec2[][] => {
+    if (half <= 0) return loops;
+    const section = new runtime.CrossSection(loops, "EvenOdd");
+    // Round corners are drawn in straight steps that fall just inside the true curve; grow a touch more to cover them.
+    const offset = section.offset(half / Math.cos(Math.PI / 32) + 1e-3, "Round", 2, 32);
+    const grown = offset.toPolygons().map((loop) => loop.map(([x, z]) => [x, z] as Vec2));
+    section.delete();
+    offset.delete();
+    return grown;
+  };
+
+  type Turn = { quarterTurns: 0 | 1 | 2 | 3; raster: Raster; fitsBed: boolean };
+  type Prepared = { id: string; turns: Turn[]; area: number };
   const prepared: Prepared[] = [];
   const tooBig: string[] = [];
   const placements: ShapeNestPlacement[] = [];
   for (const item of items) {
     const loops = item.loops.filter((loop) => loop.length >= 3).map((loop) => loop.map(([x, z]) => [x, z] as Vec2));
     if (loops.length === 0) continue;
-    let grown: Vec2[][] = loops;
-    if (half > 0) {
-      const section = new runtime.CrossSection(loops, "EvenOdd");
-      // Round corners are drawn in straight steps that fall just inside the true curve; grow a touch more to cover them.
-      const offset = section.offset(half / Math.cos(Math.PI / 32) + 1e-3, "Round", 2, 32);
-      grown = offset.toPolygons().map((loop) => loop.map(([x, z]) => [x, z] as Vec2));
-      section.delete();
-      offset.delete();
-    }
+    const grown = grow(loops);
     const quarterTurns: (0 | 1 | 2 | 3)[] = item.canTurn === false ? [0] : [0, 1, 2, 3];
-    const turns: Prepared["turns"] = [];
+    const turns: Turn[] = [];
     for (const q of quarterTurns) {
-      const raster = rasterize(grown.map((loop) => loop.map((point) => turnPoint(point, q))), cell);
-      if (raster) turns.push({ quarterTurns: q, raster });
+      const raw = boundsOf(loops.map((loop) => loop.map((point) => turnPoint(point, q))));
+      // The grown outline is drawn only within half the gap of the part's own box: the true grown
+      // outline goes no further, and the extra grown for round corners must not make a part that
+      // fits the bed look a square too big.
+      const frame = { minX: raw.minX - half, minZ: raw.minZ - half, maxX: raw.maxX + half, maxZ: raw.maxZ + half };
+      const raster = rasterize(grown.map((loop) => loop.map((point) => turnPoint(point, q))), cell, frame);
+      const fitsBed = raw.maxX - raw.minX <= bed.width + slack && raw.maxZ - raw.minZ <= bed.depth + slack;
+      if (raster) turns.push({ quarterTurns: q, raster, fitsBed });
     }
     if (turns.length === 0) continue;
     prepared.push({ id: item.id, turns, area: turns[0].raster.area });
@@ -332,28 +356,51 @@ export function nestOutlines(
     sheets.push(sheet);
     return sheet;
   };
-  const placementFor = (turn: Prepared["turns"][number], id: string, x: number, y: number, sheet: number): ShapeNestPlacement => ({
+  // Parts left where they are take their squares on the bed first.
+  const obstacles = (options.obstacles ?? [])
+    .map((loops) => loops.filter((loop) => loop.length >= 3).map((loop) => loop.map(([x, z]) => [x, z] as Vec2)))
+    .filter((loops) => loops.length > 0);
+  if (obstacles.length > 0 && gridWidth > 0 && gridHeight > 0) {
+    const bedSheet = newSheet();
+    const frame = { minX: gridX, minZ: gridZ, maxX: gridX + gridWidth * cell, maxZ: gridZ + gridHeight * cell };
+    for (const loops of obstacles) {
+      const raster = rasterize(grow(loops), cell, frame);
+      if (raster && raster.area > 0) bedSheet.place(raster, 0, 0);
+    }
+  }
+  const placementFor = (turn: Turn, id: string, x: number, y: number, sheet: number): ShapeNestPlacement => ({
     id,
     quarterTurns: turn.quarterTurns,
     dx: gridX + x * cell - turn.raster.originX + sheet * sheetStep,
     dz: gridZ + y * cell - turn.raster.originZ,
     sheet,
   });
+  /** A sheet of its own, the part at the bed's back left corner. */
+  const alone = (turn: Turn, id: string) => {
+    const sheet = newSheet();
+    sheet.full = true;
+    placements.push(placementFor(turn, id, 0, 0, sheets.length - 1));
+  };
 
   for (const part of prepared) {
-    const fitsEmpty = part.turns.some((turn) => turn.raster.width <= gridWidth && turn.raster.height <= gridHeight);
-    if (!fitsEmpty) {
+    const fitting = part.turns.filter((turn) => turn.fitsBed);
+    if (fitting.length === 0) {
       tooBig.push(part.id);
-      newSheet().full = true;
-      placements.push(placementFor(part.turns[0], part.id, 0, 0, sheets.length - 1));
+      alone(part.turns[0], part.id);
+      continue;
+    }
+    const fitsGrid = fitting.filter((turn) => turn.raster.width <= gridWidth && turn.raster.height <= gridHeight);
+    if (fitsGrid.length === 0) {
+      // Fits the bed, but only just: the grid's last part-square falls past the bed's edge.
+      alone(fitting[0], part.id);
       continue;
     }
     let placed = false;
     for (let index = 0; index <= sheets.length && !placed; index += 1) {
       const sheet = index < sheets.length ? sheets[index] : newSheet();
       // Of the turns that fit, the one that reaches least far toward the front, then least far right.
-      let best: { turn: Prepared["turns"][number]; x: number; y: number } | null = null;
-      for (const turn of part.turns) {
+      let best: { turn: Turn; x: number; y: number } | null = null;
+      for (const turn of fitsGrid) {
         const fit = sheet.firstFit(turn.raster);
         if (!fit) continue;
         if (

@@ -184,7 +184,8 @@ function registerProjectFileIpc(app, getWindow) {
       typeof payload?.defaultName === "string" ? payload.defaultName : `Untitled design${CURRENT_EXTENSION}`,
       CURRENT_EXTENSION,
     );
-    const target = uniquePath(path.join(dir, name));
+    // A name only: never a path that climbs out of the projects folder.
+    const target = uniquePath(path.join(dir, path.basename(name)));
     return { path: await writeTextFile(target, payload?.text) };
   });
 

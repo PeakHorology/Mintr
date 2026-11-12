@@ -692,6 +692,26 @@ function axisMoved(prev: readonly WorkplaneShape[], next: readonly WorkplaneShap
   });
 }
 
+/**
+ * Which z side an "Aligned … front/back" step lined up. Align used to call the -z side "front"
+ * (the view cube's Front looks from +z), so a guide recorded before the names were swapped
+ * says the opposite word. The parts themselves say which side they share.
+ */
+function frontBackSide(word: "front" | "back", prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]): AlignTarget {
+  const prior = new Map(prev.map((shape) => [shape.id, shape]));
+  const moved = next.filter((shape) => {
+    const before = prior.get(shape.id);
+    return Boolean(before && Math.abs(alignValue(before, "z") - alignValue(shape, "z")) > 0.05);
+  });
+  const lined = (target: AlignTarget) => moved.length > 0 && moved.every((shape) => next.some((other) => (
+    other.id !== shape.id && Math.abs(alignValue(other, "z", target) - alignValue(shape, "z", target)) <= 0.05
+  )));
+  const max = lined("max");
+  const min = lined("min");
+  if (max !== min) return max ? "max" : "min";
+  return word === "front" ? "max" : "min";
+}
+
 function alignAction(label: string, prev: readonly WorkplaneShape[], next: readonly WorkplaneShape[]): { axis: AlignAxis; target: AlignTarget } | null {
   const match = /^Aligned \d+ shapes? (left|right|center|front|back|middle|bottom|top)$/i.exec(label.trim());
   if (!match) return null;
@@ -699,8 +719,7 @@ function alignAction(label: string, prev: readonly WorkplaneShape[], next: reado
   if (word === "left") return { axis: "x", target: "min" };
   if (word === "right") return { axis: "x", target: "max" };
   if (word === "center") return { axis: "x", target: "center" };
-  if (word === "front") return { axis: "z", target: "min" };
-  if (word === "back") return { axis: "z", target: "max" };
+  if (word === "front" || word === "back") return { axis: "z", target: frontBackSide(word, prev, next) };
   if (word === "bottom") return { axis: "y", target: "min" };
   if (word === "top") return { axis: "y", target: "max" };
   const yMoved = axisMoved(prev, next, "y");

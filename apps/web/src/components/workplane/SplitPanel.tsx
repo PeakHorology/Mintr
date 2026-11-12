@@ -27,12 +27,14 @@ export function SplitPanel({
   limit,
   joint,
   clearance,
+  layFlat,
   workspace,
   busy,
   onAxisChange,
   onOffsetChange,
   onJointChange,
   onClearanceChange,
+  onLayFlatChange,
   onApply,
   onCancel,
 }: {
@@ -42,12 +44,15 @@ export function SplitPanel({
   limit: number;
   joint: CutJoint;
   clearance: number;
+  /** Turn each piece so its cut face sits on the workplane, ready to print. */
+  layFlat: boolean;
   workspace: WorkplaneWorkspaceSettings;
   busy: boolean;
   onAxisChange: (axis: SplitAxis) => void;
   onOffsetChange: (offset: number) => void;
   onJointChange: (joint: CutJoint) => void;
   onClearanceChange: (clearance: number) => void;
+  onLayFlatChange: (layFlat: boolean) => void;
   onApply: () => void;
   onCancel: () => void;
 }) {
@@ -122,7 +127,13 @@ export function SplitPanel({
           disabled={busy}
           onChange={onClearanceChange}
         />
-      ) : null}
+      ) : (
+        // A joint already lays both pieces cut face down; a plain split leaves them where they were.
+        <label className="edge-modifier-check">
+          <input type="checkbox" checked={layFlat} disabled={busy} onChange={(event) => onLayFlatChange(event.currentTarget.checked)} />
+          <span>Lay pieces cut-side down</span>
+        </label>
+      )}
       <div className="edge-modifier-footer">
         <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
         <button type="button" className="primary" disabled={busy} onClick={onApply}>

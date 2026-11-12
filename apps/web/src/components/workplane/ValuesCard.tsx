@@ -2,13 +2,18 @@
 
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { Plus, SlidersHorizontal, X } from "lucide-react";
-import { isValueExpression, resolveValues, valueNameProblem, valueRangeProblem, valueSliderRange } from "@/lib/parametricValues";
+import { isValueExpression, resolveValues, valueRangeProblem, valueRenameProblem, valueSliderRange } from "@/lib/parametricValues";
 import type { ShapeValue } from "@/types/sketchforge";
 
 /** A worked-out value, short: 12.5, 0.333. */
 export function formatValueNumber(value: number) {
   const rounded = Math.round(value * 1000) / 1000;
   return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
+/** An answer with the workplane unit after it, when there is one. */
+function withUnit(text: string, unitLabel: string | undefined) {
+  return unitLabel ? `${text} ${unitLabel}` : text;
 }
 
 type ValueDetails = Pick<ShapeValue, "min" | "max" | "note">;
@@ -39,17 +44,23 @@ function nextFreeName(values: readonly ShapeValue[]) {
 export function ValuesCard({
   values,
   outerScope,
+  unitMm = 1,
+  unitLabel,
   locked,
   onChange,
 }: {
   values: readonly ShapeValue[];
   /** Values from the groups around this part, which these can use. */
   outerScope?: ReadonlyMap<string, number>;
+  /** Millimeters per workplane unit: plain numbers in the sums are in this unit. */
+  unitMm?: number;
+  /** The workplane unit ("mm", "in"), shown after each answer. */
+  unitLabel?: string;
   locked: boolean;
   /** The new list; `renamed` when a row's name changed, so sums that use it follow. */
   onChange: (next: ShapeValue[], message: string, renamed?: { from: string; to: string }) => void;
 }) {
-  const resolved = resolveValues(values, outerScope);
+  const resolved = resolveValues(values, outerScope, unitMm);
   return (
     <div className="property-card values-card" aria-label="Values">
       <div className="values-card-header">
@@ -70,10 +81,14 @@ export function ValuesCard({
         <div className="values-card-rows">
           {values.map((value, index) => (
             <ValueRow
-              key={`${index}-${value.name}`}
+              // By position, not name: a rename re-keyed the row, so Tab from the name lost focus
+              // and the sum typed next went nowhere. The row syncs its drafts from the props.
+              key={index}
               value={value}
               result={resolved.own.get(value.name)}
               error={resolved.errors.get(value.name)}
+              unitLabel={unitLabel}
+              renameProblem={(name) => valueRenameProblem(name, values.filter((_, entryIndex) => entryIndex !== index), outerScope)}
               locked={locked}
               onRename={(name) => {
                 const next = values.map((entry, entryIndex) => (entryIndex === index ? { ...entry, name } : entry));
@@ -100,6 +115,8 @@ function ValueRow({
   value,
   result,
   error,
+  unitLabel,
+  renameProblem,
   locked,
   onRename,
   onExpression,
@@ -109,6 +126,9 @@ function ValueRow({
   value: ShapeValue;
   result: number | undefined;
   error: string | undefined;
+  unitLabel?: string;
+  /** Why this row cannot take a name (a bad name, or one another value has), or null. */
+  renameProblem: (name: string) => string | null;
   locked: boolean;
   onRename: (name: string) => void;
   onExpression: (expression: string) => void;
@@ -132,7 +152,7 @@ function ValueRow({
       setNameIssue(null);
       return;
     }
-    const problem = valueNameProblem(trimmed);
+    const problem = renameProblem(trimmed);
     if (problem) {
       setNameIssue(problem);
       setName(value.name);
@@ -188,7 +208,7 @@ function ValueRow({
         onKeyDown={(event) => blurOnEnter(event, () => setExpression(value.expression))}
       />
       <span className="values-card-result" title={problem ?? undefined}>
-        {problem ? "!" : sliding !== null ? formatValueNumber(sliding) : result === undefined ? "" : formatValueNumber(result)}
+        {problem ? "!" : sliding !== null ? withUnit(formatValueNumber(sliding), unitLabel) : result === undefined ? "" : withUnit(formatValueNumber(result), unitLabel)}
       </span>
       <button
         type="button"

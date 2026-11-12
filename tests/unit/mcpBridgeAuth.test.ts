@@ -39,6 +39,32 @@ function fakeResponse() {
   };
 }
 
+describe("model bridge only shows the pairing code to Mintr's own window", () => {
+  function getRequest(headers: Record<string, string>) {
+    const request = new EventEmitter() as EventEmitter & { method: string; url: string; headers: Record<string, string> };
+    request.method = "GET";
+    request.url = "/api/peakcad-mcp";
+    request.headers = headers;
+    queueMicrotask(() => request.emit("end"));
+    return request;
+  }
+
+  it("a forged Origin gets nothing; the window's page token gets the code", async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-bridge-"));
+    try {
+      const server = createModelServer({ userData, port: 3000, origin: ORIGIN }) as ReturnType<typeof createModelServer> & { pageToken: string; pageHeader: string };
+      const forged = fakeResponse();
+      await server.handle(getRequest({ origin: ORIGIN, "sec-fetch-site": "same-origin" }), forged);
+      expect(forged.captured.body).not.toContain(server.session.pairingCode);
+      const page = fakeResponse();
+      await server.handle(getRequest({ origin: ORIGIN, [server.pageHeader]: server.pageToken }), page);
+      expect(page.captured.body).toContain(server.session.pairingCode);
+    } finally {
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("model bridge pairing-code brute-force protection", () => {
   it("locks out after repeated wrong tokens and rotates the pairing code", async () => {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), "mintr-bridge-"));

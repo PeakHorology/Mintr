@@ -1,4 +1,6 @@
 import { zipSync, strToU8 } from "fflate";
+import { inferCsgOp } from "@/lib/csgTree";
+import { restoreGroupedChildren } from "@/lib/editorBoolean";
 import { printMeshForShape } from "@/lib/texture/texturedShape";
 import { rewrite3mf } from "@/lib/threeMfPackage";
 import { lookup3mfPackage } from "@/lib/threeMfSource";
@@ -39,7 +41,11 @@ export function threeMfDisplayColor(color: string | undefined) {
   return `#${match[1].toUpperCase()}${match[2] ? match[2].toUpperCase() : "FF"}`;
 }
 
-function buildModelXml(meshes: ThreeMfMeshData[]) {
+/** One printable object. Several parts make an object a slicer keeps together, each with its own filament. */
+export type ThreeMfObjectData = { name: string; parts: ThreeMfMeshData[] };
+
+function buildModelXml(objects: ThreeMfObjectData[]) {
+  const meshes = objects.flatMap((object) => object.parts);
   const materials: { name: string; display: string }[] = [];
   const materialIndex = new Map<string, number>();
   for (const mesh of meshes) {
@@ -48,7 +54,8 @@ function buildModelXml(meshes: ThreeMfMeshData[]) {
     materialIndex.set(display, materials.length);
     materials.push({ name: `Color ${materials.length + 1}`, display });
   }
-  const materialId = meshes.length + 1;
+  const assemblies = objects.filter((object) => object.parts.length > 1).length;
+  const materialId = meshes.length + assemblies + 1;
 
   // Single-pass string parts — avoid nested map/join temporaries for large meshes.
   const parts: string[] = [
@@ -88,9 +95,29 @@ function buildModelXml(meshes: ThreeMfMeshData[]) {
     parts.push("          </triangles>\n", "        </mesh>\n", "      </object>\n");
   });
 
+  // An object of several parts lists its meshes as components; only it goes on the build plate.
+  const buildItems: number[] = [];
+  let meshId = 1;
+  let assemblyId = meshes.length + 1;
+  objects.forEach((object, index) => {
+    if (object.parts.length === 1) {
+      buildItems.push(meshId);
+      meshId += 1;
+      return;
+    }
+    parts.push(`      <object id="${assemblyId}" name="${escapeXml(sanitizeObjectName(object.name, index))}" type="model">\n`, "        <components>\n");
+    for (let part = 0; part < object.parts.length; part += 1) {
+      parts.push(`          <component objectid="${meshId}" />\n`);
+      meshId += 1;
+    }
+    parts.push("        </components>\n", "      </object>\n");
+    buildItems.push(assemblyId);
+    assemblyId += 1;
+  });
+
   parts.push("  </resources>\n", "  <build>\n");
-  for (let index = 0; index < meshes.length; index += 1) {
-    parts.push(`      <item objectid="${index + 1}" />\n`);
+  for (const id of buildItems) {
+    parts.push(`      <item objectid="${id}" />\n`);
   }
   parts.push("  </build>\n", "</model>\n");
   return parts.join("");
@@ -111,7 +138,14 @@ const RELS_XML = `<?xml version="1.0" encoding="UTF-8"?>
 
 /** Build a Core 3MF package (ZIP) from triangle meshes. Units are millimeters, Z-up. */
 export function to3mf(meshes: ThreeMfMeshData[]): Uint8Array {
-  const exportable = meshes.filter((mesh) => mesh.vertices.length >= 3 && mesh.faces.length >= 1);
+  return to3mfObjects(meshes.map((mesh) => ({ name: mesh.name, parts: [mesh] })));
+}
+
+/** Build a Core 3MF package from objects, each of one part or several. */
+export function to3mfObjects(objects: ThreeMfObjectData[]): Uint8Array {
+  const exportable = objects
+    .map((object) => ({ ...object, parts: object.parts.filter((mesh) => mesh.vertices.length >= 3 && mesh.faces.length >= 1) }))
+    .filter((object) => object.parts.length > 0);
   if (exportable.length === 0) {
     throw new Error("No triangle geometry to export as 3MF");
   }
@@ -124,6 +158,26 @@ export function to3mf(meshes: ThreeMfMeshData[]): Uint8Array {
     },
     { level: 6 },
   );
+}
+
+/** A Tie keeps its parts apart: nothing was fused, so each part keeps its own colour. */
+function isTie(shape: WorkplaneShape) {
+  return Boolean(shape.groupedShapes?.length) && (shape.csg?.op ?? inferCsgOp(shape)) === "assemble" && !(shape.importedMesh && shape.importedMesh.positions.length >= 9);
+}
+
+/**
+ * The 3MF objects for one shape. A Tie of plain parts is one object made of those parts,
+ * so a slicer gives each part its own filament (a label's plate and letters). A Tie of
+ * Ties is each of them as its own object, so a slicer can arrange them separately.
+ */
+function objectsForShape(shape: WorkplaneShape): ThreeMfObjectData[] {
+  const meshOf = (part: WorkplaneShape) => ({ ...printMeshForShape(part), color: part.hole ? undefined : part.color });
+  if (!isTie(shape)) return [{ name: shape.name, parts: [meshOf(shape)] }];
+  const children = restoreGroupedChildren(shape).filter((child) => !child.hidden && !child.suppressed && !child.csg?.suppressed);
+  // A hole in a Tie cuts nothing, so it is never printed as a part of its own.
+  if (children.some(isTie)) return children.filter((child) => !child.hole).flatMap(objectsForShape);
+  const solids = children.filter((child) => !child.hole);
+  return solids.length > 0 ? [{ name: shape.name, parts: solids.map(meshOf) }] : [];
 }
 
 function sourceCarrier(shape: WorkplaneShape): WorkplaneShape | null {
@@ -145,7 +199,7 @@ export function to3mfForShapes(shapes: WorkplaneShape[]): { bytes: Uint8Array; p
     if (bytes) return { bytes, preserved: true };
   }
   return {
-    bytes: to3mf(shapes.map((shape) => ({ ...printMeshForShape(shape), color: shape.hole ? undefined : shape.color }))),
+    bytes: to3mfObjects(shapes.flatMap(objectsForShape)),
     preserved: false,
   };
 }

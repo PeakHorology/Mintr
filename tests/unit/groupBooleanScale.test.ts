@@ -25,6 +25,7 @@ import {
 } from "@/lib/editorBoolean";
 import {
   booleanWorkingQuality,
+  EXACT_GROUP_MAX_PARTS,
   isHeavyBooleanSelection,
   LIVE_OCCT_BOOLEAN_OPERANDS,
   shouldSkipLiveOcctBoolean,
@@ -60,12 +61,14 @@ describe("Group scale for multi-body parts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("skips live OCCT once the selection is larger than a handful of solids", () => {
+  it("joins up to 40 parts exactly in the browser, and meshes above that", () => {
     const few = [box("a"), box("b"), box("c")];
-    const many = Array.from({ length: LIVE_OCCT_BOOLEAN_OPERANDS + 1 }, (_, i) => box(`b${i}`, i * 22));
+    const nine = Array.from({ length: LIVE_OCCT_BOOLEAN_OPERANDS + 1 }, (_, i) => box(`b${i}`, i * 22));
+    const tooMany = Array.from({ length: EXACT_GROUP_MAX_PARTS + 1 }, (_, i) => box(`b${i}`, i * 22));
     expect(shouldSkipLiveOcctBoolean(few)).toBe(false);
-    expect(shouldSkipLiveOcctBoolean(many)).toBe(true);
-    expect(isHeavyBooleanSelection(many)).toBe(true);
+    expect(shouldSkipLiveOcctBoolean(nine)).toBe(false);
+    expect(shouldSkipLiveOcctBoolean(tooMany)).toBe(true);
+    expect(isHeavyBooleanSelection(nine)).toBe(true);
   });
 
   it("tessellates large Groups at draft even when the viewport is Smooth", () => {
@@ -76,8 +79,8 @@ describe("Group scale for multi-body parts", () => {
     expect(booleanWorkingQuality([box("a"), box("b")], "draft")).toBe("draft");
   });
 
-  it("does not load OCCT for a 9-solid Group", async () => {
-    const many = Array.from({ length: 9 }, (_, i) => box(`b${i}`, i * 22));
+  it("does not load OCCT for a Group of more than 40 solids", async () => {
+    const many = Array.from({ length: EXACT_GROUP_MAX_PARTS + 1 }, (_, i) => box(`b${i}`, i * 22));
     const start = performance.now();
     expect(await occtBooleanMeshShape(many, "union")).toBeNull();
     expect(performance.now() - start).toBeLessThan(50);

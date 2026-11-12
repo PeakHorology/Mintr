@@ -215,11 +215,8 @@ function sendJson(response, status, payload) {
   response.end(body);
 }
 
-function isPageRequest(request, origin) {
-  const header = request.headers.origin;
-  if (header && header === origin) return true;
-  return request.headers["sec-fetch-site"] === "same-origin";
-}
+/** Header the app's own window sends with its model-server requests; see pageToken. */
+const PAGE_HEADER = "x-mintr-page";
 
 function presentedToken(request) {
   const header = request.headers.authorization;
@@ -238,6 +235,10 @@ function createModelServer({ userData, port, origin }) {
     port,
     url: origin,
   };
+  // Only Mintr's window knows this: Electron adds it to the window's requests to this route. Origin
+  // and Sec-Fetch-Site headers can be faked by any program on the computer, which then read the
+  // pairing code and posed as the editor. Never written to mcp-session.json.
+  const pageToken = crypto.randomBytes(24).toString("hex");
   const sessionPath = path.join(userData, "mcp-session.json");
   writeSession(sessionPath, session);
 
@@ -253,6 +254,11 @@ function createModelServer({ userData, port, origin }) {
     const a = Buffer.from(String(presented));
     const b = Buffer.from(String(expected));
     return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+  }
+
+  function isPageRequest(request) {
+    const presented = request.headers[PAGE_HEADER];
+    return typeof presented === "string" && sameSecret(presented, pageToken);
   }
 
   function authLockedMs() {
@@ -298,7 +304,7 @@ function createModelServer({ userData, port, origin }) {
     }
     try {
       if (request.method === "GET") {
-        const page = isPageRequest(request, origin);
+        const page = isPageRequest(request);
         const tokenOk = page ? Boolean(presentedToken(request)) && authorized(request) : authorized(request);
         if (!page && !tokenOk) {
           unauthorized(response);
@@ -307,7 +313,7 @@ function createModelServer({ userData, port, origin }) {
         if (tokenOk) bridge.noteClient();
         sendJson(response, 200, {
           editors: bridge.listEditors(),
-          pairingCode: isPageRequest(request, origin) ? session.pairingCode : undefined,
+          pairingCode: page ? session.pairingCode : undefined,
           port,
           ready: true,
         });
@@ -318,7 +324,7 @@ function createModelServer({ userData, port, origin }) {
         return true;
       }
       const body = await readBody(request);
-      const page = isPageRequest(request, origin);
+      const page = isPageRequest(request);
       if (body.type === "heartbeat" && page) {
         if (!body.editor || typeof body.editor !== "object") {
           sendJson(response, 400, { error: "Invalid editor heartbeat." });
@@ -380,7 +386,7 @@ function createModelServer({ userData, port, origin }) {
     return true;
   }
 
-  return { handle, session, sessionPath };
+  return { handle, session, sessionPath, pageToken, pageHeader: PAGE_HEADER };
 }
 
 module.exports = { createModelServer, createBridge, READ_ACTIONS };

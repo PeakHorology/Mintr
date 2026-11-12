@@ -205,6 +205,8 @@ function eventTargetButton(event: Event) {
   const button = node.closest("button, [data-sage-key]");
   if (!(button instanceof HTMLElement)) return null;
   if (!button.closest(".peakcad-editor")) return null;
-  if (button.closest(".sage-card, .top-action-panel, .modal, .value-dialog, .inline-value-dialog")) return null;
+  // The Export and Import panels stay in: Save cut file, Save as DXF, Open in and Send to laser have
+  // guides, and a button there without one shows nothing. The card never takes clicks.
+  if (button.closest(".sage-card, .modal, .value-dialog, .inline-value-dialog")) return null;
   return button;
 }

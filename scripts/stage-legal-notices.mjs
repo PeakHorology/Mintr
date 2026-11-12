@@ -115,6 +115,13 @@ const FONT_ENTRIES = [
     files: [join(root, "apps", "web", "src", "app", "fonts", "Inter-LICENSE.txt")],
   },
   {
+    name: "Russo One by Jovanny Lemonad, shown as \"Heavy\" in the Text and Toolbox Label fonts",
+    version: "Regular, converted to a three.js typeface",
+    license: "OFL-1.1",
+    url: "https://github.com/google/fonts/tree/main/ofl/russoone",
+    files: [join(root, "apps", "web", "src", "lib", "fonts", "heavy-LICENSE.txt")],
+  },
+  {
     name: "three.js example typefaces (helvetiker, optimer, gentilis, droid) used by the Text shape",
     version: "from three",
     license: "See license texts below",

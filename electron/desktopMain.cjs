@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, session, shell } = require("electron");
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -213,6 +213,15 @@ function startStaticServer() {
       command: process.execPath,
       args: ["--mcp"],
     }));
+    // The window's own requests to the model route carry a secret only this process knows, so no
+    // other program on the computer can pose as the editor or read the pairing code.
+    const modelRoutes = ["peakcad-mcp", "sketchforge-mcp"].flatMap((route) => [
+      `http://${HOST}:${APP_PORT}/api/${route}*`,
+      `http://localhost:${APP_PORT}/api/${route}*`,
+    ]);
+    session.fromPartition(SESSION_PARTITION).webRequest.onBeforeSendHeaders({ urls: modelRoutes }, (details, callback) => {
+      callback({ requestHeaders: { ...details.requestHeaders, [models.pageHeader]: models.pageToken } });
+    });
     // Only requests addressed to the loopback origin are served. A web page
     // whose DNS name is rebound to 127.0.0.1 reaches this port with the
     // browser believing it is same-origin, but its Host header gives it away.
@@ -502,7 +511,12 @@ function createWindow(port) {
     saveBeforeCloseInFlight = true;
     void requestRendererSave(window).then((ok) => {
       saveBeforeCloseInFlight = false;
-      if (!ok || window.isDestroyed()) return;
+      if (!ok || window.isDestroyed()) {
+        // The save failed or was cancelled, so the window stays open; a waiting update install
+        // must hear that, or its button stays busy forever.
+        deferPendingInstaller();
+        return;
+      }
       // destroy() skips beforeunload: bodies whose exact STEP could not be baked would otherwise ask again.
       if (closing) window.destroy();
       else window.webContents.reload();

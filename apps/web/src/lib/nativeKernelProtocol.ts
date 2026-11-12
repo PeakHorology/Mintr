@@ -5,6 +5,7 @@ import { gridfinityRecipeForShape, isGridfinityKind, type GridfinityRecipe } fro
 import { loftBuildPending, serializeLoftJob } from "@/lib/loftShape";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { NATIVE_EXACT_KINDS } from "@/lib/shapeBrep";
+import { groupScaleInChildFrame } from "@/lib/shapeBounds";
 import { exactThreadPlanForShape } from "@/lib/threadShape";
 import type { ExactThreadPlan } from "@/lib/metricThreadSolid";
 import { shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
@@ -89,6 +90,8 @@ export type NativeKernelReply = {
   brepStep?: string;
   quality?: "exact" | "faceted";
   displayEdges?: { points: number[] }[];
+  /** A boolean's exact bounds [minX, minY, minZ, maxX, maxY, maxZ]. */
+  bounds?: number[];
   edges?: Array<{
     id: number;
     points: number[];
@@ -218,23 +221,35 @@ export async function requestMintrKernelJob(job: NativeKernelJob, timeoutMs = 45
   }
 }
 
-/** A group's child in the group's own frame, stretched with the group when it was resized. */
-function localChildFromGroup(group: WorkplaneShape, child: WorkplaneShape): WorkplaneShape {
+/**
+ * A group's child in the group's own frame, stretched with the group when it was resized.
+ * The stretch runs along the group's axes, as the viewport draws it, so a turned child is
+ * scaled in its own axes by that stretch turned into its frame. Null when the stretch would
+ * shear the child (a part turned 30° in a group stretched along X): no primitive can express
+ * that, so the job falls back to the browser kernels, which mesh the child.
+ */
+export function localChildFromGroup(group: WorkplaneShape, child: WorkplaneShape): WorkplaneShape | null {
   const sx = group.groupedBaseWidth ? shapeWidth(group) / Math.max(0.001, group.groupedBaseWidth) : 1;
   const sy = group.groupedBaseHeight ? group.height / Math.max(0.001, group.groupedBaseHeight) : 1;
   const sz = group.groupedBaseDepth ? shapeDepth(group) / Math.max(0.001, group.groupedBaseDepth) : 1;
-  const width = shapeWidth(child) * sx;
-  const depth = shapeDepth(child) * sz;
-  const height = child.height * sy;
+  if (sx === 1 && sy === 1 && sz === 1) return child;
+  const frame = groupScaleInChildFrame(child, { x: sx, y: sy, z: sz });
+  if (!frame) return null;
+  const width = shapeWidth(child) * frame.scale.x;
+  const depth = shapeDepth(child) * frame.scale.z;
+  const height = child.height * frame.scale.y;
+  // The child turns about its centre, so the centre is what the group stretch moves.
+  const centerY = ((child.elevation ?? 0) + child.height / 2) * sy;
   return {
     ...child,
     x: child.x * sx,
     z: child.z * sz,
-    elevation: (child.elevation ?? 0) * sy,
+    elevation: centerY - height / 2,
     width,
     depth,
     height,
     size: (width + depth) / 2,
+    rotation: frame.rotation,
   };
 }
 
@@ -342,7 +357,8 @@ function encodeNativeKernelShape(shape: WorkplaneShape): NativeKernelSolid | nul
   for (const child of shape.groupedShapes) {
     // Inside a group only a switched-off feature is left out, as in the browser.
     if (child.suppressed || child.csg?.suppressed) continue;
-    const encoded = encodeNativeKernelShape(localChildFromGroup(shape, { ...child, hidden: false, construction: false }));
+    const local = localChildFromGroup(shape, { ...child, hidden: false, construction: false });
+    const encoded = local && encodeNativeKernelShape(local);
     if (!encoded) return null;
     children.push(encoded);
   }

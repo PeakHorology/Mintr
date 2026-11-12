@@ -158,10 +158,19 @@ export function importedShapeFromStl(
   const rawNormals: number[] = [];
   const unitScale = stlMillimetersPerFileUnit(workplaneUnit);
 
+  // STL files are Z up (slicers, CAD apps and Mintr's own export), and Mintr is Y up with -Z to
+  // the back. Keeping the file's orientation means standing it up the way it was saved; laying it
+  // flat finds its own way down, so the raw axes are kept there.
+  const zUp = seatMode === "keep-orientation";
   for (let i = 0; i < position.count; i += 1) {
-    rawPositions.push(position.getX(i) * unitScale, position.getY(i) * unitScale, position.getZ(i) * unitScale);
+    const x = position.getX(i) * unitScale;
+    const y = position.getY(i) * unitScale;
+    const z = position.getZ(i) * unitScale;
+    if (zUp) rawPositions.push(x, z, -y);
+    else rawPositions.push(x, y, z);
     if (normal) {
-      rawNormals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
+      if (zUp) rawNormals.push(normal.getX(i), normal.getZ(i), -normal.getY(i));
+      else rawNormals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
     }
   }
 

@@ -9,7 +9,8 @@ import * as THREE from "three";
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { clearManifoldRuntimeCache, getManifoldRuntime } from "@/lib/manifoldRuntime";
+import { clearManifoldRuntimeCache, getManifoldRuntime, manifoldRuntimeIfReady } from "@/lib/manifoldRuntime";
+import { buildToolboxLabelSetReport, toolboxLabelSetNotice } from "@/lib/toolboxLabel";
 import { simplifiedImportedShapePatch } from "@/lib/meshSimplify";
 import {
   curveSidesForShape,
@@ -86,9 +87,11 @@ import {
 } from "@/lib/workplaneShapes";
 import {
   cloneShapesForPaste,
+  pasteOffsetSteps,
   readShapeClipboard,
   readSharedClipboard,
   SHARED_CLIPBOARD_STORAGE_KEY,
+  duplicateShapeWithFreshIds,
   writeShapeClipboard,
 } from "@/lib/shapeClipboard";
 import { TinkercadBookmark } from "@/components/workplane/TinkercadBookmark";
@@ -105,7 +108,6 @@ import {
   inferCsgOp,
   markCsgClean,
   migrateShapesCsg,
-  reorderCsgChild,
   replaceLeafInCsgTree,
   setCsgChildSuppressed,
   expandBooleanOperands,
@@ -148,6 +150,7 @@ import {
   clampCircularPatternCount,
   clampCircularPatternRadius,
   clampCircularPatternRotation,
+  clampCircularPatternTurn,
   defaultCircularPatternCenter,
   resolveCircularPatternSourceId,
   type CircularPatternCenter,
@@ -160,6 +163,7 @@ import {
   boundLinearPatternCounts,
   clampLinearPatternCount,
   clampLinearPatternSpacing,
+  clampLinearPatternTurn,
   linearPatternInstances,
   linearPatternSuggestedSpacing,
   linearPatternWouldClamp,
@@ -175,6 +179,7 @@ import {
   patternFeatureId,
   patternMemberIds,
   replacePatternFeature,
+  withAppliedPattern,
   syncLinkedPatternShapes,
   tagCircularPatternInstances,
   tagLinearPatternInstances,
@@ -239,12 +244,13 @@ import {
   squareSketchGeometry,
   starSketchGeometry,
 } from "@/lib/sketchDrawShapes";
-import { resolveSketchRevolveAxis, shapeFromSketchRevolve, type SketchRevolveAxis } from "@/lib/sketchRevolve";
+import { resolveSketchRevolveAxis, shapeFromSketchRevolve, type SketchRevolveAxis, sketchRevolveIssue } from "@/lib/sketchRevolve";
 import { shapeFromSketchSweep } from "@/lib/sketchSweep";
-import { rebuildSketchedShape } from "@/lib/sketchRebuild";
+import { splitPiecesCutSideDown } from "@/lib/splitLayFlat";
+import { keepPartAfterSketchFinish, rebuildSketchedShape } from "@/lib/sketchRebuild";
 import { buildGeneratedShape } from "@/lib/generatedShapes";
 import { withExactGeneratedShape } from "@/lib/generatedExact";
-import { planValues } from "@/components/workplane/valueDrivenPatches";
+import { findGroupedPart, planValues, withPlannedChildPatches, worldGroupedPart } from "@/components/workplane/valueDrivenPatches";
 import { planSketchSweep, resolveSketchSweep, sweepChainHit, sweepSpec, type SweepChain } from "@/lib/sketch/sweepPlan";
 import {
   buildStepExportPreflight,
@@ -254,8 +260,9 @@ import {
   type StepPreflightRow,
 } from "@/lib/stepQuality";
 import { fingerprintsForEdgeIds, matchRecipeEdgeIds } from "@/lib/edgeTreatmentRematch";
-import { bakedPartSize, edgeTreatmentsForSteps, failedEdgeTreatmentFeatures, hasPartSteps, hollowPartFeature, rebuildsOnResize, resizedFeatureBase, stepsReplaceSnapshots, partFeatureLabel, pushPullPartFeature, stepsCanReplay, withoutEdgeTreatmentFeatures, withPartFeature, withPartStepSize } from "@/lib/partFeatures";
-import { placeReplayedShape, replayPartFeatures, type ReplayEngine } from "@/lib/featureReplay";
+import { bakedPartSize, edgeTreatmentsForSteps, failedEdgeTreatmentFeatures, hasPartSteps, hollowPartFeature, rebuildsOnResize, resizedFeatureBase, stepsReplaceSnapshots, partFeatureLabel, partFeatureShortLabel, pushPullPartFeature, stepsCanReplay, withoutEdgeTreatmentFeatures, withPartFeature, withPartStepSize } from "@/lib/partFeatures";
+import { edgesForStep, faceForStep, placeReplayedShape, replayPartFeatures, type ReplayEngine } from "@/lib/featureReplay";
+import { partStepsBefore, removePartFromTree, reorderPartSteps, type TreeDrop } from "@/lib/designTree";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
 import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
 import { buildFaceBody, faceDraftsToBuild, joinedFaceDrafts, rememberFaceDraft, type FaceDraft } from "@/lib/faceBody";
@@ -313,6 +320,14 @@ import {
 } from "@/lib/editorShapeMesh";
 import { MIN_SHAPE_DIMENSION, cleanModelDimension } from "@/lib/modelDimension";
 import {
+  changeUnlockedShapes,
+  clampShapeSizePatch,
+  groupableShapes,
+  placeGroupedShape,
+  planShapeDelete,
+  planShapeVisibility,
+} from "@/lib/mcpShapeOps";
+import {
   alignedShapesForSelection,
   alignmentLabel,
   alignmentStatuses,
@@ -328,6 +343,7 @@ import {
   mirrorAxisLabel,
   mirroredShapesForSelection,
   remeshCsgGroup,
+  remeshCsgGroupFromWorldChildren,
   restoreGroupedChildren,
   rewriteSketchHostIds,
   separablePartCount,
@@ -393,7 +409,6 @@ import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettings
 import {
   applyRepeatActionToDuplicate,
   computeShapeRepeatDelta,
-  createDuplicateForRepeat,
   DEFAULT_SHAPE_REPEAT_DELTA,
   hasShapeRepeatDelta,
   snapshotShapesForRepeat,
@@ -431,8 +446,8 @@ import {
 import { guideMinutes, guidePrompt, guideStartIndex, proposeGuideSteps, type GuideSession, type MintrGuide } from "@/lib/mintrGuide";
 import { applyGuideDraft, readGuideAuthor, readGuideDraft, shrinkPicture, writeGuideAuthor, writeGuideDraft } from "@/lib/guideAuthoring";
 import { buildPeakcadDocument, packMintrGuideText, serializeMintrGuide } from "@/lib/peakcadDocument";
-import { readCustomFonts } from "@/lib/customFontStore";
-import { crystalReach, CUT_FILE_STYLES, isCrystalDesign, isLaserDesign, laserMachineName, materialById, materialLabel, sheetThickness } from "@/lib/laserMachine";
+import { designFontLibrary } from "@/lib/customFontStore";
+import { crystalReach, CUT_FILE_STYLES, isCrystalDesign, isLaserDesign, laserMachineName, loadMachineChoice, machineHasLaser, materialById, materialLabel, sheetThickness } from "@/lib/laserMachine";
 import { buildCutLayout, cutLayoutDxf, cutLayoutSvg, footprintOutline, lengthLabel } from "@/lib/laser/cutFile";
 import { nestOutlines, overlappingGroups, placePoint } from "@/lib/laser/shapeNest";
 import { fitTestKerfs, fitTestLayout } from "@/lib/laser/fitTest";
@@ -447,6 +462,8 @@ import { crystalSizeNote } from "@/lib/laser/crystalFile";
 import { crystalSizeLabel, fitInsideCrystal } from "@/lib/laser/crystal";
 import { uniformScalePatch } from "@/lib/uniformScale";
 import { flatParts } from "@/lib/laser/flatParts";
+import { centreShapesAt, laserBatches, makeLaserParts, pendingLaserShapes, sendableShapes, sheetPartFromLoops, shapesCentre, sourcesForUpdate } from "@/lib/laser/sendToLaser";
+import { SendToLaserDialog, type SendToLaserChoice } from "@/components/workplane/SendToLaserDialog";
 import type { SettingsSectionId } from "@/lib/settingGuides";
 import { EMPTY_GUIDE_LOG, compactGuideForFile, syncGuideLog, type GuideLog } from "@/lib/guideLog";
 import { loadGuideLog, saveGuideLogSoon } from "@/lib/guideLogStore";
@@ -456,7 +473,7 @@ import { GuideCoach } from "@/components/workplane/GuideCoach";
 import { GuideConfetti } from "@/components/workplane/GuideConfetti";
 import { GuideBuilderPanel, type GuideBuilderDraft } from "@/components/workplane/GuideBuilderPanel";
 import { isPeakcadProSketchTool, SketchCoach, SketchFinishToolbar, SketchRibbon, sketchCoach, type SketchCoachKey } from "@/components/workplane/SketchToolSidebar";
-import { ShapeSidebar } from "@/components/workplane/ShapeSidebar";
+import { ShapeSidebar, type ShownStep } from "@/components/workplane/ShapeSidebar";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import type { MeshSeatMode } from "@/lib/meshSeatOrientation";
 import { displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
@@ -629,6 +646,8 @@ export type EdgeModifierSession = {
   componentPreviews: EdgeModifierComponentPreview[];
   /** Recipe being edited so prepare can reselect the original edges. */
   editRecipe?: NonNullable<WorkplaneShape["edgeTreatments"]>[number];
+  /** The recorded step being edited: its edges are found again the way a rebuild finds them. */
+  editStep?: Extract<PartFeature, { kind: "fillet" | "chamfer" }>;
 };
 
 function edgeWipePointsFromSession(session: EdgeModifierSession): { polylines: number[][] } | undefined {
@@ -652,6 +671,8 @@ export type CircularPatternSession = {
   radius: number;
   count: number;
   rotation: CircularPatternRotationStep;
+  /** Degrees the whole pattern turns around its center, the original included. */
+  turn?: number;
   preview: WorkplaneShape[] | null;
   featureId?: string;
   editing?: boolean;
@@ -664,6 +685,8 @@ export type LinearPatternSession = {
   spacingX: number;
   spacingZ: number;
   spacingY: number;
+  /** Degrees the rows and columns turn around the original. */
+  turn?: number;
   preview: WorkplaneShape[] | null;
   featureId?: string;
   editing?: boolean;
@@ -1352,6 +1375,13 @@ function readMcpEditorIdentity() {
   return identity;
 }
 
+/** Triangles in a part's stored mesh, so a Push Pull can mesh its result about as densely. Undefined for a part the viewport builds itself. */
+function storedTriangleCount(shape: WorkplaneShape | null | undefined): number | undefined {
+  const mesh = shape?.importedMesh;
+  if (!mesh?.positions?.length) return undefined;
+  return mesh.indices?.length ? Math.floor(mesh.indices.length / 3) : Math.floor(mesh.positions.length / 9);
+}
+
 export function SketchForgeEditor({
   initialShapes = [],
   initialHistory,
@@ -1376,6 +1406,10 @@ export function SketchForgeEditor({
   guidePlayback = null,
   onGuidePublished,
   onGuideCompleted,
+  laserDesigns = [],
+  onSendToLaser,
+  onLoadDesignForLaser,
+  designRevision,
 }: {
   initialShapes?: WorkplaneShape[];
   initialHistory?: EditorHistoryEntry[];
@@ -1408,6 +1442,14 @@ export function SketchForgeEditor({
   guidePlayback?: GuideSession | null;
   onGuidePublished?: (session: GuideSession, path: string | null) => void;
   onGuideCompleted?: (id: string) => void;
+  /** Laser designs to offer in Send to laser. */
+  laserDesigns?: readonly { id: string; name: string; crystal?: boolean }[];
+  /** Send to laser: hands the parts, marked pending, to a new laser design ("new") or an existing one. */
+  onSendToLaser?: (target: string, sourceName: string, shapes: WorkplaneShape[]) => void | Promise<void>;
+  /** Update from model: the 3D design's current parts. */
+  onLoadDesignForLaser?: (designId: string) => Promise<{ name: string; shapes: WorkplaneShape[]; revision: number } | null>;
+  /** A design's latest revision, to say when the model behind laser parts has changed. */
+  designRevision?: (designId: string) => number | null;
 } = {}) {
   const initialSceneRef = useRef<WorkplaneShape[] | null>(null);
   if (initialSceneRef.current === null) {
@@ -1498,6 +1540,7 @@ export function SketchForgeEditor({
     shapeId: string,
     pose: { x: number; z: number; elevation: number; rotationX: number; rotation: number; rotationZ: number },
     done: () => void,
+    motion?: { durationMs?: number; liftMm?: number },
   ) => void) | null>(null);
   const [alignAnchorId, setAlignAnchorId] = useState<string | null>(null);
   const [alignPreview, setAlignPreview] = useState<{ axis: AlignAxis; target: AlignTarget } | null>(null);
@@ -1564,6 +1607,8 @@ export function SketchForgeEditor({
   const [projectInteractionActive, setProjectInteractionActive] = useState(false);
   const [toolbarMode, setToolbarMode] = useState<ToolbarMode>("geometry");
   const [shapeRailPinned, setShapeRailPinned] = useState(false);
+  /** The rail shows the Parts tree instead of the shape catalog; it then stays open while something is selected. */
+  const [partsTreeOpen, setPartsTreeOpen] = useState(false);
   const [sketchActive, setSketchActive] = useState(false);
   const beginBlankSketchRef = useRef<() => void>(() => {});
   const beginSketchFacePickRef = useRef<() => void>(() => {});
@@ -1599,6 +1644,8 @@ export function SketchForgeEditor({
   /** True for the moment the sketch tools fade out after a finish. */
   const [sketchLeaving, setSketchLeaving] = useState(false);
   const extrudeLookRef = useRef(extrudeLook);
+  /** True while a tutorial is on its extrude step; set where the guide prompt is worked out. */
+  const guideExtrudeStepRef = useRef(false);
   extrudeLookRef.current = extrudeLook;
   useEffect(() => {
     if (extrudeLook === null) {
@@ -1685,6 +1732,8 @@ export function SketchForgeEditor({
     prepared: boolean;
     error: string | null;
     preview: WorkplaneShape | null;
+    /** Apply was pressed before the preview finished; apply this distance once it lands. */
+    applyQueued?: number;
   } | null>(null);
   const pushPullSessionRef = useRef(pushPullSession);
   useEffect(() => {
@@ -1696,7 +1745,11 @@ export function SketchForgeEditor({
     offset: number;
     joint: CutJoint;
     clearance: number;
+    /** A plain split turns each piece cut face down on the workplane. */
+    layFlat: boolean;
   } | null>(null);
+  /** The last Lay pieces cut-side down choice, so the next Split starts with it. */
+  const splitLayFlatRef = useRef(false);
   /** The texture being tried on one part. It shows at once; nothing is saved until Apply. */
   const [textureSession, setTextureSession] = useState<{
     shapeId: string;
@@ -1707,6 +1760,8 @@ export function SketchForgeEditor({
   const edgeModifierRef = useRef<EdgeModifierSession | null>(null);
   const [circularPattern, setCircularPattern] = useState<CircularPatternSession | null>(null);
   const circularPatternRef = useRef<CircularPatternSession | null>(null);
+  /** A pattern panel slider is being dragged: the original's handles hide meanwhile. */
+  const [patternSliderDragging, setPatternSliderDragging] = useState(false);
   const [linearPattern, setLinearPattern] = useState<LinearPatternSession | null>(null);
   const linearPatternRef = useRef<LinearPatternSession | null>(null);
   const [valueDialog, setValueDialog] = useState<ValueDialogState>(null);
@@ -1747,12 +1802,26 @@ export function SketchForgeEditor({
    * `resized`: the part was resized and is rebuilt at its new size; the rebuild replaces the
    * resize's own undo entry instead of adding one.
    */
-  /** The part as it was just before its newest step, rebuilt from the steps before it. */
-  const partBeforeLastStepRef = useRef<(shape: WorkplaneShape) => Promise<WorkplaneShape | null>>(async () => null);
-  const replayPartStepsRef = useRef<(shapeId: string, features: PartFeature[], label: string, base?: WorkplaneShape, options?: { resized?: boolean }) => Promise<boolean>>(async () => false);
+  /**
+   * The part rebuilt from its first `count` steps only: the part as it was right after step
+   * `count - 1`, or before its first step for 0. Editing a step opens its tool on the part
+   * with the steps before it; "Show up to here" shows the part with the steps up to it.
+   */
+  const partWithStepsRef = useRef<(shape: WorkplaneShape, count: number) => Promise<WorkplaneShape | null>>(async () => null);
+  /**
+   * `requireAllSteps`: commit only when every step still fits; otherwise keep the part as it is
+   * and say which step did not (used to check a new step order).
+   */
+  const replayPartStepsRef = useRef<(shapeId: string, features: PartFeature[], label: string, base?: WorkplaneShape, options?: { resized?: boolean; requireAllSteps?: boolean }) => Promise<boolean>>(async () => false);
   const cadModifierBaseFingerprintRef = useRef("");
   const cadModifierSourcePartsRef = useRef<WorkplaneShape[]>([]);
   const cadModifierEditBeforeRef = useRef<WorkplaneShape | null>(null);
+  /** Editing a step in the middle of a part: the steps after it, put back once the edit is applied. */
+  const cadModifierLaterStepsRef = useRef<PartFeature[] | null>(null);
+  /** A push or pull step being edited: its face is picked again once the part's faces are ready. */
+  const pushPullEditStepRef = useRef<Extract<PartFeature, { kind: "pushPull" }> | null>(null);
+  /** Pro "Show up to here": the part as it was after one of its steps, shown in place of the live part. */
+  const [stepPreview, setStepPreview] = useState<{ bodyId: string; stepId: string; shape: WorkplaneShape; fingerprint: string } | null>(null);
   const edgePreviewShapeRef = useRef<WorkplaneShape | null>(null);
   const edgePreviewSmoothRef = useRef(false);
   const edgeRefineRequestRef = useRef<number | null>(null);
@@ -1919,11 +1988,17 @@ export function SketchForgeEditor({
         }
         if (pushPullSessionRef.current) {
           const faces = message.planarFaces ?? [];
+          // A push or pull step being edited picks its face again, as a rebuild would.
+          const editStep = pushPullEditStepRef.current;
+          pushPullEditStepRef.current = null;
+          const editFace = editStep ? faceForStep(editStep, faces) : null;
+          if (editStep && !editFace) setNotice("The face this step was made on could not be found. Drag a face to make it again.");
           setPushPullSession((current) => current ? {
             ...current,
             faces,
             prepared: true,
             busy: false,
+            ...(editFace && editStep ? { selectedFaceId: editFace.id, distance: editStep.distance } : {}),
             error: faces.length > 0 ? null : "Push Pull needs a flat face.",
           } : current);
           return;
@@ -1934,9 +2009,12 @@ export function SketchForgeEditor({
         }
         setEdgeModifier((current) => {
           if (!current) return current;
-          const rematched = current.editRecipe
-            ? matchRecipeEdgeIds(current.editRecipe, message.edges, current.sharpAngle)
-            : [];
+          // A recorded step finds its edges the way a rebuild does; an older recipe matches by fingerprint.
+          const fromStep = current.editStep ? edgesForStep(current.editStep, { edges: message.edges, planarFaces: [] }) : null;
+          const rematched = fromStep
+            ?? (current.editRecipe
+              ? matchRecipeEdgeIds(current.editRecipe, message.edges, current.sharpAngle)
+              : []);
           const selectedEdgeIds = rematched.length > 0 ? rematched : [];
           const hasEdges = selectedEdgeIds.length > 0 || message.selectableEdgeIds.length > 0;
           return {
@@ -2147,6 +2225,8 @@ export function SketchForgeEditor({
     cadModifierBaseFingerprintRef.current = "";
     cadModifierSourcePartsRef.current = [];
     cadModifierEditBeforeRef.current = null;
+    cadModifierLaterStepsRef.current = null;
+    pushPullEditStepRef.current = null;
     edgePreviewShapeRef.current = null;
     edgePreviewSmoothRef.current = false;
     edgeRefineRequestRef.current = null;
@@ -2599,19 +2679,31 @@ export function SketchForgeEditor({
       if (preview && cadModifierBaseShapeRef.current) {
         return shapes.map((shape) => shape.id === cadModifierBaseShapeRef.current?.id ? preview : shape);
       }
+      // "Show up to here": the part as it was after one of its steps stands in for the live part.
+      if (stepPreview) {
+        return shapes.map((shape) => (shape.id === stepPreview.bodyId ? stepPreview.shape : shape));
+      }
       if (alignMode && alignPreview) {
         return alignedShapesForSelection(shapes, selectedIds, selectedShapes, effectiveAlignAnchorId, alignPreview.axis, alignPreview.target).nextShapes;
       }
       if (mirrorMode && mirrorPreviewAxis) {
         return mirroredShapesForSelection(shapes, selectedIds, selectedShapes, mirrorPreviewAxis).nextShapes;
       }
+      // While a pattern is being edited, its old copies make way for the preview too, or copies
+      // dropped by a lower count stay drawn until Update.
       if (circularPattern?.preview) {
         const sourceIds = new Set(circularPattern.sourceIds);
-        return shapes.filter((shape) => !sourceIds.has(shape.id)).concat(circularPattern.preview);
+        const featureId = circularPattern.featureId;
+        return shapes
+          .filter((shape) => !sourceIds.has(shape.id) && !(featureId && shape.patternFeature?.id === featureId))
+          .concat(circularPattern.preview);
       }
       if (linearPattern?.preview) {
         const sourceIds = new Set(linearPattern.sourceIds);
-        return shapes.filter((shape) => !sourceIds.has(shape.id)).concat(linearPattern.preview);
+        const featureId = linearPattern.featureId;
+        return shapes
+          .filter((shape) => !sourceIds.has(shape.id) && !(featureId && shape.patternFeature?.id === featureId))
+          .concat(linearPattern.preview);
       }
       if (sweepPreview) {
         return shapes.filter((shape) => shape.id !== sweepPreview.id).concat(sweepPreview);
@@ -2621,8 +2713,17 @@ export function SketchForgeEditor({
       }
       return shapes;
     },
-    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, editingSketchShapeId, effectiveAlignAnchorId, extrudePreviewShape, guidePreview, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, sweepPreview],
+    [alignMode, alignPreview, circularPattern, edgeModifier?.preview, editingSketchShapeId, effectiveAlignAnchorId, extrudePreviewShape, guidePreview, history, historyBrowse, historyIndex, linearPattern, mirrorMode, mirrorPreviewAxis, pushPullSession?.preview, selectedIds, selectedShapes, shapes, stepPreview, sweepPreview],
   );
+
+  // The "Show up to here" view ends on its own once the part changes or is gone, so a preview
+  // never stands in for a part that no longer matches it. It is only ever a view: no data changes.
+  useEffect(() => {
+    if (!stepPreview) return;
+    const live = shapes.find((shape) => shape.id === stepPreview.bodyId);
+    if (live && projectShapesFingerprint([live]) === stepPreview.fingerprint) return;
+    setStepPreview(null);
+  }, [shapes, stepPreview]);
   const faceOperationIds = useMemo(() => {
     if (!faceSession?.prepared) return [] as number[];
     const ids = faceSession.kept.map((entry) => entry.faceId);
@@ -3782,16 +3883,37 @@ export function SketchForgeEditor({
     })();
   }, [activeFeatureId, commitShapes, selectedShape]);
 
-  const suppressSelectedFeature = useCallback((featureId: string, suppressed: boolean) => {
+  /**
+   * Build a group without one of its parts, or with it again (the Parts tree's Off). The part
+   * can sit at any depth. The group's own steps (fillets, walls, pulls) are replayed on the
+   * rebuilt pieces, the same path `changePartSteps` takes, so they survive. Only a fillet from
+   * before steps were recorded, which cannot replay, falls back to being cleared.
+   */
+  const suppressFeatureInBody = useCallback((bodyId: string, featureId: string, suppressed: boolean) => {
     if (edgeModifier) {
-      setNotice("Cancel the fillet or chamfer before turning a feature off.");
+      setNotice("Cancel the fillet or chamfer before turning a part off.");
       return;
     }
     void (async () => {
       try {
-        const body = selectedShape;
+        const body = shapesRef.current.find((entry) => entry.id === bodyId);
         if (!body?.groupedShapes?.length) return;
-        const dirty = setCsgChildSuppressed(body, featureId, suppressed);
+        const child = findShapeInTree(body.groupedShapes, featureId);
+        if (!child) return;
+        const childName = child.name || child.kind;
+        const dirty = body.groupedShapes.some((entry) => entry.id === featureId)
+          ? setCsgChildSuppressed(body, featureId, suppressed)
+          : replaceLeafInCsgTree(body, featureId, {
+              ...child,
+              suppressed: suppressed || undefined,
+              ...(child.csg ? { csg: { ...child.csg, suppressed: suppressed || undefined } } : {}),
+            });
+        const label = suppressed ? `Turned off ${childName}` : `Turned on ${childName}`;
+        const replayable = Boolean(body.features?.length && stepsCanReplay(body.features));
+        if (replayable && body.features) {
+          const base = await remeshCsgGroup({ ...dirty, features: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined });
+          if (base && await replayPartStepsRef.current(bodyId, body.features, label, base)) return;
+        }
         const hadEdgeTreatment = Boolean(dirty.edgeTreatments?.length);
         const remeshGen = remeshGenerationRef.current + 1;
         remeshGenerationRef.current = remeshGen;
@@ -3802,9 +3924,9 @@ export function SketchForgeEditor({
           importedMesh: body.importedMesh,
           csg: { ...(dirty.csg ?? { op: inferCsgOp(dirty) ?? "union", version: 1 }), dirty: true },
         };
-        // A fillet belongs to the solid that existed when it was applied. Turning a
-        // feature off changes that solid, so the old fillet is cleared instead of
-        // being run again on edges that may no longer exist.
+        // A fillet made before steps were recorded belongs to the solid that existed then. The
+        // solid has changed and the fillet cannot be replayed, so it is cleared rather than run
+        // again on edges that may no longer exist.
         const committed = remeshed && hadEdgeTreatment
           ? {
               ...next,
@@ -3817,41 +3939,29 @@ export function SketchForgeEditor({
               cadDisplayEdgesVersion: undefined,
             }
           : next;
+        const state = suppressed ? "Part off" : "Part on";
         commitShapes(
           shapesRef.current.map((entry) => (entry.id === body.id ? committed : entry)),
           body.id,
           !remeshed
-            ? "Could not rebuild body after toggling feature — last good mesh kept. Ungroup then Group to retry."
+            ? "Could not rebuild the group after turning that part off — last good shape kept. Ungroup then Group to retry."
             : hadEdgeTreatment
-              ? (suppressed
-                ? "Feature off. Fillet cleared — add it again on this body."
-                : "Feature on. Fillet cleared — add it again on this body.")
-              : (suppressed ? "Feature off — body rebuilt" : "Feature on — body rebuilt"),
+              ? replayable
+                ? `${state}. The fillet on this group could not be rebuilt on the new shape, so it was cleared — add it again.`
+                : `${state}. The fillet on this group was made before Mintr recorded steps, so it could not be rebuilt and was cleared — add it again.`
+              : `${state} — group rebuilt`,
         );
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : "Could not turn that feature off.");
+        setNotice(error instanceof Error ? error.message : "Could not turn that part off.");
       }
     })();
-  }, [commitShapes, edgeModifier, selectedShape]);
-
-  const reorderSelectedFeature = useCallback((featureId: string, direction: "up" | "down") => {
-    const body = selectedShape;
-    if (!body?.groupedShapes?.length) return;
-    const next = reorderCsgChild(body, featureId, direction);
-    if (next === body) return;
-    // Every child of a node feeds one op, so the evaluated solid is the same whatever the order.
-    // Rebuilding would only spend the wait and risk an exact body returning faceted.
-    commitShapes(
-      shapesRef.current.map((entry) => (entry.id === body.id ? next : entry)),
-      body.id,
-      `Reordered feature ${direction}`,
-    );
-  }, [commitShapes, selectedShape]);
+  }, [commitShapes, edgeModifier]);
 
   const updateSelectedFeature = useCallback((featureId: string, patch: ShapeUpdatePatch) => {
     const body = shapesRef.current.find((entry) => entry.id === selectedShape?.id) ?? selectedShape;
     if (!body?.groupedShapes?.length) return;
-    const child = body.groupedShapes.find((entry) => entry.id === featureId);
+    // The part may sit inside a nested group: the Parts tree reaches any depth.
+    const child = findShapeInTree(body.groupedShapes, featureId);
     if (!child) return;
     if (child.locked && !("locked" in patch)) {
       setNotice(`“${child.name}” is locked`);
@@ -3867,10 +3977,7 @@ export function SketchForgeEditor({
         )
         : { ...child, ...cleanedPatch },
     );
-    const dirty = bumpCsgVersion({
-      ...body,
-      groupedShapes: body.groupedShapes.map((entry) => (entry.id === featureId ? nextChild : entry)),
-    });
+    const dirty = replaceLeafInCsgTree(body, featureId, nextChild);
     const message = `Edited ${nextChild.name || nextChild.kind}`;
     const op = dirty.csg?.op ?? inferCsgOp(dirty);
 
@@ -3930,9 +4037,14 @@ export function SketchForgeEditor({
     }, delay);
   }, [commitShapes, flushPendingFeatureRemesh, selectedShape]);
 
-  // Clear in-body feature focus when the top-level selection changes.
+  // Clear in-body feature focus when the top-level selection changes, unless the part picked
+  // inside a group still sits in the one selected part (the Parts tree and Alt-click set both).
   useEffect(() => {
-    setActiveFeatureId(null);
+    setActiveFeatureId((current) => {
+      if (!current) return current;
+      const owner = selectedIds.length === 1 ? shapesRef.current.find((shape) => shape.id === selectedIds[0]) : null;
+      return owner && owner.id !== current && csgTreeContainsId(owner, current) ? current : null;
+    });
   }, [selectedIds.join("|")]);
 
   const beginSketchFacePick = useCallback(() => {
@@ -3998,7 +4110,9 @@ export function SketchForgeEditor({
       setSketchCancelUndo(park);
       setSketchCancelRedo(null);
     }
-    abandonSketchSession("sketch");
+    // Cancelling an edit of a part's sketch goes back to the part. A new sketch goes back to
+    // choosing where to sketch.
+    abandonSketchSession(editingSketchShapeIdRef.current ? "geometry" : "sketch");
   }, [abandonSketchSession, cancelSweepSteps, captureSketchPark]);
 
   const sketchUndo = useCallback(() => {
@@ -5454,7 +5568,8 @@ export function SketchForgeEditor({
         ?? 10;
     setExtrudeAsHole(faceSketch || Boolean(existing?.hole));
     // A guide writes the depth in the prompt. The field stays empty so that number is typed, not filled in.
-    if (guidePlayback) {
+    // Only while the tutorial is on an extrude step: a finished tutorial project extrudes like any other.
+    if (guideExtrudeStepRef.current) {
       setExtrudeHeightPrompt(Number.NaN);
       setNotice("Type the height from the tutorial.");
       return;
@@ -5467,7 +5582,7 @@ export function SketchForgeEditor({
           ? `Face sketch on ${host?.name ?? "part"} — ${throughDepth.toFixed(1)} mm goes through. A shorter number is a pocket that deep`
           : "Face sketch — the number is how far the cut or the solid goes")
       : "Set extrude height, then create a solid or hole");
-  }, [editingSketchShapeId, guidePlayback, shapes, sketchDoc.faceReferenceLoops, sketchDoc.plane, sketchProfile]);
+  }, [editingSketchShapeId, shapes, sketchDoc.faceReferenceLoops, sketchDoc.plane, sketchProfile]);
 
   const cancelExtrudeHeightPrompt = useCallback(() => {
     setExtrudeHeightPrompt(null);
@@ -5482,13 +5597,13 @@ export function SketchForgeEditor({
   /** Step two of Extrude: look at the solid in View in 3D before it is made. */
   const previewSketchExtrude = useCallback(() => {
     if (typeof extrudeHeightPrompt === "number" && !Number.isFinite(extrudeHeightPrompt)) {
-      setNotice(guidePlayback ? "Type the height from the tutorial." : "Type an extrude height.");
+      setNotice(guideExtrudeStepRef.current ? "Type the height from the tutorial." : "Type an extrude height.");
       return;
     }
     setExtrudeLook(sketchFocusMode);
     setSketchFocusMode("3d");
     setNotice("Orbit to check it, then finish, or go back to change the sketch");
-  }, [extrudeHeightPrompt, guidePlayback, sketchFocusMode]);
+  }, [extrudeHeightPrompt, sketchFocusMode]);
 
   // Finishing, leaving the sketch, or anything else that closes the extrude ends the preview too.
   useEffect(() => {
@@ -5663,7 +5778,8 @@ export function SketchForgeEditor({
         }
         if (result.consumed) {
           const remaining = shapesRef.current.filter((shape) => shape.id !== host.id && shape.id !== existing?.id);
-          commitFinishedSketch(remaining, null, "Sketch feature consumed the host solid");
+          commitFinishedSketch(remaining, null, "Sketch cut used up the part");
+          setNotice("The cut covered the whole part, so nothing is left. Press Ctrl+Z to undo.");
           return;
         }
         setNotice(
@@ -5675,9 +5791,12 @@ export function SketchForgeEditor({
       }
     }
 
+    // An edited part keeps where it was moved and turned to, its lock, laser job and steps.
+    if (existing) extruded = keepPartAfterSketchFinish(extruded, existing, { cutIntoFace: Boolean(asHole && faceSketch) });
     const nextShapes = existing
       ? shapesRef.current.map((shape) => (shape.id === existing.id ? extruded : shape))
       : [...shapesRef.current, extruded];
+    const finished = extruded;
     commitFinishedSketch(
       nextShapes,
       extruded.id,
@@ -5689,6 +5808,7 @@ export function SketchForgeEditor({
           ? `Sketch solid ready — join to ${host.name} failed; select the solid and Group to retry`
           : (existing ? "Sketch updated in 3D" : `Sketch extruded at ${height.toFixed(1)} mm`)),
     );
+    if (existing && hasPartSteps(finished)) await reapplyEdgeTreatmentsRef.current(finished);
   }, [commitFinishedSketch, commitShapes, editingSketchShapeId, leaveSketchSoftly, noteSketchFinish, sketchDoc, sketchProfile]);
 
   const finishSketchExtrude = useCallback(async (heightMm?: number, asHole = extrudeAsHole) => {
@@ -5697,7 +5817,7 @@ export function SketchForgeEditor({
     // kernel exception used to leave "Building sketch…" on screen forever.
     if (sketchExtrudeBusyRef.current) return;
     if (typeof heightMm === "number" && !Number.isFinite(heightMm)) {
-      setNotice(guidePlayback ? "Type the height from the tutorial." : "Type an extrude height.");
+      setNotice(guideExtrudeStepRef.current ? "Type the height from the tutorial." : "Type an extrude height.");
       return;
     }
     sketchExtrudeBusyRef.current = true;
@@ -5710,7 +5830,7 @@ export function SketchForgeEditor({
       sketchExtrudeBusyRef.current = false;
       setExtrudeBuilding(false);
     }
-  }, [extrudeAsHole, finishSketchExtrudeInner, guidePlayback, setNotice]);
+  }, [extrudeAsHole, finishSketchExtrudeInner, setNotice]);
 
   /** The Extrude button (and E) opens the extrude; pressed again while it is open, it finishes it. */
   const pressSketchExtrude = useCallback(() => {
@@ -5727,7 +5847,7 @@ export function SketchForgeEditor({
     if (!revolved) {
       setRevolvePrompt({ phase: "pick" });
       setSketchTool("select");
-      setNotice("Revolve needs a closed profile that stays on one side of the axis. Pick another axis line.");
+      setNotice(sketchRevolveIssue(sketchProfile, axis) ?? "Revolve needs a closed profile that stays on one side of the axis. Pick another axis line.");
       return;
     }
     // Keep the live doc (construction lines, projected geometry, analytic
@@ -5735,8 +5855,10 @@ export function SketchForgeEditor({
     // lost all of that the next time the revolve was edited.
     revolved.sketchDoc = mergeProfileIntoDoc(cloneSketchDoc(sketchDoc), sketchProfile);
     revolved.sketchId = sketchDoc.id;
-    const nextShapes = existing ? shapes.map((shape) => (shape.id === existing.id ? revolved : shape)) : [...shapes, revolved];
-    commitFinishedSketch(nextShapes, revolved.id, existing ? "Sketch revolved" : "Sketch revolved around axis");
+    const finished = existing ? keepPartAfterSketchFinish(revolved, existing) : revolved;
+    const nextShapes = existing ? shapes.map((shape) => (shape.id === existing.id ? finished : shape)) : [...shapes, finished];
+    commitFinishedSketch(nextShapes, finished.id, existing ? "Sketch revolved" : "Sketch revolved around axis");
+    if (existing && hasPartSteps(finished)) void reapplyEdgeTreatmentsRef.current(finished);
   }, [commitFinishedSketch, editingSketchShapeId, shapes, sketchDoc, sketchProfile]);
 
   const applySketchRevolveAxis = useCallback((axisId: string) => {
@@ -5759,7 +5881,8 @@ export function SketchForgeEditor({
       setNotice("Revolve is only available on workplane sketches");
       return;
     }
-    const closedCount = orderedSketchPaths(sketchProfile).filter((path) => path.closed).length;
+    // Construction lines are guides, never part of the outline that is revolved.
+    const closedCount = orderedSketchPaths({ ...sketchProfile, segments: sketchProfile.segments.filter((segment) => !segment.construction) }).filter((path) => path.closed).length;
     if (closedCount === 0) {
       setNotice("Close a profile first, then click Revolve");
       return;
@@ -5772,10 +5895,12 @@ export function SketchForgeEditor({
 
   const commitSweepShape = useCallback((shape: WorkplaneShape) => {
     const existing = editingSketchShapeId ? shapes.find((entry) => entry.id === editingSketchShapeId) ?? null : null;
+    const finished = existing ? keepPartAfterSketchFinish(shape, existing) : shape;
     const nextShapes = existing
-      ? shapes.map((entry) => (entry.id === existing.id ? shape : entry))
-      : [...shapes, shape];
-    commitFinishedSketch(nextShapes, shape.id, existing ? "Sketch swept" : "Sketch swept along the path");
+      ? shapes.map((entry) => (entry.id === existing.id ? finished : entry))
+      : [...shapes, finished];
+    commitFinishedSketch(nextShapes, finished.id, existing ? "Sketch swept" : "Sketch swept along the path");
+    if (existing && hasPartSteps(finished)) void reapplyEdgeTreatmentsRef.current(finished);
     setSweepPrompt(null);
     setSweepPreview(null);
   }, [commitFinishedSketch, editingSketchShapeId, shapes]);
@@ -6298,8 +6423,9 @@ export function SketchForgeEditor({
             commitShapes(
               shapesRef.current.filter((shape) => shape.id !== host.id && shape.id !== id),
               null,
-              "Hole consumed the host solid",
+              "Hole used up the part",
             );
+            setNotice("The hole covered the whole part, so nothing is left. Press Ctrl+Z to undo.");
             return;
           }
           commitShapes(
@@ -6308,6 +6434,37 @@ export function SketchForgeEditor({
             result.failureNotice,
           );
         })();
+        return;
+      }
+
+      // A toolbox label is rebuilt from its settings, in place.
+      if (previous?.toolboxLabel && cleanedPatch.toolboxLabel) {
+        const runtime = manifoldRuntimeIfReady();
+        if (!runtime) {
+          void getManifoldRuntime().catch(() => clearManifoldRuntimeCache());
+          setNotice("Still getting ready. Try that again in a moment");
+          return;
+        }
+        const { toolboxLabel: nextLabel, ...rest } = cleanedPatch;
+        const bed = normalizePrinterBed(workspaceSettingsRef.current);
+        const report = buildToolboxLabelSetReport(runtime, nextLabel, { ...previous, ...rest }, bed);
+        const built = report?.shape;
+        if (!report || !built) {
+          setNotice("That font has none of those letters. Try another font or other letters");
+          return;
+        }
+        if (projectInteractionActiveRef.current) {
+          // A live slider drag: no history entry per tick.
+          setShapes((current) => {
+            const next = current.map((shape) => (shape.id === id ? built : shape));
+            interactionHistoryChangedRef.current = true;
+            shapesRef.current = next;
+            return next;
+          });
+          return;
+        }
+        // Say what to change when magnets were left out, a label is too big, or the set needs more plates.
+        commitShapes(shapesRef.current.map((shape) => (shape.id === id ? built : shape)), selectedIds, toolboxLabelSetNotice(report, bed) ?? `${previous.name} updated`);
         return;
       }
 
@@ -6568,7 +6725,7 @@ export function SketchForgeEditor({
    * with every setting and sketch size the values now give, as one undo step.
    */
   const applyValues = useCallback(async (nextBody: WorkplaneShape, message: string) => {
-    const plan = planValues(nextBody);
+    const plan = planValues(nextBody, lengthDisplayUnit(workspaceSettingsRef.current).millimetersPerUnit);
     if (plan.errors.length > 0) setNotice(plan.errors[0]);
     const startFingerprint = projectShapesFingerprint(shapesRef.current);
     const sceneMoved = () => projectShapesFingerprint(shapesRef.current) !== startFingerprint;
@@ -6607,23 +6764,20 @@ export function SketchForgeEditor({
     let body: WorkplaneShape = bumpCsgVersion({
       ...nextBody,
       ...cleanShapePatch(plan.body.patch),
-      groupedShapes: (nextBody.groupedShapes ?? []).map((child) => {
-        const change = plan.children.get(child.id);
-        return change && Object.keys(change.patch).length ? canonicalizeShape({ ...child, ...cleanShapePatch(change.patch) }) : child;
-      }),
+      groupedShapes: withPlannedChildPatches(nextBody, plan.children),
     });
     const sketchChildren = [...plan.children].filter(([, change]) => change.sketchDoc);
     if (sketchChildren.length) {
       // A sketched part inside rebuilds from its sketch, in the plate's frame, then joins the group again.
       for (const [childId, change] of sketchChildren) {
-        const world = restoreGroupedChildren(body, { preserveIds: true }).find((child) => child.id === childId);
+        const world = worldGroupedPart(body, childId);
         if (!world || !change.sketchDoc) continue;
         const rebuild = await rebuildSketchedShape(world, change.sketchDoc, { exact: true });
         if (!rebuild.ok) {
           setNotice(rebuild.message);
           return;
         }
-        const raw = body.groupedShapes?.find((child) => child.id === childId);
+        const raw = findGroupedPart(body, childId);
         const updated = await updateCsgLeafAndRemesh(body, childId, raw ? keepValues(rebuild.shape, raw) : rebuild.shape);
         body = updated.body;
       }
@@ -6691,7 +6845,7 @@ export function SketchForgeEditor({
     }
     // Keep the copy in the same place as the original (TinkerCAD-style).
     const sourceShapes = shapesRef.current.filter((shape) => selectedIdsRef.current.includes(shape.id));
-    const duplicates = sourceShapes.map((shape) => createDuplicateForRepeat(shape, createLocalId(`${shape.id}-copy`)));
+    const duplicates = sourceShapes.map((shape) => duplicateShapeWithFreshIds(shape, createLocalId(`${shape.id}-copy`)));
     commitShapes(
       [...shapesRef.current, ...duplicates],
       duplicates.map((shape) => shape.id),
@@ -6714,7 +6868,7 @@ export function SketchForgeEditor({
       const storedAction = lastShapeActionRef.current[shape.id];
       const delta =
         duplicateRepeatDeltasRef.current.get(shape.id) ?? storedAction?.delta ?? DEFAULT_SHAPE_REPEAT_DELTA;
-      const duplicate = createDuplicateForRepeat(shape, createLocalId(`${shape.id}-repeat`));
+      const duplicate = duplicateShapeWithFreshIds(shape, createLocalId(`${shape.id}-repeat`));
       const repeated = hasShapeRepeatDelta(delta)
         ? applyRepeatActionToDuplicate(duplicate, delta, { incremental: true })
         : duplicate;
@@ -6782,11 +6936,14 @@ export function SketchForgeEditor({
     if (serializeShapesForSync(sourceClipboard) !== serializeShapesForSync(clipboard)) {
       setClipboard(sourceClipboard);
     }
-    const pasted = cloneShapesForPaste(sourceClipboard).map((shape) => ({
-      ...shape,
-      x: Math.min(110, shape.x + 12),
-      z: Math.min(110, shape.z + 12),
-    }));
+    // Each paste steps 12 mm further from the copied shape, so pasting twice no longer stacks
+    // two copies on one spot.
+    const pasted = cloneShapesForPaste(sourceClipboard);
+    const step = pasteOffsetSteps(pasted, shapesRef.current) * 12;
+    for (const shape of pasted) {
+      shape.x += step;
+      shape.z += step;
+    }
     commitShapes([...shapesRef.current, ...pasted], pasted.map((shape) => shape.id), `Pasted ${pasted.length} shape${pasted.length === 1 ? "" : "s"}`);
   }, [clipboard, commitShapes, pasteTinkercad]);
 
@@ -6953,7 +7110,7 @@ export function SketchForgeEditor({
         sketchCancelRedoRef.current = null;
         setSketchCancelUndo(sketchCancelUndoRef.current);
         setSketchCancelRedo(null);
-        abandonSketchSession("sketch");
+        abandonSketchSession(editingSketchShapeIdRef.current ? "geometry" : "sketch");
         return;
       }
       if (step.kind === "reopen-finished") {
@@ -7098,6 +7255,7 @@ export function SketchForgeEditor({
       return circularPatternInstances(sources, session.center, session.count, {
         radius: session.radius,
         rotationOffset: session.rotation,
+        turn: session.turn ?? 0,
         createId: circularPatternCopyId,
       });
     },
@@ -7141,6 +7299,11 @@ export function SketchForgeEditor({
       setNotice("Select at least one unlocked shape to pattern");
       return;
     }
+    const inOtherPattern = unlockedSelected.find((shape) => shape.patternFeature);
+    if (inOtherPattern?.patternFeature) {
+      setNotice(`"${inOtherPattern.name}" is already part of a ${inOtherPattern.patternFeature.kind} pattern. Dissolve that pattern first, then make the circular one.`);
+      return;
+    }
     clearEditorToolSessions("circular");
     const center = defaultCircularPatternCenter(unlockedSelected);
     const radius = circularPatternSuggestedRadius(unlockedSelected, center);
@@ -7155,25 +7318,50 @@ export function SketchForgeEditor({
     };
     session.preview = rebuildCircularPatternPreview(session, shapesRef.current);
     setCircularPattern(session);
-    setNotice("Circular pattern. Click the workplane to move the center.");
+    setNotice("Circular pattern. Click the shape to turn around, or the workplane, to set the center.");
   }, [cancelCircularPattern, circularPattern, clearEditorToolSessions, rebuildCircularPatternPreview, selectedShapes]);
 
   const setCircularPatternCenter = useCallback(
     (center: CircularPatternCenter) => {
       setCircularPattern((current) => {
         if (!current) return current;
-        const sources = shapesRef.current.filter((shape) => current.sourceIds.includes(shape.id) && !shape.locked);
-        const radius = circularPatternSuggestedRadius(sources, center);
+        // The radius stays as set: picking a center only moves the circle.
         const next: CircularPatternSession = {
           ...current,
           pivotId: null,
           center,
-          radius,
         };
         return { ...next, preview: rebuildCircularPatternPreview(next, shapesRef.current) };
       });
     },
     [rebuildCircularPatternPreview],
+  );
+
+  /**
+   * A shape clicked during Round pattern becomes its centre: the copies turn around the middle
+   * of that shape. Returns false when the click should fall through to the workplane.
+   */
+  const pickCircularPatternPivot = useCallback(
+    (pickId: string) => {
+      const current = circularPatternRef.current ?? circularPattern;
+      if (!current) return false;
+      if (resolveCircularPatternSourceId(pickId, current)) {
+        setNotice("That is the shape being copied. Click another shape, or the workplane, to set the center");
+        return true;
+      }
+      const pivot = shapesRef.current.find((shape) => shape.id === pickId && !shape.hidden);
+      if (!pivot) return false;
+      const center = { x: pivot.x, z: pivot.z };
+      setCircularPattern((session) => {
+        if (!session) return session;
+        // The radius stays as set: picking a center only moves the circle.
+        const next: CircularPatternSession = { ...session, pivotId: pivot.id, center };
+        return { ...next, preview: rebuildCircularPatternPreview(next, shapesRef.current) };
+      });
+      setNotice(`Copies turn around the center of ${pivot.name}`);
+      return true;
+    },
+    [circularPattern, rebuildCircularPatternPreview],
   );
 
   const patchCircularPatternCount = useCallback(
@@ -7209,6 +7397,17 @@ export function SketchForgeEditor({
     [rebuildCircularPatternPreview],
   );
 
+  const patchCircularPatternTurn = useCallback(
+    (turn: number) => {
+      setCircularPattern((current) => {
+        if (!current) return current;
+        const next: CircularPatternSession = { ...current, turn: clampCircularPatternTurn(turn) };
+        return { ...next, preview: rebuildCircularPatternPreview(next, shapesRef.current) };
+      });
+    },
+    [rebuildCircularPatternPreview],
+  );
+
   const applyCircularPattern = useCallback(() => {
     if (!circularPattern?.center || !circularPattern.preview?.length) return;
     const sourceIds = new Set(circularPattern.sourceIds);
@@ -7219,17 +7418,20 @@ export function SketchForgeEditor({
       radius: circularPattern.radius,
       rotationOffset: circularPattern.rotation,
     };
+    // Rebuild from the parts as they are now: a colour, size or turn changed while the panel was
+    // open must not be undone by copies made before it.
+    const fresh = rebuildCircularPatternPreview(circularPattern, shapes) ?? circularPattern.preview;
     let tagged: WorkplaneShape[] = [];
     for (const source of sources) {
       const featureId = circularPattern.featureId ?? patternFeatureId();
-      const instances = circularPattern.preview.filter((shape) => (
+      const instances = fresh.filter((shape) => (
         shape.id === source.id || shape.id.startsWith(`${source.id}__circular_pattern__`)
       ));
       tagged = tagged.concat(tagCircularPatternInstances(instances.length ? instances : [source], source, params, featureId));
     }
     const nextShapes = circularPattern.editing && circularPattern.featureId
       ? replacePatternFeature(shapes, tagged, circularPattern.featureId)
-      : shapes.filter((shape) => !sourceIds.has(shape.id) && shape.patternFeature?.id !== circularPattern.featureId).concat(tagged);
+      : withAppliedPattern(shapes, sourceIds, tagged, circularPattern.featureId);
     const wouldClamp = circularPatternWouldClamp(
       circularPattern.center,
       circularPattern.radius,
@@ -7238,9 +7440,9 @@ export function SketchForgeEditor({
     commitShapes(nextShapes, tagged.map((shape) => shape.id), circularPattern.editing ? `Circular pattern updated ×${circularPattern.count}` : `Circular pattern ×${circularPattern.count}`);
     setCircularPattern(null);
     if (wouldClamp) {
-      setNotice("Circular pattern clamped some positions to ±110 mm");
+      setNotice("Circular pattern held some copies at the 10 m limit");
     }
-  }, [circularPattern, commitShapes, shapes]);
+  }, [circularPattern, commitShapes, rebuildCircularPatternPreview, shapes]);
 
   const rebuildLinearPatternPreview = useCallback((session: LinearPatternSession, sourceShapes: WorkplaneShape[]) => {
     const sourceIds = new Set(session.sourceIds);
@@ -7274,6 +7476,7 @@ export function SketchForgeEditor({
           spacingX: linear.spacingX,
           spacingZ: linear.spacingZ,
           spacingY: linear.spacingY ?? linearPatternSuggestedSpacing([source], "y"),
+          turn: linear.turn ?? 0,
           preview: null,
           featureId: source.patternFeature?.id,
           editing: true,
@@ -7286,6 +7489,11 @@ export function SketchForgeEditor({
     const unlockedSelected = selectedShapes.filter((shape) => !shape.locked && !isConstructionShape(shape));
     if (!unlockedSelected.length) {
       setNotice("Select at least one unlocked shape for a linear pattern");
+      return;
+    }
+    const inOtherPattern = unlockedSelected.find((shape) => shape.patternFeature);
+    if (inOtherPattern?.patternFeature) {
+      setNotice(`"${inOtherPattern.name}" is already part of a ${inOtherPattern.patternFeature.kind} pattern. Dissolve that pattern first, then make the linear one.`);
       return;
     }
     clearEditorToolSessions("linear");
@@ -7322,6 +7530,7 @@ export function SketchForgeEditor({
         spacingX: patch.spacingX !== undefined ? clampLinearPatternSpacing(patch.spacingX) : current.spacingX,
         spacingZ: patch.spacingZ !== undefined ? clampLinearPatternSpacing(patch.spacingZ) : current.spacingZ,
         spacingY: patch.spacingY !== undefined ? clampLinearPatternSpacing(patch.spacingY) : current.spacingY,
+        turn: patch.turn !== undefined ? clampLinearPatternTurn(patch.turn) : current.turn,
       };
       return { ...next, preview: rebuildLinearPatternPreview(next, shapesRef.current) };
     });
@@ -7338,25 +7547,27 @@ export function SketchForgeEditor({
       spacingX: linearPattern.spacingX,
       spacingZ: linearPattern.spacingZ,
       spacingY: linearPattern.spacingY,
+      ...(linearPattern.turn ? { turn: linearPattern.turn } : {}),
     };
+    const fresh = rebuildLinearPatternPreview(linearPattern, shapes) ?? linearPattern.preview;
     let tagged: WorkplaneShape[] = [];
     for (const source of sources) {
       const featureId = linearPattern.featureId ?? patternFeatureId();
-      const instances = linearPattern.preview.filter((shape) => (
+      const instances = fresh.filter((shape) => (
         shape.id === source.id || shape.id.startsWith(`${source.id}__linear_pattern__`)
       ));
       tagged = tagged.concat(tagLinearPatternInstances(instances.length ? instances : [source], source, params, featureId));
     }
     const nextShapes = linearPattern.editing && linearPattern.featureId
       ? replacePatternFeature(shapes, tagged, linearPattern.featureId)
-      : shapes.filter((shape) => !sourceIds.has(shape.id)).concat(tagged);
+      : withAppliedPattern(shapes, sourceIds, tagged);
     const wouldClamp = linearPatternWouldClamp(sources, linearPattern, linearPattern);
     commitShapes(nextShapes, tagged.map((shape) => shape.id), linearPattern.editing ? `Linear pattern updated ×${tagged.length}` : `Linear pattern ×${tagged.length}`);
     setLinearPattern(null);
     if (wouldClamp) {
-      setNotice("Linear pattern clamped some positions to ±110 mm");
+      setNotice("Linear pattern held some copies at the 10 m limit");
     }
-  }, [commitShapes, linearPattern, shapes]);
+  }, [commitShapes, linearPattern, rebuildLinearPatternPreview, shapes]);
 
   useEffect(() => {
     if (!linearPattern) return;
@@ -7696,7 +7907,12 @@ export function SketchForgeEditor({
     setNotice("Edge modifier cancelled");
   }, [invalidateCadModifierSession]);
 
-  const startEdgeModifier = useCallback(async (kind: CadModifierKind, historyIndex?: number) => {
+  /**
+   * `stepId` opens that recorded fillet or chamfer (from the Parts tree) on the part as it was
+   * just before it; the steps after it are put back when the edit is applied. Without it the
+   * newest step reopens when it is this tool's.
+   */
+  const startEdgeModifier = useCallback(async (kind: CadModifierKind, historyIndex?: number, stepId?: string) => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
       setNotice(`Select one unlocked solid to ${kind}`);
       return;
@@ -7714,14 +7930,22 @@ export function SketchForgeEditor({
     const editEntry = fromSteps ? null : indexed ?? lastEditableEdgeTreatment(selectedShape, kind);
     let workingShape = editEntry ? restoreShapeBeforeEdgeTreatment(selectedShape, editEntry) : selectedShape;
     let editRecipe = editEntry?.feature;
-    const lastStep = selectedShape.features?.[selectedShape.features.length - 1];
-    if (fromSteps && historyIndex === undefined && lastStep?.kind === kind && !lastStep.suppressed && !lastStep.failed) {
-      setNotice(`Opening the last ${kind}`);
+    let editStep: EdgeModifierSession["editStep"];
+    let laterSteps: PartFeature[] | null = null;
+    const steps = selectedShape.features ?? [];
+    const stepIndex = stepId !== undefined
+      ? steps.findIndex((step) => step.id === stepId)
+      : historyIndex === undefined ? steps.length - 1 : -1;
+    const step = fromSteps && stepIndex >= 0 ? steps[stepIndex] : undefined;
+    if (step && step.kind === kind && (stepId !== undefined || (!step.suppressed && !step.failed))) {
+      setNotice(stepIndex === steps.length - 1 ? `Opening the last ${kind}` : `Opening this ${kind}`);
       try {
-        const before = await partBeforeLastStepRef.current(selectedShape);
+        const before = await partWithStepsRef.current(selectedShape, stepIndex);
         if (before) {
           workingShape = before;
-          editRecipe = selectedShape.edgeTreatments?.[selectedShape.edgeTreatments.length - 1];
+          editStep = step;
+          editRecipe = edgeTreatmentsForSteps([{ ...step, suppressed: undefined, failed: undefined }], selectedShape)?.[0];
+          laterSteps = steps.slice(stepIndex + 1);
         }
       } catch {
         // Opens as a new fillet or chamfer on the part as it is.
@@ -7730,6 +7954,7 @@ export function SketchForgeEditor({
       if (shapesRef.current.find((shape) => shape.id === selectedShape.id) !== selectedShape) return;
     }
     cadModifierEditBeforeRef.current = editRecipe ? workingShape : null;
+    cadModifierLaterStepsRef.current = editRecipe && laterSteps?.length ? laterSteps : null;
     const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(workingShape);
     const hasAppliedEdgeTreatment = Boolean(workingShape.importedMesh && workingShape.edgeTreatments?.length);
     const sourceParts = edgeTreatmentSourceParts(workingShape, {
@@ -7769,6 +7994,7 @@ export function SketchForgeEditor({
         preview: null,
         componentPreviews: [],
         editRecipe,
+        editStep,
       });
       const newerCount = historyIndex === undefined ? 0 : Math.max(0, history.length - historyIndex - 1);
       setNotice(editRecipe
@@ -7799,13 +8025,38 @@ export function SketchForgeEditor({
     armCadModifierWatchdog(prepareRequestId, "prepare");
   }, [armCadModifierWatchdog, clearEditorToolSessions, invalidateCadModifierSession, postCadModifierRequest, selectedShape, selectedShapes.length]);
 
-  const startShell = useCallback(() => {
+  /**
+   * `options.step` reopens that recorded hollow (from the Parts tree) on the part as it was just
+   * before it, with the wall and openings it was made with; the steps after it are put back
+   * when the edit is applied.
+   */
+  const startShell = useCallback(async (options?: { step?: Extract<PartFeature, { kind: "hollow" }> }) => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
       setNotice("Select one unlocked solid to hollow");
       return;
     }
     invalidateCadModifierSession();
-    const sourceParts = edgeTreatmentSourceParts(selectedShape);
+    const step = options?.step?.kind === "hollow" ? options.step : undefined;
+    const steps = selectedShape.features ?? [];
+    const stepIndex = step ? steps.findIndex((entry) => entry.id === step.id) : -1;
+    let workingShape = selectedShape;
+    let laterSteps: PartFeature[] | null = null;
+    if (step && stepIndex >= 0 && stepsReplaceSnapshots(selectedShape)) {
+      setNotice("Opening this hollow");
+      try {
+        const before = await partWithStepsRef.current(selectedShape, stepIndex);
+        if (before) {
+          workingShape = before;
+          laterSteps = steps.slice(stepIndex + 1);
+        }
+      } catch {
+        // Opens as a new hollow on the part as it is.
+      }
+      invalidateCadModifierSession();
+      if (shapesRef.current.find((shape) => shape.id === selectedShape.id) !== selectedShape) return;
+    }
+    const editing = workingShape !== selectedShape;
+    const sourceParts = edgeTreatmentSourceParts(workingShape);
     const partInputs = sourceParts.map(modifierPartInput);
     const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
     if (modifierInputsLackSurface(partInputs)) {
@@ -7817,18 +8068,20 @@ export function SketchForgeEditor({
       return;
     }
     const maxWall = shellMaxThickness(
-      { width: shapeWidth(selectedShape), depth: shapeDepth(selectedShape), height: selectedShape.height },
+      { width: shapeWidth(workingShape), depth: shapeDepth(workingShape), height: workingShape.height },
       ["top"],
     );
     cadModifierBaseShapeRef.current = selectedShape;
     cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
     cadModifierSourcePartsRef.current = sourceParts;
     clearEditorToolSessions("fillet");
+    cadModifierEditBeforeRef.current = editing ? workingShape : null;
+    cadModifierLaterStepsRef.current = editing && laterSteps?.length ? laterSteps : null;
     const session = {
-      thickness: Math.min(2, maxWall),
-      corners: "sharp" as const,
-      cornerRadius: Math.min(2, maxWall),
-      openings: ["top"] as Array<"top" | "bottom" | "front" | "back" | "left" | "right">,
+      thickness: editing && step ? step.thickness : Math.min(2, maxWall),
+      corners: editing && step ? step.corners : "sharp" as const,
+      cornerRadius: editing && step ? step.cornerRadius : Math.min(2, maxWall),
+      openings: editing && step ? [...step.openings] : ["top"] as Array<"top" | "bottom" | "front" | "back" | "left" | "right">,
       busy: true,
       prepared: false,
       error: null,
@@ -8061,12 +8314,38 @@ export function SketchForgeEditor({
     setNotice("Click the next flat face. It uses these same settings.");
   }, []);
 
-  const startPushPull = useCallback(() => {
+  /**
+   * `options.step` reopens that recorded push or pull (from the Parts tree) on the part as it
+   * was just before it, with its face picked and its distance set; the steps after it are put
+   * back when the edit is applied.
+   */
+  const startPushPull = useCallback(async (options?: { step?: Extract<PartFeature, { kind: "pushPull" }> }) => {
     if (selectedShapes.length !== 1 || !selectedShape || selectedShape.locked || selectedShape.hole) {
       setNotice("Select one unlocked solid to Push Pull");
       return;
     }
-    const sourceParts = pushPullSourceParts(selectedShape);
+    const step = options?.step?.kind === "pushPull" ? options.step : undefined;
+    const steps = selectedShape.features ?? [];
+    const stepIndex = step ? steps.findIndex((entry) => entry.id === step.id) : -1;
+    let workingShape = selectedShape;
+    let laterSteps: PartFeature[] | null = null;
+    if (step && stepIndex >= 0 && stepsReplaceSnapshots(selectedShape)) {
+      invalidateCadModifierSession();
+      setNotice(`Opening this ${step.distance < 0 ? "push" : "pull"}`);
+      try {
+        const before = await partWithStepsRef.current(selectedShape, stepIndex);
+        if (before) {
+          workingShape = before;
+          laterSteps = steps.slice(stepIndex + 1);
+        }
+      } catch {
+        // Opens as a new push or pull on the part as it is.
+      }
+      invalidateCadModifierSession();
+      if (shapesRef.current.find((shape) => shape.id === selectedShape.id) !== selectedShape) return;
+    }
+    const editing = workingShape !== selectedShape;
+    const sourceParts = pushPullSourceParts(workingShape);
     const hasCad = sourceParts.some((part) => Boolean(cadModifierPrimitiveForShape(part) || part.cadBrep || part.importedMesh?.brepStep));
     if (!hasCad) {
       setNotice("Push Pull needs an exact CAD body. Group CAD parts first.");
@@ -8083,6 +8362,9 @@ export function SketchForgeEditor({
     cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
     cadModifierSourcePartsRef.current = sourceParts;
     clearEditorToolSessions("fillet");
+    cadModifierEditBeforeRef.current = editing ? workingShape : null;
+    cadModifierLaterStepsRef.current = editing && laterSteps?.length ? laterSteps : null;
+    pushPullEditStepRef.current = editing && step ? step : null;
     const session = {
       faces: [] as CadPlanarFace[],
       selectedFaceId: null as number | null,
@@ -8282,12 +8564,18 @@ export function SketchForgeEditor({
       ...shape,
       edgeTreatments: undefined,
       edgeTreatmentHistory: undefined,
-      features: withoutEdgeTreatmentFeatures(shape.features),
+      // Turned-off fillets and chamfers have no recipe to re-apply, so they are kept as they are;
+      // stripping them lost them for good.
+      features: [
+        ...(withoutEdgeTreatmentFeatures(shape.features) ?? []),
+        ...(shape.features ?? []).filter((feature) => (feature.kind === "fillet" || feature.kind === "chamfer") && feature.suppressed),
+      ],
       cadBrep: undefined,
       cadBrepFrame: undefined,
       cadDisplayEdges: undefined,
       cadDisplayEdgesVersion: undefined,
     };
+    if (!stripped.features?.length) stripped.features = undefined;
     commitShapes(
       shapesRef.current.map((entry) => (entry.id === shape.id ? stripped : entry)),
       shape.id,
@@ -8373,6 +8661,39 @@ export function SketchForgeEditor({
     await replayPartStepsRef.current(shapeId, change(live.features), label, base);
   }, []);
 
+  /**
+   * Commit a step that was applied from a tool. A step opened from the middle of a part (the
+   * Parts tree) has the steps after it put back by rebuilding the whole part, as one undo
+   * step. If that rebuild fails, the edit is kept on its own and the later steps are left
+   * off, and the notice says so.
+   */
+  const finishStepEdit = useCallback(async (shapeId: string, edited: WorkplaneShape, label: string, wipe?: { polylines: number[][] }) => {
+    const later = cadModifierLaterStepsRef.current;
+    cadModifierLaterStepsRef.current = null;
+    const commitEdited = (shape: WorkplaneShape, message?: string) => {
+      commitShapes(shapesRef.current.map((entry) => (entry.id === shapeId ? shape : entry)), shapeId, label);
+      flashCadApply(shapeId, wipe);
+      if (message) setNotice(message);
+    };
+    if (!later?.length) {
+      commitEdited(edited);
+      return;
+    }
+    const features = [...(edited.features ?? []), ...later];
+    let base = edited.featureBase;
+    if (!base && edited.groupedShapes?.length) {
+      base = (await remeshCsgGroup({ ...edited, features: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined })) ?? undefined;
+    }
+    // The tool's own apply is finished; the rebuild takes the engine over from here.
+    cadApplyBusyRef.current = false;
+    if (base && await replayPartStepsRef.current(shapeId, features, label, base)) return;
+    const count = later.length;
+    commitEdited(
+      canonicalizeShape({ ...edited, edgeTreatments: edgeTreatmentsForSteps(edited.features ?? [], edited) }),
+      `${label}. The ${count === 1 ? "step" : `${count} steps`} after it could not be rebuilt on the new shape, so ${count === 1 ? "it was" : "they were"} left off. Undo brings ${count === 1 ? "it" : "them"} back.`,
+    );
+  }, [commitShapes, flashCadApply]);
+
   /** The engine calls a step replay makes, answered with the live tools' own requests. */
   const editorReplayEngine = useCallback((): ReplayEngine => {
     const finish = async (source: WorkplaneShape, response: CadModifierWorkerResponse, refineFor?: number) => {
@@ -8433,28 +8754,29 @@ export function SketchForgeEditor({
         return finish(shape, await postCadModifierRequestAsync({ type: "hollow", ...step, quality: "standard" }, [], 30000));
       },
       async pushPull(shape, step) {
-        return finish(shape, await postCadModifierRequestAsync({ type: "pushPull", ...step, quality: "standard" }, [], 30000));
+        return finish(shape, await postCadModifierRequestAsync({ type: "pushPull", ...step, quality: "standard", matchTriangles: storedTriangleCount(shape) }, [], 30000));
       },
     };
   }, [postCadModifierRequestAsync]);
 
-  partBeforeLastStepRef.current = async (shape) => {
+  partWithStepsRef.current = async (shape, count) => {
     const steps = shape.features ?? [];
-    const last = steps[steps.length - 1];
-    if (!last) return null;
+    if (steps.length === 0) return null;
+    const kept = Math.max(0, Math.min(steps.length, count));
     const base = shape.featureBase ?? (shape.groupedShapes?.length
       ? (await remeshCsgGroup({ ...shape, features: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined })) ?? undefined
       : undefined);
     if (!base) return null;
-    const result = await replayPartFeatures(base, steps.slice(0, -1), editorReplayEngine());
-    // The newest step's frame is where the part sat just before it; follow the part's moves since.
-    const lastApplied = last.frame && last.appliedAt
+    const result = await replayPartFeatures(base, steps.slice(0, kept), editorReplayEngine());
+    // The first step left out recorded where the part sat just before it; follow the part's moves since.
+    const next = steps[kept];
+    const lastApplied = next?.frame && next.appliedAt
       ? {
-          recordedAt: last.appliedAt,
+          recordedAt: next.appliedAt,
           drift: [
-            last.frame.origin[0] - result.shape.x,
-            last.frame.origin[1] - (result.shape.elevation ?? 0),
-            last.frame.origin[2] - result.shape.z,
+            next.frame.origin[0] - result.shape.x,
+            next.frame.origin[1] - (result.shape.elevation ?? 0),
+            next.frame.origin[2] - result.shape.z,
           ] as [number, number, number],
         }
       : result.lastApplied;
@@ -8531,6 +8853,15 @@ export function SketchForgeEditor({
       if (!current || projectShapesFingerprint([current]) !== sourceFingerprint) {
         if (!options?.resized) setNotice("The part changed while it was rebuilding. Try again.");
         return false;
+      }
+      if (options?.requireAllSteps) {
+        const wasFine = new Set((live.features ?? []).filter((feature) => !feature.failed).map((feature) => feature.id));
+        const broke = result.steps.find((step) => !step.ok && wasFine.has(step.id));
+        if (broke) {
+          const feature = features.find((entry) => entry.id === broke.id);
+          setNotice(`That order doesn't work: ${feature ? partFeatureLabel(feature) : "a step"} can't be made there. Kept the order as it was.`);
+          return false;
+        }
       }
       // A resized part is rebuilt at its new size, so it is not stretched to it afterwards.
       const placed = placeReplayedShape(result.shape, options?.resized ? { ...live, cadBrepFrame: undefined } : live, result.lastApplied);
@@ -8698,13 +9029,15 @@ export function SketchForgeEditor({
         session.edges,
       );
       const modifiedShape: WorkplaneShape = await recutIgnoredThreadsAfterEdgeTreatment(recordedShape, recordBefore);
-      commitShapes(
-        shapes.map((shape) => shape.id === base.id ? modifiedShape : shape),
+      // The later steps (a step edited from the middle of the part) are read before the session clears.
+      const finished = finishStepEdit(
         base.id,
+        modifiedShape,
         `${label} ${session.selectedEdgeIds.length} edge${session.selectedEdgeIds.length === 1 ? "" : "s"}`,
+        edgeWipePointsFromSession(session),
       );
-      flashCadApply(base.id, edgeWipePointsFromSession(session));
       invalidateCadModifierSession();
+      await finished;
       } catch (error) {
         setEdgeModifier((current) => current
           ? { ...current, busy: false, error: error instanceof Error && error.message ? error.message : "Could not apply the edge change" }
@@ -8713,7 +9046,7 @@ export function SketchForgeEditor({
         cadApplyBusyRef.current = false;
       }
     })();
-  }, [commitShapes, edgeModifier, flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync, shapes]);
+  }, [edgeModifier, finishStepEdit, invalidateCadModifierSession, postCadModifierRequestAsync]);
 
   useEffect(() => {
     if (!edgeModifier) return;
@@ -8787,6 +9120,7 @@ export function SketchForgeEditor({
         faceId,
         distance,
         quality: modifierPreviewQualityForDisplay(workspaceSettingsRef.current.displayQuality),
+        matchTriangles: storedTriangleCount(cadModifierBaseShapeRef.current),
       });
       if (requestId === null) {
         setPushPullSession((current) => current ? { ...current, busy: false, error: cadModifierWorkerFailureMessage() } : current);
@@ -8815,17 +9149,15 @@ export function SketchForgeEditor({
       return;
     }
     const settings = shellSessionRef.current;
+    // A hollow step reopened from the Parts tree was made on the part as it was before it.
+    const before = cadModifierEditBeforeRef.current ?? base;
     const hollowed = settings
-      ? withPartFeature(preview, base, hollowPartFeature(createLocalId("hollow"), settings, base))
+      ? withPartFeature(preview, before, hollowPartFeature(createLocalId("hollow"), settings, before))
       : preview;
-    commitShapes(
-      shapes.map((shape) => shape.id === base.id ? hollowed : shape),
-      base.id,
-      "Hollowed",
-    );
-    flashCadApply(base.id);
+    const finished = finishStepEdit(base.id, hollowed, cadModifierEditBeforeRef.current ? "Updated hollow" : "Hollowed");
     invalidateCadModifierSession();
-  }, [commitShapes, flashCadApply, invalidateCadModifierSession, shellSession?.preview, shapes]);
+    void finished;
+  }, [finishStepEdit, invalidateCadModifierSession, shellSession?.preview]);
 
   const applyPushPull = useCallback((distanceOverride?: number) => {
     const base = cadModifierBaseShapeRef.current;
@@ -8838,7 +9170,9 @@ export function SketchForgeEditor({
     }
     const preview = session.preview;
     if (!preview) {
-      setNotice("Wait for a Push Pull preview before applying");
+      // Pressed while the preview is still building: apply it as soon as it is ready.
+      if (session.error) setNotice(session.error);
+      else setPushPullSession((current) => current ? { ...current, applyQueued: distance } : current);
       return;
     }
     if (cadApplyBusyRef.current) return;
@@ -8846,16 +9180,14 @@ export function SketchForgeEditor({
     setPushPullSession((current) => current ? { ...current, busy: true } : current);
     const pushedFace = session.faces.find((face) => face.id === session.selectedFaceId);
     const finish = (exact: WorkplaneShape) => {
+      // A push or pull reopened from the Parts tree was made on the part as it was before it.
+      const before = cadModifierEditBeforeRef.current ?? base;
       const recorded = pushedFace
-        ? withPartFeature(exact, base, pushPullPartFeature(createLocalId("push-pull"), pushedFace, distance, session.faces))
+        ? withPartFeature(exact, before, pushPullPartFeature(createLocalId("push-pull"), pushedFace, distance, session.faces))
         : exact;
-      commitShapes(
-        shapesRef.current.map((shape) => shape.id === base.id ? recorded : shape),
-        base.id,
-        pushPullHistoryLabel(distance, workspaceSettingsRef.current.accuracy),
-      );
-      flashCadApply(base.id);
+      const finished = finishStepEdit(base.id, recorded, pushPullHistoryLabel(distance, workspaceSettingsRef.current.accuracy));
       invalidateCadModifierSession();
+      void finished;
     };
     void (async () => {
       try {
@@ -8879,7 +9211,7 @@ export function SketchForgeEditor({
         cadApplyBusyRef.current = false;
       }
     })();
-  }, [commitShapes, flashCadApply, invalidateCadModifierSession, postCadModifierRequestAsync]);
+  }, [finishStepEdit, invalidateCadModifierSession, postCadModifierRequestAsync]);
 
   const playPushPullSettle = useCallback((distance: number) => {
     const session = pushPullSessionRef.current;
@@ -8906,6 +9238,19 @@ export function SketchForgeEditor({
     };
     window.requestAnimationFrame(tick);
   }, [applyPushPull]);
+
+  // A queued Apply runs once the preview for that same distance lands; a new distance or an error drops it.
+  useEffect(() => {
+    const queued = pushPullSession?.applyQueued;
+    if (queued === undefined || !pushPullSession) return;
+    if (pushPullSession.error || Math.abs(queued - pushPullSession.distance) > 1e-9) {
+      setPushPullSession((current) => current ? { ...current, applyQueued: undefined } : current);
+      return;
+    }
+    if (!pushPullSession.preview || pushPullSession.busy) return;
+    setPushPullSession((current) => current ? { ...current, applyQueued: undefined } : current);
+    playPushPullSettle(queued);
+  }, [playPushPullSettle, pushPullSession]);
 
   useEffect(() => {
     if (!pushPullSession) return;
@@ -8993,8 +9338,44 @@ export function SketchForgeEditor({
           parts.map((part) => part.id),
           session.joint === "none" ? "Split" : "Cut to fit",
         );
-        flashCadApply(parts.map((part) => part.id), undefined, "separate");
         setSplitSession(null);
+        const laid = session.layFlat && session.joint === "none"
+          ? splitPiecesCutSideDown(shape, { axis: session.axis, offset: session.offset }, parts)
+          : [];
+        if (laid.length !== parts.length) {
+          flashCadApply(parts.map((part) => part.id), undefined, "separate");
+          return;
+        }
+        // The pieces rise, turn cut face down and settle apart; one more step, so Undo first
+        // puts them back as they were cut.
+        const ids = parts.map((part) => part.id);
+        const commitLaid = () => {
+          const poses = new Map(laid.map((entry) => [entry.id, entry.pose]));
+          commitShapes(
+            shapesRef.current.map((entry) => {
+              const pose = poses.get(entry.id);
+              return pose && !entry.locked ? { ...entry, ...pose } : entry;
+            }),
+            ids,
+            "Laid pieces cut-side down",
+          );
+          flashCadApply(ids, undefined, "separate");
+          setNotice("Split, and laid each piece cut-side down");
+        };
+        // Wait for the pieces to be drawn before moving them.
+        window.setTimeout(() => {
+          const motion = faceSnapMotionRef.current;
+          if (!motion) {
+            commitLaid();
+            return;
+          }
+          let left = laid.length;
+          const lift = Math.max(6, Math.min(30, shape.height * 0.6));
+          laid.forEach((entry) => motion(entry.id, entry.pose, () => {
+            left -= 1;
+            if (left === 0) commitLaid();
+          }, { durationMs: 650, liftMm: lift }));
+        }, 160);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not split that object");
       } finally {
@@ -9202,11 +9583,15 @@ export function SketchForgeEditor({
         setNotice(shape?.locked ? "That shape is locked" : "Click a shape");
         return;
       }
-      const pose = layFaceOnWorkplane(shape, pick);
-      if (!pose) {
+      const facePose = layFaceOnWorkplane(shape, pick);
+      if (!facePose) {
         setNotice("Could not lay that face down");
         return;
       }
+      // An inside face of a U or hollow part has the rest of the part below it once it points
+      // down. Rest the part on its lowest point so nothing goes through the workplane.
+      const sunk = meshAabb({ ...shape, ...facePose }).minY;
+      const pose = sunk < -0.01 ? { ...facePose, elevation: Number((facePose.elevation - sunk).toFixed(6)) } : facePose;
       const finish = () => {
         commitShapes(
           shapesRef.current.map((item) => item.id === shape.id && !item.locked ? { ...item, ...pose } : item),
@@ -9354,8 +9739,9 @@ export function SketchForgeEditor({
             commitShapes(
               shapesRef.current.filter((shape) => shape.id !== host.id && shape.id !== holeShape.id),
               null,
-              "Hole consumed the host solid",
+              "Hole used up the part",
             );
+            setNotice("The hole covered the whole part, so nothing is left. Press Ctrl+Z to undo.");
             return;
           }
           setNotice(result.failureNotice);
@@ -9632,7 +10018,8 @@ export function SketchForgeEditor({
     if (!group) {
       if (result.consumed) {
         const selected = new Set(selectedIds);
-        commitShapes(shapesRef.current.filter((shape) => !selected.has(shape.id)), null, "Grouped: hole consumed solid");
+        commitShapes(shapesRef.current.filter((shape) => !selected.has(shape.id)), null, "Grouped: hole used up the solid");
+        setNotice("The hole covered the whole solid, so nothing is left. Press Ctrl+Z to undo.");
         return;
       }
       setNotice(result.failureNotice);
@@ -10013,12 +10400,20 @@ export function SketchForgeEditor({
 
       if (command.action === "delete_objects") {
         const requestedIds = mcpStringArray(params.ids ?? params.id);
-        const ids = requestedIds.length ? new Set(requestedIds) : new Set(selectedIdsRef.current);
-        const deleted = currentShapes().filter((shape) => ids.has(shape.id));
-        if (deleted.length === 0) throw new Error("No matching objects to delete");
-        commitShapes(currentShapes().filter((shape) => !ids.has(shape.id)), [], `MCP deleted ${deleted.length} object${deleted.length === 1 ? "" : "s"}`);
+        const ids = requestedIds.length ? requestedIds : selectedIdsRef.current;
+        const { remaining, removedIds, lockedIds } = planShapeDelete(currentShapes(), ids);
+        if (removedIds.length === 0) {
+          throw new Error(lockedIds.length ? "Unlock the object before deleting it" : "No matching objects to delete");
+        }
+        commitShapes(
+          remaining,
+          [],
+          lockedIds.length
+            ? `MCP deleted ${removedIds.length} object${removedIds.length === 1 ? "" : "s"} (${lockedIds.length} locked kept)`
+            : `MCP deleted ${removedIds.length} object${removedIds.length === 1 ? "" : "s"}`,
+        );
         selectedIdsRef.current = [];
-        return { deletedIds: deleted.map((shape) => shape.id), deletedCount: deleted.length };
+        return { deletedIds: removedIds, deletedCount: removedIds.length, lockedKeptIds: lockedIds };
       }
 
       if (command.action === "create_shape") {
@@ -10038,8 +10433,11 @@ export function SketchForgeEditor({
             ? params.hostShapeId.trim()
             : undefined;
           const host = hostShapeId
-            ? currentShapes().find((entry) => entry.id === hostShapeId && !entry.hole && !entry.hidden)
+            ? currentShapes().find((entry) => entry.id === hostShapeId && !entry.hole && !entry.hidden && !entry.locked)
             : undefined;
+          if (!host && hostShapeId && findShape(hostShapeId)?.locked) {
+            throw new Error("Unlock the host object before sketching on it");
+          }
           // Bake on the host top face when hosted so hole auto-cut overlaps the solid.
           const hostPlane = host
             ? {
@@ -10243,7 +10641,7 @@ export function SketchForgeEditor({
 
         const nextShapes = currentShapes().map((shape) => {
           if (shape.id !== target.id) return shape;
-          const patched = { ...shape, ...cleanShapePatch(patch) };
+          const patched = { ...shape, ...cleanShapePatch(clampShapeSizePatch(patch)) };
           const width = shapeWidth(patched);
           const depth = shapeDepth(patched);
           const sized = { ...patched, size: Math.max(width, depth) };
@@ -10290,10 +10688,10 @@ export function SketchForgeEditor({
       }
 
       if (command.action === "group_objects") {
-        const ids = new Set(mcpStringArray(params.ids));
-        const groupable = currentShapes().filter((shape) => ids.has(shape.id));
-        if (groupable.length < 2) throw new Error("Select at least two objects to group");
+        const groupable = groupableShapes(currentShapes(), mcpStringArray(params.ids));
+        if (groupable.length < 2) throw new Error("Select at least two solids to group (construction planes stay out of Group)");
         if (groupable.some((shape) => shape.locked)) throw new Error("Unlock every selected object before grouping");
+        const operandIds = new Set(groupable.map((shape) => shape.id));
         const sourceFingerprint = projectShapesFingerprint(currentShapes());
         const sourceProjectId = projectInfoRef.current.projectId;
         const result = await buildGroupedShapeFromSelection(groupable);
@@ -10302,16 +10700,20 @@ export function SketchForgeEditor({
         }
         if (!result.group) {
           if (result.consumed) {
-            commitShapes(currentShapes().filter((shape) => !ids.has(shape.id)), null, "MCP group consumed solid");
-            return { consumed: true, objects: currentShapes().filter((shape) => !ids.has(shape.id)).map(mcpShapeSummary) };
+            const kept = currentShapes().filter((shape) => !operandIds.has(shape.id));
+            commitShapes(kept, null, "MCP group consumed solid");
+            return { consumed: true, objects: kept.map(mcpShapeSummary) };
           }
           throw new Error(result.failureNotice);
         }
-        const leftOutIds = new Set((result.leftOutShapes ?? []).map((shape) => shape.id));
-        const groupedIds = new Set(groupable.filter((shape) => !leftOutIds.has(shape.id)).map((shape) => shape.id));
-        commitShapes([...currentShapes().filter((shape) => !groupedIds.has(shape.id)), result.group], result.group.id, `MCP grouped ${groupedIds.size} objects`);
-        flashCadApply(result.group.id, undefined, "combine");
-        return { object: mcpShapeSummary(result.group) };
+        const { next, linkedGroup, groupedIds } = placeGroupedShape(currentShapes(), groupable, result.group, result.leftOutShapes);
+        commitShapes(next, linkedGroup.id, `MCP grouped ${groupedIds.size} objects`);
+        flashCadApply(linkedGroup.id, undefined, "combine");
+        if (result.qualityNotice) setNotice(result.qualityNotice);
+        return {
+          object: mcpShapeSummary(linkedGroup),
+          ...(result.qualityNotice ? { qualityNotice: result.qualityNotice } : {}),
+        };
       }
 
       if (command.action === "ungroup_objects") {
@@ -10335,8 +10737,7 @@ export function SketchForgeEditor({
       }
 
       if (command.action === "tie_objects") {
-        const ids = new Set(mcpStringArray(params.ids));
-        const groupable = currentShapes().filter((shape) => ids.has(shape.id) && !isConstructionShape(shape));
+        const groupable = groupableShapes(currentShapes(), mcpStringArray(params.ids));
         if (groupable.length < 2) throw new Error("Select at least two objects to tie");
         if (groupable.some((shape) => shape.locked)) throw new Error("Unlock every object before tying");
         const assembly = groupedShape(groupable);
@@ -10346,8 +10747,9 @@ export function SketchForgeEditor({
           const child = linked.groupedShapes?.[index];
           if (child) linked = rewriteSketchHostIds(linked, shape.id, child.id);
         });
+        const tiedIds = new Set(groupable.map((shape) => shape.id));
         commitShapes(
-          [...currentShapes().filter((shape) => !ids.has(shape.id)), linked],
+          [...currentShapes().filter((shape) => !tiedIds.has(shape.id)), linked],
           linked.id,
           `Tied ${groupable.length} shapes`,
         );
@@ -10367,7 +10769,8 @@ export function SketchForgeEditor({
         if (projectInfoRef.current.projectId !== sourceProjectId || projectShapesFingerprint(currentShapes()) !== sourceFingerprint) {
           throw new Error("The scene changed while intersecting; run the command again");
         }
-        const remaining = currentShapes().filter((shape) => !ids.has(shape.id));
+        const operandIds = new Set(groupable.map((shape) => shape.id));
+        const remaining = currentShapes().filter((shape) => !operandIds.has(shape.id));
         if (result.empty || !result.group) {
           if (result.empty) {
             commitShapes(remaining, null, "Intersection is empty");
@@ -10395,6 +10798,7 @@ export function SketchForgeEditor({
         const ids = mcpStringArray(params.ids ?? params.id);
         const sources = currentShapes().filter((shape) => ids.includes(shape.id) && !shape.locked && !isConstructionShape(shape));
         if (sources.length === 0) throw new Error("Choose at least one unlocked object");
+        if (sources.some((shape) => shape.patternFeature)) throw new Error("One of those objects is already part of a pattern. Dissolve that pattern first.");
         const center = typeof params.centerX === "number" && typeof params.centerZ === "number"
           ? { x: params.centerX, z: params.centerZ }
           : defaultCircularPatternCenter(sources);
@@ -10429,6 +10833,7 @@ export function SketchForgeEditor({
         const ids = mcpStringArray(params.ids ?? params.id);
         const sources = currentShapes().filter((shape) => ids.includes(shape.id) && !shape.locked && !isConstructionShape(shape));
         if (sources.length === 0) throw new Error("Choose at least one unlocked object");
+        if (sources.some((shape) => shape.patternFeature)) throw new Error("One of those objects is already part of a pattern. Dissolve that pattern first.");
         const session = {
           countX: clampLinearPatternCount(mcpNumber(params.countX, LINEAR_PATTERN_DEFAULT_COUNT_X)),
           countZ: clampLinearPatternCount(mcpNumber(params.countZ, LINEAR_PATTERN_DEFAULT_COUNT_Z)),
@@ -10461,7 +10866,7 @@ export function SketchForgeEditor({
         const ids = mcpStringArray(params.ids ?? params.id);
         const sources = currentShapes().filter((shape) => (ids.length ? ids.includes(shape.id) : selectedIdsRef.current.includes(shape.id)));
         if (sources.length === 0) throw new Error("Choose at least one object to duplicate");
-        const duplicates = sources.map((shape) => createDuplicateForRepeat(shape, createLocalId(`${shape.id}-copy`)));
+        const duplicates = sources.map((shape) => duplicateShapeWithFreshIds(shape, createLocalId(`${shape.id}-copy`)));
         commitShapes(
           [...currentShapes(), ...duplicates],
           duplicates.map((shape) => shape.id),
@@ -10475,26 +10880,24 @@ export function SketchForgeEditor({
         const chosen = new Set(ids.length ? ids : selectedIdsRef.current);
         if (chosen.size === 0) throw new Error("Choose at least one object");
         const hidden = typeof params.hidden === "boolean" ? params.hidden : true;
-        commitShapes(
-          currentShapes().map((shape) => chosen.has(shape.id) && !shape.locked ? { ...shape, hidden } : shape),
-          [...chosen],
-          hidden ? "Hidden by a model" : "Shown by a model",
-        );
-        return { hidden, ids: [...chosen] };
+        const { next, changedIds, nextSelected } = planShapeVisibility(currentShapes(), chosen, hidden, selectedIdsRef.current);
+        if (changedIds.length === 0) return { hidden, ids: [] };
+        commitShapes(next, nextSelected, hidden ? "Hidden by a model" : "Shown by a model");
+        selectedIdsRef.current = nextSelected;
+        return { hidden, ids: changedIds };
       }
 
       if (command.action === "drop_objects") {
         const ids = mcpStringArray(params.ids ?? params.id);
         const chosen = new Set(ids.length ? ids : selectedIdsRef.current);
         if (chosen.size === 0) throw new Error("Choose at least one object");
-        commitShapes(
-          currentShapes().map((shape) => chosen.has(shape.id) && !shape.locked
-            ? { ...shape, ...dropPatchOntoFrame(shape, meshAabb(shape)) }
-            : shape),
-          [...chosen],
-          "Dropped onto the workplane",
-        );
-        return { ids: [...chosen] };
+        const { next, changedIds } = changeUnlockedShapes(currentShapes(), chosen, (shape) => {
+          const patch = dropPatchOntoFrame(shape, meshAabb(shape));
+          return Math.abs((patch.elevation ?? 0) - (shape.elevation ?? 0)) > 1e-6 ? { ...shape, ...patch } : null;
+        });
+        if (changedIds.length === 0) return { ids: [] };
+        commitShapes(next, [...chosen], "Dropped onto the workplane");
+        return { ids: changedIds };
       }
 
       if (command.action === "undo" || command.action === "redo") {
@@ -10531,17 +10934,18 @@ export function SketchForgeEditor({
           : selectedIdsRef.current.length
             ? currentShapes().filter((shape) => selectedIdsRef.current.includes(shape.id))
             : currentShapes()
-        ).filter((shape) => !shape.hole && !isConstructionShape(shape));
+        ).filter((shape) => !shape.hole && !shape.hidden && !isConstructionShape(shape));
         if (source.length === 0) throw new Error("Nothing to export");
         const fileName = projectExportFileName(projectInfoRef.current.projectName, format);
+        // Files leave at full smoothness, whatever the view is set to draw.
         if (format === "3mf") {
           await ensureSurfaceTextures(source);
-          const exported = to3mfForShapes(source);
+          const exported = withDisplayQuality("smooth", () => to3mfForShapes(source));
           await downloadBlobFile(fileName, exported.bytes, "model/3mf");
           return { fileName, format, count: source.length };
         }
         await ensureSurfaceTextures(source);
-        const meshes = source.map(printMeshForShape);
+        const meshes = withDisplayQuality("smooth", () => source.map(printMeshForShape));
         if (format === "obj") {
           await downloadTextFile(fileName, toObj(meshes), "text/plain");
         } else {
@@ -10605,6 +11009,8 @@ export function SketchForgeEditor({
       if (command.action === "apply_edge_treatment") {
         const target = findShape(params.id);
         if (!target) throw new Error("Object not found");
+        if (target.locked) throw new Error("Unlock the object before rounding or chamfering its edges");
+        if (target.hole) throw new Error("Fillet and chamfer work on solids, not holes");
         return applyCadModifierForMcp(target, params);
       }
 
@@ -10823,8 +11229,11 @@ export function SketchForgeEditor({
         });
         const profile = composeSketchProfile(parts);
         const host = typeof params.hostShapeId === "string"
-          ? currentShapes().find((shape) => shape.id === params.hostShapeId && !shape.hole && !shape.hidden)
+          ? currentShapes().find((shape) => shape.id === params.hostShapeId && !shape.hole && !shape.hidden && !shape.locked)
           : undefined;
+        if (!host && typeof params.hostShapeId === "string" && findShape(params.hostShapeId)?.locked) {
+          throw new Error("Unlock the host object before sketching on it");
+        }
         const faceName = typeof params.face === "string" && (SHELL_SIDES as readonly string[]).includes(params.face)
           ? params.face as ShellSide
           : host ? "top" as const : null;
@@ -11351,6 +11760,9 @@ export function SketchForgeEditor({
   const [boxMakerOpen, setBoxMakerOpen] = useState(false);
   const [traceLogoOpen, setTraceLogoOpen] = useState(false);
   const [tracePhotoOpen, setTracePhotoOpen] = useState(false);
+  const [sendToLaserOpen, setSendToLaserOpen] = useState(false);
+  const [laserUpdateBusy, setLaserUpdateBusy] = useState(false);
+  const laserArrivalRef = useRef(false);
   const [flatPartsTarget, setFlatPartsTarget] = useState<{ id: string; name: string; size: { width: number; depth: number; height: number } } | null>(null);
 
   /** Box maker: every panel as a flat sketch part, laid out apart on the workplane and selected together. */
@@ -11611,20 +12023,10 @@ export function SketchForgeEditor({
       const made: WorkplaneShape[] = [];
       for (const placement of result.placements) {
         const part = parts[Number(placement.id)];
-        const toBed = (point: readonly [number, number]) => placePoint(lying(point, part.height), placement);
-        const points: SketchProfile["points"] = [];
-        const segments: SketchProfile["segments"] = [];
-        for (const polygon of part.polygons) {
-          const ids = polygon.map(() => createLocalId("flat-point"));
-          polygon.forEach((point, index) => {
-            const [x, z] = toBed(point);
-            // A sketch's z runs the other way to the workplane's.
-            points.push({ id: ids[index], x, z: -z, mode: "corner" });
-          });
-          ids.forEach((id, index) => segments.push({ id: createLocalId("flat-edge"), startId: id, endId: ids[(index + 1) % ids.length], kind: "line" }));
-        }
-        const shape = shapeFromSketchProfile({ points, segments, images: [] }, thickness);
-        if (shape) made.push(canonicalizeShape({ ...shape, id: createLocalId("flat-part"), name: `${source.name} · ${part.name}`, color: BOX_PANEL_COLOR }));
+        const loops = part.polygons.map((polygon) => polygon.map((point) => placePoint(lying(point, part.height), placement)));
+        // Each solid piece gets its own region, so an island inside a hole stays solid.
+        const shape = sheetPartFromLoops(loops, thickness, { name: `${source.name} · ${part.name}`, color: BOX_PANEL_COLOR });
+        if (shape) made.push({ ...shape, id: createLocalId("flat-part") });
       }
       if (made.length === 0) {
         setNotice("Could not make the flat parts");
@@ -11641,6 +12043,144 @@ export function SketchForgeEditor({
       setNotice(`Could not slice ${source.name}. It needs to be one closed solid; try Combine first.`);
     }
   }, [clearOfOtherParts, commitShapes]);
+
+  /** The sheet the laser design cuts from, for making sent parts. */
+  const laserSheet = useCallback(() => {
+    const settings = workspaceSettingsRef.current;
+    return { thickness: settings.materialThickness, bedWidth: settings.laserWidth, bedDepth: settings.laserDepth, gap: settings.nestGapMm };
+  }, []);
+
+  /** Send to laser: hands the selected parts (or every part) to a laser design, which makes them into sheet parts. */
+  const sendToLaser = useCallback(async (choice: SendToLaserChoice) => {
+    setSendToLaserOpen(false);
+    const sources = sendableShapes(selectedIdsRef.current.length > 0
+      ? shapesRef.current.filter((shape) => selectedIdsRef.current.includes(shape.id))
+      : shapesRef.current);
+    if (sources.length === 0 || !onSendToLaser || !projectId) {
+      setNotice("Add a part to send to the laser");
+      return;
+    }
+    // Save this design first, so the laser parts link to the model as it is now.
+    flushProjectShapesSync();
+    const sent = pendingLaserShapes(sources, {
+      designId: projectId,
+      designName: projectName,
+      mode: choice.mode,
+      across: choice.mode === "interlock" ? choice.across : undefined,
+      along: choice.mode === "interlock" ? choice.along : undefined,
+      // Never older than the design's own revision, or the laser parts would read as changed at once.
+      revision: Math.max(Date.now(), designRevision?.(projectId) ?? 0),
+    });
+    await onSendToLaser(choice.target, projectName, sent);
+  }, [designRevision, flushProjectShapesSync, onSendToLaser, projectId, projectName]);
+
+  // Parts sent from a 3D design arrive as they are; a laser design makes them into sheet parts
+  // with its own material and bed. This is not an undo step: the design opens with them made.
+  useEffect(() => {
+    if (!laserDesignOpen || laserArrivalRef.current) return;
+    if (!shapes.some((shape) => shape.laserLink?.pending)) return;
+    laserArrivalRef.current = true;
+    void (async () => {
+      try {
+        const runtime = await getManifoldRuntime();
+        const current = shapesRef.current;
+        const pending = current.filter((shape) => shape.laserLink?.pending);
+        const rest = current.filter((shape) => !shape.laserLink?.pending);
+        const made: WorkplaneShape[] = [];
+        const skipped: string[] = [];
+        let sheets = 0;
+        let from = "";
+        for (const batch of laserBatches(pending).values()) {
+          const result = makeLaserParts(runtime, batch, laserSheet(), { color: BOX_PANEL_COLOR });
+          from = batch[0].laserLink?.designName ?? from;
+          skipped.push(...result.skipped);
+          sheets = Math.max(sheets, result.sheets);
+          const mode = batch[0].laserLink?.mode;
+          // Flat parts are already packed on the bed; the others go to its middle.
+          made.push(...(mode === "stack" || mode === "interlock" ? result.shapes : centreShapesAt(result.shapes, 0, 0)));
+        }
+        shapesRef.current = rest;
+        const placed = clearOfOtherParts(made);
+        const next = [...rest, ...placed].map(canonicalizeShape);
+        const ids = placed.map((shape) => shape.id);
+        shapesRef.current = next;
+        selectedIdsRef.current = ids;
+        setShapes(next);
+        setSelectedIds(ids);
+        const entries = historyRef.current;
+        const index = historyIndexRef.current;
+        if (entries[index]) {
+          const nextEntries = entries.slice();
+          nextEntries[index] = editorHistoryEntry(next, ids);
+          historyRef.current = nextEntries;
+          setHistory(nextEntries);
+        }
+        syncProjectShapes(next);
+        const left = skipped.length > 0 ? ` ${skipped.join(", ")} had nothing to cut from above and ${skipped.length === 1 ? "was" : "were"} left out.` : "";
+        const more = sheets > 1 ? ` They need ${sheets} sheets; the rest are laid out beside the bed.` : "";
+        setNotice(placed.length > 0
+          ? `Made ${placed.length} laser part${placed.length === 1 ? "" : "s"} from ${from}.${more}${left}`
+          : `Nothing from ${from} could be made into laser parts.${left}`);
+      } catch {
+        setNotice("Could not make the laser parts. Open the 3D design and check the parts are closed solids.");
+      } finally {
+        laserArrivalRef.current = false;
+      }
+    })();
+  }, [clearOfOtherParts, laserDesignOpen, laserSheet, shapes, syncProjectShapes]);
+
+  /** Update from model: makes a send's laser parts again from the 3D design as it is now, where they were. */
+  const updateLaserPartsFromModel = useCallback(async (batch: string) => {
+    const linked = shapesRef.current.filter((shape) => shape.laserLink?.batch === batch);
+    const link = linked[0]?.laserLink;
+    if (!link || !onLoadDesignForLaser || laserUpdateBusy) return;
+    setLaserUpdateBusy(true);
+    try {
+      const design = await onLoadDesignForLaser(link.designId);
+      if (!design) {
+        setNotice(`Could not find ${link.designName}. It may have been deleted.`);
+        return;
+      }
+      const { found, missing } = sourcesForUpdate(link, design.shapes);
+      if (found.length === 0) {
+        setNotice(`The parts sent from ${design.name} are no longer in it.`);
+        return;
+      }
+      const runtime = await getManifoldRuntime();
+      const sourceIds = found.map((shape) => shape.id);
+      const sources = found.map((shape) => ({ ...shape, laserLink: { ...link, designName: design.name, sourceIds, revision: design.revision, pending: true } }));
+      const result = makeLaserParts(runtime, sources, laserSheet(), { color: linked[0].color, previous: linked });
+      if (result.shapes.length === 0) {
+        setNotice(`Nothing from ${design.name} could be made into laser parts.`);
+        return;
+      }
+      const centre = shapesCentre(linked);
+      const made = centreShapesAt(result.shapes, centre.x, centre.z);
+      const firstIndex = shapesRef.current.findIndex((shape) => shape.laserLink?.batch === batch);
+      const rest = shapesRef.current.filter((shape) => shape.laserLink?.batch !== batch);
+      const next = [...rest.slice(0, firstIndex), ...made, ...rest.slice(firstIndex)];
+      const gone = missing > 0 ? ` ${missing} part${missing === 1 ? " is" : "s are"} no longer in the model and ${missing === 1 ? "was" : "were"} left out.` : "";
+      commitShapes(next, made.map((shape) => shape.id), `Updated ${made.length} part${made.length === 1 ? "" : "s"} from ${design.name}.${gone}`);
+    } catch {
+      setNotice(`Could not update from ${link.designName}.`);
+    } finally {
+      setLaserUpdateBusy(false);
+    }
+  }, [commitShapes, laserSheet, laserUpdateBusy, onLoadDesignForLaser]);
+
+  /** The selected laser part's model, for the inspector's Update from model. */
+  const laserSourceInfo = useMemo(() => {
+    const link = laserDesignOpen && selectedShapes.length >= 1 ? selectedShapes[0].laserLink : undefined;
+    if (!link || link.pending || !onLoadDesignForLaser) return null;
+    const latest = designRevision?.(link.designId);
+    return {
+      designName: link.designName,
+      missing: latest === null,
+      changed: typeof latest === "number" && latest > link.revision,
+      busy: laserUpdateBusy,
+      onUpdate: () => void updateLaserPartsFromModel(link.batch),
+    };
+  }, [designRevision, laserDesignOpen, laserUpdateBusy, onLoadDesignForLaser, selectedShapes, updateLaserPartsFromModel]);
 
   /**
    * Nest: packs the parts on the laser bed by their real outlines, the gap from the
@@ -11684,7 +12224,19 @@ export function SketchForgeEditor({
       loops: group.loops,
       canTurn: group.members.every((member) => upright(outlined[member].shape)),
     }));
-    const result = nestOutlines(runtime, items, { width: settings.laserWidth, depth: settings.laserDepth }, gap);
+    // Parts left out of the nest (not chosen, or locked) stay put, so the nest keeps clear of them.
+    const moving = new Set(source.map((shape) => shape.id));
+    const obstacles: [number, number][][][] = [];
+    for (const shape of shapesRef.current) {
+      if (moving.has(shape.id) || shape.hole || shape.hidden || isConstructionShape(shape)) continue;
+      try {
+        const loops = footprintOutline(runtime, meshForShape(shape));
+        if (loops.length > 0) obstacles.push(loops);
+      } catch {
+        // No outline from above: nothing to keep clear of.
+      }
+    }
+    const result = nestOutlines(runtime, items, { width: settings.laserWidth, depth: settings.laserDepth }, gap, { obstacles });
     const moves = new Map<string, (typeof result.placements)[number]>();
     for (const placement of result.placements) {
       for (const member of groups[Number(placement.id)].members) moves.set(outlined[member].shape.id, placement);
@@ -11985,12 +12537,11 @@ export function SketchForgeEditor({
       setMenuOpen(false);
       return;
     }
-    const copies = shapes.map((shape) => ({
-      ...shape,
-      id: createLocalId(`${shape.id}-copy`),
-      x: Math.min(110, shape.x + 12),
-      z: Math.min(110, shape.z + 12),
-    }));
+    // Fresh ids inside each part too, as Ctrl+D does: shared child or sketch ids tangled the copies.
+    const copies = shapes.map((shape) => {
+      const copy = duplicateShapeWithFreshIds(shape, createLocalId(`${shape.id}-copy`));
+      return { ...copy, x: shape.x + 12, z: shape.z + 12 };
+    });
     commitShapes([...shapes, ...copies], copies.map((shape) => shape.id), "Made a copy of the design");
     setMenuOpen(false);
   }, [commitShapes, shapes]);
@@ -12161,6 +12712,335 @@ export function SketchForgeEditor({
     });
   }, [circularPattern, linearPattern]);
 
+  /** The Parts tree: select a part inside a group, as Alt-click in the view does. */
+  const selectTreeChild = useCallback((bodyId: string, childId: string) => {
+    selectShape(bodyId);
+    setActiveFeatureId(childId);
+  }, [selectShape]);
+
+  /** The Parts tree: rename a part inside a group. A name changes no geometry, so nothing rebuilds. */
+  const renameChildInTree = useCallback((bodyId: string, childId: string, name: string) => {
+    const body = shapesRef.current.find((entry) => entry.id === bodyId);
+    const child = body ? findShapeInTree(body.groupedShapes ?? [], childId) : null;
+    if (!body || !child) return;
+    if (child.locked) {
+      setNotice(`“${child.name}” is locked`);
+      return;
+    }
+    const next = replaceLeafInCsgTree(body, childId, { ...child, name }, { markDirty: false });
+    commitShapes(
+      shapesRef.current.map((entry) => (entry.id === bodyId ? next : entry)),
+      selectedIdsRef.current,
+      `Renamed ${child.name || child.kind} to ${name}`,
+    );
+  }, [commitShapes]);
+
+  /** The words for a step row in the Parts tree, in the design's units. The rail is narrow, so the edges are left to the tooltip. */
+  const treeStepLabel = useCallback((step: PartFeature) => partFeatureShortLabel(
+    step,
+    (mm) => `${formatMeasurementNumber(millimetersToDisplay(mm, workspaceSettings), workspaceSettings.accuracy)} ${lengthDisplayUnit(workspaceSettings).label}`,
+  ), [workspaceSettings]);
+
+  /** A tool is open on a part, so its steps and groups must not rebuild under it. */
+  const treeToolOpen = Boolean(edgeModifier || shellSession || pushPullSession || faceSession);
+
+  /** A step picked in the Parts tree to open, once its part is the one selected. */
+  const [pendingStepOpen, setPendingStepOpen] = useState<{ bodyId: string; stepId: string } | null>(null);
+  useEffect(() => {
+    if (!pendingStepOpen) return;
+    if (selectedShapes.length !== 1 || selectedShape?.id !== pendingStepOpen.bodyId) return;
+    setPendingStepOpen(null);
+    const step = selectedShape.features?.find((entry) => entry.id === pendingStepOpen.stepId);
+    if (!step) return;
+    if (step.kind === "hollow") void startShell({ step });
+    else if (step.kind === "pushPull") void startPushPull({ step });
+    else void startEdgeModifier(step.kind, undefined, step.id);
+  }, [pendingStepOpen, selectedShape, selectedShapes.length, startEdgeModifier, startPushPull, startShell]);
+
+  /** The Parts tree: open a step in its tool, on the part as it was just before that step. */
+  const openPartStep = useCallback((bodyId: string, stepId: string) => {
+    const body = shapesRef.current.find((entry) => entry.id === bodyId);
+    const step = body?.features?.find((entry) => entry.id === stepId);
+    if (!body || !step) return;
+    if (body.locked) {
+      setNotice(`“${body.name}” is locked`);
+      return;
+    }
+    if (!stepsReplaceSnapshots(body)) {
+      setNotice("This part's steps were made before Mintr recorded them, so they cannot be reopened.");
+      return;
+    }
+    setStepPreview(null);
+    setActiveFeatureId(null);
+    selectShape(bodyId);
+    setPendingStepOpen({ bodyId, stepId });
+  }, [selectShape]);
+
+  /** The Parts tree: leave a step out of its part, or put it back. */
+  const togglePartStepInBody = useCallback((bodyId: string, stepId: string) => {
+    const body = shapesRef.current.find((entry) => entry.id === bodyId);
+    const step = body?.features?.find((entry) => entry.id === stepId);
+    if (!body || !step) return;
+    if (body.locked) {
+      setNotice(`“${body.name}” is locked`);
+      return;
+    }
+    setStepPreview(null);
+    void changePartSteps(
+      bodyId,
+      (features) => features.map((feature) => (feature.id === stepId ? { ...feature, suppressed: !feature.suppressed || undefined } : feature)),
+      `${step.suppressed ? "Put back" : "Left out"} ${partFeatureLabel(step)}`,
+    );
+  }, [changePartSteps]);
+
+  /** The Parts tree: take the part back to just before a step, dropping it and every step after it. */
+  const removePartStepsFrom = useCallback((bodyId: string, stepId: string) => {
+    const body = shapesRef.current.find((entry) => entry.id === bodyId);
+    const step = body?.features?.find((entry) => entry.id === stepId);
+    if (!body?.features || !step) return;
+    if (body.locked) {
+      setNotice(`“${body.name}” is locked`);
+      return;
+    }
+    const removed = body.features.length - partStepsBefore(body.features, stepId).length;
+    setStepPreview(null);
+    void changePartSteps(
+      bodyId,
+      (features) => partStepsBefore(features, stepId),
+      removed > 1 ? `Removed ${partFeatureLabel(step)} and ${removed - 1} later step${removed === 2 ? "" : "s"}` : `Removed ${partFeatureLabel(step)}`,
+    );
+  }, [changePartSteps]);
+
+  /** Pro, the Parts tree: move a step to a new place in its part's steps. The order only changes if every step still fits. */
+  const reorderPartStep = useCallback((bodyId: string, stepId: string, toIndex: number) => {
+    void (async () => {
+      const live = shapesRef.current.find((entry) => entry.id === bodyId);
+      const step = live?.features?.find((entry) => entry.id === stepId);
+      if (!live?.features?.length || !step) return;
+      if (live.locked) {
+        setNotice(`“${live.name}” is locked`);
+        return;
+      }
+      const features = reorderPartSteps(live.features, stepId, toIndex);
+      if (features.every((feature, index) => feature === live.features?.[index])) return;
+      setStepPreview(null);
+      let base = live.featureBase;
+      if (!base && live.groupedShapes?.length) {
+        base = (await remeshCsgGroup({ ...live, features: undefined, edgeTreatments: undefined, edgeTreatmentHistory: undefined })) ?? undefined;
+      }
+      if (!base) {
+        setNotice("This part does not have its starting shape stored, so its steps cannot be reordered.");
+        return;
+      }
+      await replayPartStepsRef.current(bodyId, features, `Moved ${partFeatureLabel(step)}`, base, { requireAllSteps: true });
+    })();
+  }, []);
+
+  /** Pro, the Parts tree: show a part as it was right after one of its steps, or all of it again. Only the view changes. */
+  const showUpToStep = useCallback((bodyId: string, stepId: string | null) => {
+    if (!stepId) {
+      setStepPreview(null);
+      setNotice("Showing every step again");
+      return;
+    }
+    const body = shapesRef.current.find((entry) => entry.id === bodyId);
+    const index = body?.features?.findIndex((entry) => entry.id === stepId) ?? -1;
+    if (!body?.features || index < 0) return;
+    const step = body.features[index];
+    if (index === body.features.length - 1) {
+      setStepPreview(null);
+      setNotice(`${partFeatureLabel(step)} is the last step, so this is the whole part`);
+      return;
+    }
+    void (async () => {
+      setNotice("Rebuilding the part up to that step…");
+      try {
+        const shown = await partWithStepsRef.current(body, index + 1);
+        if (shapesRef.current.find((entry) => entry.id === bodyId) !== body) return;
+        if (!shown) {
+          setNotice("Could not rebuild the part up to that step.");
+          return;
+        }
+        setStepPreview({ bodyId, stepId, shape: shown, fingerprint: projectShapesFingerprint([body]) });
+        const after = body.features ? body.features.length - index - 1 : 0;
+        setNotice(`Showing ${body.name} as it was after ${partFeatureLabel(step)}, without the ${after === 1 ? "step" : `${after} steps`} after it. Nothing has changed; pick “Show all steps” to see it whole again.`);
+      } catch (error) {
+        setNotice(error instanceof Error && error.message ? error.message : "Could not rebuild the part up to that step.");
+      }
+    })();
+  }, []);
+
+  /**
+   * Pro, the Parts tree: move a part into a group, or out of its group to the top level. The
+   * part keeps its place in the world either way, so nothing jumps. A group whose parts changed
+   * is rebuilt and its steps are replayed on the new shape; the result is one undo step.
+   */
+  const movePartInTree = useCallback((drop: TreeDrop) => {
+    if (drop.kind === "reorder-step") return;
+    if (treeToolOpen) {
+      setNotice("Finish the open tool first");
+      return;
+    }
+    void (async () => {
+      const all = shapesRef.current;
+      const sourceFingerprint = projectShapesFingerprint(all);
+      /** A part anywhere inside `body`, in its world pose. */
+      const worldPartIn = (body: WorkplaneShape, id: string): WorkplaneShape | null => {
+        for (const child of restoreGroupedChildren(body, { preserveIds: true })) {
+          if (child.id === id) return child;
+          if (child.groupedShapes?.length && csgTreeContainsId(child, id)) return worldPartIn(child, id);
+        }
+        return null;
+      };
+      /**
+       * A group with its parts changed, built again by `build` and with its steps replayed on
+       * the new shape. The new shape is where the pieces truly are, so it is not moved.
+       */
+      const rebuilt = async (body: WorkplaneShape, build: (stripped: WorkplaneShape) => Promise<WorkplaneShape | null>): Promise<{ shape: WorkplaneShape; note?: string } | null> => {
+        const stripped: WorkplaneShape = {
+          ...body,
+          features: undefined,
+          edgeTreatments: undefined,
+          edgeTreatmentHistory: undefined,
+          cadBrep: undefined,
+          cadBrepFrame: undefined,
+          cadDisplayEdges: undefined,
+          cadDisplayEdgesVersion: undefined,
+        };
+        const base = await build(stripped);
+        if (!base) return null;
+        if (!body.features?.length || !stepsCanReplay(body.features)) {
+          const hadTreatments = Boolean(body.edgeTreatments?.length);
+          return {
+            shape: base,
+            note: hadTreatments ? "The fillet on this group was made before Mintr recorded steps, so it could not be rebuilt and was cleared. Add it again." : undefined,
+          };
+        }
+        const result = await replayPartFeatures(base, body.features, editorReplayEngine());
+        const placed = placeReplayedShape(
+          result.shape,
+          { ...body, x: result.shape.x, z: result.shape.z, elevation: result.shape.elevation, rotation: 0, rotationX: undefined, rotationZ: undefined, mirrorX: undefined, mirrorY: undefined, mirrorZ: undefined, cadBrepFrame: undefined },
+          null,
+        );
+        const failed = result.steps.filter((entry) => !entry.ok);
+        return {
+          shape: canonicalizeShape({
+            ...placed,
+            features: result.features.length ? result.features : undefined,
+            featureBase: undefined,
+            edgeTreatments: edgeTreatmentsForSteps(result.features, body),
+            edgeTreatmentHistory: undefined,
+            edgeResizeMode: body.edgeResizeMode,
+            csg: base.csg ? { ...base.csg, dirty: false } : base.csg,
+          }),
+          note: failed.length === 1
+            ? `One step no longer fits this group and was skipped. ${failed[0].message ?? ""}`.trim()
+            : failed.length > 1 ? `${failed.length} steps no longer fit this group and were skipped.` : undefined,
+        };
+      };
+      try {
+        const notes: string[] = [];
+        let shapes = all;
+        let part: WorkplaneShape | null = null;
+        // 1. The part in its world pose, and the design without it.
+        const fromBodyId = drop.kind === "out-of-group" ? drop.fromBodyId : drop.fromBodyId;
+        if (fromBodyId) {
+          const fromBody = all.find((entry) => entry.id === fromBodyId);
+          if (!fromBody) return;
+          if (fromBody.locked) {
+            setNotice(`“${fromBody.name}” is locked`);
+            return;
+          }
+          part = worldPartIn(fromBody, drop.partId);
+          if (!part) return;
+          if (part.locked) {
+            setNotice(`“${part.name}” is locked`);
+            return;
+          }
+          const trimmed = removePartFromTree(fromBody, drop.partId);
+          let remaining: WorkplaneShape | null = null;
+          if (trimmed) {
+            const outcome = await rebuilt(fromBody, (stripped) => remeshCsgGroup({ ...trimmed, ...stripped, groupedShapes: trimmed.groupedShapes }));
+            if (!outcome) {
+              setNotice(`Could not rebuild “${fromBody.name}” without “${part.name}”, so nothing was changed.`);
+              return;
+            }
+            remaining = outcome.shape;
+            if (outcome.note) notes.push(outcome.note);
+          }
+          shapes = all.flatMap((entry) => (entry.id !== fromBodyId ? [entry] : remaining ? [remaining] : []));
+        } else {
+          part = all.find((entry) => entry.id === drop.partId) ?? null;
+          if (!part) return;
+          if (part.locked) {
+            setNotice(`“${part.name}” is locked`);
+            return;
+          }
+          shapes = all.filter((entry) => entry.id !== drop.partId);
+        }
+        const moved: WorkplaneShape = { ...part, suppressed: undefined, csg: part.csg ? { ...part.csg, suppressed: undefined } : part.csg };
+        // 2. Put it where it goes.
+        if (drop.kind === "out-of-group") {
+          if (projectShapesFingerprint(shapesRef.current) !== sourceFingerprint) {
+            setNotice("The design changed while the group was rebuilding. Try again.");
+            return;
+          }
+          commitShapes([...shapes, moved], moved.id, `Moved ${moved.name} out of its group`);
+          setActiveFeatureId(null);
+          flashCadApply(moved.id, undefined, "separate");
+          if (notes.length) setNotice(notes.join(" "));
+          return;
+        }
+        const body = shapes.find((entry) => entry.id === drop.bodyId);
+        if (!body) return;
+        if (body.locked) {
+          setNotice(`“${body.name}” is locked`);
+          return;
+        }
+        const group = drop.groupId === body.id ? body : worldPartIn(body, drop.groupId);
+        if (!group) return;
+        if (group.locked) {
+          setNotice(`“${group.name}” is locked`);
+          return;
+        }
+        // A plain group given a hole becomes a cut, as grouping a hole with a solid does.
+        const groupOp = group.csg?.op ?? inferCsgOp(group) ?? "union";
+        const op = moved.hole && groupOp === "union" ? "subtract" : groupOp;
+        const withOp = (target: WorkplaneShape): WorkplaneShape => (op === groupOp ? target : { ...target, csg: { ...(target.csg ?? { version: 1 }), op } });
+        const groupChildren = [...restoreGroupedChildren(group, { preserveIds: true }), moved];
+        const outcome = group.id === body.id
+          ? await rebuilt(body, (stripped) => remeshCsgGroupFromWorldChildren(withOp(stripped), groupChildren))
+          : await (async () => {
+              const nested = await remeshCsgGroupFromWorldChildren(withOp(group), groupChildren);
+              if (!nested) return null;
+              return rebuilt(body, async (stripped) => {
+                const updated = await updateCsgLeafAndRemesh(stripped, group.id, nested);
+                return updated.remeshed ? updated.body : null;
+              });
+            })();
+        if (!outcome) {
+          setNotice(`Could not rebuild “${group.name}” with “${moved.name}” in it, so nothing was changed.`);
+          return;
+        }
+        if (outcome.note) notes.push(outcome.note);
+        if (projectShapesFingerprint(shapesRef.current) !== sourceFingerprint) {
+          setNotice("The design changed while the group was rebuilding. Try again.");
+          return;
+        }
+        commitShapes(
+          shapes.map((entry) => (entry.id === body.id ? outcome.shape : entry)),
+          body.id,
+          `Moved ${moved.name} into ${group.name}`,
+        );
+        setActiveFeatureId(moved.id);
+        flashCadApply(body.id, undefined, "combine");
+        if (notes.length) setNotice(notes.join(" "));
+      } catch (error) {
+        setNotice(error instanceof Error && error.message ? error.message : "Could not move that part.");
+      }
+    })();
+  }, [commitShapes, editorReplayEngine, flashCadApply, treeToolOpen]);
+
   const nudgeSelected = useCallback(
     (deltaX: number, deltaZ: number, gridStep = 0) => {
       if (!hasSelection) {
@@ -12168,10 +13048,12 @@ export function SketchForgeEditor({
       }
       const snapCoord = (value: number, delta: number) => {
         const next = value + delta;
-        if (gridStep <= 0) return Math.max(-110, Math.min(110, next));
+        // An axis that was not pressed stays put: snapping it too moved the part sideways.
+        if (Math.abs(delta) < 1e-9) return value;
+        if (gridStep <= 0) return Math.max(-10000, Math.min(10000, next));
         // Land on the grid cell in the nudge direction (no diagonal / half-step drift).
         const snapped = Math.round(next / gridStep) * gridStep;
-        return Math.max(-110, Math.min(110, Number(snapped.toFixed(6))));
+        return Math.max(-10000, Math.min(10000, Number(snapped.toFixed(6))));
       };
       const selected = new Set(selectedIds);
       const repeatEntries: Array<{ shapeId: string; delta: ShapeRepeatDelta }> = [];
@@ -12193,9 +13075,9 @@ export function SketchForgeEditor({
   );
 
   const nudgeSelectedByView = useCallback(
-    (screenRight: number, screenUp: number, step: number) => {
+    (screenRight: number, screenUp: number, step: number, gridStep = step) => {
       const { deltaX, deltaZ } = viewNudgeDelta(viewNudgeAxesRef.current, screenRight, screenUp, step);
-      nudgeSelected(deltaX, deltaZ, step);
+      nudgeSelected(deltaX, deltaZ, gridStep);
     },
     [nudgeSelected],
   );
@@ -12544,19 +13426,19 @@ export function SketchForgeEditor({
           break;
         case "nudgeLeft":
           event.preventDefault();
-          nudgeSelectedByView(-1, 0, step);
+          nudgeSelectedByView(-1, 0, step, unit);
           break;
         case "nudgeRight":
           event.preventDefault();
-          nudgeSelectedByView(1, 0, step);
+          nudgeSelectedByView(1, 0, step, unit);
           break;
         case "nudgeUp":
           event.preventDefault();
-          nudgeSelectedByView(0, 1, step);
+          nudgeSelectedByView(0, 1, step, unit);
           break;
         case "nudgeDown":
           event.preventDefault();
-          nudgeSelectedByView(0, -1, step);
+          nudgeSelectedByView(0, -1, step, unit);
           break;
         case "dropToWorkplane":
           if (!hasSelection) return;
@@ -12747,7 +13629,7 @@ export function SketchForgeEditor({
       }
       if (edgeModifier) cancelEdgeModifier();
       if (shellSession || pushPullSession) invalidateCadModifierSession();
-      setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0, joint: "none", clearance: 0.2 });
+      setSplitSession({ shapeId: selectedShape.id, axis: "x", offset: 0, joint: "none", clearance: 0.2, layFlat: splitLayFlatRef.current });
     },
     splitActive: Boolean(splitSession),
     onTexture: () => {
@@ -12912,6 +13794,11 @@ export function SketchForgeEditor({
       mirrorMode,
     })
     : null;
+  // A tutorial project keeps its guide after the tutorial ends, so Extrude asks for the typed
+  // height only while an unfinished tutorial is on its extrude step.
+  guideExtrudeStepRef.current = Boolean(
+    guideLesson && !guideLesson.complete && (guideLesson.cue === "extrude" || guideLesson.cue === "cut"),
+  );
   useEffect(() => {
     if (!guideLesson?.complete || !guidePlayback || guideCompletedRef.current) return;
     guideCompletedRef.current = true;
@@ -13082,7 +13969,7 @@ export function SketchForgeEditor({
         history: kept,
         historyIndex: kept.length - 1,
         guide,
-        fonts: readCustomFonts(),
+        fonts: designFontLibrary(),
       })));
       const path = await saveGuideTextAs(text, guide.title);
       onGuidePublished?.({ id: `guide:${guideDraft.guideId}`, guide, history: kept }, path);
@@ -13749,6 +14636,8 @@ export function SketchForgeEditor({
           circularPatternCenter={circularPattern?.center ?? null}
           circularPatternRadius={circularPatternRadius}
           onCircularPatternCenterPick={setCircularPatternCenter}
+          onCircularPatternShapePick={pickCircularPatternPivot}
+          transformHandlesHidden={patternSliderDragging && Boolean(circularPattern || linearPattern)}
           sketchFacePickMode={sketchFacePickMode}
           onSketchPlanePicked={acceptSketchPlane}
           onSketchFacePickRejected={(reason) => setNotice(reason)}
@@ -13789,14 +14678,12 @@ export function SketchForgeEditor({
             if (featureId) {
               const body = selectedShape?.groupedShapes?.length
                 ? selectedShape
-                : shapes.find((shape) => shape.groupedShapes?.some((child) => child.id === featureId));
-              const feature = body?.groupedShapes?.find((child) => child.id === featureId);
-              setNotice(feature ? `Feature selected: ${feature.name || feature.kind}` : "Feature selected");
+                : shapes.find((shape) => shape.groupedShapes?.length && csgTreeContainsId(shape, featureId));
+              const feature = body ? findShapeInTree(body.groupedShapes ?? [], featureId) : null;
+              setNotice(feature ? `Part selected: ${feature.name || feature.kind}` : "Part selected");
             }
           }}
-          onSuppressFeature={selectedShape?.groupedShapes?.length ? suppressSelectedFeature : undefined}
           modelTreeLocked={Boolean(edgeModifier)}
-          onReorderFeature={selectedShape?.groupedShapes?.length ? reorderSelectedFeature : undefined}
           onUpdateFeature={selectedShape?.groupedShapes?.length ? updateSelectedFeature : undefined}
           onEditPattern={selectedShape?.patternFeature ? () => {
             if (selectedShape.patternFeature?.kind === "linear") toggleLinearPattern();
@@ -13818,21 +14705,22 @@ export function SketchForgeEditor({
             const changed = withPartStepSize(step, valueMm);
             void changePartSteps(selectedShape.id, (features) => features.map((feature) => (feature.id === featureId ? changed : feature)), `Changed ${partFeatureLabel(changed)}`);
           } : undefined}
+          onOpenPartStep={selectedShape && stepsReplaceSnapshots(selectedShape) && !treeToolOpen ? (featureId) => openPartStep(selectedShape.id, featureId) : undefined}
           onTogglePartStep={(featureId) => {
             if (!selectedShape) return;
-            const step = selectedShape.features?.find((feature) => feature.id === featureId);
-            if (!step) return;
-            void changePartSteps(
-              selectedShape.id,
-              (features) => features.map((feature) => (feature.id === featureId ? { ...feature, suppressed: !feature.suppressed || undefined } : feature)),
-              `${step.suppressed ? "Turned on" : "Turned off"} ${partFeatureLabel(step)}`,
-            );
+            togglePartStepInBody(selectedShape.id, featureId);
           }}
           onRemovePartStep={(featureId) => {
             if (!selectedShape) return;
             const step = selectedShape.features?.find((feature) => feature.id === featureId);
             if (!step) return;
+            setStepPreview(null);
             void changePartSteps(selectedShape.id, (features) => features.filter((feature) => feature.id !== featureId), `Removed ${partFeatureLabel(step)}`);
+          }}
+          laserSource={laserSourceInfo}
+          onRemovePartStepsFrom={(featureId) => {
+            if (!selectedShape) return;
+            removePartStepsFrom(selectedShape.id, featureId);
           }}
           onRemoveEdgeTreatment={selectedShape?.edgeTreatments?.length ? (index) => {
             const entry = selectedShape.edgeTreatmentHistory?.[index];
@@ -13951,6 +14839,7 @@ export function SketchForgeEditor({
           textureGuide={textureGuide}
           onTextureWheel={resizeTextureOnWheel}
           splitPlane={splitPlane}
+          inspectorBadgeShape={(edgeModifier?.preview ?? pushPullSession?.preview) ? cadModifierBaseShapeRef.current : null}
           inspectorDockTop={
             textureSession && textureTarget ? (
               <ToolbarFlow tool="Texture" label="Texture">
@@ -13990,6 +14879,11 @@ export function SketchForgeEditor({
                   onOffsetChange={(offset) => setSplitSession((current) => current ? { ...current, offset } : current)}
                   onJointChange={(joint) => setSplitSession((current) => current ? { ...current, joint } : current)}
                   onClearanceChange={(clearance) => setSplitSession((current) => current ? { ...current, clearance } : current)}
+                  layFlat={splitSession.layFlat}
+                  onLayFlatChange={(layFlat) => {
+                    splitLayFlatRef.current = layFlat;
+                    setSplitSession((current) => current ? { ...current, layFlat } : current);
+                  }}
                   onApply={applySplit}
                   onCancel={cancelSplit}
                 />
@@ -14001,7 +14895,7 @@ export function SketchForgeEditor({
                   distance={pushPullSession.distance}
                   maxDistance={Math.max(shapeWidth(selectedShape), shapeDepth(selectedShape), selectedShape.height) * 2}
                   workspace={workspaceSettings}
-                  busy={pushPullSession.busy || pushPullSession.settling}
+                  busy={pushPullSession.busy || pushPullSession.settling || pushPullSession.applyQueued !== undefined}
                   prepared={pushPullSession.prepared}
                   error={pushPullSession.error}
                   onDistanceChange={(distance) => setPushPullSession((current) => current?.prepared ? {
@@ -14183,6 +15077,9 @@ export function SketchForgeEditor({
                 onSpacingXChange={(spacingX) => patchLinearPattern({ spacingX })}
                 onSpacingZChange={(spacingZ) => patchLinearPattern({ spacingZ })}
                 onSpacingYChange={(spacingY) => patchLinearPattern({ spacingY })}
+                turnDeg={linearPattern.turn ?? 0}
+                onTurnChange={(turn) => patchLinearPattern({ turn })}
+                onSliderDragChange={setPatternSliderDragging}
                 onApply={applyLinearPattern}
                 onCancel={cancelLinearPattern}
                 applyLabel={linearPattern.editing ? "Update" : "Apply"}
@@ -14201,6 +15098,9 @@ export function SketchForgeEditor({
                 count={circularPattern.count}
                 radiusMm={circularPatternRadius}
                 rotationDeg={circularPattern.rotation}
+                turnDeg={circularPattern.turn ?? 0}
+                onTurnChange={patchCircularPatternTurn}
+                onSliderDragChange={setPatternSliderDragging}
                 canApply={Boolean(circularPattern.center && circularPattern.preview?.length)}
                 workspace={workspaceSettings}
                 onCountChange={patchCircularPatternCount}
@@ -14253,11 +15153,32 @@ export function SketchForgeEditor({
             <ShapeSidebar
               shapes={historyBrowse !== null && historyBrowse !== historyIndex ? viewportShapes : shapes}
               selectedIds={historyBrowse !== null && historyBrowse !== historyIndex ? (history[historyBrowse]?.selectedIds ?? []) : selectedIds}
-              collapsed={hasSelection && !shapeRailPinned}
+              collapsed={hasSelection && !shapeRailPinned && !partsTreeOpen}
               onExpand={() => setShapeRailPinned(true)}
-              onCollapse={hasSelection ? () => setShapeRailPinned(false) : undefined}
+              onCollapse={hasSelection ? () => {
+                setShapeRailPinned(false);
+                // The Parts tab keeps the rail open; closing the rail goes back to the shapes.
+                setPartsTreeOpen(false);
+              } : undefined}
               laserDesign={laserDesignOpen}
+              treeOpen={partsTreeOpen}
+              onTreeOpenChange={setPartsTreeOpen}
+              activeFeatureId={historyBrowse !== null && historyBrowse !== historyIndex ? null : activeFeatureId}
               onSelectShape={historyBrowse !== null && historyBrowse !== historyIndex ? () => setHistoryBrowse(null) : selectShape}
+              onSelectChild={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : selectTreeChild}
+              onUpdateShape={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : updateShape}
+              onRenameChild={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : renameChildInTree}
+              onTurnOff={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : suppressFeatureInBody}
+              turnOffBlocked={treeToolOpen}
+              pro={workspaceSettings.peakcadPro}
+              stepLabel={treeStepLabel}
+              shownStep={stepPreview ? { bodyId: stepPreview.bodyId, stepId: stepPreview.stepId } satisfies ShownStep : null}
+              onOpenStep={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : openPartStep}
+              onToggleStep={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : togglePartStepInBody}
+              onRemoveStepsFrom={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : removePartStepsFrom}
+              onReorderStep={historyBrowse !== null && historyBrowse !== historyIndex || !workspaceSettings.peakcadPro ? undefined : reorderPartStep}
+              onShowUpToStep={historyBrowse !== null && historyBrowse !== historyIndex || !workspaceSettings.peakcadPro ? undefined : showUpToStep}
+              onMovePart={historyBrowse !== null && historyBrowse !== historyIndex || !workspaceSettings.peakcadPro ? undefined : movePartInTree}
               onAddShape={(shape) => {
                 addShape(shape);
                 setTopPanel(null);
@@ -14418,6 +15339,14 @@ export function SketchForgeEditor({
             setTopPanel(null);
             openBlueprintExport();
           }}
+          onSendToLaser={onSendToLaser && projectId && machineHasLaser(loadMachineChoice()) ? () => {
+            setTopPanel(null);
+            if (sendableShapes(hasSelection ? selectedShapes : shapes).length === 0) {
+              setNotice("Add a part to send to the laser");
+              return;
+            }
+            setSendToLaserOpen(true);
+          } : undefined}
           blueprintExporting={blueprintExporting}
           stepExporting={stepExporting}
           onImportFiles={selectFiles}
@@ -14567,6 +15496,17 @@ export function SketchForgeEditor({
           }}
         />
       ) : null}
+      {sendToLaserOpen ? (
+        <SendToLaserDialog
+          summary={(() => {
+            const sending = sendableShapes(hasSelection ? selectedShapes : shapes);
+            return sending.length === 1 ? sending[0].name : `${sending.length} parts`;
+          })()}
+          laserDesigns={laserDesigns}
+          onCancel={() => setSendToLaserOpen(false)}
+          onSend={(choice) => void sendToLaser(choice)}
+        />
+      ) : null}
       {flatPartsTarget ? (
         <FlatPartsDialog
           partName={flatPartsTarget.name}
@@ -14692,6 +15632,7 @@ function TopActionPanel({
   onSelectSlicer,
   onExportStep,
   onExportBlueprint,
+  onSendToLaser,
   blueprintExporting = false,
   stepExporting,
   onImportFiles,
@@ -14723,6 +15664,8 @@ function TopActionPanel({
   onSelectSlicer: (key: string) => void;
   onExportStep: () => void;
   onExportBlueprint?: () => void;
+  /** In a 3D print design, when the machines include a laser: bring the parts into a laser design. */
+  onSendToLaser?: () => void;
   blueprintExporting?: boolean;
   stepExporting: boolean;
   onImportFiles: (files: FileList | File[]) => void;
@@ -14961,6 +15904,14 @@ function TopActionPanel({
                   {option.label}
                 </button>
               ))}
+            </div>
+          ) : null}
+          {onSendToLaser ? (
+            <div className="export-mesh-actions export-send-laser">
+              <button type="button" onClick={onSendToLaser}>
+                <ToolbarExportIcon />
+                Send to laser
+              </button>
             </div>
           ) : null}
           {stepPreflight.length > 0 ? (

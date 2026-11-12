@@ -448,7 +448,7 @@ export function buildGeneratedShape(spec: GeneratedSpec, size: GeneratedSize, pr
     ...previous,
     ...built,
     id: previous.id ?? createLocalId(spec.form),
-    name: previous.name,
+    name: spec.form === "screwHole" ? screwHoleName(spec.threaded === true, previous.name) : previous.name,
     color: previous.color,
     hole: previous.hole,
     x: previous.x ?? 0,
@@ -464,6 +464,18 @@ export function buildGeneratedShape(spec: GeneratedSpec, size: GeneratedSize, pr
     locked: previous.locked ?? false,
     hidden: previous.hidden ?? false,
   } as WorkplaneShape);
+}
+
+/**
+ * A screw hole's own name follows Threaded or Slides through, so a plain hole is not called
+ * threaded. A name someone typed is kept.
+ */
+function screwHoleName(threaded: boolean, name: string) {
+  const threadedName = /^(Threaded Hole|Tapped hole)( |$)/.test(name);
+  const clearanceName = /^Clearance Hole( |$)/.test(name);
+  if (threaded && clearanceName) return name.replace(/^Clearance Hole/, "Threaded Hole");
+  if (!threaded && threadedName) return name.replace(/^(Threaded Hole|Tapped hole)/, "Clearance Hole");
+  return name;
 }
 
 /** Starting settings and size for each generated shape on the menu. */

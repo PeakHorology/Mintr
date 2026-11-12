@@ -103,7 +103,8 @@ describe("CAD multi-body grouping path", () => {
     });
     const working = booleanWorkingQuality(shapes, "smooth");
     expect(working).toBe("draft");
-    expect(shouldSkipLiveOcctBoolean(shapes)).toBe(true);
+    // 20 parts is within the exact Group limit (40).
+    expect(shouldSkipLiveOcctBoolean(shapes)).toBe(false);
     measure(rows, "20-cylinders", "meshForShape working", 3, { count: 20 }, () => {
       withDisplayQuality(working, () => {
         shapes.forEach((shape) => meshForShape(shape));

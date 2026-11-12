@@ -29,7 +29,7 @@ export const TOOL_DESCRIPTIONS = {
   pushPull: "Drag a flat face to grow or shrink the solid. Click Apply to keep it.",
   face: "Click a flat face. Out grows a pad from that face. In cuts a pocket into the body. Inset pulls the outline in from the edges, corner radius rounds it, and depth sets how far the pad or pocket goes.",
   boxMaker: "Make a box that slots together, cut from your sheet. Type its size and Mintr draws every panel with fingers that lock at the edges, sized to the sheet's thickness.",
-  flatParts: "Turn a 3D part into flat parts you can cut: stacked layers to glue together, or slotted slices that push together crosswise. Paste a model in from a 3D print design, select it, and click Flat parts.",
+  flatParts: "Turn a 3D part into flat parts you can cut: stacked layers to glue together, or slotted slices that push together crosswise. Bring a model over with Send to laser in a 3D print design, select it, and click Flat parts.",
   fitCrystal: "Scale the model to fill the crystal and centre it, a margin in from every surface so the glass doesn't crack. Works on the selected parts, or every part when nothing is selected.",
   traceLogo: "Turn a logo picture, a PNG or JPG, into outlines the laser can engrave, cut or score. Made for logos, text and simple drawings, not photos.",
   nest: "Pack the parts close together on the laser bed, turning them where that fits better, so a sheet goes further. Works on the selected parts, or all of them.",

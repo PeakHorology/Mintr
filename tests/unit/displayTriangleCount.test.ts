@@ -3,6 +3,7 @@ import {
   booleanWorkingQuality,
   displayTriangleCount,
   displayTriangleTotal,
+  EXACT_GROUP_MAX_PARTS,
   HEAVY_DISPLAY_TRIANGLES,
   isHeavyBooleanSelection,
   isHeavyDisplayScene,
@@ -89,8 +90,15 @@ describe("display triangle count", () => {
     expect(booleanWorkingQuality(pair, "smooth")).toBe("standard");
     expect(booleanWorkingQuality(many, "smooth")).toBe("draft");
     expect(shouldSkipLiveOcctBoolean(pair)).toBe(false);
+    // Group joins up to 40 parts exactly; 8 is only where it drops round parts to draft.
     expect(shouldSkipLiveOcctBoolean(
       Array.from({ length: LIVE_OCCT_BOOLEAN_OPERANDS + 1 }, (_, i) => shape({ id: `b${i}` })),
+    )).toBe(false);
+    expect(shouldSkipLiveOcctBoolean(
+      Array.from({ length: EXACT_GROUP_MAX_PARTS }, (_, i) => shape({ id: `b${i}` })),
+    )).toBe(false);
+    expect(shouldSkipLiveOcctBoolean(
+      Array.from({ length: EXACT_GROUP_MAX_PARTS + 1 }, (_, i) => shape({ id: `b${i}` })),
     )).toBe(true);
     expect(isHeavyBooleanSelection(many)).toBe(true);
   });

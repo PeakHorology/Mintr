@@ -105,6 +105,50 @@ export type GridfinityBaseplateSpec = {
   connectors?: Partial<Record<GridfinitySide, GridfinityConnector>>;
 };
 
+export type ToolboxLabelMagnetSize = "6x2" | "8x3" | "10x3" | "12x3" | "custom";
+
+/**
+ * A set of magnetic drawer labels: a plate, raised letters in a second colour, and magnet
+ * pockets on the back. Kept on the Tie that holds the set, which is rebuilt from it.
+ */
+export type ToolboxLabelSpec = {
+  /** One label per entry; `letterHeight` overrides the set's for a long name. */
+  labels: { text: string; letterHeight?: number }[];
+  allCaps: boolean;
+  font: string;
+  /** Lean of the letters, in degrees. */
+  slant: number;
+  /** Height of a capital letter, in mm. */
+  letterHeight: number;
+  /** Extra space between letters, in mm. */
+  letterSpacing: number;
+  /** How far the letters stand above the plate, in mm. */
+  raise: number;
+  plateShape: "rounded" | "follow";
+  cornerRadius: number;
+  /** Space left and right of the letters, in mm. */
+  padSides: number;
+  /** Space above and below the letters, in mm. */
+  padEnds: number;
+  thickness: number;
+  sameHeight: boolean;
+  sameWidth: boolean;
+  /** Round on the plate's top edge, in mm. */
+  edgeRound: number;
+  magnetSize: ToolboxLabelMagnetSize;
+  magnetDiameter: number;
+  magnetDepth: number;
+  /** Extra room around and under the magnet, in mm. */
+  fitAcross: number;
+  fitDeep: number;
+  /** 0 = automatic. */
+  magnetCount: number;
+  pocket: "open" | "hidden";
+  preset: "usGeneral" | "custom";
+  plateColor: string;
+  letterColor: string;
+};
+
 export type ShapeAsset = {
   id: string;
   name: string;
@@ -114,6 +158,8 @@ export type ShapeAsset = {
   hole?: boolean;
   /** A shape built from settings by lib/generatedShapes.ts. */
   generated?: GeneratedSpec;
+  /** A set of magnetic toolbox labels, built by lib/toolboxLabel.ts. */
+  toolboxLabel?: boolean;
 };
 
 /** The same sizes Threads offers, so a screw hole or nut pocket can match any thread. */
@@ -537,6 +583,31 @@ export type ShapeValue = {
   note?: string;
 };
 
+/** How a 3D part becomes laser parts: its outline from above, flat parts to glue or slot together, or unchanged. */
+export type LaserSendMode = "outline" | "stack" | "interlock" | "asis";
+
+/** Where a laser part came from, so Update from model can make it again from the edited 3D design. */
+export type LaserLink = {
+  designId: string;
+  designName: string;
+  /** The top-level parts in the 3D design that were sent. */
+  sourceIds: string[];
+  mode: LaserSendMode;
+  /** Interlocking slices across and along, when chosen. */
+  across?: number;
+  along?: number;
+  /** Every laser part made in one send shares this, so an update replaces them together. */
+  batch: string;
+  /** The 3D design's revision when the parts were made. */
+  revision: number;
+  /** Still the 3D part as sent; the laser design turns it into sheet parts when it opens. */
+  pending?: boolean;
+  /** The 3D part this laser part was made from. Older designs lack it. */
+  sourceId?: string;
+  /** Which of that 3D part's pieces this is, such as its layer; 0 for Outline and As it is. */
+  piece?: number;
+};
+
 export type WorkplaneShape = {
   id: string;
   name: string;
@@ -577,6 +648,8 @@ export type WorkplaneShape = {
   textCircumference?: number;
   /** Rod bent through the letters. 0 is flat, ±100 is a full circle. Letters turn with the rod. Negative bows outward, positive bows inward. */
   textWrap?: number;
+  /** Lean of the letters, in degrees (0 upright, up to 20). */
+  textSlant?: number;
   importedMesh?: {
     positions: number[];
     /** Optional indexed triangles into `positions` (shared verts). Prefer when present. */
@@ -656,6 +729,8 @@ export type WorkplaneShape = {
   surfaceTexture?: SurfaceTexture;
   /** In a laser design, what the laser does along this part: cut through (the default), score a line, or engrave its area. */
   laserJob?: "cut" | "score" | "engrave";
+  /** In a laser design, the 3D design this part was brought over from, so it can be updated after the model changes. */
+  laserLink?: LaserLink;
   edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];
   /**
    * Involute gear. Size follows the module and tooth count.
@@ -709,6 +784,8 @@ export type WorkplaneShape = {
    * the current spec means the kernel build is still pending.
    */
   gridfinityBuilt?: string;
+  /** On the Tie holding a set of toolbox labels: the settings it is rebuilt from. */
+  toolboxLabel?: ToolboxLabelSpec;
   /** `kind: "loft"` outlines and settings. */
   loftSpec?: LoftSpec;
   /** Key of the loft the stored exact body was built from. A mismatch means a build is pending. */
@@ -759,6 +836,8 @@ export type LinearPatternFeatureParams = {
   spacingX: number;
   spacingZ: number;
   spacingY?: number;
+  /** Degrees the rows and columns turn around the original. */
+  turn?: number;
 };
 
 export type CircularPatternFeatureParams = {

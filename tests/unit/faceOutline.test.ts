@@ -444,4 +444,31 @@ describe("another face", () => {
     expect(joined.every((draft) => draft.passThrough)).toBe(true);
     for (const draft of joined) expect(draft.depth).toBeGreaterThan(20);
   });
+
+  it("insets a face with rounded corners past the corner radius", () => {
+    // A 20 x 10 face with 2 mm rounded corners, sampled the way a CAD face reports it.
+    const rounded = roundPolygonCorners([
+      { x: 0, z: 0 }, { x: 20, z: 0 }, { x: 20, z: 10 }, { x: 0, z: 10 },
+    ], 2, 6);
+    for (const inset of [2, 3]) {
+      const loop = insetPolygon(rounded, inset);
+      expect(loop.length).toBeGreaterThanOrEqual(4);
+      const xs = loop.map((point) => point.x);
+      const zs = loop.map((point) => point.z);
+      expect(Math.min(...xs)).toBeCloseTo(inset, 3);
+      expect(Math.max(...xs)).toBeCloseTo(20 - inset, 3);
+      expect(Math.min(...zs)).toBeCloseTo(inset, 3);
+      expect(Math.max(...zs)).toBeCloseTo(10 - inset, 3);
+    }
+  });
+
+  it("still closes a strip narrower than twice the inset", () => {
+    const rounded = roundPolygonCorners([
+      { x: 0, z: 0 }, { x: 20, z: 0 }, { x: 20, z: 4 }, { x: 0, z: 4 },
+    ], 1, 6);
+    expect(insetPolygon(rounded, 2.5)).toEqual([]);
+    expect(insetPolygon([
+      { x: 0, z: 0 }, { x: 20, z: 0 }, { x: 20, z: 4 }, { x: 0, z: 4 },
+    ], 2.5)).toEqual([]);
+  });
 });

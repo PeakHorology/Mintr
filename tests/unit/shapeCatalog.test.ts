@@ -19,11 +19,12 @@ describe("shape catalog", () => {
   });
 
   it("keeps generated parts off the solids tab", () => {
-    const parts = toolbarShapeAssets.filter((asset) => asset.group === "part" && !asset.generated).map((asset) => asset.kind);
+    const parts = toolbarShapeAssets.filter((asset) => asset.group === "part" && !asset.generated && !asset.toolboxLabel).map((asset) => asset.kind);
     const solids = toolbarShapeAssets.filter((asset) => asset.group === "solid").map((asset) => asset.kind);
 
     expect(parts).toEqual(["text", "thread", "gear", "gridfinityBin", "gridfinityBaseplate"]);
     expect(toolbarShapeAssets.filter((asset) => asset.group === "part" && asset.generated).map((asset) => asset.id)).toEqual(["qr-code", "screw-hole", "nut-pocket"]);
+    expect(toolbarShapeAssets.filter((asset) => asset.toolboxLabel).map((asset) => [asset.id, asset.group, asset.printOnly])).toEqual([["toolbox-label", "part", true]]);
     expect(solids).not.toEqual(expect.arrayContaining(parts));
     expect(solids).toContain("box");
     expect(solids).not.toContain("text");

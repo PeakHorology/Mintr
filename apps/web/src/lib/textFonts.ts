@@ -10,11 +10,13 @@ import helvetikerBoldFontJson from "three/examples/fonts/helvetiker_bold.typefac
 import helvetikerRegularFontJson from "three/examples/fonts/helvetiker_regular.typeface.json";
 import optimerBoldFontJson from "three/examples/fonts/optimer_bold.typeface.json";
 import optimerRegularFontJson from "three/examples/fonts/optimer_regular.typeface.json";
+import heavyFontJson from "./fonts/heavy.typeface.json";
 import {
   BUILT_IN_TEXT_FONTS,
   CUSTOM_FONTS_EVENT,
   MAX_TYPEFACE_CHARS,
   newFontId,
+  readCarriedDesignFont,
   readCustomFonts,
   writeCustomFonts,
   type CustomTextFont,
@@ -51,11 +53,40 @@ const textFonts: Record<string, Font> = {
   "Rounded Light": parseFont(optimerRegularFontJson),
   Clean: parseFont(helvetikerRegularFontJson),
   Stencil: parseFont(helvetikerBoldFontJson),
+  // Russo One (OFL), under its own name here: bold and wide, for labels and signs.
+  Heavy: parseFont(heavyFontJson),
 };
 
 export function resolveTextFont(fontName?: string | null): Font {
   if (fontName && textFonts[fontName]) return textFonts[fontName];
   return (fontName ? customFont(fontName) : null) ?? textFonts[DEFAULT_TEXT_FONT];
+}
+
+/**
+ * Built-in fonts that cover the most letters (accents, Polish, Hungarian, Cyrillic, €), tried in
+ * turn for a letter the chosen font lacks. A light font borrows from a light one first.
+ */
+const GLYPH_FALLBACK_FONTS = ["Sans", "Sans Light", "Serif", "Monospace"] as const;
+const LIGHT_GLYPH_FALLBACK_FONTS = ["Sans Light", "Sans", "Serif Light", "Monospace"] as const;
+
+function fontHasGlyph(font: Font, char: string) {
+  const glyph = (font.data.glyphs as Record<string, unknown>)[char];
+  return Boolean(glyph);
+}
+
+/**
+ * The font to draw one letter with: the chosen font when it has the letter, otherwise the first
+ * built-in font that does, so "Café" is not drawn "Caf?". Null when no font has it.
+ */
+export function textGlyphFont(fontName: string | null | undefined, char: string): Font | null {
+  const font = resolveTextFont(fontName);
+  if (fontHasGlyph(font, char)) return font;
+  const fallbacks = fontName && /light/i.test(fontName) ? LIGHT_GLYPH_FALLBACK_FONTS : GLYPH_FALLBACK_FONTS;
+  for (const name of fallbacks) {
+    const candidate = textFonts[name];
+    if (candidate && candidate !== font && fontHasGlyph(candidate, char)) return candidate;
+  }
+  return null;
 }
 
 export function textFontCurveSegments(fontName?: string | null): number {
@@ -90,7 +121,8 @@ export function textFontOptions(): string[] {
 function customFont(fontName: string): Font | null {
   const known = customFontCache.get(fontName);
   if (known) return known;
-  const entry = readCustomFonts().find((font) => font.name === fontName);
+  // A font this computer could not keep still draws from the design that brought it.
+  const entry = readCustomFonts().find((font) => font.name === fontName) ?? readCarriedDesignFont(fontName);
   if (!entry) return null;
   try {
     const font = parseFont(JSON.parse(entry.typeface));

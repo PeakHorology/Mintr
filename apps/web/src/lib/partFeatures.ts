@@ -61,9 +61,18 @@ function fingerprintToFrame(print: EdgeFingerprint, frame: PartFeatureFrame): Ed
 
 /** A stored edge fingerprint placed back in the world, on the solid now in `live`. */
 export function fingerprintFromFrame(print: EdgeFingerprint, recorded: PartFeatureFrame, live: PartFeatureFrame): EdgeFingerprint {
-  const lengthScale = recorded.size.some((size) => size > 1e-6)
-    ? Math.max(...live.size) / Math.max(1e-6, ...recorded.size)
-    : 1;
+  const axisScale = (axis: 0 | 1 | 2) => (recorded.size[axis] > 1e-6 ? live.size[axis] / recorded.size[axis] : 1);
+  // An edge grows only along the axes it runs in: a box widened 4× keeps its upright edges. A
+  // print without a direction falls back to the largest growth, as before.
+  // Only a straight edge (its centroid on its chord's middle) runs along one direction.
+  const straight = !print.centroid
+    || Math.hypot(print.centroid[0] - print.mid[0], print.centroid[1] - print.mid[1], print.centroid[2] - print.mid[2]) <= Math.max(1e-4, print.length * 1e-3);
+  const dir = straight ? print.direction : undefined;
+  const lengthScale = dir
+    ? Math.hypot(dir[0] * axisScale(0), dir[1] * axisScale(1), dir[2] * axisScale(2)) / Math.max(1e-9, Math.hypot(dir[0], dir[1], dir[2]))
+    : recorded.size.some((size) => size > 1e-6)
+      ? Math.max(...live.size) / Math.max(1e-6, ...recorded.size)
+      : 1;
   return {
     ...print,
     mid: fromFrame(print.mid, recorded, live),
@@ -213,12 +222,19 @@ export function withPartFeature(shape: WorkplaneShape, before: WorkplaneShape, f
  * `failedIndexes` in `shape.edgeTreatments`. Parts from before steps were recorded have none.
  */
 export function failedEdgeTreatmentFeatures(shape: WorkplaneShape, failedIndexes: readonly number[]): PartFeature[] {
-  const recorded = (shape.features ?? []).filter((feature) => feature.kind === "fillet" || feature.kind === "chamfer");
+  // edgeTreatments holds one recipe per fillet or chamfer that is on the part: turned-off and
+  // failed steps have none, so they are left out when lining the two lists up.
+  const recorded = (shape.features ?? []).filter(isLiveEdgeStep);
   if (recorded.length !== (shape.edgeTreatments?.length ?? 0)) return [];
   return failedIndexes.flatMap((index) => {
     const feature = recorded[index];
     return feature ? [{ ...feature, failed: "These edges could not be found after the part changed." }] : [];
   });
+}
+
+/** A fillet or chamfer step that is on the part, so it has a recipe in edgeTreatments. */
+function isLiveEdgeStep(feature: PartFeature) {
+  return (feature.kind === "fillet" || feature.kind === "chamfer") && !feature.suppressed && !feature.failed;
 }
 
 /** Steps other than fillets and chamfers, for re-applying edge treatments without stacking them twice. */
@@ -287,7 +303,7 @@ export function stepsCanReplay(features: readonly PartFeature[]): boolean {
  */
 export function edgeTreatmentsForSteps(features: readonly PartFeature[], previous: WorkplaneShape): EdgeTreatmentFeature[] | undefined {
   const previousTreatments = previous.edgeTreatments ?? [];
-  const previousSteps = (previous.features ?? []).filter((feature) => feature.kind === "fillet" || feature.kind === "chamfer");
+  const previousSteps = (previous.features ?? []).filter(isLiveEdgeStep);
   const aligned = previousSteps.length === previousTreatments.length;
   const out: EdgeTreatmentFeature[] = [];
   for (const feature of features) {
@@ -322,6 +338,13 @@ export function withPartStepSize(feature: PartFeature, sizeMm: number): PartFeat
   if (feature.kind === "hollow") return { ...feature, thickness: sizeMm };
   if (feature.kind === "pushPull") return { ...feature, distance: sizeMm };
   return { ...feature, amount: sizeMm };
+}
+
+/** The short form for a narrow row: the step and its size, without which edges it is on. */
+export function partFeatureShortLabel(feature: PartFeature, formatMm: (mm: number) => string = (mm) => `${Number(mm.toFixed(2))} mm`): string {
+  if (feature.kind === "hollow" || feature.kind === "pushPull") return partFeatureLabel(feature, formatMm);
+  const name = feature.kind === "chamfer" ? "Chamfer" : feature.filletProfile === "cove" ? "Concave fillet" : "Fillet";
+  return `${name} ${formatMm(feature.amount)}`;
 }
 
 export function partFeatureLabel(feature: PartFeature, formatMm: (mm: number) => string = (mm) => `${Number(mm.toFixed(2))} mm`): string {

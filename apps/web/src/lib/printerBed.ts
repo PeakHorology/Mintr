@@ -371,6 +371,27 @@ function shapeCorners(shape: WorkplaneShape): Corner[] {
   });
 }
 
+/**
+ * A toolbox label set too big for one bed lays its extra plates out beside the bed, to print
+ * one at a time, so only its first plate's labels have to fit. Others are themselves.
+ */
+function firstPlateOfLabelSet(shape: WorkplaneShape, bed: PrinterBed): WorkplaneShape {
+  const labels = shape.groupedShapes;
+  const turned = Math.abs(shape.rotation ?? 0) > 1e-6 || Math.abs(shape.rotationX ?? 0) > 1e-6 || Math.abs(shape.rotationZ ?? 0) > 1e-6;
+  if (!shape.toolboxLabel || !labels?.length || turned) return shape;
+  const width = shape.width ?? shape.size;
+  if (width <= bed.width + 1e-6) return shape;
+  // Children sit relative to the set's centre; the first plate starts at its left edge.
+  const left = -width / 2;
+  const first = labels.filter((label) => label.x - (label.width ?? label.size) / 2 - left < bed.width + 1);
+  if (first.length === 0) return shape;
+  const minX = Math.min(...first.map((label) => label.x - (label.width ?? label.size) / 2));
+  const maxX = Math.max(...first.map((label) => label.x + (label.width ?? label.size) / 2));
+  const minZ = Math.min(...first.map((label) => label.z - (label.depth ?? label.size) / 2));
+  const maxZ = Math.max(...first.map((label) => label.z + (label.depth ?? label.size) / 2));
+  return { ...shape, x: shape.x + (minX + maxX) / 2, z: shape.z + (minZ + maxZ) / 2, width: maxX - minX, depth: maxZ - minZ, size: Math.max(maxX - minX, maxZ - minZ) };
+}
+
 export function bedFitForShapes(shapes: WorkplaneShape[], bed: PrinterBed): BedFit {
   let minX = Infinity;
   let maxX = -Infinity;
@@ -381,7 +402,7 @@ export function bedFitForShapes(shapes: WorkplaneShape[], bed: PrinterBed): BedF
   for (const shape of shapes) {
     if (shape.hidden || shape.hole) continue;
     counted += 1;
-    for (const [x, y, z] of shapeCorners(shape)) {
+    for (const [x, y, z] of shapeCorners(firstPlateOfLabelSet(shape, bed))) {
       minX = Math.min(minX, x);
       maxX = Math.max(maxX, x);
       maxY = Math.max(maxY, y);

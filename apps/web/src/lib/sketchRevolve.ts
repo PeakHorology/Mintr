@@ -1,16 +1,14 @@
 import * as THREE from "three";
 import { createLocalId } from "@/lib/localIds";
 import { sketchProfileToDoc } from "@/lib/sketch/migrate";
+import { materialOutlines, sketchLoopRegion, type OrderedSketchPath } from "@/lib/sketch/profiles";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
-import type { SketchPoint, SketchProfile, SketchSegment, WorkplaneShape } from "@/types/sketchforge";
+import type { SketchPoint, SketchProfile, WorkplaneShape } from "@/types/sketchforge";
 
 export type SketchRevolveAxis = {
   start: { x: number; z: number };
   end: { x: number; z: number };
 };
-
-type OrderedStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
-type OrderedPath = { points: SketchPoint[]; steps: OrderedStep[]; closed: boolean };
 
 function cloneSketchProfile(profile: SketchProfile): SketchProfile {
   return {
@@ -22,56 +20,6 @@ function cloneSketchProfile(profile: SketchProfile): SketchProfile {
     segments: profile.segments.map((segment) => ({ ...segment })),
     images: (profile.images ?? []).map((image) => ({ ...image })),
   };
-}
-
-function orderedSketchPaths(profile: SketchProfile): OrderedPath[] {
-  const pointById = new Map(profile.points.map((point) => [point.id, point]));
-  const adjacency = new Map<string, Array<{ pointId: string; segment: SketchSegment }>>();
-  profile.points.forEach((point) => adjacency.set(point.id, []));
-  const validSegments = profile.segments.filter((segment) => {
-    if (!pointById.has(segment.startId) || !pointById.has(segment.endId) || segment.startId === segment.endId) return false;
-    adjacency.get(segment.startId)?.push({ pointId: segment.endId, segment });
-    adjacency.get(segment.endId)?.push({ pointId: segment.startId, segment });
-    return true;
-  });
-  const unvisited = new Set(validSegments.map((segment) => segment.id));
-  const paths: OrderedPath[] = [];
-  while (unvisited.size > 0) {
-    const seedId = unvisited.values().next().value as string | undefined;
-    const seed = validSegments.find((segment) => segment.id === seedId);
-    if (!seed) break;
-    const componentIds = new Set<string>();
-    const queue = [seed.startId, seed.endId];
-    while (queue.length > 0) {
-      const id = queue.pop();
-      if (!id || componentIds.has(id)) continue;
-      componentIds.add(id);
-      adjacency.get(id)?.forEach((entry) => queue.push(entry.pointId));
-    }
-    const startId = [...componentIds].find((id) => (adjacency.get(id)?.filter((entry) => unvisited.has(entry.segment.id)).length ?? 0) === 1) ?? seed.startId;
-    const first = pointById.get(startId);
-    if (!first) {
-      unvisited.delete(seed.id);
-      continue;
-    }
-    const points = [first];
-    const steps: OrderedStep[] = [];
-    let currentId = startId;
-    for (let guard = 0; guard <= validSegments.length; guard += 1) {
-      const edge = adjacency.get(currentId)?.find((entry) => unvisited.has(entry.segment.id));
-      if (!edge) break;
-      const from = pointById.get(currentId);
-      const to = pointById.get(edge.pointId);
-      if (!from || !to) break;
-      unvisited.delete(edge.segment.id);
-      steps.push({ segment: edge.segment, from, to });
-      currentId = to.id;
-      if (currentId === startId) break;
-      points.push(to);
-    }
-    paths.push({ points, steps, closed: currentId === startId && steps.length >= 3 });
-  }
-  return paths;
 }
 
 function cubicPoint(
@@ -89,7 +37,7 @@ function cubicPoint(
 }
 
 /** Dense polyline samples of a closed sketch path in the XZ plane. */
-function sampleClosedPath(path: OrderedPath): Array<{ x: number; z: number }> {
+function sampleClosedPath(path: OrderedSketchPath): Array<{ x: number; z: number }> {
   const samples: Array<{ x: number; z: number }> = [];
   path.steps.forEach(({ segment, from, to }, stepIndex) => {
     if (stepIndex === 0) samples.push({ x: from.x, z: from.z });
@@ -214,12 +162,181 @@ function flatTriangleNormals(positions: ArrayLike<number>): number[] {
   return normals;
 }
 
-function pathArea(samples: Array<{ x: number; z: number }>) {
+function signedPathArea(samples: Array<{ x: number; z: number }>) {
   let area = 0;
   for (let index = 0, previous = samples.length - 1; index < samples.length; previous = index, index += 1) {
     area += samples[previous].x * samples[index].z - samples[index].x * samples[previous].z;
   }
-  return Math.abs(area) * 0.5;
+  return area * 0.5;
+}
+
+function insidePolygon(point: { x: number; z: number }, polygon: Array<{ x: number; z: number }>) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.z > point.z !== b.z > point.z && point.x < ((b.x - a.x) * (point.z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+type RevolveLoop = {
+  /** Closed samples, first point repeated at the end, as the lathe wants them. */
+  samples: Array<{ x: number; z: number }>;
+  /** The same outline without the repeat, for area and containment. */
+  ring: Array<{ x: number; z: number }>;
+  area: number;
+  region: string | null;
+};
+type RevolveRegion = { outer: RevolveLoop; holes: RevolveLoop[] };
+
+/**
+ * Closed regions to revolve: every solid outline with the holes inside it.
+ * Construction lines are guides and never part of the section. Loops nest by containment the
+ * way extrude nests them: even depth is material, odd depth is a hole in its parent.
+ */
+function revolveRegions(profile: SketchProfile): RevolveRegion[] {
+  const outlines = materialOutlines({
+    ...profile,
+    segments: profile.segments.filter((segment) => !segment.construction),
+  });
+  const loops: RevolveLoop[] = outlines
+    .map((path) => {
+      const samples = sampleClosedPath(path);
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      const ring = samples.length > 1 && Math.hypot(first.x - last.x, first.z - last.z) < 1e-6 ? samples.slice(0, -1) : samples;
+      return { samples, ring, area: Math.abs(signedPathArea(ring)), region: sketchLoopRegion(path.steps) };
+    })
+    .filter((loop) => loop.ring.length >= 3 && loop.area > 1e-9)
+    .sort((a, b) => b.area - a.area);
+  const parent = new Map<number, number>();
+  const depth: number[] = [];
+  loops.forEach((loop, index) => {
+    let best = -1;
+    for (let candidate = 0; candidate < index; candidate += 1) {
+      if (loops[candidate].region !== loop.region) continue;
+      // Most of the outline inside, so a hole touching its parent at a corner still counts.
+      const inside = loop.ring.filter((point) => insidePolygon(point, loops[candidate].ring)).length;
+      if (inside * 2 <= loop.ring.length) continue;
+      if (best < 0 || loops[candidate].area < loops[best].area) best = candidate;
+    }
+    if (best >= 0) parent.set(index, best);
+    depth[index] = best >= 0 ? depth[best] + 1 : 0;
+  });
+  const regions = new Map<number, RevolveRegion>();
+  loops.forEach((loop, index) => {
+    if (depth[index] % 2 === 0) regions.set(index, { outer: loop, holes: [] });
+  });
+  loops.forEach((loop, index) => {
+    if (depth[index] % 2 === 1) regions.get(parent.get(index)!)?.holes.push(loop);
+  });
+  return [...regions.values()];
+}
+
+type RevolveBuild = { positions: number[]; normals: number[]; centerX: number; centerZ: number } | { issue: string };
+
+function buildRevolve(profile: SketchProfile, axis: SketchRevolveAxis, radialSegments: number): RevolveBuild {
+  const axisDx = axis.end.x - axis.start.x;
+  const axisDz = axis.end.z - axis.start.z;
+  const axisLength = Math.hypot(axisDx, axisDz);
+  if (axisLength < 0.25) return { issue: "The axis line is too short. Pick a longer straight line to revolve around." };
+  const ux = axisDx / axisLength;
+  const uz = axisDz / axisLength;
+
+  const regions = revolveRegions(profile);
+  if (regions.length === 0) return { issue: "Revolve needs a closed profile. Close the outline first, then pick the axis." };
+
+  type LatheSample = { radius: number; along: number; sign: number };
+  const toLathe = (samples: Array<{ x: number; z: number }>): LatheSample[] => samples.map((point) => {
+    const vx = point.x - axis.start.x;
+    const vz = point.z - axis.start.z;
+    const along = vx * ux + vz * uz;
+    const rx = vx - along * ux;
+    const rz = vz - along * uz;
+    const radius = Math.hypot(rx, rz);
+    const sign = Math.sign(ux * vz - uz * vx) || 1;
+    return { radius, along, sign };
+  });
+  const lathe = regions.map((region) => ({
+    outer: toLathe(region.outer.samples),
+    holes: region.holes.map((hole) => toLathe(hole.samples)),
+  }));
+
+  // Every loop must sit on one side. Two sections on opposite sides would sweep through each other.
+  const all = lathe.flatMap((entry) => [...entry.outer, ...entry.holes.flat()]);
+  const sideVotes = all.reduce((sum, sample) => sum + (sample.radius < 1e-4 ? 0 : sample.sign), 0);
+  const side = Math.sign(sideVotes) || 1;
+  if (all.some((sample) => sample.radius > 0.2 && sample.sign !== side)) {
+    return { issue: "The profile crosses the axis. Keep the whole profile on one side of the axis line." };
+  }
+
+  const segments = Math.max(16, Math.min(128, Math.floor(radialSegments)));
+  const radial = new THREE.Vector3(-uz * side, 0, ux * side).normalize();
+  const axisVec = new THREE.Vector3(ux, 0, uz);
+  const binormal = new THREE.Vector3().crossVectors(radial, axisVec).normalize();
+  const matrix = new THREE.Matrix4().makeBasis(radial, axisVec, binormal);
+  matrix.setPosition(axis.start.x, 0, axis.start.z);
+
+  const positions: number[] = [];
+  let maxRadius = 0;
+  const spin = (samples: LatheSample[], hole: boolean) => {
+    const cleaned = orientLatheProfile(samples.map((sample) => new THREE.Vector2(Math.max(0, sample.radius), sample.along)));
+    if (cleaned.length < 3) return;
+    // A hole is the same surface turned inside out: walked clockwise, it faces into the void.
+    if (hole) cleaned.reverse();
+    maxRadius = cleaned.reduce((max, point) => Math.max(max, point.x), maxRadius);
+    const geometry = new THREE.LatheGeometry(cleaned, segments);
+    // The lathe repeats the first meridian as a separate last column. Those two
+    // copies are the same edge, and leaving them split draws a crack down the solid.
+    weldLatheSeam(geometry, cleaned.length, segments);
+    geometry.applyMatrix4(matrix);
+    const flat = geometry.index ? geometry.toNonIndexed() : geometry;
+    const array = flat.getAttribute("position").array as ArrayLike<number>;
+    for (let index = 0; index < array.length; index += 1) positions.push(array[index]);
+    if (flat !== geometry) flat.dispose();
+    geometry.dispose();
+  };
+  for (const entry of lathe) {
+    spin(entry.outer, false);
+    for (const hole of entry.holes) spin(hole, true);
+  }
+  if (positions.length === 0 || maxRadius < 0.25) {
+    return { issue: "The profile is too close to the axis to make a solid. Move it away from the axis line." };
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < positions.length; index += 3) {
+    minX = Math.min(minX, positions[index]);
+    maxX = Math.max(maxX, positions[index]);
+    minY = Math.min(minY, positions[index + 1]);
+    minZ = Math.min(minZ, positions[index + 2]);
+    maxZ = Math.max(maxZ, positions[index + 2]);
+  }
+  const centerX = (minX + maxX) / 2;
+  const centerZ = (minZ + maxZ) / 2;
+  // Center on the footprint and seat the solid on the plate (y = 0).
+  for (let index = 0; index < positions.length; index += 3) {
+    positions[index] -= centerX;
+    positions[index + 1] -= minY;
+    positions[index + 2] -= centerZ;
+  }
+  // One normal per face. Display shading welds the gentle steps around the
+  // axis and keeps a corner where the profile actually turns.
+  return { positions, normals: flatTriangleNormals(positions), centerX, centerZ };
+}
+
+/**
+ * Why a revolve cannot be built, in words for the person drawing, or null when it can.
+ * The editor can show this instead of a generic notice when `shapeFromSketchRevolve` returns null.
+ */
+export function sketchRevolveIssue(profile: SketchProfile, axis: SketchRevolveAxis, radialSegments = 72): string | null {
+  const built = buildRevolve(profile, axis, radialSegments);
+  return "issue" in built ? built.issue : null;
 }
 
 export function resolveSketchRevolveAxis(
@@ -237,8 +354,10 @@ export function resolveSketchRevolveAxis(
 }
 
 /**
- * Revolve the largest closed sketch profile around a straight axis in the sketch plane.
- * Profiles that stay away from the axis become solids with a hole (e.g. tubes, rings).
+ * Revolve the closed sketch profiles around a straight axis in the sketch plane.
+ * Every solid outline is spun, each with the holes drawn inside it, so a washer section comes
+ * out as a ring with its void. Profiles that stay away from the axis become tubes and rings.
+ * Returns null when it cannot be built; `sketchRevolveIssue` says why.
  */
 export function shapeFromSketchRevolve(
   profile: SketchProfile,
@@ -246,77 +365,9 @@ export function shapeFromSketchRevolve(
   existing?: WorkplaneShape | null,
   radialSegments = 72,
 ): WorkplaneShape | null {
-  const closedPaths = orderedSketchPaths(profile).filter((path) => path.closed);
-  if (closedPaths.length === 0) return null;
-
-  const axisDx = axis.end.x - axis.start.x;
-  const axisDz = axis.end.z - axis.start.z;
-  const axisLength = Math.hypot(axisDx, axisDz);
-  if (axisLength < 0.25) return null;
-  const ux = axisDx / axisLength;
-  const uz = axisDz / axisLength;
-
-  const sampledPaths = closedPaths.map((path) => sampleClosedPath(path)).filter((samples) => samples.length >= 4);
-  if (sampledPaths.length === 0) return null;
-  sampledPaths.sort((a, b) => pathArea(b) - pathArea(a));
-  const samples = sampledPaths[0];
-
-  type LatheSample = { radius: number; along: number; sign: number };
-  const latheSamples: LatheSample[] = samples.map((point) => {
-    const vx = point.x - axis.start.x;
-    const vz = point.z - axis.start.z;
-    const along = vx * ux + vz * uz;
-    const rx = vx - along * ux;
-    const rz = vz - along * uz;
-    const radius = Math.hypot(rx, rz);
-    const sign = Math.sign(ux * vz - uz * vx) || 1;
-    return { radius, along, sign };
-  });
-
-  const sideVotes = latheSamples.reduce((sum, sample) => sum + (sample.radius < 1e-4 ? 0 : sample.sign), 0);
-  const side = Math.sign(sideVotes) || 1;
-  const crossed = latheSamples.some((sample) => sample.radius > 0.2 && sample.sign !== 0 && sample.sign !== side);
-  if (crossed) return null;
-
-  const points2 = latheSamples.map((sample) => new THREE.Vector2(Math.max(0, sample.radius), sample.along));
-  const cleaned = orientLatheProfile(points2);
-  if (cleaned.length < 3) return null;
-
-  const maxRadius = cleaned.reduce((max, point) => Math.max(max, point.x), 0);
-  if (maxRadius < 0.25) return null;
-
-  const segments = Math.max(16, Math.min(128, Math.floor(radialSegments)));
-  const geometry = new THREE.LatheGeometry(cleaned, segments);
-  // The lathe repeats the first meridian as a separate last column. Those two
-  // copies are the same edge, and leaving them split draws a crack down the solid.
-  weldLatheSeam(geometry, cleaned.length, segments);
-  const radial = new THREE.Vector3(-uz * side, 0, ux * side).normalize();
-  const axisVec = new THREE.Vector3(ux, 0, uz);
-  const binormal = new THREE.Vector3().crossVectors(radial, axisVec).normalize();
-  const matrix = new THREE.Matrix4().makeBasis(radial, axisVec, binormal);
-  matrix.setPosition(axis.start.x, 0, axis.start.z);
-  geometry.applyMatrix4(matrix);
-  geometry.computeBoundingBox();
-
-  const box = geometry.boundingBox;
-  if (!box) {
-    geometry.dispose();
-    return null;
-  }
-  const meshCenterX = (box.min.x + box.max.x) / 2;
-  const meshCenterZ = (box.min.z + box.max.z) / 2;
-
-  // Center on the footprint and seat the solid on the plate (y = 0).
-  geometry.translate(-meshCenterX, -box.min.y, -meshCenterZ);
-
-  const meshGeometry = geometry.index ? geometry.toNonIndexed() : geometry;
-  const position = meshGeometry.getAttribute("position");
-  const positions = Array.from(position.array as ArrayLike<number>);
-  // One normal per face. Display shading welds the gentle steps around the
-  // axis and keeps a corner where the profile actually turns.
-  const normals = flatTriangleNormals(positions);
-  if (meshGeometry !== geometry) meshGeometry.dispose();
-  geometry.dispose();
+  const built = buildRevolve(profile, axis, radialSegments);
+  if ("issue" in built) return null;
+  const { positions, normals, centerX: meshCenterX, centerZ: meshCenterZ } = built;
 
   let minY = Number.POSITIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;

@@ -210,8 +210,6 @@
   --shape-tile-height: 92px;
   --shape-tile-icon: 52px;
   --shape-rail-tab-width: 22px;
-  --object-list-width: 188px;
-  --object-list-tab-width: 28px;
   --chrome-left: 0px;
   --chrome-right: 0px;
   /* Match editor viewport captures used for project/folder thumbnails. */
@@ -1811,7 +1809,7 @@ html.is-theme-switching[data-theme-wipe="contract"]::view-transition-new(root) {
   gap: 10px 14px;
 }
 
-.sage-home-owl {
+.sage-home-mark {
   display: grid;
   flex: 0 0 auto;
   width: 36px;

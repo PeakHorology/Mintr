@@ -6,6 +6,8 @@ import type {
 } from "@/types/sketchforge";
 import { circularPatternInstances, type CircularPatternRotationStep } from "@/lib/circularPattern";
 import { linearPatternCopyId, linearPatternInstances } from "@/lib/linearPattern";
+import { createLocalId } from "@/lib/localIds";
+import { duplicateShapeWithFreshIds } from "@/lib/shapeClipboard";
 
 export type { CircularPatternFeatureParams, LinearPatternFeatureParams, PatternFeature };
 
@@ -120,6 +122,22 @@ export function rebuildCircularPatternFeature(
  * Drop previous instances for a feature, then insert the rebuilt set.
  * Source keeps its current geometry; copies are regenerated.
  */
+/**
+ * Shapes after a pattern is applied: the sources (and any old copies of the same pattern) make
+ * way for the new copies, and every other shape stays. A new pattern has no feature id yet, and
+ * neither does a plain shape, so two missing ids must never count as the same pattern.
+ */
+export function withAppliedPattern(
+  shapes: readonly WorkplaneShape[],
+  sourceIds: ReadonlySet<string>,
+  copies: readonly WorkplaneShape[],
+  featureId?: string,
+): WorkplaneShape[] {
+  return shapes
+    .filter((shape) => !sourceIds.has(shape.id) && !(featureId && shape.patternFeature?.id === featureId))
+    .concat(copies);
+}
+
 export function replacePatternFeature(
   shapes: readonly WorkplaneShape[],
   rebuilt: readonly WorkplaneShape[],
@@ -141,9 +159,16 @@ export function replacePatternFeature(
   return [...keptBefore, ...rebuilt, ...keptAfter];
 }
 
+/**
+ * Every copy keeps its place but becomes a plain part. The copies get fresh ids, because a copy's
+ * id is worked out from its original and a new pattern of that original would reuse it.
+ */
 export function dissolvePatternFeature(shapes: readonly WorkplaneShape[], featureId: string): WorkplaneShape[] {
   return shapes.map((shape) => {
     if (shape.patternFeature?.id !== featureId) return shape;
+    if (shape.patternFeature.role === "instance") {
+      return duplicateShapeWithFreshIds(shape, createLocalId(`${shape.patternFeature.sourceId}-copy`));
+    }
     const { patternFeature: _removed, ...rest } = shape;
     return rest;
   });
@@ -192,7 +217,9 @@ export function syncLinkedPatternShapes(shapes: readonly WorkplaneShape[]): Work
   let changed = false;
   for (const source of shapes) {
     const feature = source.patternFeature;
-    if (!feature || feature.role !== "source") continue;
+    // Only the part the pattern was made from drives it; a stray copy that still says "source"
+    // must not replace the real pattern.
+    if (!feature || feature.role !== "source" || feature.sourceId !== source.id) continue;
     const rebuilt = feature.kind === "linear" && feature.linear
       ? rebuildLinearPatternFeature(source, feature.linear, feature.id)
       : feature.kind === "circular" && feature.circular

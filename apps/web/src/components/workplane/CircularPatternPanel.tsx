@@ -15,6 +15,7 @@ import {
   type CircularPatternRotationStep,
 } from "@/lib/circularPattern";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
+import { PatternTurnControl, slidersDragHandler } from "@/components/workplane/PatternTurnControl";
 import {
   displayStepFromMillimeters,
   displayToMillimeters,
@@ -298,29 +299,37 @@ export function CircularPatternPanel({
   count,
   radiusMm,
   rotationDeg,
+  turnDeg = 0,
   canApply,
   workspace,
   onCountChange,
   onRadiusChange,
   onRotationChange,
+  onTurnChange,
+  onSliderDragChange,
   onApply,
   onCancel,
   positionClampWarning = false,
   applyLabel = "Apply",
   editing = false,
 }: {
+  /** True while one of the panel's sliders is being dragged. */
+  onSliderDragChange?: (active: boolean) => void;
   sourceCount: number;
   count: number;
   radiusMm: number;
   rotationDeg: number;
+  /** Degrees the whole pattern turns around its center. */
+  turnDeg?: number;
   canApply: boolean;
   workspace: WorkplaneWorkspaceSettings;
   onCountChange: (count: number) => void;
   onRadiusChange: (radiusMm: number) => void;
   onRotationChange: (degrees: CircularPatternRotationStep) => void;
+  onTurnChange?: (degrees: number) => void;
   onApply: () => void;
   onCancel: () => void;
-  /** True when one or more instances clamp to the ±110 mm workplane bounds. */
+  /** True when one or more copies would pass the 10 m sanity limit. */
   positionClampWarning?: boolean;
   applyLabel?: string;
   editing?: boolean;
@@ -331,6 +340,7 @@ export function CircularPatternPanel({
     <aside
       className="edge-modifier-panel circular-pattern-panel"
       aria-label="Circular pattern"
+      onPointerDownCapture={slidersDragHandler(onSliderDragChange)}
       onContextMenu={(event) => {
         event.preventDefault();
         setHintOpen((open) => !open);
@@ -348,7 +358,7 @@ export function CircularPatternPanel({
 
       <div className="edge-modifier-meta">
         <span>{sourceCount} source{sourceCount === 1 ? "" : "s"}</span>
-        <span>Click the workplane to move the center</span>
+        <span>Click a shape to turn around its middle, or the workplane</span>
       </div>
 
       <RadiusControl
@@ -362,6 +372,13 @@ export function CircularPatternPanel({
         onChange={onCountChange}
       />
 
+      {onTurnChange ? (
+        <PatternTurnControl
+          value={turnDeg}
+          onChange={onTurnChange}
+        />
+      ) : null}
+
       <RotationControl
         value={rotationDeg}
         onChange={onRotationChange}
@@ -369,13 +386,13 @@ export function CircularPatternPanel({
 
       {hintOpen ? (
         <p className="edge-modifier-hint">
-          The original stays as the first copy. The rest are spaced evenly around the center and face it. Click the workplane to move the center. Count includes the original. Rotation adds 0°, 90°, 180°, or 270°.
+          The original stays as the first copy. The rest are spaced evenly around the center and face it. Click a shape to put the center in its middle, or click the workplane to put it there. Count includes the original. Turn pattern spins the whole ring around the center, the original too. Rotation turns each copy in place by 0°, 90°, 180°, or 270°.
         </p>
       ) : null}
 
       {positionClampWarning ? (
         <p className="edge-modifier-hint" role="status">
-          Some instances hit the ±110 mm workplane limit and will be clamped.
+          Some copies would land more than 10 m from the middle of the workplane and will be held at 10 m.
         </p>
       ) : null}
 

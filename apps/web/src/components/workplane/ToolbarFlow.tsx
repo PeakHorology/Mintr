@@ -44,12 +44,31 @@ function toolbarAnchor(tool: string, width: number): Anchor {
   const center = rect.left + rect.width / 2;
   let left = center - 36;
   left = Math.min(Math.max(margin, left), window.innerWidth - margin - panelWidth);
+  // Keep clear of the open shape inspector (it moves left when the Parts tree is open),
+  // so the tool card never sits half over it. Only when there is room beside it.
+  const inspector = document.querySelector<HTMLElement>(".shape-inspector");
+  const box = inspector?.getBoundingClientRect();
+  if (box && box.width > 0 && left + panelWidth > box.left && left < box.right) {
+    const beside = box.left - margin - panelWidth;
+    if (beside >= margin) left = beside;
+  }
+  // Moved under the Geometry / Sketch switch: drop below it so the card's title stays visible.
+  let top = rect.bottom + 8;
+  const notch = document.querySelector<HTMLElement>(".editor-mode-notch")?.getBoundingClientRect();
+  if (notch && notch.width > 0 && left < notch.right && left + panelWidth > notch.left && top < notch.bottom) {
+    top = notch.bottom + 8;
+  }
   return {
-    top: rect.bottom + 8,
+    top,
     left,
-    caret: center - left,
+    // A card moved down or aside no longer points at its button.
+    caret: top === rect.bottom + 8 ? center - left : -1,
     width: panelWidth,
   };
+}
+
+function sameAnchor(a: Anchor | null, b: Anchor) {
+  return Boolean(a) && a!.top === b.top && a!.left === b.left && a!.caret === b.caret && a!.width === b.width;
 }
 
 /** A tool menu that opens under its toolbar button, the same way History does. */
@@ -69,15 +88,24 @@ export function ToolbarFlow({
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
   useLayoutEffect(() => {
-    const place = () => setAnchor(toolbarAnchor(tool, width));
+    const place = () => {
+      const next = toolbarAnchor(tool, width);
+      setAnchor((current) => (sameAnchor(current, next) ? current : next));
+    };
     place();
     window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
+    // The inspector opens, closes and moves with the selection; follow it.
+    const follow = window.setInterval(place, 400);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.clearInterval(follow);
+    };
   }, [tool, width]);
+  const caretShown = anchor ? anchor.caret >= 14 && anchor.caret <= anchor.width - 14 : true;
 
   return (
     <div
-      className={`toolbar-flow${closing ? " is-closing" : ""}`}
+      className={`toolbar-flow${closing ? " is-closing" : ""}${caretShown ? "" : " toolbar-flow--no-caret"}`}
       role="dialog"
       aria-label={label}
       style={anchor ? {

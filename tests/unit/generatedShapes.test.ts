@@ -111,6 +111,19 @@ describe("generated shapes", () => {
     expect(shape.hole).toBe(true);
   });
 
+  it("a screw hole's own name follows Threaded or Slides through, and a typed name stays", () => {
+    const build = (threaded: boolean, name: string) => buildGeneratedShape(
+      { form: "screwHole", size: "M3", head: "none", threaded },
+      { width: 3, depth: 3, height: 10 },
+      { name, color: "#000", hole: true },
+    )!.name;
+    expect(build(false, "Threaded Hole")).toBe("Clearance Hole");
+    expect(build(false, "Threaded Hole M3")).toBe("Clearance Hole M3");
+    expect(build(true, "Clearance Hole")).toBe("Threaded Hole");
+    expect(build(true, "Threaded Hole")).toBe("Threaded Hole");
+    expect(build(false, "Lid screw")).toBe("Lid screw");
+  });
+
   it("a nut pocket is the nut's width across its flats, plus room", () => {
     const shape = buildGeneratedShape({ form: "nutPocket", size: "M3" }, { width: 0, depth: 0, height: 3 }, { name: "Nut", color: "#000", hole: true })!;
     const box = bounds(shape)!;

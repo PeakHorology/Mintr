@@ -57,6 +57,7 @@ export function PushPullPanel({
         step={0.1}
         workspace={workspace}
         length
+        lessonTarget="push-pull-distance"
         disabled={!prepared || busy}
         onChange={onDistanceChange}
       />

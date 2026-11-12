@@ -41,6 +41,14 @@ function shapeExportsExact(shape: WorkplaneShape): boolean {
  */
 export function shapeExportQualityHint(shape: WorkplaneShape): ShapeExportQualityHint {
   if (shape.csg?.dirty) return "pending";
+  // A Tie fuses nothing: it exports as well as its weakest part.
+  if (shape.groupedShapes?.length && !isEvaluatedCsgBody(shape) && !shape.importedMesh) {
+    const parts = shape.groupedShapes.filter((child) => !child.hidden && !child.suppressed).map(shapeExportQualityHint);
+    for (const worst of ["unsupported", "pending", "faceted"] as const) {
+      if (parts.includes(worst)) return worst;
+    }
+    if (parts.length > 0) return "exact";
+  }
   if (isEvaluatedCsgBody(shape)) {
     if (shape.importedMesh?.brepStep || shape.cadBrep) return "exact";
     // Evaluated Manifold mesh without bake yet — still downloadable as faceted.

@@ -163,4 +163,79 @@ describe("true-shape nesting", () => {
     const small = result.placements.find((placement) => placement.id === "small")!;
     expect(small.sheet).not.toBe(huge.sheet);
   });
+
+  it("fits a part the size of the bed, at the bed's corner", () => {
+    const bed = { width: 200, depth: 150 };
+    for (const [width, depth] of [[200, 150], [199.9, 149.8], [150, 200]]) {
+      const items = [{ id: "full", loops: [rect(30, -40, width, depth)] }];
+      const result = nestOutlines(runtime, items, bed, 2);
+      expect(result.tooBig, `${width} x ${depth}`).toEqual([]);
+      expect(result.sheets).toBe(1);
+      expect(result.placements[0].sheet).toBe(0);
+      expectGapKept(items, result, 2, bed);
+    }
+    // A hair past the bed is still too big.
+    expect(nestOutlines(runtime, [{ id: "over", loops: [rect(0, 0, 200.5, 150)] }], bed, 2).tooBig).toEqual(["over"]);
+  });
+
+  it("keeps a bed-size part on the bed with small parts in its hole", () => {
+    const bed = { width: 200, depth: 150 };
+    const frame = { id: "frame", loops: [rect(0, 0, 200, 150), rect(20, 20, 160, 110).reverse()] };
+    const small = Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, loops: [rect(0, 0, 30, 20)] }));
+    const items = [frame, ...small];
+    const result = nestOutlines(runtime, items, bed, 2);
+    expect(result.tooBig).toEqual([]);
+    expect(result.sheets).toBe(1);
+    expectGapKept(items, result, 2, bed);
+  });
+
+  it("packs forty parts, some L-shaped, on the bed without overlaps and with the gap kept", () => {
+    const bed = { width: 200, depth: 150 };
+    let seed = 7;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const items: ShapeNestItem[] = Array.from({ length: 40 }, (_, k) => {
+      const w = 5 + random() * 60;
+      const h = 5 + random() * 60;
+      const loop: Vec2[] = random() < 0.5 ? [[0, 0], [w, 0], [w, h / 2], [w / 2, h / 2], [w / 2, h], [0, h]] : [[0, 0], [w, 0], [w, h], [0, h]];
+      return { id: String(k), loops: [loop] };
+    });
+    for (const gap of [3, 0]) {
+      const result = nestOutlines(runtime, items, bed, gap);
+      expect(result.placements).toHaveLength(40);
+      expect(result.tooBig).toEqual([]);
+      for (let sheet = 0; sheet < result.sheets; sheet += 1) {
+        const onSheet = result.placements.filter((placement) => placement.sheet === sheet);
+        const ids = new Set(onSheet.map((placement) => placement.id));
+        expectGapKept(items.filter((item) => ids.has(item.id)), { ...result, placements: onSheet }, gap, bed);
+      }
+    }
+  });
+
+  it("keeps the gap from parts left where they are", () => {
+    const bed = { width: 200, depth: 150 };
+    const gap = 3;
+    // A plate across the back of the bed and a ring in the middle stay put.
+    const plate = [rect(-100, -75, 200, 50)];
+    const ring = [circle(0, 20, 30), circle(0, 20, 20).reverse()];
+    const items: ShapeNestItem[] = Array.from({ length: 12 }, (_, i) => ({ id: `p${i}`, loops: [rect(0, 0, 25, 15)] }));
+    const result = nestOutlines(runtime, items, bed, gap, { obstacles: [plate, ring] });
+    expect(result.placements).toHaveLength(12);
+    const fixed: ShapeNestItem[] = [{ id: "plate", loops: plate }, { id: "ring", loops: ring }];
+    const still = [0, 1].map((index) => ({ id: fixed[index].id, quarterTurns: 0 as const, dx: 0, dz: 0, sheet: 0 }));
+    const onBed = result.placements.filter((placement) => placement.sheet === 0);
+    expect(onBed.length).toBeGreaterThan(0);
+    expectGapKept([...items, ...fixed], { ...result, placements: [...onBed, ...still] }, gap, bed);
+    // Something fits inside the ring's hole too.
+    const inHole = onBed.some((placement) => {
+      const [x, z] = placePoint([12.5, 7.5], placement);
+      return Math.hypot(x, z - 20) < 20;
+    });
+    expect(inHole).toBe(true);
+  });
+
+  it("gives a part too big for the bed its own sheet, not the bed with parts left on it", () => {
+    const result = nestOutlines(runtime, [{ id: "huge", loops: [rect(0, 0, 300, 300)] }], { width: 100, depth: 100 }, 2, { obstacles: [[rect(-10, -10, 20, 20)]] });
+    expect(result.tooBig).toEqual(["huge"]);
+    expect(result.placements[0].sheet).toBe(1);
+  });
 });

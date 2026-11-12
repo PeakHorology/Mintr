@@ -42,6 +42,31 @@ export const UNRELEASED_NOTES: string[] = [];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.4.1",
+    items: [
+    "The Parts tab beside the shapes is now a proper tree of your design: every part, with its steps and the parts inside each group under it, however deep. Click a part inside a group to edit it, double-click to rename it, hover for Hide and Lock, or turn a part Off to build the group without it; a fillet on the group is rebuilt rather than lost. Each fillet, chamfer, hollow, push and pull sits under its part as a step: double-click one to reopen it in its tool with the values it was made with, even a step from the middle, and the later steps are rebuilt on top. Right-click any row for everything it can do, including removing a step and the steps after it. With Pro on, drag a step to change the order, drag a part into or out of a group, or pick “Show up to here” on a step to see the part as it was back then without changing anything. The tab stays open while you work, and a part's steps also sit at the top of its settings as Steps.",
+    "Fillet and Chamfer on an inside corner, such as where a box runs into a cylinder, the base of a cylinder standing on a plate, or the corners of a square hole, now fill the corner in smoothly the way you'd expect, instead of cutting a groove into it. Where a round part meets a flat one, picking the inside corner along with the edges around it works far more often, and where the usual blend builder gives up on some of the edges, Mintr now builds the rounds and chamfers itself, so All sharp edges on a box joined to a cylinder, a cylinder on a plate or a block with a pocket does every edge, inside corners and all. A size too big for a face is still refused rather than built badly, and a fillet or chamfer that can't be built answers within a few seconds instead of leaving the tool waiting.",
+    "Send to laser: in a 3D print design, open Export and click Send to laser to bring the model into a new or existing laser design, as its outline, stacked layers, slotted slices or unchanged. The parts are made from that design's material. They remember the model, so after you change it, select one in the laser design and click Update from model.",
+    "Sage is now a friendly brontosaurus.",
+    "Toolbox Label, in Shapes under Text and codes, makes magnetic drawer labels with raised letters on a plate. Type one drawer name per line to make a whole set, laid out on your printer bed; extra labels go onto a second plate. Choose the font, slant, letter height, plate size, rounded top edge and colours, with magnet pockets open on the back or hidden inside. 3MF export keeps the plate and letters in two colours.",
+    "Heavy, a free bold font, is now included, and text can slant.",
+    "Split has a new Lay pieces cut-side down option: the pieces turn flat side down onto the workplane, ready to print.",
+    "Circular pattern: click any shape and the copies go evenly around its middle. Circular and Linear pattern both have a Turn pattern slider to spin the whole pattern.",
+    "Group stays CAD ready with up to 40 parts at once in the browser, as in the desktop app, and grouping one part at a time onto a Group stays CAD ready and true to size.",
+    "Groups with tori are much faster: two tori take about a second instead of 35 to 50 seconds.",
+    "Push Pull keeps the part's mesh detail, the face under the pointer is clearly highlighted, and Apply waits for the preview if you click it early.",
+    "Groups and splits show true sizes, such as 16.00 instead of 15.999, without stray fan-shaped lines on flat faces.",
+    "Shapes dropped onto the top of a part land on that surface. Shift+arrow moves exactly 5 grid steps, and arrow keys no longer also move the part sideways.",
+    "Size boxes take units and sums such as 2in or (10+2)mm, and 0 or a negative size reverts instead of making a sliver.",
+    "About 20 actions that used to do nothing now say why.",
+    "Fixed: Circular pattern Apply could delete other shapes in your design. Ctrl+D or paste on a patterned part could delete the original pattern.",
+    "Fixed: laser Cut/Score/Engrave, threads, Gridfinity and turning a step off are now saved and can be undone.",
+    "Fixed: saving a design that had not finished loading could write an empty file, and saving twice quickly could keep the older copy.",
+    "Fixed: editing a sketch kept the part's colour, hole setting and fillets; Revolve works on sketches with holes or several outlines; Ungroup of a stretched group comes out the right size.",
+    "Pro values: a plain number now means your workplane's unit, so on an inch workplane wall = 2 means 2 inches.",
+    ],
+  },
+  {
     version: "1.4.0",
     items: [
       "The Shapes bar is easier to find your way around: bigger pictures, full names, and one list in plain sections from Basic to Gridfinity. Type in the Find box at the top to jump straight to a shape. In a laser design the flat shapes come first.",

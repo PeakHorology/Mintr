@@ -1,3 +1,4 @@
+#include "fillet.hpp"
 #include "kernel.hpp"
 #include "protocol.hpp"
 
@@ -27,6 +28,9 @@ int main() {
       reply = { { "ok", false }, { "fallback", true }, { "message", "invalid kernel frame" } };
     }
     if (!writeFrame(reply.dump())) break;
+    // A blend build left spinning on its own thread would burn a core for the rest of the
+    // session; the desktop app starts a fresh engine for the next request.
+    if (kernelNeedsRestart()) break;
   }
   return 0;
 }

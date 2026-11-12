@@ -565,6 +565,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.text === b.text &&
     a.font === b.font &&
     a.textCircumference === b.textCircumference &&
+    a.textSlant === b.textSlant &&
     a.textWrap === b.textWrap &&
     a.importedMesh === b.importedMesh &&
     a.imagePlate === b.imagePlate &&
@@ -578,6 +579,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.drivenBy === b.drivenBy &&
     a.surfaceTexture === b.surfaceTexture &&
     a.laserJob === b.laserJob &&
+    a.laserLink === b.laserLink &&
     a.edgeTreatmentHistory === b.edgeTreatmentHistory &&
     a.cadDisplayEdges === b.cadDisplayEdges &&
     a.cadDisplayEdgesVersion === b.cadDisplayEdgesVersion &&
@@ -595,6 +597,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.patternFeature === b.patternFeature &&
     a.holeSpec === b.holeSpec &&
     a.gridfinityBin === b.gridfinityBin &&
+    a.toolboxLabel === b.toolboxLabel &&
     a.gridfinityBaseplate === b.gridfinityBaseplate &&
     a.gridfinityBuilt === b.gridfinityBuilt &&
     a.loftSpec === b.loftSpec &&

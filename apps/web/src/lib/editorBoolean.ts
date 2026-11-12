@@ -54,7 +54,7 @@ import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape } from "@/li
 import { hardwareProfile } from "@/lib/desktopHardware";
 import { meshDataToTransfer, runManifoldBooleanInWorker } from "@/lib/manifoldBooleanClient";
 import { createLocalId } from "@/lib/localIds";
-import { aabbsOverlap, shapeYawDegrees, worldAabb } from "@/lib/shapeBounds";
+import { aabbsOverlap, groupScaleInChildFrame, shapeYawDegrees, worldAabb } from "@/lib/shapeBounds";
 import { isFaceHostedSketch, resolveSketchPlane } from "@/lib/sketchPlane";
 import { barrelHoleCutDepthMm } from "@/lib/sketchCylinder";
 import { sphereTessellation } from "@/lib/sphereTessellation";
@@ -67,7 +67,7 @@ import {
 } from "@/lib/stepQuality";
 import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
 import { axisAlignedRectFromClosedPath, circleFromClosedPath, orderedSketchPaths, pointInSketchPolygon, shapeFromSketchProfile, type OrderedSketchPath } from "@/lib/sketchProfileShape";
-import { cloneAsGroupChild } from "@/lib/editorGroup";
+import { cloneAsGroupChild, groupedShape } from "@/lib/editorGroup";
 import {
   type Cuboid,
   type MeshData,
@@ -160,7 +160,8 @@ export function alignmentLabel(axis: AlignAxis, target: AlignTarget) {
     return target === "min" ? "left" : target === "max" ? "right" : "center";
   }
   if (axis === "z") {
-    return target === "min" ? "front" : target === "max" ? "back" : "middle";
+    // +z faces the view cube's Front view, so the +z side is the front.
+    return target === "max" ? "front" : target === "min" ? "back" : "middle";
   }
   return target === "min" ? "bottom" : target === "max" ? "top" : "middle";
 }
@@ -1919,6 +1920,24 @@ export function positionsInteriorTriangleCount(positions: number[], cutters: Wor
   return count;
 }
 
+/**
+ * True when a solid's exact bounds hold its mesh: the mesh lies on or inside the surface, and
+ * no further inside than meshing ever leaves it. Anything else means the two do not belong
+ * together, and the mesh's own bounds are kept.
+ */
+export function exactBoundsHoldMesh(exact: readonly number[], mesh: readonly number[]): boolean {
+  if (exact.length !== 6 || !exact.every(Number.isFinite)) return false;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const size = exact[axis + 3] - exact[axis];
+    if (!(size > 0)) return false;
+    const slack = Math.max(0.5, size * 0.02);
+    const below = mesh[axis] - exact[axis];
+    const above = exact[axis + 3] - mesh[axis + 3];
+    if (below < -1e-3 || above < -1e-3 || below > slack || above > slack) return false;
+  }
+  return true;
+}
+
 export function meshPositionsToGroupShape(
   selection: WorkplaneShape[],
   solids: WorkplaneShape[],
@@ -1926,6 +1945,7 @@ export function meshPositionsToGroupShape(
   idPrefix: string,
   cleanup?: BooleanCleanupOptions,
   normals?: number[],
+  exactBounds?: number[],
 ): WorkplaneShape | null {
   const cleaned = cleanupBooleanPositions(positions, undefined, cleanup);
   if (cleaned.length < 9) {
@@ -1954,6 +1974,14 @@ export function meshPositionsToGroupShape(
 
   if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) {
     return null;
+  }
+
+  // An exact result is placed by the solid's own bounds, which its stored STEP is centred on.
+  // The mesh sits a hair inside them on curves (a 16 mm sphere pair measured 15.999), and
+  // placing by the mesh moved the solid by that much on every Group onto it, until a fuse of
+  // touching round faces failed. It also shows the true size.
+  if (exactBounds && exactBoundsHoldMesh(exactBounds, [minX, minY, minZ, maxX, maxY, maxZ])) {
+    [minX, minY, minZ, maxX, maxY, maxZ] = exactBounds;
   }
 
   const centerX = (minX + maxX) / 2;
@@ -3049,9 +3077,16 @@ export function restoreGroupedChildren(group: WorkplaneShape, options?: { preser
   const groupCenter = new THREE.Vector3(group.x, (group.elevation ?? 0) + group.height / 2, group.z);
 
   return children.map((child) => {
-    const width = shapeWidth(child) * sx;
-    const depth = shapeDepth(child) * sz;
-    const height = child.height * sy;
+    // The group stretches along its own axes; a turned child takes that stretch along its own.
+    const frame = groupScaleInChildFrame(child, { x: sx, y: sy, z: sz });
+    if (!frame) {
+      const baked = shearedGroupChildAsMesh(group, child, options);
+      if (baked) return baked;
+    }
+    const scale = frame?.scale ?? { x: sx, y: sy, z: sz };
+    const width = shapeWidth(child) * scale.x;
+    const depth = shapeDepth(child) * scale.z;
+    const height = child.height * scale.y;
     const localCenter = new THREE.Vector3(
       child.x * sx * mirrorSign(group.mirrorX),
       (((child.elevation ?? 0) + child.height / 2) * sy - group.height / 2) * mirrorSign(group.mirrorY),
@@ -3061,7 +3096,7 @@ export function restoreGroupedChildren(group: WorkplaneShape, options?: { preser
     const childRotationMatrix = new THREE.Matrix4()
       .makeRotationFromQuaternion(groupQuaternion)
       .multiply(groupReflection)
-      .multiply(new THREE.Matrix4().makeRotationFromQuaternion(quaternionForShape(child)))
+      .multiply(new THREE.Matrix4().makeRotationFromQuaternion(quaternionForShape(frame ? { ...child, rotation: frame.rotation } : child)))
       .multiply(groupReflection);
     const childRotation = rotationFromQuaternion(new THREE.Quaternion().setFromRotationMatrix(childRotationMatrix));
     const restored: WorkplaneShape = {
@@ -3081,10 +3116,79 @@ export function restoreGroupedChildren(group: WorkplaneShape, options?: { preser
       mirrorY: Boolean(child.mirrorY) !== Boolean(group.mirrorY) || undefined,
       mirrorZ: Boolean(child.mirrorZ) !== Boolean(group.mirrorZ) || undefined,
       hidden: group.hidden ? true : child.hidden,
+      values: valuesKeptOnUngroup(group, child),
     };
+    if (!restored.values) delete restored.values;
     // Preserve each child's own solid/hole role. Applying the parent group's hole
     // flag would turn every restored solid into a hole after Hole → Group → Ungroup.
     return canonicalizeShape(restored);
+  });
+}
+
+/** Every sum a part and the parts inside it use, for Ungroup to keep the values they need. */
+function drivenExpressions(shape: WorkplaneShape): string[] {
+  return [
+    ...Object.values(shape.drivenBy ?? {}),
+    ...(shape.values ?? []).map((value) => value.expression),
+    ...(shape.groupedShapes ?? []).flatMap(drivenExpressions),
+  ];
+}
+
+/**
+ * A part leaving a group keeps the group's values its sums use (its own come first), so Ungroup
+ * never leaves "There is no value named …" behind.
+ */
+function valuesKeptOnUngroup(group: WorkplaneShape, child: WorkplaneShape): WorkplaneShape["values"] {
+  const own = child.values ?? [];
+  const groupValues = group.values ?? [];
+  if (groupValues.length === 0) return child.values;
+  const sums = drivenExpressions(child).join(" ");
+  const named = new Set(own.map((value) => value.name));
+  // A group value used by another group value the child needs comes along too.
+  const needed = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    const text = sums + " " + groupValues.filter((value) => needed.has(value.name)).map((value) => value.expression).join(" ");
+    for (const value of groupValues) {
+      if (needed.has(value.name) || named.has(value.name)) continue;
+      if (new RegExp(`(^|[^A-Za-z0-9_.])${value.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`).test(text)) {
+        needed.add(value.name);
+        grew = true;
+      }
+    }
+  }
+  const kept = groupValues.filter((value) => needed.has(value.name));
+  return kept.length > 0 ? [...own, ...kept.map((value) => ({ ...value }))] : child.values;
+}
+
+/** A child the group's stretch would shear (turned 30° in a group stretched along X): bake the mesh the viewport draws. */
+function shearedGroupChildAsMesh(group: WorkplaneShape, child: WorkplaneShape, options?: { preserveIds?: boolean }): WorkplaneShape | null {
+  const alone: WorkplaneShape = {
+    ...group,
+    hole: Boolean(child.hole),
+    importedMesh: undefined,
+    cadBrep: undefined,
+    groupedShapes: [{ ...child, hidden: false, suppressed: undefined, csg: child.csg && { ...child.csg, suppressed: undefined } }],
+  };
+  const mesh = meshForShape(alone);
+  const positions: number[] = [];
+  for (const [a, b, c] of mesh.faces) positions.push(...mesh.vertices[a], ...mesh.vertices[b], ...mesh.vertices[c]);
+  const baked = meshPositionsToGroupShape([child], [child], positions, "ungroup-stretched");
+  if (!baked) return null;
+  return canonicalizeShape({
+    ...baked,
+    id: options?.preserveIds ? child.id : createLocalId(`${child.id}-ungroup`),
+    name: child.name,
+    color: child.color,
+    hole: child.hole,
+    hidden: group.hidden ? true : child.hidden,
+    suppressed: child.suppressed,
+    csg: undefined,
+    groupedShapes: undefined,
+    groupedBaseWidth: undefined,
+    groupedBaseDepth: undefined,
+    groupedBaseHeight: undefined,
   });
 }
 
@@ -3432,6 +3536,7 @@ export async function occtBooleanMeshShape(
           ? { unifyCoplanar: true }
           : undefined,
       result.quality === "exact" ? result.normals : undefined,
+      result.quality === "exact" ? result.bounds : undefined,
     );
     if (!group?.importedMesh) return null;
     const expected = boundsForShapes(selection);
@@ -3692,6 +3797,23 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
   const hasSolid = booleanSelection.some((shape) => !shape.hole);
   const hasHole = booleanSelection.some((shape) => shape.hole);
   const hasImportedMesh = booleanSelection.some((shape) => Boolean(shape.importedMesh));
+  if (!hasSolid && hasHole) {
+    // Holes on their own: there is nothing to cut yet, so keep them together as one hole that
+    // cuts later, as Tie does. Group used to refuse a row of separate holes ("make sure they overlap").
+    const holeGroup = groupedShape(solidified);
+    if (holeGroup) {
+      return {
+        group: { ...holeGroup, name: "Group" },
+        booleanSelection,
+        hasSolid,
+        hasHole,
+        hasImportedMesh,
+        consumed: false,
+        failureNotice: "",
+        leftOutShapes: [],
+      } as GroupBuildResult;
+    }
+  }
   const boxBooleanSelection = hasSolid && hasHole
     ? await ensureExactSketchOperands(expandBooleanHoleCutters(expandGroupsForBoxBoolean(solidified)))
     : [];

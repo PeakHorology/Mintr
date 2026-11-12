@@ -77,6 +77,16 @@
   color: var(--danger-text);
 }
 
+/* A tight bar keeps Extrude's name, since it is the usual way out; the others show their icons. */
+.editor-top-bar.is-compact .sketch-finish-toolbar .sketch-finish-action.primary {
+  width: auto;
+  padding: 0 10px;
+}
+
+.editor-top-bar.is-compact .sketch-finish-toolbar .sketch-finish-action.primary .editor-file-action-text {
+  display: inline;
+}
+
 .sketch-finish-more {
   position: relative;
 }
@@ -376,6 +386,50 @@
   color: #EFEBE8;
   background: #655447;
   border-color: #655447;
+}
+
+/* A narrow window folds Rules, then Adjust, into a menu so the ribbon stays one row. */
+.sketch-ribbon-menu-host {
+  position: relative;
+}
+
+.sketch-ribbon-menu-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sketch-ribbon-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 190px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  padding: 8px;
+  background: #efebe8;
+  border: 1px solid #d2c4a8;
+  border-radius: 12px;
+  box-shadow: var(--elevation-lg);
+}
+
+.sketch-ribbon-menu .sketch-ribbon-tool {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+/* Last step on a narrow window: Change shows icons; the name still shows on hover. */
+.sketch-ribbon-group.is-icons .sketch-ribbon-tool > span {
+  display: none;
+}
+
+[data-theme="dark"] .sketch-ribbon-menu {
+  background: var(--glass-surface-strong);
+  border-color: var(--control-border-strong);
 }
 
 [data-theme="dark"] .sketch-ribbon {
@@ -726,6 +780,12 @@
   top: -6px;
   border-width: 7px;
   border-bottom-color: var(--glass-surface-strong);
+}
+
+/* Moved aside to clear the inspector: the caret would point past the card's edge. */
+.toolbar-flow--no-caret::before,
+.toolbar-flow--no-caret::after {
+  display: none;
 }
 
 .toolbar-flow > .edge-modifier-panel {
@@ -3150,6 +3210,7 @@
   pointer-events: none;
   transform: translateX(-50%);
   animation: active-tool-chip-in 160ms ease;
+  transition: top 180ms ease;
 }
 
 .active-tool-chip strong {
@@ -3809,6 +3870,12 @@
   border-radius: var(--radius-lg);
   box-shadow: var(--elevation-lg);
   font-size: var(--text-xs);
+}
+
+/* The sketch ribbon spans the top of the view; start the status panel just under it. */
+.editor-body:has(> .sketch-ribbon) .sketch-palette {
+  top: calc(var(--editor-mode-notch-height) + 6px + 78px);
+  max-height: calc(100% - var(--editor-mode-notch-height) - 120px);
 }
 
 .sketch-palette-header {

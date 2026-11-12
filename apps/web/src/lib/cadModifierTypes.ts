@@ -144,6 +144,8 @@ export type CadPushPullRequest = {
   faceId: number;
   distance: number;
   quality: CadModifierQuality;
+  /** Triangles in the part before the push, so the result is meshed about as densely. */
+  matchTriangles?: number;
 };
 
 export type CadModifierWorkerRequest =

@@ -282,6 +282,7 @@ export function rulerShapeTopologyKey(shape: WorkplaneShape): string {
     font: shape.font,
     textCircumference: shape.textCircumference,
     textWrap: shape.textWrap,
+    textSlant: shape.textSlant,
     mesh: [positions.length, positionSample],
     brep: [brep.length, brepSample],
     treatments: shape.edgeTreatments,

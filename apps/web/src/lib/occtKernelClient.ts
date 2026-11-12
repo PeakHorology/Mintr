@@ -1,5 +1,6 @@
 import { cadModifierRequestTimeoutMs } from "@/lib/cadModifierRuntime";
 import { booleanAngularDeflection } from "@/lib/displayTessellation";
+import { displayTriangleTotal } from "@/lib/displayTriangleCount";
 import { mintrKernel, plainNativeReply, toNativeKernelSolids, type NativeKernelJob, type NativeKernelReply } from "@/lib/nativeKernelProtocol";
 import type { OcctBooleanMeshResult, StepExportResult } from "@/lib/stepExport";
 import {
@@ -150,6 +151,9 @@ function nativeJobFor(request: OcctKernelRequest, requestId: number): NativeKern
       op: request.op,
       solids,
       angularDeflection: booleanAngularDeflection(request.shapes),
+      // What the parts showed, so a torus or sphere result is not meshed many times finer
+      // (and slower) than it looked. Cylinders keep their side count either way.
+      shownTriangles: displayTriangleTotal(request.shapes),
     };
   }
   if (request.type === "exportStep") {
@@ -196,6 +200,7 @@ function nativeReplyToResult(request: OcctKernelRequest, reply: NativeKernelRepl
       brepStep: reply.brepStep,
       quality: reply.quality ?? "exact",
       displayEdges: reply.displayEdges,
+      bounds: reply.bounds,
     } satisfies OcctBooleanMeshResult;
   }
   if (request.type === "exportStep") {

@@ -752,22 +752,31 @@ function withLoftMesh(
   // The body can bulge a little past its outlines; on a fresh loft the shape box moves to
   // the body. Later rebuilds keep the shape where the user put it.
   const offset = moveToBody ? yawPoint(placed.centerX, placed.centerZ, shape.rotation ?? 0) : [0, 0];
+  // A round outline's widest points fall between the mesh's corners, so a 20 mm circle measured
+  // 19.97. The outlines give the true size; a mesh a hair short of it takes the outlines' size.
+  // A smooth loft can bulge past them, and then the mesh is the size.
+  const trueSize = (meshed: number, outline: number) =>
+    meshed < outline && outline - meshed <= Math.max(0.05, outline * 0.005) ? outline : meshed;
+  const width = trueSize(placed.width, span[0]);
+  const depth = trueSize(placed.depth, span[1]);
+  const height = trueSize(placed.height, span[2]);
   return {
     ...shape,
     x: shape.x + offset[0],
     z: shape.z + offset[1],
-    width: placed.width,
-    depth: placed.depth,
-    height: placed.height,
-    size: Math.max(placed.width, placed.depth),
+    width,
+    depth,
+    height,
+    size: Math.max(width, depth),
     loftSpec: { ...shape.loftSpec, span },
     importedMesh: {
       positions: placed.positions,
       normals: placed.normals,
       indices: placed.indices,
-      baseWidth: placed.width,
-      baseDepth: placed.depth,
-      baseHeight: placed.height,
+      // Same as the size, so the mesh is drawn at 1:1 and not stretched by the hair it was short.
+      baseWidth: width,
+      baseDepth: depth,
+      baseHeight: height,
       triangleCount: Math.floor(placed.indices.length / 3),
       sourceFormat: "json",
     },

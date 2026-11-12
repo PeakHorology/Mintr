@@ -36,6 +36,14 @@ TopoDS_Shape kernelFitImportedLocal(const TopoDS_Shape& shape, const nlohmann::j
 bool kernelReadStep(const std::string& text, TopoDS_Shape& out);
 bool kernelReadBrep(const std::string& text, TopoDS_Shape& out);
 std::string kernelExportStep(const TopoDS_Shape& shape, bool zUp);
+/**
+ * STEP for the app to keep with a body and send back later: plain STEP, with the engine's
+ * own copy of the solid in a comment at the end. kernelReadStep reads that copy when it is
+ * there. Reading STEP back rebuilds how each curved face is trimmed, and on round parts a
+ * fuse with the rebuilt solid could drop a part. Other programs ignore the comment, and a
+ * file the user exports is written fresh without it.
+ */
+std::string kernelStoreStep(const TopoDS_Shape& shape);
 std::string kernelExportBrep(const TopoDS_Shape& shape);
 bool kernelTessellate(const TopoDS_Shape& shape, std::vector<double>& positions, double deflection = 0.12);
 /**
@@ -51,6 +59,20 @@ struct KernelMeshOptions {
   bool copyFirst = true;
   /** Coarsest angle the triangle-budget retries may reach. */
   double maxAngular = 0.5;
+  /**
+   * Mesh about this many triangles (within half again either way) by loosening or tightening
+   * both deflections a step at a time. Zero meshes at the given deflections. Push Pull uses it
+   * so the result is as dense as the part was, as the browser worker's tessellateNear does.
+   */
+  double targetTriangles = 0.0;
+  /**
+   * How many triangles the parts showed on screen (0 = unknown). A surface curved both ways,
+   * such as a torus, meshes many times denser than it showed at the same angle, and slowly:
+   * a 16 mm torus took 11 s. When two quick coarse meshes say the full one would pass 4 times
+   * this, the angle is opened just enough to land near it. Plain curves such as cylinders
+   * stay under that and keep their side count.
+   */
+  double shownTriangles = 0.0;
 };
 bool kernelTessellateIndexed(
   const TopoDS_Shape& shape,

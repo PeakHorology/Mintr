@@ -100,6 +100,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     text: shape.text,
     font: shape.font,
     textCircumference: shape.textCircumference,
+    textSlant: shape.textSlant,
     textWrap: shape.textWrap,
     locked: shape.locked || undefined,
     hidden: shape.hidden || undefined,
@@ -113,6 +114,8 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     edgeTreatments: shape.edgeTreatments,
     features: shape.features,
     generated: shape.generated,
+    toolboxLabel: shape.toolboxLabel,
+    laserLink: shape.laserLink,
     values: shape.values,
     drivenBy: shape.drivenBy,
     surfaceTexture: shape.surfaceTexture,
@@ -159,6 +162,24 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
       feature: entry.feature,
       before: shapeFingerprintPayload(entry.before),
     })),
+    // Settings-only edits (laser job, thread or bin settings, turning a step off) change none of
+    // the fields above, so without these the edit was never saved and Undo skipped it.
+    laserJob: shape.laserJob,
+    suppressed: shape.suppressed || undefined,
+    threadSpec: shape.threadSpec,
+    threadFeatures: shape.threadFeatures,
+    threadHistory: shape.threadHistory?.map((entry) => ({
+      ...entry,
+      before: shapeFingerprintPayload(entry.before),
+    })),
+    gridfinityBin: shape.gridfinityBin,
+    gridfinityBaseplate: shape.gridfinityBaseplate,
+    gridfinityBuilt: shape.gridfinityBuilt,
+    loftBuilt: shape.loftBuilt,
+    sketchRevolveAxis: shape.sketchRevolveAxis,
+    featureBase: shape.featureBase ? shapeFingerprintPayload(shape.featureBase) : undefined,
+    cadDisplayEdgesLength: shape.cadDisplayEdges?.length ?? 0,
+    source3mfKey: shape.source3mfKey,
   };
 }
 

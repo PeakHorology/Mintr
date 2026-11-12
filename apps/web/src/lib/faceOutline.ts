@@ -138,19 +138,31 @@ export function insetPolygon(loop: FaceVec2[], distance: number, edgeInset: Edge
     if (!line) return [];
     lines.push(line);
   }
-  const next: FaceVec2[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const hit = lineIntersect(lines[(index - 1 + lines.length) % lines.length], lines[index]);
-    if (!hit) return [];
-    next.push(hit);
+  // A short edge on a rounded convex corner shrinks as the inset grows and turns round once the
+  // inset passes the corner's radius. That edge is gone from the inset outline, so drop it and join
+  // its neighbours, one at a time, the way a real offset sharpens the corner.
+  let active = lines;
+  while (active.length >= 3) {
+    const next: FaceVec2[] = [];
+    for (let index = 0; index < active.length; index += 1) {
+      const hit = lineIntersect(active[(index - 1 + active.length) % active.length], active[index]);
+      if (!hit) return [];
+      next.push(hit);
+    }
+    let worst = -1;
+    let worstDot = 0.2;
+    for (let index = 0; index < next.length; index += 1) {
+      const moved = norm2(sub2(next[(index + 1) % next.length], next[index]));
+      const along = dot2(active[index].dir, moved);
+      if (along < worstDot) {
+        worstDot = along;
+        worst = index;
+      }
+    }
+    if (worst < 0) return signedArea2(next) > 1e-4 ? next : [];
+    active = active.filter((_, index) => index !== worst);
   }
-  if (signedArea2(next) <= 1e-4) return [];
-  for (let index = 0; index < next.length; index += 1) {
-    const original = norm2(sub2(loop[(index + 1) % loop.length], loop[index]));
-    const moved = norm2(sub2(next[(index + 1) % next.length], next[index]));
-    if (dot2(original, moved) < 0.2) return [];
-  }
-  return next;
+  return [];
 }
 
 function cornerTurn(previous: FaceVec2, current: FaceVec2, next: FaceVec2) {
@@ -174,6 +186,8 @@ export function maxCornerRadius(loop: FaceVec2[]): number {
     const tanHalf = Math.tan(absTurn / 2);
     if (tanHalf < 1e-4) continue;
     const room = Math.min(len2(sub2(current, previous)), len2(sub2(next, current))) * 0.5;
+    // roundPolygonCorners leaves a corner this tight as it is, so it does not cap the radius.
+    if (!(room > 0.05)) continue;
     limit = Math.min(limit, room / tanHalf);
   }
   return Number.isFinite(limit) ? Math.max(0, limit) : 0;

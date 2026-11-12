@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   Check,
+  ChevronDown,
   Circle,
   Ellipsis,
   Eraser,
@@ -342,7 +343,7 @@ export function SketchFinishToolbar({
       <div className="toolbar-section-tools">
         <button className="editor-file-action sketch-finish-action primary" type="button" data-lesson-target="extrude" aria-label="Extrude" data-tool-help={TOOL_DESCRIPTIONS.extrude} onClick={onSketchExtrude} onContextMenu={extrudeHelp.onContextMenu}>
           <Check size={16} strokeWidth={2.4} />
-          <span>Extrude</span>
+          <span className="editor-file-action-text">Extrude</span>
           {extrudeHelp.helpPortal}
         </button>
         <button
@@ -357,17 +358,17 @@ export function SketchFinishToolbar({
           onContextMenu={revolveHelp.onContextMenu}
         >
           <RotateCw size={16} strokeWidth={2.2} />
-          <span>Revolve</span>
+          <span className="editor-file-action-text">Revolve</span>
           {revolveHelp.helpPortal}
         </button>
         <button className="editor-file-action sketch-finish-action" type="button" data-lesson-target="sweep" aria-label="Sweep" data-tool-help={TOOL_DESCRIPTIONS.sweep} onClick={onSketchSweep} onContextMenu={sweepHelp.onContextMenu}>
           <Spline size={16} strokeWidth={2.2} />
-          <span>Sweep</span>
+          <span className="editor-file-action-text">Sweep</span>
           {sweepHelp.helpPortal}
         </button>
         <button className="editor-file-action sketch-finish-action cancel" type="button" data-lesson-target="cancel" aria-label="Cancel" data-tool-help={TOOL_DESCRIPTIONS.cancelSketch} onClick={onSketchCancel} onContextMenu={cancelHelp.onContextMenu}>
           <X size={16} strokeWidth={2.4} />
-          <span>Cancel</span>
+          <span className="editor-file-action-text">Cancel</span>
           {cancelHelp.helpPortal}
         </button>
       </div>
@@ -589,6 +590,9 @@ function RibbonTool({
   );
 }
 
+/** A ribbon taller than this has wrapped onto a second row. */
+const RIBBON_ONE_ROW_MAX = 84;
+
 const SHAPE_TOOLS: SketchTool[] = ["square", "roundRect", "slot", "triangle", "polygon", "star", "ellipse"];
 
 /** One horizontal strip while a sketch is open. Solid tools return when it closes. */
@@ -634,8 +638,129 @@ export function SketchRibbon({
     setShapesOpen(false);
   };
   const shapeActive = SHAPE_TOOLS.includes(sketchTool);
+
+  // One row where it fits. When it would wrap, fold Rules into a menu, then Adjust, then show
+  // Change as icons only. Select and Draw always keep their names.
+  const ribbonRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(0);
+  const [menuOpen, setMenuOpen] = useState<"adjust" | "rules" | null>(null);
+  useLayoutEffect(() => {
+    const ribbon = ribbonRef.current;
+    if (!ribbon || compact >= 3) return;
+    if (ribbon.offsetHeight > RIBBON_ONE_ROW_MAX) setCompact((level) => Math.min(3, level + 1));
+  }, [compact, proEnabled, sketchTool, onTracePhoto]);
+  useEffect(() => {
+    let frame = 0;
+    const refit = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => setCompact(0));
+    };
+    window.addEventListener("resize", refit);
+    return () => {
+      window.removeEventListener("resize", refit);
+      window.cancelAnimationFrame(frame);
+    };
+  }, []);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".sketch-ribbon-menu-host")) return;
+      setMenuOpen(null);
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [menuOpen]);
+  // A tool picked from a folded menu closes it.
+  useEffect(() => {
+    setMenuOpen(null);
+  }, [sketchTool]);
+  const toolGroup = (key: "adjust" | "rules", folded: boolean, tools: Array<{ tool?: SketchTool; label: string; node: ReactNode }>) => {
+    if (!folded) return <div className="sketch-ribbon-tools">{tools.map((entry) => entry.node)}</div>;
+    const active = tools.find((entry) => entry.tool && entry.tool === sketchTool);
+    return (
+      <div className="sketch-ribbon-tools sketch-ribbon-menu-host">
+        <button
+          type="button"
+          className={`sketch-ribbon-tool sketch-ribbon-menu-button${active || menuOpen === key ? " active" : ""}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen === key}
+          onClick={() => setMenuOpen((open) => (open === key ? null : key))}
+        >
+          <span>{active?.label ?? "Choose"}</span>
+          <ChevronDown size={14} strokeWidth={2.2} />
+        </button>
+        {menuOpen === key ? (
+          <div className="sketch-ribbon-menu" role="menu" aria-label={key === "rules" ? "Rules" : "Adjust"}>
+            {tools.map((entry) => entry.node)}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+  const adjustTools: Array<{ tool?: SketchTool; label: string; node: ReactNode }> = [
+    { tool: "refine", label: "Bend", node: (
+      <RibbonTool key="refine" label="Bend" description={TOOL_DESCRIPTIONS.refine} active={sketchTool === "refine"} hoverKey="refine" onHoverTool={onHoverTool} onClick={() => onSketchTool("refine")}>
+        <Spline size={16} strokeWidth={1.75} />
+      </RibbonTool>
+    ) },
+    { tool: "smooth", label: "Smooth", node: (
+      <RibbonTool key="smooth" label="Smooth" description={TOOL_DESCRIPTIONS.smooth} active={sketchTool === "smooth"} hoverKey="smooth" onHoverTool={onHoverTool} onClick={() => onSketchTool("smooth")}>
+        <Spline size={16} strokeWidth={1.75} />
+      </RibbonTool>
+    ) },
+    { tool: "pattern", label: "Linear", node: (
+      <RibbonTool key="pattern" label="Linear" sageKey="sketch-linear" description="Repeat the selection in rows." lessonTarget="linear pattern" active={sketchTool === "pattern"} hoverKey="pattern" onHoverTool={onHoverTool} onClick={() => onSketchTool("pattern")}>
+        <SketchRectPatternIcon />
+      </RibbonTool>
+    ) },
+    { tool: "circular-pattern", label: "Circular", node: (
+      <RibbonTool key="circular-pattern" label="Circular" sageKey="sketch-circular" description="Spin copies around the middle of the selection." lessonTarget="circular pattern" active={sketchTool === "circular-pattern"} hoverKey="circular-pattern" onHoverTool={onHoverTool} onClick={() => onSketchTool("circular-pattern")}>
+        <ToolbarCircularPatternIcon />
+      </RibbonTool>
+    ) },
+    { tool: "stroke", label: "Lineweight", node: (
+      <RibbonTool key="stroke" label="Lineweight" description={TOOL_DESCRIPTIONS.stroke} active={sketchTool === "stroke"} hoverKey="stroke" onHoverTool={onHoverTool} onClick={() => onSketchTool("stroke")}>
+        <Minus size={16} strokeWidth={1.75} />
+      </RibbonTool>
+    ) },
+    { label: "Image", node: (
+      <RibbonTool key="image" label="Image" description={TOOL_DESCRIPTIONS.image} hoverKey="image" onHoverTool={onHoverTool} onClick={() => { setMenuOpen(null); onSketchImage(); }}>
+        <Image size={16} strokeWidth={1.75} />
+      </RibbonTool>
+    ) },
+    ...(onTracePhoto ? [{ label: "Trace photo", node: (
+      <RibbonTool key="trace" label="Trace photo" sageKey="sketch-trace-photo" description={TOOL_DESCRIPTIONS.tracePhoto} onClick={() => { setMenuOpen(null); onTracePhoto?.(); }}>
+        <ScanLine size={16} strokeWidth={1.75} />
+      </RibbonTool>
+    ) }] : []),
+  ];
+  const rule = (tool: SketchTool, label: string, description: string, icon: ReactNode) => ({
+    tool,
+    label,
+    node: (
+      <RibbonTool key={tool} label={label} description={description} active={sketchTool === tool} hoverKey={tool as SketchCoachKey} onHoverTool={onHoverTool} onClick={() => onSketchTool(tool)}>
+        {icon}
+      </RibbonTool>
+    ),
+  });
+  const ruleTools = [
+    rule("dimension", "Dimension", "Add a driving length dimension.", <SketchDimensionIcon />),
+    rule("dimension-angle", "Angle", "Keep the angle between two lines.", <SketchAngleDimensionIcon />),
+    rule("constrain-coincident", "Coincident", "Join two points so they stay together.", <SketchConstraintCoincidentIcon />),
+    rule("constrain-h", "Horizontal", "Make a line, or two points, horizontal.", <SketchConstraintHorizontalIcon />),
+    rule("constrain-v", "Vertical", "Make a line vertical.", <SketchConstraintVerticalIcon />),
+    rule("constrain-equal", "Equal", "Make two lines equal length.", <SketchConstraintEqualIcon />),
+    rule("constrain-parallel", "Parallel", "Make two lines parallel.", <SketchConstraintParallelIcon />),
+    rule("constrain-perp", "Right angle", "Make two lines meet at a right angle.", <SketchConstraintPerpendicularIcon />),
+    rule("constrain-tangent", "Tangent", "Make a line tangent to a circle.", <SketchConstraintTangentIcon />),
+    rule("constrain-midpoint", "Midpoint", "Lock a point to the middle of a line.", <SketchConstraintMidpointIcon />),
+    rule("constrain-concentric", "Concentric", "Share a center between two circles.", <SketchConstraintConcentricIcon />),
+    rule("constrain-fix", "Fix", "Lock a point or line so it cannot move.", <SketchConstraintFixIcon />),
+    rule("constrain-symmetry", "Symmetry", "Mirror two points or lines across an axis.", <SketchConstraintSymmetryIcon />),
+  ];
   return (
-    <div className="sketch-ribbon" role="toolbar" aria-label="Sketch">
+    <div className="sketch-ribbon" role="toolbar" aria-label="Sketch" ref={ribbonRef} data-compact={compact || undefined}>
       <section className="sketch-ribbon-group">
         <span>Select</span>
         <div className="sketch-ribbon-tools">
@@ -703,7 +828,7 @@ export function SketchRibbon({
           </div>
         ) : null}
       </section>
-      <section className="sketch-ribbon-group">
+      <section className={`sketch-ribbon-group${compact >= (proEnabled ? 3 : 2) ? " is-icons" : ""}`}>
         <span>Change</span>
         <div className="sketch-ribbon-tools">
           <RibbonTool label="Offset" description={TOOL_DESCRIPTIONS.offset} active={sketchTool === "offset"} ready={hasSelection} hoverKey="offset" onHoverTool={onHoverTool} onClick={() => onSketchTool("offset")}>
@@ -742,76 +867,12 @@ export function SketchRibbon({
       </section>
       <section className="sketch-ribbon-group">
         <span>Adjust</span>
-        <div className="sketch-ribbon-tools">
-          <RibbonTool label="Bend" description={TOOL_DESCRIPTIONS.refine} active={sketchTool === "refine"} hoverKey="refine" onHoverTool={onHoverTool} onClick={() => onSketchTool("refine")}>
-            <Spline size={16} strokeWidth={1.75} />
-          </RibbonTool>
-          <RibbonTool label="Smooth" description={TOOL_DESCRIPTIONS.smooth} active={sketchTool === "smooth"} hoverKey="smooth" onHoverTool={onHoverTool} onClick={() => onSketchTool("smooth")}>
-            <Spline size={16} strokeWidth={1.75} />
-          </RibbonTool>
-          <RibbonTool label="Linear" sageKey="sketch-linear" description="Repeat the selection in rows." lessonTarget="linear pattern" active={sketchTool === "pattern"} hoverKey="pattern" onHoverTool={onHoverTool} onClick={() => onSketchTool("pattern")}>
-            <SketchRectPatternIcon />
-          </RibbonTool>
-          <RibbonTool label="Circular" sageKey="sketch-circular" description="Spin copies around the middle of the selection." lessonTarget="circular pattern" active={sketchTool === "circular-pattern"} hoverKey="circular-pattern" onHoverTool={onHoverTool} onClick={() => onSketchTool("circular-pattern")}>
-            <ToolbarCircularPatternIcon />
-          </RibbonTool>
-          <RibbonTool label="Lineweight" description={TOOL_DESCRIPTIONS.stroke} active={sketchTool === "stroke"} hoverKey="stroke" onHoverTool={onHoverTool} onClick={() => onSketchTool("stroke")}>
-            <Minus size={16} strokeWidth={1.75} />
-          </RibbonTool>
-          <RibbonTool label="Image" description={TOOL_DESCRIPTIONS.image} hoverKey="image" onHoverTool={onHoverTool} onClick={onSketchImage}>
-            <Image size={16} strokeWidth={1.75} />
-          </RibbonTool>
-          {onTracePhoto ? (
-            <RibbonTool label="Trace photo" sageKey="sketch-trace-photo" description={TOOL_DESCRIPTIONS.tracePhoto} onClick={onTracePhoto}>
-              <ScanLine size={16} strokeWidth={1.75} />
-            </RibbonTool>
-          ) : null}
-        </div>
+        {toolGroup("adjust", compact >= (proEnabled ? 2 : 1), adjustTools)}
       </section>
       {proEnabled ? (
         <section className="sketch-ribbon-group">
           <span>Rules</span>
-          <div className="sketch-ribbon-tools">
-            <RibbonTool label="Dimension" description="Add a driving length dimension." active={sketchTool === "dimension"} hoverKey="dimension" onHoverTool={onHoverTool} onClick={() => onSketchTool("dimension")}>
-              <SketchDimensionIcon />
-            </RibbonTool>
-            <RibbonTool label="Angle" description="Keep the angle between two lines." active={sketchTool === "dimension-angle"} hoverKey="dimension-angle" onHoverTool={onHoverTool} onClick={() => onSketchTool("dimension-angle")}>
-              <SketchAngleDimensionIcon />
-            </RibbonTool>
-            <RibbonTool label="Coincident" description="Join two points so they stay together." active={sketchTool === "constrain-coincident"} hoverKey="constrain-coincident" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-coincident")}>
-              <SketchConstraintCoincidentIcon />
-            </RibbonTool>
-            <RibbonTool label="Horizontal" description="Make a line, or two points, horizontal." active={sketchTool === "constrain-h"} hoverKey="constrain-h" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-h")}>
-              <SketchConstraintHorizontalIcon />
-            </RibbonTool>
-            <RibbonTool label="Vertical" description="Make a line vertical." active={sketchTool === "constrain-v"} hoverKey="constrain-v" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-v")}>
-              <SketchConstraintVerticalIcon />
-            </RibbonTool>
-            <RibbonTool label="Equal" description="Make two lines equal length." active={sketchTool === "constrain-equal"} hoverKey="constrain-equal" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-equal")}>
-              <SketchConstraintEqualIcon />
-            </RibbonTool>
-            <RibbonTool label="Parallel" description="Make two lines parallel." active={sketchTool === "constrain-parallel"} hoverKey="constrain-parallel" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-parallel")}>
-              <SketchConstraintParallelIcon />
-            </RibbonTool>
-            <RibbonTool label="Right angle" description="Make two lines meet at a right angle." active={sketchTool === "constrain-perp"} hoverKey="constrain-perp" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-perp")}>
-              <SketchConstraintPerpendicularIcon />
-            </RibbonTool>
-            <RibbonTool label="Tangent" description="Make a line tangent to a circle." active={sketchTool === "constrain-tangent"} hoverKey="constrain-tangent" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-tangent")}>
-              <SketchConstraintTangentIcon />
-            </RibbonTool>
-            <RibbonTool label="Midpoint" description="Lock a point to the middle of a line." active={sketchTool === "constrain-midpoint"} hoverKey="constrain-midpoint" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-midpoint")}>
-              <SketchConstraintMidpointIcon />
-            </RibbonTool>
-            <RibbonTool label="Concentric" description="Share a center between two circles." active={sketchTool === "constrain-concentric"} hoverKey="constrain-concentric" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-concentric")}>
-              <SketchConstraintConcentricIcon />
-            </RibbonTool>
-            <RibbonTool label="Fix" description="Lock a point or line so it cannot move." active={sketchTool === "constrain-fix"} hoverKey="constrain-fix" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-fix")}>
-              <SketchConstraintFixIcon />
-            </RibbonTool>
-            <RibbonTool label="Symmetry" description="Mirror two points or lines across an axis." active={sketchTool === "constrain-symmetry"} hoverKey="constrain-symmetry" onHoverTool={onHoverTool} onClick={() => onSketchTool("constrain-symmetry")}>
-              <SketchConstraintSymmetryIcon />
-            </RibbonTool>
-          </div>
+          {toolGroup("rules", compact >= 1, ruleTools)}
         </section>
       ) : null}
     </div>

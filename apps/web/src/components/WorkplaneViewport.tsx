@@ -11,6 +11,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { createBooleanTextGeometry, meshForShape } from "@/lib/editorShapeMesh";
+import { meshCreaseEdges } from "@/lib/meshCreaseEdges";
 import { shapeFromSketchRevolve } from "@/lib/sketchRevolve";
 import { createGearGeometry } from "@/lib/gearMesh";
 import { gearPatchForFootprint, gearSpecKey } from "@/lib/gearProfile";
@@ -117,7 +118,8 @@ import type { PrintOverlayMarks } from "@/lib/printOverlayCollect";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
-import { hasUsableCsgResultMesh, viewportCadDisplayEdges, viewportGroupChildren } from "@/lib/csgTree";
+import { csgTreeContainsId, hasUsableCsgResultMesh, viewportCadDisplayEdges, viewportGroupChildren } from "@/lib/csgTree";
+import { restoreGroupedChildren } from "@/lib/editorBoolean";
 import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, fallbackSolidColor, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
@@ -216,6 +218,20 @@ const CAMERA_TARGET = new THREE.Vector3(0, 0, 0);
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
 let rememberedSketchCamera: { planeKey: string; pose: SketchCameraPose } | null = null;
 const MIN_SHAPE_SIZE = 0.01;
+
+/** A part inside `body`, at any depth, as it sits in the world; null when it is not in the body. */
+function worldPoseOfPartInBody(body: WorkplaneShape, partId: string): WorkplaneShape | null {
+  let group = body;
+  for (let depth = 0; depth < 32; depth += 1) {
+    const children = restoreGroupedChildren(group, { preserveIds: true });
+    const direct = children.find((child) => child.id === partId);
+    if (direct) return direct;
+    const next = children.find((child) => csgTreeContainsId(child, partId));
+    if (!next) return null;
+    group = next;
+  }
+  return null;
+}
 const CUT_PREVIEW_PADDING = 0.01;
 const MIN_ELEVATION = -180;
 const MAX_ELEVATION = 220;
@@ -298,6 +314,7 @@ function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
       color: asset.color,
       hole: asset.hole,
       generated: asset.generated,
+      toolboxLabel: asset.toolboxLabel === true || undefined,
     };
   } catch {
     return null;
@@ -330,6 +347,10 @@ export type WorkplaneViewportProps = {
   circularPatternRadius?: number;
   /** Click on the workplane places the circular pattern center. */
   onCircularPatternCenterPick?: (point: { x: number; z: number }) => void;
+  /** Click on a shape during a circular pattern: true when it set the center (its middle). */
+  onCircularPatternShapePick?: (shapeId: string) => boolean;
+  /** Hide the move/resize handles and size labels, such as while a pattern slider is dragged. */
+  transformHandlesHidden?: boolean;
   /** When true, left-click picks a face (or workplane) to start a sketch. */
   sketchFacePickMode?: boolean;
   onSketchPlanePicked?: (plane: SketchPlane) => void;
@@ -362,17 +383,18 @@ export type WorkplaneViewportProps = {
   onReduceTriangles?: (keepFraction: number) => void;
   activeFeatureId?: string | null;
   onSelectFeature?: (featureId: string | null) => void;
-  onSuppressFeature?: (featureId: string, suppressed: boolean) => void;
   modelTreeLocked?: boolean;
-  onReorderFeature?: (featureId: string, direction: "up" | "down") => void;
   onUpdateFeature?: (featureId: string, patch: ShapeUpdatePatch, options?: ShapeInspectorUpdateOptions) => void;
   onEditPattern?: () => void;
   onDissolvePattern?: () => void;
   onEditEdgeTreatment?: (index: number) => void;
   onRemoveEdgeTreatment?: (index: number) => void;
   onEditPartStep?: (featureId: string, valueMm: number) => void;
+  onOpenPartStep?: (featureId: string) => void;
   onTogglePartStep?: (featureId: string) => void;
   onRemovePartStep?: (featureId: string) => void;
+  onRemovePartStepsFrom?: (featureId: string) => void;
+  laserSource?: { designName: string; missing: boolean; changed: boolean; busy: boolean; onUpdate: () => void } | null;
   /** Smooth card in the inspector, on a Smooth body. */
   smoothControls?: SmoothInspectorControls | null;
   /** Edit points on a Smooth body: the dots to draw and drag. */
@@ -436,7 +458,8 @@ export type WorkplaneViewportProps = {
   /** The side already chosen. Stays highlighted until the shapes move. */
   faceSnapSource?: { shapeId: string; point: [number, number, number]; normal: [number, number, number] } | null;
   onFaceSnapPick?: (pick: { shapeId: string; point: [number, number, number]; normal: [number, number, number] }) => void;
-  faceSnapMotionRef?: MutableRefObject<((shapeId: string, pose: FaceMatePose, done: () => void) => void) | null>;
+  /** Move a part into a pose on screen, then call done. Longer moves can rise in an arc on the way. */
+  faceSnapMotionRef?: MutableRefObject<((shapeId: string, pose: FaceMatePose, done: () => void, motion?: { durationMs?: number; liftMm?: number }) => void) | null>;
   /**
    * While texturing: the part as it looks with the texture being set up, and what a click on it
    * does. Faces shows the chosen faces and the one under the mouse; place shows a faint copy of
@@ -452,6 +475,8 @@ export type WorkplaneViewportProps = {
     width: number;
     height: number;
   } | null;
+  /** The part before a Fillet, Chamfer or Push Pull preview, for the inspector's export badge. */
+  inspectorBadgeShape?: WorkplaneShape | null;
   /** Floated in the shape-inspector column so width/alignment stay matched. */
   inspectorDock?: ReactNode;
   /** Top of the inspector column (fillet / chamfer panel). */
@@ -2647,6 +2672,8 @@ export function WorkplaneViewport({
   circularPatternCenter = null,
   circularPatternRadius = 0,
   onCircularPatternCenterPick,
+  onCircularPatternShapePick,
+  transformHandlesHidden = false,
   sketchFacePickMode = false,
   sketchOnModel = null,
   sketchFrameRequest = 0,
@@ -2671,17 +2698,18 @@ export function WorkplaneViewport({
   onReduceTriangles,
   activeFeatureId = null,
   onSelectFeature,
-  onSuppressFeature,
   modelTreeLocked = false,
-  onReorderFeature,
   onUpdateFeature,
   onEditPattern,
   onDissolvePattern,
   onEditEdgeTreatment,
   onRemoveEdgeTreatment,
   onEditPartStep,
+  onOpenPartStep,
   onTogglePartStep,
   onRemovePartStep,
+  onRemovePartStepsFrom,
+  laserSource = null,
   smoothControls,
   smoothEdit = null,
   onSmoothPointPick,
@@ -2731,6 +2759,7 @@ export function WorkplaneViewport({
   textureGuide = null,
   onTextureWheel,
   splitPlane = null,
+  inspectorBadgeShape = null,
   faceSnapMotionRef,
   inspectorDock,
   inspectorDockTop,
@@ -2882,6 +2911,8 @@ export function WorkplaneViewport({
   const circularPatternCenterRef = useRef(circularPatternCenter);
   const circularPatternRadiusRef = useRef(circularPatternRadius);
   const onCircularPatternCenterPickRef = useRef(onCircularPatternCenterPick);
+  const onCircularPatternShapePickRef = useRef(onCircularPatternShapePick);
+  onCircularPatternShapePickRef.current = onCircularPatternShapePick;
   const sketchFacePickModeRef = useRef(sketchFacePickMode);
   const sketchOnModelRef = useRef<SketchOnModelSession | null>(sketchOnModel);
   sketchOnModelRef.current = sketchOnModel;
@@ -3346,11 +3377,11 @@ export function WorkplaneViewport({
       state.needsRender = true;
       return;
     }
-    const body = shapesRef.current.find((shape) =>
-      shape.groupedShapes?.some((child) => child.id === activeFeatureId) || shape.id === activeFeatureId,
-    );
-    const feature = body?.groupedShapes?.find((child) => child.id === activeFeatureId);
-    if (!body || !feature || feature.hole) {
+    // The part may sit at any depth (the Parts tree reaches nested groups), so it is placed in the
+    // world the way the group restores it, and holes are outlined like solids.
+    const body = shapesRef.current.find((shape) => shape.id !== activeFeatureId && csgTreeContainsId(shape, activeFeatureId));
+    const feature = body ? worldPoseOfPartInBody(body, activeFeatureId) : null;
+    if (!body || !feature) {
       state.needsRender = true;
       return;
     }
@@ -3360,7 +3391,7 @@ export function WorkplaneViewport({
     const geometry = new THREE.BoxGeometry(width, height, depth);
     const edges = new THREE.EdgesGeometry(geometry);
     geometry.dispose();
-    const material = new THREE.LineBasicMaterial({ color: 0xc45c26, transparent: true, opacity: 0.95 });
+    const material = new THREE.LineBasicMaterial({ color: feature.hole ? 0x8f4a4a : 0xc45c26, transparent: true, opacity: 0.95 });
     const lines = new THREE.LineSegments(edges, material);
     lines.position.set(feature.x, (feature.elevation ?? 0) + height / 2, feature.z);
     lines.rotation.set(
@@ -3371,13 +3402,6 @@ export function WorkplaneViewport({
     );
     const group = new THREE.Group();
     group.name = "csg-feature-highlight";
-    group.position.set(body.x, body.elevation ?? 0, body.z);
-    group.rotation.set(
-      THREE.MathUtils.degToRad(body.rotationX ?? 0),
-      THREE.MathUtils.degToRad(body.rotation ?? 0),
-      THREE.MathUtils.degToRad(body.rotationZ ?? 0),
-      "XYZ",
-    );
     group.add(lines);
     state.helperLayer.add(group);
     state.needsRender = true;
@@ -5193,6 +5217,41 @@ export function WorkplaneViewport({
     return null;
   }, []);
 
+  /**
+   * Where a shape dragged in from the sidebar lands: on top of the part under the pointer when
+   * the pointer is over an upward-facing surface, otherwise on the workplane.
+   */
+  const dropSpotAt = useCallback((clientX: number, clientY: number) => {
+    const state = threeRef.current;
+    if (state) {
+      const rect = state.renderer.domElement.getBoundingClientRect();
+      state.camera.updateMatrixWorld();
+      state.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      state.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      state.raycaster.setFromCamera(state.pointer, state.camera);
+      try {
+        for (const hit of preciseMeshHits(state, state.shapeLayer.children)) {
+          if (!(hit.object instanceof THREE.Mesh) || !hit.face) continue;
+          let shapeId: string | null = null;
+          for (let node: THREE.Object3D | null = hit.object; node; node = node.parent) {
+            const id = node.userData.shapeId;
+            if (typeof id === "string") shapeId = id;
+          }
+          const shape = shapeId ? shapesRef.current.find((item) => item.id === shapeId) : undefined;
+          if (!shape || shape.hidden) continue;
+          // The first visible part the pointer meets decides: its top lands the shape, a wall does not.
+          const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+          if (normal.y < 0.7 || hit.point.y <= 1e-4) break;
+          return { x: hit.point.x, z: hit.point.z, elevation: Number(hit.point.y.toFixed(4)) };
+        }
+      } catch {
+        // Fall back to the workplane.
+      }
+    }
+    const point = toPlanePoint(clientX, clientY);
+    return { x: point?.x ?? 0, z: point?.z ?? 0, elevation: 0 };
+  }, [toPlanePoint]);
+
   const updateFaceSnapHover = useCallback((clientX: number, clientY: number) => {
     const state = threeRef.current;
     if (!state) return;
@@ -5326,7 +5385,7 @@ export function WorkplaneViewport({
 
   useEffect(() => {
     if (!faceSnapMotionRef) return;
-    faceSnapMotionRef.current = (shapeId, pose, done) => {
+    faceSnapMotionRef.current = (shapeId, pose, done, motion) => {
       const state = threeRef.current;
       const object = state ? findShapeObject(state, shapeId) : null;
       const shape = shapesRef.current.find((item) => item.id === shapeId);
@@ -5346,10 +5405,14 @@ export function WorkplaneViewport({
         "XYZ",
       ));
       const started = performance.now();
+      const duration = Math.max(1, motion?.durationMs ?? 180);
+      const lift = motion?.liftMm ?? 0;
       const tick = (now: number) => {
-        const t = Math.min(1, (now - started) / 180);
-        const eased = 1 - (1 - t) ** 3;
+        const t = Math.min(1, (now - started) / duration);
+        // A quick snap eases out; a longer move eases in and out, and rises over its middle.
+        const eased = motion?.durationMs ? (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2) : 1 - (1 - t) ** 3;
         object.position.lerpVectors(start, end, eased);
+        if (lift) object.position.y += lift * Math.sin(Math.PI * eased);
         object.quaternion.slerpQuaternions(startQuaternion, endQuaternion, eased);
         object.updateMatrixWorld(true);
         state.needsRender = true;
@@ -5554,6 +5617,9 @@ export function WorkplaneViewport({
         const patternHandle = pickTransformHandle(event.clientX, event.clientY);
         if (!patternHandle) {
           event.preventDefault();
+          // A shape under the cursor sets the center to its middle; the bare workplane, to the spot.
+          const hitId = pickShape(event.clientX, event.clientY);
+          if (hitId && onCircularPatternShapePickRef.current?.(hitId)) return;
           const point = toPlanePoint(event.clientX, event.clientY);
           if (point) onCircularPatternCenterPickRef.current?.(point);
           return;
@@ -5737,7 +5803,15 @@ export function WorkplaneViewport({
       }
       const dragPlaneY = shape ? shape.elevation ?? 0 : 0;
       const point = toPlanePointAtY(event.clientX, event.clientY, dragPlaneY);
-      if (!point || !shape) {
+      if (!shape) {
+        return;
+      }
+      if (!point) {
+        // Side views look level with the shape's base, so the drag plane is out of reach.
+        // The click still selects; it just cannot start a move.
+        event.preventDefault();
+        if (additive) onSelectShape(id, "toggle");
+        else if (!selectedIdsSnapshot.includes(id)) onSelectShape(id);
         return;
       }
 
@@ -6353,14 +6427,11 @@ export function WorkplaneViewport({
       if (!state || !asset || rulerMoveModeRef.current) {
         return;
       }
-      const point = toPlanePoint(clientX, clientY);
-      const x = point?.x ?? 0;
-      const z = point?.z ?? 0;
-      const elevation = 0;
+      const { x, z, elevation } = dropSpotAt(clientX, clientY);
       syncAssetPlacementPreview(state, asset, x, z, elevation, sheetThickness(workspaceRef.current) ?? undefined);
       state.needsRender = true;
     },
-    [toPlanePoint],
+    [dropSpotAt],
   );
 
   const handleAssetDragOver = useCallback(
@@ -6412,12 +6483,9 @@ export function WorkplaneViewport({
       if (!asset) {
         return;
       }
-      const point = toPlanePoint(event.clientX, event.clientY);
-      const x = point?.x ?? 0;
-      const z = point?.z ?? 0;
-      onAddShape(asset, { x, z, elevation: 0 });
+      onAddShape(asset, dropSpotAt(event.clientX, event.clientY));
     },
-    [clearAssetPlacementPreview, onAddShape, toPlanePoint],
+    [clearAssetPlacementPreview, dropSpotAt, onAddShape],
   );
 
   useEffect(() => {
@@ -6862,6 +6930,12 @@ export function WorkplaneViewport({
         onPointerMove={onViewCubePointerMove}
         onPointerUp={onViewCubePointerUp}
         onPointerCancel={onViewCubePointerUp}
+        onClick={(event) => {
+          // A pointer click snaps on pointer up. Enter or Space on a focused face sends a click with no pointer.
+          if (event.detail !== 0) return;
+          const face = viewCubeFaceFromTarget(event.target);
+          if (face) applyViewCubeFace(face);
+        }}
         onContextMenu={(event) => event.preventDefault()}
       >
         <div className="view-cube-inner" ref={viewCubeRef}>
@@ -7096,7 +7170,7 @@ export function WorkplaneViewport({
               </button>
             )
           ) : null}
-          {transformOverlay && !smoothEdit && !sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive && !pushPullActive ? (
+          {transformOverlay && !transformHandlesHidden && !smoothEdit &&!sketchOnModel && !sketchFacePickMode && !alignMode && !mirrorMode && !rulerMode && !rulerDeleteMode && !rulerMoveMode && !placementRulerMode && !modifierActive && !pushPullActive ? (
             <TransformOverlay
               box={transformOverlay}
               measureKey={pinnedMeasureKey ?? hoverMeasureKey}
@@ -7210,6 +7284,7 @@ export function WorkplaneViewport({
           <ShapeInspector
             shape={selectedShape}
             sceneShapes={shapes}
+            badgeShape={inspectorBadgeShape}
             workspace={workspace}
             onUpdate={(patch, options) => onUpdateShape(selectedShape.id, patchWithResizeAnchor(selectedShape, patch, options?.resizeAxis, lastResizeAnchorRef.current))}
             onClose={() => {
@@ -7230,17 +7305,18 @@ export function WorkplaneViewport({
             onReduceTriangles={onReduceTriangles}
             activeFeatureId={activeFeatureId}
             onSelectFeature={onSelectFeature}
-            onSuppressFeature={onSuppressFeature}
             modelTreeLocked={modelTreeLocked}
-            onReorderFeature={onReorderFeature}
             onUpdateFeature={onUpdateFeature}
             onEditPattern={onEditPattern}
             onDissolvePattern={onDissolvePattern}
             onEditEdgeTreatment={onEditEdgeTreatment}
             onRemoveEdgeTreatment={onRemoveEdgeTreatment}
             onEditPartStep={onEditPartStep}
+            onOpenPartStep={onOpenPartStep}
             onTogglePartStep={onTogglePartStep}
             onRemovePartStep={onRemovePartStep}
+            onRemovePartStepsFrom={onRemovePartStepsFrom}
+            laserSource={laserSource}
             smoothControls={smoothControls}
             onInteractionActiveChange={onInteractionActiveChange}
           />
@@ -7455,7 +7531,17 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
   const preventContextMenu = (event: MouseEvent) => {
     event.preventDefault();
   };
+  // The canvas never takes focus, so a rename, a size label or the W×L field stayed focused
+  // after a click in the view: the typed value was dropped and Delete/arrows went into the box.
+  // Let go of the field first so it commits like it would on Tab.
+  const releaseTextField = () => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)) return;
+    if (active.closest("[data-keep-focus-on-view]")) return;
+    active.blur();
+  };
   controls.addEventListener("change", requestRender);
+  renderer.domElement.addEventListener("pointerdown", releaseTextField, { capture: true });
   renderer.domElement.addEventListener("pointerdown", configureSketchForgeMouseButtons, { capture: true });
   renderer.domElement.addEventListener("pointerup", resetSketchForgeMouseButtons);
   renderer.domElement.addEventListener("pointercancel", resetSketchForgeMouseButtons);
@@ -7464,6 +7550,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
   renderer.domElement.addEventListener("pointerdown", requestRender);
   state.disposeInteractionListeners = () => {
     controls.removeEventListener("change", requestRender);
+    renderer.domElement.removeEventListener("pointerdown", releaseTextField, { capture: true });
     renderer.domElement.removeEventListener("pointerdown", configureSketchForgeMouseButtons, { capture: true });
     renderer.domElement.removeEventListener("pointerup", resetSketchForgeMouseButtons);
     renderer.domElement.removeEventListener("pointercancel", resetSketchForgeMouseButtons);
@@ -7596,11 +7683,36 @@ function resetCamera(state: ThreeState) {
   state.needsRender = true;
 }
 
-/** Home, as a glide: the same pose as resetCamera. */
+/**
+ * Home, as a glide: the starting angle, around the parts on the plane and far enough back to
+ * show all of them. A fixed pose cropped anything much over 100 mm. Never closer than the
+ * starting view, so a small part still sits on its workplane.
+ */
 function glideCameraHome(state: ThreeState) {
+  const offset = CAMERA_HOME.clone().sub(CAMERA_TARGET);
+  const baseDistance = offset.length();
+  offset.normalize();
+  const bounds = new THREE.Box3();
+  for (const child of state.shapeLayer.children) {
+    if (!child.visible || !child.userData.shapeId || child.userData.edgeWipeRole === "out" || child.userData.previewHold) continue;
+    bounds.expandByObject(child);
+  }
+  let target = CAMERA_TARGET.clone();
+  let distance = baseDistance;
+  if (!bounds.isEmpty()) {
+    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+    const camera = state.camera as THREE.PerspectiveCamera;
+    const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+    const fit = (sphere.radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * 1.05;
+    if (fit > baseDistance) {
+      target = sphere.center;
+      distance = fit;
+    }
+  }
   startCameraTween(state, {
-    target: { x: CAMERA_TARGET.x, y: CAMERA_TARGET.y, z: CAMERA_TARGET.z },
-    position: { x: CAMERA_HOME.x, y: CAMERA_HOME.y, z: CAMERA_HOME.z },
+    target: { x: target.x, y: target.y, z: target.z },
+    position: { x: target.x + offset.x * distance, y: target.y + offset.y * distance, z: target.z + offset.z * distance },
     up: { x: 0, y: 1, z: 0 },
   });
 }
@@ -9966,7 +10078,58 @@ function rebuildModifierEdges(state: ThreeState | null, edges: CadModifierEdge[]
 }
 
 const PUSH_PULL_FACE_BRONZE = new THREE.Color("#c6a15b");
-const PUSH_PULL_FACE_HOVER = new THREE.Color("#d4b37a");
+const PUSH_PULL_FACE_HOVER = new THREE.Color("#ffb21e");
+
+/** A soft fill over one flat face outline, so the face under the pointer reads at a glance. */
+function planarFaceFill(face: CadPlanarFace, color: THREE.Color, opacity: number): THREE.Mesh | null {
+  const count = Math.floor(face.points.length / 3);
+  if (count < 3) return null;
+  const normal = new THREE.Vector3(face.normal.x, face.normal.y, face.normal.z);
+  if (normal.lengthSq() < 1e-12) return null;
+  normal.normalize();
+  const u = Math.abs(normal.y) < 0.9 ? new THREE.Vector3(0, 1, 0).cross(normal).normalize() : new THREE.Vector3(1, 0, 0).cross(normal).normalize();
+  const v = normal.clone().cross(u);
+  const loop: THREE.Vector2[] = [];
+  const world: THREE.Vector3[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const point = new THREE.Vector3(face.points[index * 3], face.points[index * 3 + 1], face.points[index * 3 + 2]);
+    const last = world[world.length - 1];
+    if (last && last.distanceToSquared(point) < 1e-12) continue;
+    world.push(point);
+    loop.push(new THREE.Vector2(point.dot(u), point.dot(v)));
+  }
+  if (world.length > 3 && world[0].distanceToSquared(world[world.length - 1]) < 1e-12) {
+    world.pop();
+    loop.pop();
+  }
+  if (world.length < 3) return null;
+  const triangles = THREE.ShapeUtils.triangulateShape(loop, []);
+  if (triangles.length === 0) return null;
+  const positions = new Float32Array(triangles.length * 9);
+  let cursor = 0;
+  for (const triangle of triangles) {
+    for (const corner of triangle) {
+      const point = world[corner];
+      positions[cursor++] = point.x;
+      positions[cursor++] = point.y;
+      positions[cursor++] = point.z;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  }));
+  mesh.renderOrder = 1002;
+  return mesh;
+}
 
 /** Face outlines arrive as an open ordered loop; draw it closed. */
 function polylineToLinePositions(points: number[]) {
@@ -10004,14 +10167,25 @@ function rebuildPushPullFaces(
 ) {
   if (!state) return;
   const existing = state.modifierLayer.userData.pushPullFaceLines as THREE.LineSegments | undefined;
+  const existingFill = state.modifierLayer.userData.pushPullFaceFill as THREE.Mesh | undefined;
   // Nothing drawn and nothing to draw: skip the work and the extra frame.
-  if (!existing && faces.length === 0) return;
-  if (existing) {
-    state.modifierLayer.remove(existing);
-    existing.geometry.dispose();
-    (existing.material as THREE.Material).dispose();
+  if (!existing && !existingFill && faces.length === 0) return;
+  for (const old of [existing, existingFill]) {
+    if (!old) continue;
+    state.modifierLayer.remove(old);
+    old.geometry.dispose();
+    (old.material as THREE.Material).dispose();
   }
   delete state.modifierLayer.userData.pushPullFaceLines;
+  delete state.modifierLayer.userData.pushPullFaceFill;
+  const hovered = hoverId !== null && hoverId !== selectedId && !markedIds.includes(hoverId)
+    ? faces.find((face) => face.id === hoverId)
+    : undefined;
+  const fill = hovered ? planarFaceFill(hovered, PUSH_PULL_FACE_HOVER, 0.32) : null;
+  if (fill) {
+    state.modifierLayer.add(fill);
+    state.modifierLayer.userData.pushPullFaceFill = fill;
+  }
   const drawable = faces.filter((face) => face.points.length >= 6);
   if (drawable.length === 0) {
     state.needsRender = true;
@@ -12644,9 +12818,14 @@ function getImportedMeshCache(mesh: NonNullable<WorkplaneShape["importedMesh"]>,
   if (mesh.indices && mesh.indices.length >= 3) {
     geometry.setIndex(mesh.indices);
   }
-  const shaded = mesh.normals && mesh.normals.length === mesh.positions.length
-    ? shadeDisplayNormals(mesh.positions, mesh.normals, mesh.indices)
-    : null;
+  const hasNormals = Boolean(mesh.normals && mesh.normals.length === mesh.positions.length);
+  const tooBigToWeld = !hasNormals && !(mesh.indices && mesh.indices.length >= 3)
+    && Math.floor(mesh.positions.length / 9) > 80_000;
+  // Meshes without normals (split pieces, some imports) get creased smooth normals
+  // instead of one flat normal per triangle.
+  const shaded = tooBigToWeld
+    ? null
+    : shadeDisplayNormals(mesh.positions, hasNormals ? mesh.normals : undefined, mesh.indices);
   if (shaded) {
     geometry.setAttribute("normal", new THREE.BufferAttribute(shaded, 3));
     geometry.userData.keepNormals = true;
@@ -12726,7 +12905,14 @@ function getEdgesGeometry(shape: WorkplaneShape, geometry: THREE.BufferGeometry,
     return cached;
   }
 
-  const edges = new THREE.EdgesGeometry(cache.geometry, threshold);
+  // Not EdgesGeometry: a Split or boolean mesh drew a fan of lines across its flat faces.
+  const position = cache.geometry.getAttribute("position");
+  const index = cache.geometry.getIndex();
+  const edges = new THREE.EdgesGeometry();
+  edges.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(meshCreaseEdges(position.array as ArrayLike<number>, index ? (index.array as ArrayLike<number>) : null, threshold), 3),
+  );
   edges.userData.cached = true;
   cache.edges.set(threshold, edges);
   return edges;

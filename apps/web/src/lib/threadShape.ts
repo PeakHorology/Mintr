@@ -24,7 +24,7 @@ import {
 } from "@/lib/metricThreadSolid";
 import * as THREE from "three";
 import { shapeYawDegrees } from "@/lib/shapeBounds";
-import { canonicalizeShape, withHoleMode } from "@/lib/workplaneShapes";
+import { canonicalizeShape, mirrorSign, withHoleMode } from "@/lib/workplaneShapes";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 export const DEFAULT_THREAD_DESIGNATION: MetricThreadDesignation = "M6";
@@ -390,8 +390,9 @@ export function matchingThreadPart(shape: WorkplaneShape, printerKind?: "filamen
   if (!spec || !canMakeMatchingTappedHole(shape)) return null;
   const length = spec.length ?? shape.height;
   // Parts turn about their centre. The hole's centre sits on the same axis, at the middle
-  // of the threaded length (a screw's head is above that).
-  const axis = new THREE.Vector3(0, 1, 0).applyEuler(new THREE.Euler(
+  // of the threaded length (a screw's head is above that). Mirror Y flips the part about its
+  // centre before the turn, so an upside-down screw has its threads on the other side.
+  const axis = new THREE.Vector3(0, mirrorSign(shape.mirrorY), 0).applyEuler(new THREE.Euler(
     THREE.MathUtils.degToRad(shape.rotationX ?? 0),
     THREE.MathUtils.degToRad(shapeYawDegrees(shape)),
     THREE.MathUtils.degToRad(shape.rotationZ ?? 0),

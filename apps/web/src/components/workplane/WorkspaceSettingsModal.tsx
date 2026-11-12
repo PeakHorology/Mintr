@@ -859,7 +859,7 @@ export function WorkspaceSettingsModal({
                         max={2000}
                         step={1}
                         aria-label="Printer bed width"
-                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, printerWidth: event.currentTarget.value }))}
+                        onChange={(event) => { const value = event.currentTarget.value; setPrinterDrafts((current) => ({ ...current, printerWidth: value })); }}
                         onBlur={(event) => setPrinterSize("printerWidth", event.currentTarget.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") event.currentTarget.blur();
@@ -875,7 +875,7 @@ export function WorkspaceSettingsModal({
                         max={2000}
                         step={1}
                         aria-label="Printer bed depth"
-                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, printerDepth: event.currentTarget.value }))}
+                        onChange={(event) => { const value = event.currentTarget.value; setPrinterDrafts((current) => ({ ...current, printerDepth: value })); }}
                         onBlur={(event) => setPrinterSize("printerDepth", event.currentTarget.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") event.currentTarget.blur();
@@ -893,7 +893,7 @@ export function WorkspaceSettingsModal({
                         max={2000}
                         step={1}
                         aria-label="Printer height"
-                        onChange={(event) => setPrinterDrafts((current) => ({ ...current, printerHeight: event.currentTarget.value }))}
+                        onChange={(event) => { const value = event.currentTarget.value; setPrinterDrafts((current) => ({ ...current, printerHeight: value })); }}
                         onBlur={(event) => setPrinterSize("printerHeight", event.currentTarget.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") event.currentTarget.blur();

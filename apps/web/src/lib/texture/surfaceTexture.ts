@@ -41,6 +41,8 @@ export const MAX_TEXTURE_PICTURE_SIDE = 256;
 /** Text is wide and short, so it may be wider: letters stay sharp along a long word. */
 export const MAX_TEXTURE_IMAGE_SIDE = 512;
 export const MAX_TEXTURE_TEXT_LENGTH = 40;
+/** As long as an added font's name can be (customFontStore keeps up to 60 letters). */
+export const MAX_TEXTURE_FONT_NAME_LENGTH = 60;
 
 /** How the pattern is laid on the part. Auto picks Around for round parts, All round otherwise. */
 export type SurfaceTextureWrap = "auto" | "around" | "allRound";
@@ -228,7 +230,7 @@ function normalizeImage(input: unknown): SurfaceTextureImage | undefined {
     data: image.data,
     invert: image.invert === true,
     ...(image.text && typeof image.text.value === "string" && typeof image.text.font === "string"
-      ? { text: { value: image.text.value.slice(0, MAX_TEXTURE_TEXT_LENGTH), font: image.text.font.slice(0, 40) } }
+      ? { text: { value: image.text.value.slice(0, MAX_TEXTURE_TEXT_LENGTH), font: image.text.font.slice(0, MAX_TEXTURE_FONT_NAME_LENGTH) } }
       : {}),
   };
 }

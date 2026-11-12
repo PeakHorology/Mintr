@@ -126,6 +126,24 @@ describe("loft shape", () => {
     expect(isClosed(loft.importedMesh!.positions, loft.importedMesh!.indices!)).toBe(true);
   });
 
+  it("measures a round loft at its outline size, not a hair under from its mesh corners", () => {
+    const result = createSketchLoft([cylinder("top", 20, 30), cylinder("bottom", 20, 0)]);
+    if (!("shape" in result)) throw new Error("no loft");
+    const loft = result.shape;
+    const mesh = loft.importedMesh!;
+    const key = loftShapeKey(loft)!;
+    // An engine mesh whose corners miss the circle's widest points, as a 20 mm circle came out 19.97.
+    const short = mesh.positions.map((value, index) => (index % 3 === 1 ? value : value * 0.9985));
+    const built = applyLoftKernelMesh(loft, short, undefined, mesh.indices!, "brep", key)!;
+    expect(built.width).toBeCloseTo(20, 6);
+    expect(built.depth).toBeCloseTo(20, 6);
+    // Drawn 1:1: the size it is shown at is the size it was built at.
+    expect(built.importedMesh!.baseWidth).toBe(built.width);
+    // A body that really bulges past its outlines keeps its own size.
+    const bulged = mesh.positions.map((value, index) => (index % 3 === 1 ? value : value * 1.05));
+    expect(applyLoftKernelMesh(loft, bulged, undefined, mesh.indices!, "brep", key)!.width).toBeCloseTo(21, 1);
+  });
+
   it("refuses outlines at the same height and single outlines", () => {
     expect(createSketchLoft([box("a", 20, 0), box("b", 10, 0)])).toHaveProperty("error");
     expect(createSketchLoft([box("a", 20, 0)])).toHaveProperty("error");
@@ -158,6 +176,17 @@ describe.skipIf(!hasNativeKernelExe || !hasWasmKernel)("loft in the Mintr engine
       expect(loftBuildPending(built)).toBe(false);
       expect(toNativeKernelSolid(built)?.kind).toBe("brep");
     }
+  });
+
+  it("builds a 20 mm circle loft that measures 20.00", async () => {
+    const result = createSketchLoft([cylinder("top", 20, 30), cylinder("bottom", 20, 0)]);
+    if (!("shape" in result)) throw new Error("no loft");
+    const job = serializeLoftJob(result.shape)!;
+    const reply = await native.request({ id: 3, ...job });
+    expect(reply.ok, String(reply.message)).toBe(true);
+    const built = applyLoftKernelMesh(result.shape, reply.positions as number[], reply.normals as number[], reply.indices as number[], String(reply.cadBrep), job.key)!;
+    expect(built.width!.toFixed(2)).toBe("20.00");
+    expect(built.depth!.toFixed(2)).toBe("20.00");
   });
 
   it("says why a wall is too thick", async () => {

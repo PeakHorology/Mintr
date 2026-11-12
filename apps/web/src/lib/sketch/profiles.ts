@@ -33,16 +33,218 @@ function straightLoopHasArea(points: SketchPoint[], steps: OrderedSketchStep[]):
   return Math.abs(twiceArea) > Math.max(1e-9, extent * 1e-6);
 }
 
+/**
+ * Every path in the sketch: closed loops and the open chains left over.
+ *
+ * A connected piece with no point where more than two segments meet is one chain or one ring,
+ * and is walked end to end. A piece with a junction (a rectangle split by a line, a grid, two
+ * shapes touching at a corner) is split into its faces instead. Walking it by "first unused
+ * segment" closed loops through whichever branch happened to be listed first, so the cells it
+ * walked past came out as open chains and their area was lost, depending on drawing order.
+ */
 export function orderedSketchPaths(profile: SketchProfile): OrderedSketchPath[] {
   const pointById = new Map(profile.points.map((point) => [point.id, point]));
-  const adjacency = new Map<string, Array<{ pointId: string; segment: SketchSegment }>>();
-  profile.points.forEach((point) => adjacency.set(point.id, []));
-  const validSegments = profile.segments.filter((segment) => {
-    if (!pointById.has(segment.startId) || !pointById.has(segment.endId) || segment.startId === segment.endId) return false;
-    adjacency.get(segment.startId)?.push({ pointId: segment.endId, segment });
-    adjacency.get(segment.endId)?.push({ pointId: segment.startId, segment });
-    return true;
+  const validSegments = profile.segments.filter(
+    (segment) => pointById.has(segment.startId) && pointById.has(segment.endId) && segment.startId !== segment.endId,
+  );
+  const paths: OrderedSketchPath[] = [];
+  for (const component of segmentComponents(validSegments)) {
+    const degree = new Map<string, number>();
+    for (const segment of component) {
+      degree.set(segment.startId, (degree.get(segment.startId) ?? 0) + 1);
+      degree.set(segment.endId, (degree.get(segment.endId) ?? 0) + 1);
+    }
+    const junction = [...degree.values()].some((count) => count > 2);
+    paths.push(...(junction ? facePaths(pointById, component) : walkSketchPaths(pointById, component)));
+  }
+  return paths;
+}
+
+/** Segments grouped by connected piece, in the order each piece's first segment appears. */
+function segmentComponents(segments: SketchSegment[]): SketchSegment[][] {
+  const parent = new Map<string, string>();
+  const find = (id: string): string => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let walk = id;
+    while (walk !== root) {
+      const next = parent.get(walk)!;
+      parent.set(walk, root);
+      walk = next;
+    }
+    return root;
+  };
+  for (const segment of segments) {
+    if (!parent.has(segment.startId)) parent.set(segment.startId, segment.startId);
+    if (!parent.has(segment.endId)) parent.set(segment.endId, segment.endId);
+    const a = find(segment.startId);
+    const b = find(segment.endId);
+    if (a !== b) parent.set(a, b);
+  }
+  const byRoot = new Map<string, SketchSegment[]>();
+  for (const segment of segments) {
+    const root = find(segment.startId);
+    const list = byRoot.get(root);
+    if (list) list.push(segment);
+    else byRoot.set(root, [segment]);
+  }
+  return [...byRoot.values()];
+}
+
+/** Segments that are not on any cycle: dangling tails and lines bridging two separate loops. */
+function bridgeSegmentIndexes(segments: SketchSegment[]): Set<number> {
+  const adjacency = new Map<string, Array<{ to: string; edge: number }>>();
+  segments.forEach((segment, edge) => {
+    if (!adjacency.has(segment.startId)) adjacency.set(segment.startId, []);
+    if (!adjacency.has(segment.endId)) adjacency.set(segment.endId, []);
+    adjacency.get(segment.startId)!.push({ to: segment.endId, edge });
+    adjacency.get(segment.endId)!.push({ to: segment.startId, edge });
   });
+  const discovered = new Map<string, number>();
+  const low = new Map<string, number>();
+  const bridges = new Set<number>();
+  let clock = 0;
+  for (const root of adjacency.keys()) {
+    if (discovered.has(root)) continue;
+    discovered.set(root, clock);
+    low.set(root, clock);
+    clock += 1;
+    const stack: Array<{ vertex: string; via: number; next: number }> = [{ vertex: root, via: -1, next: 0 }];
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      const edges = adjacency.get(frame.vertex)!;
+      if (frame.next < edges.length) {
+        const { to, edge } = edges[frame.next];
+        frame.next += 1;
+        // Skip only the very segment we came in on, so a doubled segment still counts as a cycle.
+        if (edge === frame.via) continue;
+        if (!discovered.has(to)) {
+          discovered.set(to, clock);
+          low.set(to, clock);
+          clock += 1;
+          stack.push({ vertex: to, via: edge, next: 0 });
+        } else {
+          low.set(frame.vertex, Math.min(low.get(frame.vertex)!, discovered.get(to)!));
+        }
+        continue;
+      }
+      stack.pop();
+      const parentFrame = stack[stack.length - 1];
+      if (!parentFrame) continue;
+      low.set(parentFrame.vertex, Math.min(low.get(parentFrame.vertex)!, low.get(frame.vertex)!));
+      if (low.get(frame.vertex)! > discovered.get(parentFrame.vertex)!) bridges.add(frame.via);
+    }
+  }
+  return bridges;
+}
+
+/**
+ * Direction a segment leaves `from` in. A curve leaves along its first measured sample rather
+ * than its chord, so an arc and a line sharing both ends sort the way they are drawn.
+ */
+function departureAngle(segment: SketchSegment, from: SketchPoint, to: SketchPoint): number {
+  let target: SketchVec2 = to;
+  if (segment.kind && segment.kind !== "line") {
+    const forward = segment.startId === from.id;
+    const control1 = forward ? from.handleOut : from.handleIn;
+    const control2 = forward ? to.handleIn : to.handleOut;
+    if (control1 && control2) target = cubicPoint(from, control1, control2, to, 1 / CURVE_MEASURE_SAMPLES);
+  }
+  return Math.atan2(target.z - from.z, target.x - from.x);
+}
+
+/**
+ * Closed faces of one connected piece that has a junction, plus its leftover open chains.
+ *
+ * Each segment is used once in each direction. Arriving at a point, the walk turns onto the
+ * next segment clockwise from the one it came in on, which keeps the face on its left. Every
+ * bounded face then comes out counterclockwise with positive area, and the outside of the piece
+ * comes out clockwise and is dropped. The result does not depend on the order segments were drawn.
+ */
+function facePaths(pointById: Map<string, SketchPoint>, segments: SketchSegment[]): OrderedSketchPath[] {
+  const bridges = bridgeSegmentIndexes(segments);
+  // Sorted by id so faces come out in the same order however the sketch was drawn.
+  const cycleSegments = segments
+    .filter((_, index) => !bridges.has(index))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  type HalfEdge = { segment: SketchSegment; from: SketchPoint; to: SketchPoint; angle: number; twin: number };
+  const halfEdges: HalfEdge[] = [];
+  const outgoing = new Map<string, number[]>();
+  cycleSegments.forEach((segment) => {
+    const start = pointById.get(segment.startId)!;
+    const end = pointById.get(segment.endId)!;
+    const forward = halfEdges.length;
+    halfEdges.push({ segment, from: start, to: end, angle: departureAngle(segment, start, end), twin: forward + 1 });
+    halfEdges.push({ segment, from: end, to: start, angle: departureAngle(segment, end, start), twin: forward });
+    for (const index of [forward, forward + 1]) {
+      const id = halfEdges[index].from.id;
+      const list = outgoing.get(id);
+      if (list) list.push(index);
+      else outgoing.set(id, [index]);
+    }
+  });
+  const slot = new Map<number, number>();
+  for (const list of outgoing.values()) {
+    // Ties (a doubled segment) fall back to creation order, which follows segment ids.
+    list.sort((a, b) => halfEdges[a].angle - halfEdges[b].angle || a - b);
+    list.forEach((edge, index) => slot.set(edge, index));
+  }
+  const nextEdge = (edge: number) => {
+    const twin = halfEdges[edge].twin;
+    const around = outgoing.get(halfEdges[twin].from.id)!;
+    return around[(slot.get(twin)! - 1 + around.length) % around.length];
+  };
+
+  const used = new Set<number>();
+  const paths: OrderedSketchPath[] = [];
+  const inFace = new Set<SketchSegment>();
+  for (let seed = 0; seed < halfEdges.length; seed += 1) {
+    if (used.has(seed)) continue;
+    const steps: OrderedSketchStep[] = [];
+    let edge = seed;
+    for (let guard = 0; guard <= halfEdges.length && !used.has(edge); guard += 1) {
+      used.add(edge);
+      const { segment, from, to } = halfEdges[edge];
+      steps.push({ segment, from, to });
+      edge = nextEdge(edge);
+    }
+    if (edge !== seed || steps.length < 2) continue;
+    const face: OrderedSketchPath = { points: steps.map((step) => step.from), steps, closed: true };
+    if (!(signedOutlineArea(sampledPathOutline(face)) > areaFloor(face.points))) continue;
+    steps.forEach((step) => inFace.add(step.segment));
+    paths.push(face);
+  }
+  const leftover = segments.filter((segment) => !inFace.has(segment));
+  return [...walkSketchPaths(pointById, leftover), ...paths];
+}
+
+function signedOutlineArea(points: SketchVec2[]) {
+  let twiceArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const a = points[index];
+    const b = points[(index + 1) % points.length];
+    twiceArea += a.x * b.z - b.x * a.z;
+  }
+  return twiceArea / 2;
+}
+
+/** Smallest area that counts as enclosing something, scaled like `straightLoopHasArea`. */
+function areaFloor(points: SketchVec2[]) {
+  let extent = 0;
+  for (const point of points) extent = Math.max(extent, Math.abs(point.x), Math.abs(point.z));
+  return Math.max(1e-9, extent * 1e-6) / 2;
+}
+
+/** Walk chains and rings by following the next unused segment. Only safe without junctions. */
+function walkSketchPaths(pointById: Map<string, SketchPoint>, validSegments: SketchSegment[]): OrderedSketchPath[] {
+  const adjacency = new Map<string, Array<{ pointId: string; segment: SketchSegment }>>();
+  for (const segment of validSegments) {
+    if (!adjacency.has(segment.startId)) adjacency.set(segment.startId, []);
+    if (!adjacency.has(segment.endId)) adjacency.set(segment.endId, []);
+    adjacency.get(segment.startId)!.push({ pointId: segment.endId, segment });
+    adjacency.get(segment.endId)!.push({ pointId: segment.startId, segment });
+  }
   const unvisited = new Set(validSegments.map((segment) => segment.id));
   const paths: OrderedSketchPath[] = [];
   while (unvisited.size > 0) {

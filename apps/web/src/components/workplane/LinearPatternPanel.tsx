@@ -12,6 +12,7 @@ import {
   linearPatternInstanceCount,
 } from "@/lib/linearPattern";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
+import { PatternTurnControl, slidersDragHandler } from "@/components/workplane/PatternTurnControl";
 import {
   displayStepFromMillimeters,
   displayToMillimeters,
@@ -188,12 +189,20 @@ export function LinearPatternPanel({
   onSpacingXChange,
   onSpacingZChange,
   onSpacingYChange,
+  turnDeg = 0,
+  onTurnChange,
+  onSliderDragChange,
   onApply,
   onCancel,
   positionClampWarning = false,
   applyLabel = "Apply",
   editing = false,
 }: {
+  /** Degrees the rows and columns turn around the original. */
+  turnDeg?: number;
+  onTurnChange?: (degrees: number) => void;
+  /** True while one of the panel's sliders is being dragged. */
+  onSliderDragChange?: (active: boolean) => void;
   sourceCount: number;
   countX: number;
   countZ: number;
@@ -218,7 +227,7 @@ export function LinearPatternPanel({
   const total = linearPatternInstanceCount({ countX, countZ, countY });
 
   return (
-    <aside className="edge-modifier-panel circular-pattern-panel" aria-label="Linear pattern">
+    <aside className="edge-modifier-panel circular-pattern-panel" aria-label="Linear pattern" onPointerDownCapture={slidersDragHandler(onSliderDragChange)}>
       <div className="edge-modifier-header">
         <div>
           <strong>{editing ? "Edit linear pattern" : "Linear pattern"}</strong>
@@ -235,10 +244,11 @@ export function LinearPatternPanel({
       <SpacingControl label="Spacing · Length" value={spacingZ} workspace={workspace} onChange={onSpacingZChange} />
       <CountControl label="Count · Height" value={countY} onChange={onCountYChange} />
       <SpacingControl label="Spacing · Height" value={spacingY} workspace={workspace} onChange={onSpacingYChange} />
+      {onTurnChange ? <PatternTurnControl value={turnDeg} onChange={onTurnChange} /> : null}
 
       {positionClampWarning ? (
         <p className="edge-modifier-hint" role="status">
-          Some instances hit the ±110 mm workplane limit and will be clamped.
+          Some copies would land more than 10 m from the middle of the workplane and will be held at 10 m.
         </p>
       ) : null}
 

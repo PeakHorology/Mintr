@@ -90,6 +90,13 @@ export function WorkplaneDimensionsControl({
             if (event.key === "Enter") {
               event.preventDefault();
               event.currentTarget.blur();
+            } else if (event.key === "Escape") {
+              // Put the saved size back before letting go, so the blur keeps it.
+              event.preventDefault();
+              const saved = displayDraft(workspace.width, workspace);
+              event.currentTarget.value = saved;
+              setDrafts((current) => ({ ...current, width: saved }));
+              event.currentTarget.blur();
             }
           }}
         />
@@ -116,6 +123,13 @@ export function WorkplaneDimensionsControl({
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
+              event.currentTarget.blur();
+            } else if (event.key === "Escape") {
+              // Put the saved size back before letting go, so the blur keeps it.
+              event.preventDefault();
+              const saved = displayDraft(workspace.depth, workspace);
+              event.currentTarget.value = saved;
+              setDrafts((current) => ({ ...current, depth: saved }));
               event.currentTarget.blur();
             }
           }}

@@ -89,8 +89,8 @@ import {
 } from "@/lib/folderLock";
 import { decryptPeakcadText, encryptPeakcadText, isEncryptedPeakcadText } from "@/lib/peakcadFileLock";
 import { deleteStoredProject, loadStoredProject, saveStoredProject, serializeStoredProject } from "@/lib/projectStoreClient";
-import { designFontsFor, installDesignFonts, readCustomFonts } from "@/lib/customFontStore";
-import { laserDesignWorkspace, loadMachineChoice, machineHasLaser, type DesignKind, type MachineChoice } from "@/lib/laserMachine";
+import { designFontLibrary, designFontsFor, designFontsNotKeptMessage, installDesignFontsReport } from "@/lib/customFontStore";
+import { isCrystalDesign, laserDesignWorkspace, loadMachineChoice, machineHasLaser, type DesignKind, type MachineChoice } from "@/lib/laserMachine";
 import { NewDesignChooser } from "@/components/NewDesignChooser";
 import { SageHomePanel } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
@@ -869,13 +869,13 @@ function buildDocumentForProject(project: DashboardProject, entry: ProjectShapeC
     shapes: entry.shapes,
     history: entry.history,
     historyIndex: entry.historyIndex,
-    fonts: readCustomFonts(),
+    fonts: designFontLibrary(),
   });
 }
 
 /** The added fonts a project uses, handed to the store worker, which cannot read them itself. */
 function projectDesignFonts(entry: ProjectShapeCacheEntry) {
-  return designFontsFor([...entry.shapes, ...(entry.history ?? []).flatMap((step) => step.shapes)], readCustomFonts());
+  return designFontsFor([...entry.shapes, ...(entry.history ?? []).flatMap((step) => step.shapes)], designFontLibrary());
 }
 
 /**
@@ -1468,6 +1468,14 @@ export default function Home() {
             }
             return project;
           });
+          // The design open in this tab is never dropped by another tab's list: that tab may have
+          // written before it saw this design was made. Writing it back puts it on that list too.
+          const openId = activeProjectIdRef.current;
+          const open = openId ? currentById.get(openId) : undefined;
+          if (open && !merged.some((project) => project.id === open.id)) {
+            merged.unshift(open);
+            keptLocal = true;
+          }
           // Only a list that kept something of this tab's is worth writing back.
           projectsFromOtherTabRef.current = keptLocal ? null : merged;
           return merged;
@@ -1720,7 +1728,13 @@ export default function Home() {
     (opened: { document: PeakcadDocument; path: string | null }, shouldOpen: boolean) => {
       const { document, path } = opened;
       // Fonts the design brought with it join this computer's fonts, so its text looks as it was made.
-      if (document.fonts?.length) installDesignFonts(document.fonts, document.project.name);
+      const fontWarning = document.fonts?.length
+        ? designFontsNotKeptMessage(installDesignFontsReport(document.fonts, document.project.name).failed)
+        : null;
+      if (fontWarning) {
+        if (shouldOpen) notifyEditor(fontWarning);
+        else setDashboardNotice(fontWarning);
+      }
       if (document.guide && document.history?.length) {
         const id = playbackProjectId(document.project.id);
         const end = Math.min(document.history.length - 1, Math.max(0, document.historyIndex ?? document.history.length - 1));
@@ -1767,9 +1781,15 @@ export default function Home() {
         }
         return;
       }
-      const existing = projectsRef.current.find(
-        (project) => project.id === document.project.id || (path != null && project.filePath === path),
+      // The same file opened again replaces its design. A different file of the same design (an
+      // older backup, or the file a Save as moved away from) opens as a copy, so it never
+      // overwrites the design as it is now.
+      const samePath = path != null ? projectsRef.current.find((project) => project.filePath === path) : undefined;
+      const sameId = projectsRef.current.find((project) => project.id === document.project.id);
+      const opensAsCopy = Boolean(
+        !samePath && sameId && (document.project.revision ?? 0) !== (sameId.revision ?? 0),
       );
+      const existing = samePath ?? (opensAsCopy ? undefined : sameId);
       if (shouldOpen && existing?.folderId) {
         const folder = foldersRef.current.find((item) => item.id === existing.folderId);
         if (folder?.passwordLock && !unlockedFolderIdsRef.current.has(folder.id)) {
@@ -1778,8 +1798,8 @@ export default function Home() {
         }
       }
       const project: DashboardProject = {
-        id: existing?.id ?? document.project.id,
-        name: document.project.name,
+        id: existing?.id ?? (opensAsCopy ? createLocalId("project") : document.project.id),
+        name: opensAsCopy ? `${document.project.name} (opened copy)` : document.project.name,
         createdAt: document.project.createdAt,
         updatedAt: Date.now(),
         shapes: document.shapes.length,
@@ -1829,7 +1849,7 @@ export default function Home() {
         }
       }
     },
-    [updateDashboardOrder],
+    [notifyEditor, updateDashboardOrder],
   );
 
   const openSavedGuide = useCallback(async (id: string, restart: boolean) => {
@@ -1910,17 +1930,36 @@ export default function Home() {
   ): Promise<boolean> => {
     const project = projectsRef.current.find((item) => item.id === projectId);
     if (!project) return false;
-    const cached =
-      entryOverride ??
-      projectShapesByIdRef.current[projectId] ??
-      projectShapeCacheEntry(project.revision ?? project.updatedAt, []);
+    let cached = entryOverride ?? projectShapesByIdRef.current[projectId];
+    if (!cached) {
+      // Not opened yet: save what is stored. Saving an empty entry here used to wipe the design.
+      const stored = await loadProjectShapes(projectId).catch(() => null);
+      if (!stored) {
+        setDashboardNotice(`Could not read ${project.name} to save it. Open it, then save again.`);
+        return false;
+      }
+      cached = projectShapeCacheEntry(stored.revision, stored.shapes ?? [], stored.history, stored.historyIndex);
+    }
     try {
       const plain = await serializeProjectForDisk(project, cached);
       const text = await sealPeakcadText(project, plain, true);
       if (!text) return false;
       if (!forceSaveAs && project.filePath && hasDesktopProjectFiles()) {
-        await writePeakcadText(project.filePath, text);
-        lastDiskRevisionRef.current[projectId] = cached.revision;
+        // In line with autosave's file writes, so an older autosave still writing can never land
+        // after this Save and leave the file behind.
+        const filePath = project.filePath;
+        const revision = cached.revision;
+        const previous = projectShapeSaveQueuesRef.current[projectId] ?? Promise.resolve();
+        const write = previous.catch(() => undefined).then(async () => {
+          await writePeakcadText(filePath, text);
+          lastDiskRevisionRef.current[projectId] = Math.max(lastDiskRevisionRef.current[projectId] ?? 0, revision);
+        });
+        projectShapeSaveQueuesRef.current[projectId] = write;
+        try {
+          await write;
+        } finally {
+          if (projectShapeSaveQueuesRef.current[projectId] === write) delete projectShapeSaveQueuesRef.current[projectId];
+        }
         setProjects((current) =>
           current.map((item) => (item.id === projectId ? withSavedPeakcadFile(item, project.filePath) : item)),
         );
@@ -2312,6 +2351,63 @@ export default function Home() {
   };
   createAndOpenProjectRef.current = createAndOpenProject;
 
+  /** Laser designs to offer in Send to laser, most recent first. */
+  const laserDesignChoices = useMemo(
+    () => projects
+      .filter((project) => project.workspace?.designKind === "laser")
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((project) => ({ id: project.id, name: project.name, crystal: isCrystalDesign(project.workspace) })),
+    [projects],
+  );
+
+  /**
+   * Send to laser: the 3D parts go, marked pending, into a new laser design or onto the
+   * end of an existing one, which then opens and makes them into sheet parts.
+   */
+  const sendShapesToLaser = async (target: string, sourceName: string, shapes: WorkplaneShape[]) => {
+    if (shapes.length === 0) return;
+    if (target === "new") {
+      const projectId = createAndOpenProject(`${sourceName} (laser)`, "laser", shapes);
+      if (projectId) setOpeningNotice({ projectId, text: `Brought over from ${sourceName}.` });
+      return;
+    }
+    const project = projectsRef.current.find((item) => item.id === target);
+    if (!project) {
+      setDashboardNotice("That laser design is no longer here.");
+      return;
+    }
+    try {
+      const cached = projectShapesById[target];
+      const existing = cached ? cached.shapes : (await loadProjectShapes(target))?.shapes ?? [];
+      // A fresh history: the parts arrive as the design's newest state.
+      const entry = projectShapeCacheEntry(Date.now(), [...existing, ...shapes]);
+      setProjectShapesById((current) => ({ ...current, [target]: entry }));
+      await saveProjectShapes(target, entry);
+      setProjects((current) => current.map((item) => (item.id === target ? { ...item, revision: entry.revision, updatedAt: entry.revision } : item)));
+      setOpeningNotice({ projectId: target, text: `Brought over from ${sourceName}.` });
+      openEditor(target);
+    } catch {
+      setDashboardNotice(`Could not add the parts to ${project.name}.`);
+    }
+  };
+
+  /** A 3D design's parts and revision, for Update from model in a laser design. */
+  const loadDesignForLaser = async (designId: string) => {
+    const project = projectsRef.current.find((item) => item.id === designId);
+    if (!project) return null;
+    const cached = projectShapesById[designId];
+    if (cached) return { name: project.name, shapes: cached.shapes, revision: cached.revision };
+    const record = await loadProjectShapes(designId);
+    return record ? { name: project.name, shapes: record.shapes, revision: record.revision ?? project.revision ?? 0 } : null;
+  };
+
+  /** How far a design has moved on, so a laser design can say its model has changed. */
+  const designRevision = (designId: string) => {
+    const project = projects.find((item) => item.id === designId);
+    if (!project) return null;
+    return Math.max(project.revision ?? 0, projectShapesById[designId]?.revision ?? 0);
+  };
+
   /** People with a laser choose print or laser; everyone else gets a print design at once. */
   const startNewDesign = () => {
     const machines = loadMachineChoice();
@@ -2347,7 +2443,7 @@ export default function Home() {
         history: session.history,
         historyIndex: end,
         guide: session.guide,
-        fonts: readCustomFonts(),
+        fonts: designFontLibrary(),
       }),
       path: null,
     }, true);
@@ -2887,6 +2983,10 @@ export default function Home() {
                 renameProject(activeProjectId, name);
               }
             }}
+            laserDesigns={laserDesignChoices.filter((design) => design.id !== activeProjectId)}
+            onSendToLaser={sendShapesToLaser}
+            onLoadDesignForLaser={loadDesignForLaser}
+            designRevision={designRevision}
             hasMatchingSavedFile={projectMatchesSavedFile(activeProject)}
             hostNotice={editorHostNotice}
             guidePlayback={activeProjectId ? (builtinGuideSession(activeProjectId) ?? guideSessionFor(activeProjectId)) : null}

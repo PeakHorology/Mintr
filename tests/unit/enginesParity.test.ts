@@ -145,6 +145,14 @@ describe.skipIf(!hasNativeKernelExe)("desktop engine matches the browser engine"
     const nativeReady = await native.request({ id: prepareId, requestId: prepareId, type: "prepare", sharpAngle: 12, parts }, 60000);
     const browserEdges = browserReady.type === "ready" ? browserReady.selectableEdgeIds : [];
     const nativeEdges = (nativeReady.selectableEdgeIds as number[] | undefined) ?? [];
+    // The pocket's own edges are inside corners. The browser's legacy engine cuts a groove
+    // out of those at any size; the desktop fills them, as CAD does, and refuses a round too
+    // big to fit in the pocket.
+    const nativePoints = new Map((nativeReady.edges as Array<{ id: number; points: number[] }>).map((edge) => [edge.id, edge.points]));
+    const insidePocket = (edgeId: number) => {
+      const points = nativePoints.get(edgeId) ?? [];
+      return points.length > 0 && points.every((value, index) => index % 3 === 1 ? value > 11.9 : Math.abs(value) < 4.1);
+    };
     for (let index = 0; index < browserEdges.length; index += 1) {
       const previewId = nextId++;
       const request = { type: "preview" as const, requestId: previewId, chamferAngle: 45, ...OVERSIZED };
@@ -152,6 +160,7 @@ describe.skipIf(!hasNativeKernelExe)("desktop engine matches the browser engine"
       const fromNative = await native.request({ id: previewId, ...request, edgeIds: [nativeEdges[index]] }, 60000);
       const browserAnswer = fromBrowser.type === "preview" ? "ok" : (fromBrowser as { message: string }).message;
       const nativeAnswer = fromNative.ok !== false && fromNative.type === "preview" ? "ok" : String(fromNative.message);
+      if (browserAnswer === "ok" && insidePocket(nativeEdges[index]) && nativeAnswer.startsWith("That radius is too big")) continue;
       expect(nativeAnswer, `edge ${index}`).toBe(browserAnswer);
     }
     await browser.request({ type: "dispose", requestId: nextId++ });

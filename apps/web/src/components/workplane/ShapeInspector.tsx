@@ -5,13 +5,15 @@ import { ChevronDown, ChevronUp, Copy, Split, X } from "lucide-react";
 import { isLaserDesign } from "@/lib/laserMachine";
 import { LASER_JOB_LABEL, type LaserJob } from "@/lib/laser/cutFile";
 import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from "react";
-import { ToolbarHideSelectedIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
+import { PartKindGlyph, StepKindGlyph, ToolbarChamferIcon, ToolbarCircularPatternIcon, ToolbarFilletIcon, ToolbarHideSelectedIcon, ToolbarHoleIcon, ToolbarLinearPatternIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
+import { designTreeOp } from "@/lib/designTree";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { InlineValueDialog } from "@/components/workplane/InlineValueDialog";
 import { ThumbRangeInput } from "@/components/workplane/ThumbRangeInput";
 import { PeakTipButton, PeakTipLabel } from "@/components/workplane/ToolNameTooltip";
 import { useChromePresence } from "@/lib/chromePresence";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
+import { meshAabb } from "@/lib/editorShapeMesh";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, formatVolumeWithMilliliters, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import { partFeatureLabel, partStepSize } from "@/lib/partFeatures";
 import {
@@ -61,14 +63,14 @@ import {
 } from "@/lib/gridfinity";
 import { withGridfinityBaseplateSpec, withGridfinityBinSpec } from "@/lib/gridfinityShape";
 import { loftHasSteps, loftPatch, maxLoftWall, withLoftSettings, withLoftStarter } from "@/lib/loftShape";
-import { parseDimensionEntry } from "@/lib/dimensionEntry";
+import { parseDimensionEntry, parseDimensionEntryWithUnit } from "@/lib/dimensionEntry";
 import { evaluateValueExpression, isValueExpression, renameValueInShape, resolveValues } from "@/lib/parametricValues";
 import { ValuesCard } from "@/components/workplane/ValuesCard";
 import { cleanShapePatch } from "@/lib/editorBoolean";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
 import { uniformScalePatch } from "@/lib/uniformScale";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
-import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
+import { findShapeInTree } from "@/lib/csgTree";
 import { isConstructionShape } from "@/lib/holeFeature";
 import { patternFeatureLabel } from "@/lib/patternFeature";
 import {
@@ -195,7 +197,15 @@ const SMOOTH_MIRROR_LABELS = { off: "Off", x: "Left to right", z: "Front to back
 /** First row of a part's step list: what the steps were applied to. */
 function partStepsStartLabel(shape: WorkplaneShape) {
   if (shape.groupedShapes?.length) return "Combined parts";
-  const kind = shape.featureBase?.importedMesh ? "Imported part" : shape.featureBase?.kind ?? shape.kind;
+  const base = shape.featureBase ?? shape;
+  // Name what the part started as. Sketches, lofts and generated shapes carry a mesh too,
+  // so only a mesh with no other origin is an imported part.
+  let kind: string;
+  if (base.sketchProfile || base.sketchDoc || base.sketchId) kind = base.sketchRevolveAxis ? "Sketch revolve" : "Sketch extrude";
+  else if (base.loftBuilt) kind = "Loft";
+  else if (base.generated) kind = base.generated.form.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+  else if (base.kind === "mesh" && base.importedMesh) kind = "Imported part";
+  else kind = base.kind;
   return kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
@@ -204,7 +214,7 @@ function partStepsStartLabel(shape: WorkplaneShape) {
  * does not take focus from the field, and the click may deselect the shape and close this panel
  * before the field ever loses focus, so the field lets go of focus as soon as the press starts.
  */
-function useBlurOnOutsidePress(inputRef: RefObject<HTMLInputElement | null>) {
+function useBlurOnOutsidePress(inputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>) {
   useEffect(() => {
     const onPress = (event: PointerEvent) => {
       const input = inputRef.current;
@@ -230,7 +240,7 @@ function isFootprintSize(property: ShapePropertyConfig): property is RangeProper
 }
 
 function propertyUsesLengthUnit(label: string) {
-  return /length|width|height|radius|bevel|thickness|clearance|module|backlash|rim|hole|padding/i.test(label);
+  return /length|width|height|radius|bevel|thickness|clearance|module|backlash|rim|hole|padding|raise|spacing|fit across|fit deep|edge round|diameter/i.test(label);
 }
 
 function propertyUsesDegreeUnit(label: string) {
@@ -263,18 +273,20 @@ export function ShapeInspector({
   onInteractionActiveChange,
   activeFeatureId = null,
   onSelectFeature,
-  onSuppressFeature,
   modelTreeLocked = false,
-  onReorderFeature,
   onUpdateFeature,
   sceneShapes,
+  badgeShape = null,
   onEditPattern,
   onDissolvePattern,
   onEditEdgeTreatment,
   onRemoveEdgeTreatment,
   onEditPartStep,
+  onOpenPartStep,
   onTogglePartStep,
   onRemovePartStep,
+  onRemovePartStepsFrom,
+  laserSource = null,
   smoothControls,
 }: {
   shape: WorkplaneShape;
@@ -294,33 +306,42 @@ export function ShapeInspector({
   onSplitForPrintBed?: () => void;
   onReduceTriangles?: (keepFraction: number) => void;
   onInteractionActiveChange?: (active: boolean) => void;
-  /** In-body feature selection (CSG child id). */
+  /** The part picked inside a group (from the Parts tree or Alt-click), at any depth. */
   activeFeatureId?: string | null;
   onSelectFeature?: (featureId: string | null) => void;
-  onSuppressFeature?: (featureId: string, suppressed: boolean) => void;
-  /** Fillet/chamfer is open, so the model tree must not rebuild the body. */
+  /** Fillet/chamfer is open, so the steps must not rebuild the part. */
   modelTreeLocked?: boolean;
-  onReorderFeature?: (featureId: string, direction: "up" | "down") => void;
-  /** Patch a CSG child selected in the model tree (rebuilds the body). */
+  /** Patch a part picked inside a group (rebuilds the group). */
   onUpdateFeature?: (featureId: string, patch: Partial<WorkplaneShape>, options?: ShapeInspectorUpdateOptions) => void;
   /** Whole scene, so the export badge can account for loose cutters that will reach this body. */
   sceneShapes?: readonly WorkplaneShape[];
+  /**
+   * The part as it was before a Fillet, Chamfer or Push Pull preview. The preview is a quick mesh,
+   * but Apply rebuilds the exact solid, so the badge keeps what the part was rather than saying Mesh.
+   */
+  badgeShape?: WorkplaneShape | null;
   onEditPattern?: () => void;
   onDissolvePattern?: () => void;
   /** Open the fillet or chamfer tool on this feature of the selected shape. */
   onEditEdgeTreatment?: (index: number) => void;
   /** Change a recorded step's size (fillet amount, wall thickness, push distance), in mm. */
   onEditPartStep?: (featureId: string, valueMm: number) => void;
+  /** Open a step in its tool, with the values it was made with; later steps are put back after. */
+  onOpenPartStep?: (featureId: string) => void;
   onTogglePartStep?: (featureId: string) => void;
   onRemovePartStep?: (featureId: string) => void;
+  /** Remove a step and every step after it. */
+  onRemovePartStepsFrom?: (featureId: string) => void;
+  /** In a laser design, the 3D design this part was sent from, with Update from model. */
+  laserSource?: { designName: string; missing: boolean; changed: boolean; busy: boolean; onUpdate: () => void } | null;
   /** Restore the shape to before this feature. Newer features on top of it go with it. */
   onRemoveEdgeTreatment?: (index: number) => void;
   /** Present on a Smooth body. */
   smoothControls?: SmoothInspectorControls | null;
 }) {
   const feature =
-    activeFeatureId
-      ? shape.groupedShapes?.find((child) => child.id === activeFeatureId) ?? null
+    activeFeatureId && shape.groupedShapes?.length
+      ? findShapeInTree(shape.groupedShapes, activeFeatureId)
       : null;
   const inspectTarget = feature ?? shape;
   const solidColor = inspectTarget.hole ? fallbackSolidColor(inspectTarget) : inspectTarget.color;
@@ -344,7 +365,9 @@ export function ShapeInspector({
     || inspectTarget.kind === "gear"
     || inspectTarget.kind === "gridfinityBin"
     || inspectTarget.kind === "gridfinityBaseplate";
-  const canScale = inspectTarget.kind !== "thread"
+  // A toolbox label's size comes from its letters and padding, not a stretch.
+  const canScale = !inspectTarget.toolboxLabel
+    && inspectTarget.kind !== "thread"
     && inspectTarget.kind !== "text"
     && inspectTarget.kind !== "gear"
     && inspectTarget.kind !== "gridfinityBin"
@@ -367,8 +390,9 @@ export function ShapeInspector({
   };
   const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget, sceneShapes ?? [], workspace.printerKind));
   // Mintr Pro values: the part's own, and the ones a part inside a group can use.
-  const bodyValues = resolveValues(shape.values);
-  const targetScope = feature ? resolveValues(feature.values, bodyValues.scope).scope : bodyValues.scope;
+  const unitMm = lengthDisplayUnit(workspace).millimetersPerUnit;
+  const bodyValues = resolveValues(shape.values, undefined, unitMm);
+  const targetScope = feature ? resolveValues(feature.values, bodyValues.scope, unitMm).scope : bodyValues.scope;
   const drivableLabels = new Set(properties.filter((property): property is RangePropertyConfig => !("type" in property) || property.type === "range").map((property) => property.label));
   /** The top-level part with the inspected part (itself, or a part inside it) changed. */
   const applyToTarget = (change: (target: WorkplaneShape) => WorkplaneShape, message: string) => {
@@ -398,9 +422,6 @@ export function ShapeInspector({
     { preferredId: activeFeatureId, preferFaceFeatures: !activeFeatureId },
   );
   const sketchDimensions = sketchFeature?.sketchDoc?.dimensions;
-  const csgChildren = shape.groupedShapes ?? [];
-  const csgOp = shape.csg?.op ?? inferCsgOp(shape);
-  const showFeatureTree = Boolean(csgChildren.length && (isEvaluatedCsgBody(shape) || csgOp));
   const pattern = shape.patternFeature;
   const holeSpec = shape.holeSpec ?? inspectTarget.holeSpec;
   const partSteps = onEditPartStep ? shape.features ?? [] : [];
@@ -410,7 +431,7 @@ export function ShapeInspector({
     : (inspectTarget.importedMesh?.triangleCount ?? 0);
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [colorOpen, setColorOpen] = useState(false);
-  const [featuresOpen, setFeaturesOpen] = useState(true);
+  const [stepsOpen, setStepsOpen] = useState(true);
   const [stepDraft, setStepDraft] = useState<{ id: string; value: string } | null>(null);
   const [dimensionDialog, setDimensionDialog] = useState<{ id: string; value: number; expression?: string; angle?: boolean } | null>(null);
   const [reduceOpen, setReduceOpen] = useState(false);
@@ -451,6 +472,9 @@ export function ShapeInspector({
   ]);
 
   const renderProperty = (property: ShapePropertyConfig) => {
+    if (property.type === "heading") {
+      return <h4 key={`heading-${property.label}`} className="property-section-heading">{property.label}</h4>;
+    }
     if (property.type === "text") {
       return <TextProperty key={property.label} {...property} disabled={locked} />;
     }
@@ -475,7 +499,7 @@ export function ShapeInspector({
       : propertyOnChange;
     const drivable = Boolean(onApplyValues) && drivableLabels.has(property.label);
     const expression = drivable ? inspectTarget.drivenBy?.[property.label] : undefined;
-    const evaluated = expression ? evaluateValueExpression(expression, targetScope) : null;
+    const evaluated = expression ? evaluateValueExpression(expression, targetScope, unitMm) : null;
     return (
       <RangeProperty
         key={property.label}
@@ -498,11 +522,13 @@ export function ShapeInspector({
         <PeakTipButton className="inspector-header-icon" label="Close shape settings" onClick={onClose}>
           <X size={22} strokeWidth={2.6} />
         </PeakTipButton>
+        <div className="shape-inspector-title">
         <strong>{feature ? `${shape.name} · ${inspectTarget.name}` : shape.name}</strong>
         {(() => {
+          const rated = badgeShape && badgeShape.id === inspectTarget.id ? badgeShape : inspectTarget;
           const quality = sceneShapes
-            ? shapeExportQualityHintInScene(inspectTarget, sceneShapes)
-            : shapeExportQualityHint(inspectTarget);
+            ? shapeExportQualityHintInScene(rated, sceneShapes)
+            : shapeExportQualityHint(rated);
           return (
             <span
               className={`cad-ready-badge${quality === "faceted" ? " cad-ready-badge--mesh" : ""}${quality === "pending" || quality === "unsupported" ? " cad-ready-badge--pending" : ""}`}
@@ -512,6 +538,7 @@ export function ShapeInspector({
             </span>
           );
         })()}
+        </div>
         <div className="inspector-header-actions">
           <PeakTipButton
             className={locked ? "inspector-header-icon active" : "inspector-header-icon"}
@@ -529,6 +556,177 @@ export function ShapeInspector({
           </PeakTipButton>
         </div>
       </div>
+
+      {/* The part's steps, oldest first, right under its name. The parts inside a group live in the Parts tree. */}
+      {showShallowFeatures ? (
+        <div className="property-card csg-feature-tree steps-card" aria-label="Steps">
+          <button
+            className="property-card-header"
+            type="button"
+            aria-expanded={stepsOpen}
+            aria-controls={`steps-${shape.id}`}
+            onClick={() => setStepsOpen((open) => !open)}
+          >
+            <span>Steps</span>
+            <ChevronUp className={stepsOpen ? "" : "collapsed"} size={25} strokeWidth={2.8} />
+          </button>
+          {stepsOpen ? (
+            <div className="csg-feature-list" id={`steps-${shape.id}`}>
+              <div className="csg-feature-row csg-step-row csg-step-start">
+                <span className="csg-step-glyph" aria-hidden="true"><PartKindGlyph shape={shape} op={designTreeOp(shape)} /></span>
+                <span className="csg-feature-name">{isConstructionShape(shape) ? "Construction plane" : partSteps.length > 0 ? partStepsStartLabel(shape) : inspectTarget.kind}</span>
+              </div>
+              {partSteps.length > 0 ? partSteps.map((step) => {
+                const blocked = locked || modelTreeLocked;
+                const size = partStepSize(step);
+                const unit = lengthDisplayUnit(workspace).label;
+                const editing = stepDraft?.id === step.id;
+                const commitDraft = () => {
+                  const typed = Number(stepDraft?.value);
+                  setStepDraft(null);
+                  if (!Number.isFinite(typed)) return;
+                  const mm = displayToMillimeters(typed, workspace);
+                  if (Math.abs(mm - size) > 1e-6) onEditPartStep?.(step.id, mm);
+                };
+                const label = partFeatureLabel(step, (mm) => `${formatMeasurementNumber(millimetersToDisplay(mm, workspace), workspace.accuracy)} ${unit}`);
+                return (
+                  <div
+                    key={step.id}
+                    className={`csg-feature-row csg-step-row${step.suppressed ? " suppressed" : ""}${step.failed ? " failed" : ""}`}
+                    title={step.failed ? `Skipped: ${step.failed}` : undefined}
+                  >
+                    <span className="csg-step-glyph" aria-hidden="true"><StepKindGlyph step={step} /></span>
+                    {editing ? (
+                      <input
+                        className="csg-feature-input"
+                        type="number"
+                        step="any"
+                        autoFocus
+                        aria-label={`New size for ${label}`}
+                        value={stepDraft.value}
+                        onChange={(event) => setStepDraft({ id: step.id, value: event.target.value })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") commitDraft();
+                          if (event.key === "Escape") setStepDraft(null);
+                        }}
+                        onBlur={commitDraft}
+                      />
+                    ) : onOpenPartStep && !blocked ? (
+                      <button
+                        type="button"
+                        className="csg-feature-name csg-step-open"
+                        title="Open this step in its tool, with the values it was made with"
+                        onClick={() => onOpenPartStep(step.id)}
+                      >
+                        {label}
+                        {step.failed ? <span className="csg-feature-note"> · skipped</span> : null}
+                      </button>
+                    ) : (
+                      <span className="csg-feature-name">
+                        {label}
+                        {step.failed ? <span className="csg-feature-note"> · skipped</span> : null}
+                      </span>
+                    )}
+                    <div className="csg-feature-actions">
+                      <button
+                        type="button"
+                        disabled={blocked || editing}
+                        title="Change the size of this step"
+                        onClick={() => setStepDraft({ id: step.id, value: formatMeasurementNumber(millimetersToDisplay(size, workspace), workspace.accuracy) })}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blocked || !onTogglePartStep}
+                        title={step.suppressed ? "Put this step back" : "Leave this step out for now"}
+                        onClick={() => onTogglePartStep?.(step.id)}
+                      >
+                        {step.suppressed ? "On" : "Off"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blocked || !onRemovePartStep}
+                        title={onRemovePartStepsFrom ? "Remove only this step; the steps after it stay. Right-click the step in the Parts tree to remove it and the later steps together." : "Remove only this step; the steps after it stay"}
+                        onClick={() => onRemovePartStep?.(step.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              }) : null}
+              {partSteps.length > 0 ? null : (shape.edgeTreatments ?? []).map((feature, index) => {
+                const entry = shape.edgeTreatmentHistory?.[index];
+                const canChange = Boolean(entry && entry.feature.kind === feature.kind);
+                const newer = Math.max(0, (shape.edgeTreatments?.length ?? 0) - index - 1);
+                const newerNote = newer > 0
+                  ? `Also removes ${newer} newer edge feature${newer === 1 ? "" : "s"}`
+                  : undefined;
+                const blocked = locked || modelTreeLocked || !canChange;
+                const name = feature.kind === "fillet"
+                  ? (feature.filletProfile === "cove" ? "Concave fillet" : "Fillet")
+                  : "Chamfer";
+                return (
+                  <div key={`edge-${index}`} className="csg-feature-row csg-step-row">
+                    <span className="csg-step-glyph" aria-hidden="true">{feature.kind === "chamfer" ? <ToolbarChamferIcon /> : <ToolbarFilletIcon />}</span>
+                    <span className="csg-feature-name">
+                      {name} {feature.amount} mm
+                      {feature.edgeCount ? ` · ${feature.edgeCount} edges` : ""}
+                    </span>
+                    <div className="csg-feature-actions">
+                      <button
+                        type="button"
+                        disabled={blocked || !onEditEdgeTreatment}
+                        title={canChange ? (newerNote ?? `Edit this ${name.toLowerCase()}`) : "This edge feature has no stored edit history"}
+                        onClick={() => onEditEdgeTreatment?.(index)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blocked || !onRemoveEdgeTreatment}
+                        title={canChange ? (newerNote ?? `Remove this ${name.toLowerCase()}`) : "This edge feature has no stored edit history"}
+                        onClick={() => onRemoveEdgeTreatment?.(index)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {holeSpec ? (
+                <div className="csg-feature-row csg-step-row">
+                  <span className="csg-step-glyph" aria-hidden="true"><ToolbarHoleIcon /></span>
+                  <span className="csg-feature-name">
+                    Hole ⌀{holeSpec.diameter}
+                    {holeSpec.depthMode === "through" ? " through" : ` × ${holeSpec.depth}`}
+                    {holeSpec.style === "counterbore" ? " · C’bore" : holeSpec.style === "countersink" ? " · C’sink" : ""}
+                  </span>
+                </div>
+              ) : null}
+              {pattern ? (
+                <div className="csg-feature-row csg-step-row active">
+                  <span className="csg-step-glyph" aria-hidden="true">{pattern.kind === "linear" ? <ToolbarLinearPatternIcon /> : <ToolbarCircularPatternIcon />}</span>
+                  <span className="csg-feature-name">{patternFeatureLabel(pattern)}</span>
+                  <div className="csg-feature-actions">
+                    {onEditPattern ? (
+                      <button type="button" disabled={locked} onClick={onEditPattern}>
+                        Edit
+                      </button>
+                    ) : null}
+                    {onDissolvePattern ? (
+                      <button type="button" disabled={locked} onClick={onDissolvePattern}>
+                        Dissolve
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* A thread's Kind decides solid or hole. Older files that made a screw a hole can still turn it back. */}
       {inspectTarget.kind !== "thread" || (inspectTarget.hole && !threadCanBeHole(inspectTarget)) ? (
@@ -586,6 +784,22 @@ export function ShapeInspector({
             })}
           </div>
           <p>{LASER_JOB_HINT[inspectTarget.laserJob ?? "cut"]}</p>
+          {laserSource ? (
+            <div className={`laser-source-row${laserSource.changed ? " changed" : ""}`}>
+              <span>
+                {laserSource.missing
+                  ? <>From <strong>{laserSource.designName}</strong>, which is no longer here.</>
+                  : laserSource.changed
+                    ? <><strong>{laserSource.designName}</strong> has changed since these parts were made.</>
+                    : <>Made from <strong>{laserSource.designName}</strong>.</>}
+              </span>
+              {laserSource.missing ? null : (
+                <button type="button" onClick={laserSource.onUpdate} disabled={laserSource.busy || locked} aria-busy={laserSource.busy}>
+                  {laserSource.busy ? "Updating…" : "Update from model"}
+                </button>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -646,6 +860,20 @@ export function ShapeInspector({
         <div className="property-card shape-size-card" aria-label="Size">
           <div className="property-list">
             {sizeProperties.map(renderProperty)}
+            {(() => {
+              // Turned parts keep their own Length / Width / Height above; this is the room they take up now.
+              const yaw = ((inspectTarget.rotation ?? 0) % 180 + 180) % 180;
+              const tilted = Math.abs(inspectTarget.rotationX ?? 0) % 360 > 1e-6 || Math.abs(inspectTarget.rotationZ ?? 0) % 360 > 1e-6;
+              if (sizeProperties.length === 0 || (!tilted && yaw < 1e-6)) return null;
+              const box = meshAabb(inspectTarget);
+              const unit = lengthDisplayUnit(workspace).label;
+              const show = (mm: number) => formatMeasurementNumber(millimetersToDisplay(mm, workspace), workspace.accuracy);
+              return (
+                <p className="shape-size-world" title="Length × Width × Height of the space the turned part takes up on the workplane">
+                  Turned, it takes up {show(box.maxZ - box.minZ)} × {show(box.maxX - box.minX)} × {show(box.maxY - box.minY)} {unit}
+                </p>
+              );
+            })()}
             {canScale ? (
               <div className="proportion-row">
                 {coupledKind ? null : (
@@ -707,6 +935,7 @@ export function ShapeInspector({
 
       {onApplyValues ? (
         <ValuesCard
+          unitMm={unitMm}
           values={shape.values ?? []}
           locked={Boolean(shape.locked)}
           onChange={(next, message, renamed) => {
@@ -861,250 +1090,6 @@ export function ShapeInspector({
         ) : null}
       </div>
 
-      {showShallowFeatures ? (
-        <div className="property-card csg-feature-tree" aria-label="Features">
-          <button
-            className="property-card-header"
-            type="button"
-            aria-expanded={featuresOpen}
-            aria-controls={`cad-features-${shape.id}`}
-            onClick={() => setFeaturesOpen((open) => !open)}
-          >
-            <span>Features</span>
-            <ChevronUp className={featuresOpen ? "" : "collapsed"} size={25} strokeWidth={2.8} />
-          </button>
-          {featuresOpen ? (
-            <div className="csg-feature-list" id={`cad-features-${shape.id}`}>
-              <div className="csg-feature-row">
-                <span className="csg-feature-name">{isConstructionShape(shape) ? "Construction plane" : partSteps.length > 0 ? partStepsStartLabel(shape) : inspectTarget.kind}</span>
-              </div>
-              {partSteps.length > 0 ? partSteps.map((step) => {
-                const blocked = locked || modelTreeLocked;
-                const size = partStepSize(step);
-                const unit = lengthDisplayUnit(workspace).label;
-                const editing = stepDraft?.id === step.id;
-                const commitDraft = () => {
-                  const typed = Number(stepDraft?.value);
-                  setStepDraft(null);
-                  if (!Number.isFinite(typed)) return;
-                  const mm = displayToMillimeters(typed, workspace);
-                  if (Math.abs(mm - size) > 1e-6) onEditPartStep?.(step.id, mm);
-                };
-                const label = partFeatureLabel(step, (mm) => `${formatMeasurementNumber(millimetersToDisplay(mm, workspace), workspace.accuracy)} ${unit}`);
-                return (
-                  <div
-                    key={step.id}
-                    className={`csg-feature-row${step.suppressed ? " suppressed" : ""}${step.failed ? " failed" : ""}`}
-                    title={step.failed ? `Skipped: ${step.failed}` : undefined}
-                  >
-                    {editing ? (
-                      <input
-                        className="csg-feature-input"
-                        type="number"
-                        step="any"
-                        autoFocus
-                        aria-label={`New size for ${label}`}
-                        value={stepDraft.value}
-                        onChange={(event) => setStepDraft({ id: step.id, value: event.target.value })}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") commitDraft();
-                          if (event.key === "Escape") setStepDraft(null);
-                        }}
-                        onBlur={commitDraft}
-                      />
-                    ) : (
-                      <span className="csg-feature-name">
-                        {label}
-                        {step.failed ? <span className="csg-feature-note"> · skipped</span> : null}
-                      </span>
-                    )}
-                    <div className="csg-feature-actions">
-                      <button
-                        type="button"
-                        disabled={blocked || editing}
-                        title="Change the size of this step"
-                        onClick={() => setStepDraft({ id: step.id, value: formatMeasurementNumber(millimetersToDisplay(size, workspace), workspace.accuracy) })}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        disabled={blocked || !onTogglePartStep}
-                        title={step.suppressed ? "Put this step back" : "Leave this step out for now"}
-                        onClick={() => onTogglePartStep?.(step.id)}
-                      >
-                        {step.suppressed ? "On" : "Off"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={blocked || !onRemovePartStep}
-                        title="Remove only this step; the steps after it stay"
-                        onClick={() => onRemovePartStep?.(step.id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                );
-              }) : null}
-              {partSteps.length > 0 ? null : (shape.edgeTreatments ?? []).map((feature, index) => {
-                const entry = shape.edgeTreatmentHistory?.[index];
-                const canChange = Boolean(entry && entry.feature.kind === feature.kind);
-                const newer = Math.max(0, (shape.edgeTreatments?.length ?? 0) - index - 1);
-                const newerNote = newer > 0
-                  ? `Also removes ${newer} newer edge feature${newer === 1 ? "" : "s"}`
-                  : undefined;
-                const blocked = locked || modelTreeLocked || !canChange;
-                const name = feature.kind === "fillet"
-                  ? (feature.filletProfile === "cove" ? "Concave fillet" : "Fillet")
-                  : "Chamfer";
-                return (
-                  <div key={`edge-${index}`} className="csg-feature-row">
-                    <span className="csg-feature-name">
-                      {name} {feature.amount} mm
-                      {feature.edgeCount ? ` · ${feature.edgeCount} edges` : ""}
-                    </span>
-                    <div className="csg-feature-actions">
-                      <button
-                        type="button"
-                        disabled={blocked || !onEditEdgeTreatment}
-                        title={canChange ? (newerNote ?? `Edit this ${name.toLowerCase()}`) : "This edge feature has no stored edit history"}
-                        onClick={() => onEditEdgeTreatment?.(index)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        disabled={blocked || !onRemoveEdgeTreatment}
-                        title={canChange ? (newerNote ?? `Remove this ${name.toLowerCase()}`) : "This edge feature has no stored edit history"}
-                        onClick={() => onRemoveEdgeTreatment?.(index)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-              {holeSpec ? (
-                <div className="csg-feature-row">
-                  <span className="csg-feature-name">
-                    Hole ⌀{holeSpec.diameter}
-                    {holeSpec.depthMode === "through" ? " through" : ` × ${holeSpec.depth}`}
-                    {holeSpec.style === "counterbore" ? " · C’bore" : holeSpec.style === "countersink" ? " · C’sink" : ""}
-                  </span>
-                </div>
-              ) : null}
-              {pattern ? (
-                <div className="csg-feature-row active">
-                  <span className="csg-feature-name">{patternFeatureLabel(pattern)}</span>
-                  <div className="csg-feature-reorder">
-                    {onEditPattern ? (
-                      <button type="button" disabled={locked} onClick={onEditPattern}>
-                        Edit
-                      </button>
-                    ) : null}
-                    {onDissolvePattern ? (
-                      <button type="button" disabled={locked} onClick={onDissolvePattern}>
-                        Dissolve
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {showFeatureTree ? (
-        <div className="property-card csg-feature-tree" aria-label="Model tree">
-          <button
-            className="property-card-header"
-            type="button"
-            aria-expanded={featuresOpen}
-            aria-controls={`features-${shape.id}`}
-            onClick={() => setFeaturesOpen((open) => !open)}
-          >
-            <span>Model tree</span>
-            <ChevronUp className={featuresOpen ? "" : "collapsed"} size={25} strokeWidth={2.8} />
-          </button>
-          {featuresOpen ? (
-            <div className="csg-feature-list" id={`features-${shape.id}`}>
-              <div className="csg-feature-meta">
-                <span className="csg-feature-op">
-                  {csgOp === "assemble" ? "tie" : csgOp === "subtract" ? "cut" : csgOp === "union" ? "union" : csgOp === "intersect" ? "intersect" : csgOp === "hull" ? "shrink wrap" : csgOp === "smooth" ? "smooth" : "group"}
-                </span>
-                <span className="csg-feature-tip">
-                  {csgOp === "assemble"
-                    ? "Select a part to edit its properties"
-                    : "Select a feature to edit · Alt-click in view"}
-                </span>
-              </div>
-              {csgChildren.map((child, index) => {
-                const suppressed = Boolean(child.suppressed || child.csg?.suppressed);
-                const active = activeFeatureId === child.id;
-                const childQuality = shapeExportQualityHint(child);
-                return (
-                  <div
-                    key={child.id}
-                    className={`csg-feature-row${active ? " active" : ""}${suppressed ? " suppressed" : ""}`}
-                  >
-                    <button
-                      type="button"
-                      className="csg-feature-select"
-                      disabled={locked}
-                      onClick={() => onSelectFeature?.(active ? null : child.id)}
-                      title="Select feature for edit"
-                    >
-                      <span className={`csg-feature-role ${child.hole ? "cut" : "join"}`}>{child.hole ? "−" : "+"}</span>
-                      <span className="csg-feature-name">{child.name || child.kind}</span>
-                      <span
-                        className={`csg-feature-quality csg-feature-quality--${childQuality}`}
-                        title={shapeExportQualityTitle(childQuality)}
-                      >
-                        {childQuality === "exact"
-                          ? "exact"
-                          : childQuality === "faceted"
-                            ? "mesh"
-                            : childQuality === "unsupported"
-                              ? "n/a"
-                              : "…"}
-                      </span>
-                    </button>
-                    <label className="csg-feature-suppress" title={modelTreeLocked ? "Cancel the fillet or chamfer before turning a feature off" : "Suppress feature"}>
-                      <input
-                        type="checkbox"
-                        checked={suppressed}
-                        disabled={locked || !onSuppressFeature || modelTreeLocked}
-                        onChange={(event) => onSuppressFeature?.(child.id, event.target.checked)}
-                      />
-                      <span>Off</span>
-                    </label>
-                    <div className="csg-feature-reorder">
-                      <button
-                        type="button"
-                        disabled={locked || index === 0 || !onReorderFeature}
-                        onClick={() => onReorderFeature?.(child.id, "up")}
-                        aria-label="Move feature up"
-                      >
-                        <ChevronUp size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={locked || index >= csgChildren.length - 1 || !onReorderFeature}
-                        onClick={() => onReorderFeature?.(child.id, "down")}
-                        aria-label="Move feature down"
-                      >
-                        <ChevronDown size={14} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       {dimensionDialog ? (
         <InlineValueDialog
           title="Edit sketch dimension"
@@ -1289,17 +1274,22 @@ function RangeProperty({
     // Blank or unparsable text (cleared field, "10 mm", "12,5") reverts instead
     // of collapsing the shape to the minimum; unchanged text is not a change.
     if (text === "" || text === focusTextRef.current) return;
-    if (onExpression && isValueExpression(text)) {
+    // A size with its own unit ("50mm", "2in") is millimeters already, whatever this box shows.
+    const typed = parseDimensionEntryWithUnit(text, controlValue);
+    if (onExpression && !typed && isValueExpression(text)) {
       onExpression(text);
       return;
     }
-    const next = parseDimensionEntry(text, controlValue);
-    if (next === null || !Number.isFinite(next)) return;
+    if (!typed || !Number.isFinite(typed.value)) return;
+    const modelValue = typed.unitGiven ? typed.value : toModelValue(typed.value);
+    // A size cannot be zero or negative: "-5" used to make a 0.01 mm sliver. Revert instead,
+    // as the size label in the 3D view does.
+    if (min > 0 && modelValue <= 0) return;
     if (expression && onReleaseExpression) {
-      onReleaseExpression(boundTyped(toModelValue(next)));
+      onReleaseExpression(boundTyped(modelValue));
       return;
     }
-    onChange(boundTyped(toModelValue(next)));
+    onChange(boundTyped(modelValue));
   };
   const handleSliderChange = (nextValue: number) => {
     const next = clamp(Number.isFinite(nextValue) ? nextValue : controlMin, controlMin, controlMax);
@@ -1492,13 +1482,16 @@ function TextProperty({
   label,
   value,
   maxLength = 24,
+  multiline = false,
+  hint,
   disabled,
   onChange,
 }: TextPropertyConfig & { disabled?: boolean }) {
   const [draft, setDraft] = useState(value);
   const cancelRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  useBlurOnOutsidePress(inputRef);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  useBlurOnOutsidePress(multiline ? areaRef : inputRef);
 
   useEffect(() => {
     setDraft(value);
@@ -1512,7 +1505,9 @@ function TextProperty({
       setDraft(value);
       return;
     }
-    const committed = draft.replace(/\s+/g, " ").trim();
+    const committed = multiline
+      ? draft.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n")
+      : draft.replace(/\s+/g, " ").trim();
     if (!committed) {
       const fallback = value.trim() || (label === "Name" ? "Shape" : draft);
       setDraft(fallback);
@@ -1528,6 +1523,39 @@ function TextProperty({
       onChange(committed);
     }
   };
+
+  if (multiline) {
+    const lines = Math.min(10, Math.max(3, draft.split("\n").length + 1));
+    return (
+      <label className="text-property">
+        <span>{label}</span>
+        <textarea
+          ref={areaRef}
+          value={draft}
+          rows={lines}
+          disabled={disabled}
+          maxLength={maxLength}
+          spellCheck={false}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              event.preventDefault();
+              event.currentTarget.blur();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              cancelRef.current = true;
+              event.currentTarget.blur();
+            }
+          }}
+          onChange={(event) => {
+            setDraft(event.currentTarget.value.slice(0, maxLength));
+          }}
+        />
+        {hint ? <span className="range-property-hint">{hint}</span> : null}
+      </label>
+    );
+  }
 
   return (
     <label className="text-property">

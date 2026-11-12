@@ -113,6 +113,22 @@ function deepCloneShapes(shapes: WorkplaneShape[]): WorkplaneShape[] {
  * snapshots, and sketch-host links — so Ungroup in the destination project
  * works the same as in the source.
  */
+/**
+ * How many 12 mm diagonal steps to move a paste so it does not land on an earlier paste of the
+ * same shapes. The first free step wins; the lead shape decides.
+ */
+export function pasteOffsetSteps(pasted: WorkplaneShape[], existing: WorkplaneShape[], step = 12): number {
+  const lead = pasted[0];
+  if (!lead) return 1;
+  for (let count = 1; count < 200; count += 1) {
+    const x = lead.x + step * count;
+    const z = lead.z + step * count;
+    const taken = existing.some((shape) => shape.kind === lead.kind && Math.abs(shape.x - x) < 0.01 && Math.abs(shape.z - z) < 0.01);
+    if (!taken) return count;
+  }
+  return 1;
+}
+
 export function cloneShapesForPaste(shapes: WorkplaneShape[]): WorkplaneShape[] {
   const cloned = deepCloneShapes(shapes).map(hydrateClipboardShape);
   const idMap = new Map<string, string>();
@@ -120,22 +136,71 @@ export function cloneShapesForPaste(shapes: WorkplaneShape[]): WorkplaneShape[] 
   const ids = new Set<string>();
   cloned.forEach((shape) => collectShapeIds(shape, ids));
   ids.forEach((id) => idMap.set(id, createLocalId(`${id}-paste`)));
+  cloned.forEach((shape) => collectSketchIds(shape, sketchMap));
 
-  const collectSketchIds = (shape: WorkplaneShape) => {
-    if (shape.sketchId && !sketchMap.has(shape.sketchId)) {
-      sketchMap.set(shape.sketchId, createLocalId("sketch"));
-    }
-    if (shape.sketchDoc?.id && !sketchMap.has(shape.sketchDoc.id)) {
-      sketchMap.set(shape.sketchDoc.id, shape.sketchId ? sketchMap.get(shape.sketchId)! : createLocalId("sketch"));
-    }
-    shape.groupedShapes?.forEach(collectSketchIds);
-    shape.edgeTreatmentHistory?.forEach((entry) => collectSketchIds(entry.before));
-    shape.threadHistory?.forEach((entry) => collectSketchIds(entry.before));
-    if (shape.featureBase) collectSketchIds(shape.featureBase);
-  };
-  cloned.forEach(collectSketchIds);
+  return relinkCopiedPatterns(
+    cloned.map((shape) => {
+      // A pasted laser part is its own part; Update from model would otherwise delete it.
+      const { laserLink: _unlinked, ...plain } = remapShapeTree(shape, idMap, sketchMap);
+      return canonicalizeShape(plain);
+    }),
+    idMap,
+  );
+}
 
-  return cloned.map((shape) => canonicalizeShape(remapShapeTree(shape, idMap, sketchMap)));
+function collectSketchIds(shape: WorkplaneShape, sketchMap: Map<string, string>) {
+  if (shape.sketchId && !sketchMap.has(shape.sketchId)) {
+    sketchMap.set(shape.sketchId, createLocalId("sketch"));
+  }
+  if (shape.sketchDoc?.id && !sketchMap.has(shape.sketchDoc.id)) {
+    sketchMap.set(shape.sketchDoc.id, shape.sketchId ? sketchMap.get(shape.sketchId)! : createLocalId("sketch"));
+  }
+  shape.groupedShapes?.forEach((child) => collectSketchIds(child, sketchMap));
+  shape.edgeTreatmentHistory?.forEach((entry) => collectSketchIds(entry.before, sketchMap));
+  shape.threadHistory?.forEach((entry) => collectSketchIds(entry.before, sketchMap));
+  if (shape.featureBase) collectSketchIds(shape.featureBase, sketchMap);
+}
+
+/**
+ * Copied pattern members must never share a pattern with the shapes they came from, or the next
+ * rebuild treats the copy as the pattern and drops the original. A copy that brings its pattern's
+ * source along becomes a new pattern of its own; any other copied member becomes a plain shape.
+ */
+function relinkCopiedPatterns(copies: WorkplaneShape[], idMap: ReadonlyMap<string, string>): WorkplaneShape[] {
+  const copiedIds = new Set(copies.map((shape) => shape.id));
+  const featureMap = new Map<string, string>();
+  return copies.map((shape) => {
+    const feature = shape.patternFeature;
+    if (!feature) return shape;
+    const sourceId = idMap.get(feature.sourceId);
+    if (!sourceId || !copiedIds.has(sourceId)) {
+      const { patternFeature: _dropped, ...plain } = shape;
+      return plain;
+    }
+    let featureId = featureMap.get(feature.id);
+    if (!featureId) {
+      featureId = createLocalId("pattern");
+      featureMap.set(feature.id, featureId);
+    }
+    return { ...shape, patternFeature: { ...feature, id: featureId, sourceId } };
+  });
+}
+
+/**
+ * A Duplicate of one part: fresh ids for the part, every part inside it and its sketches, so
+ * editing the copy never reaches the original. Meshes stay shared, since they are never changed in
+ * place. A duplicate is a plain part even when the original belongs to a pattern.
+ */
+export function duplicateShapeWithFreshIds(shape: WorkplaneShape, id: string): WorkplaneShape {
+  const idMap = new Map<string, string>();
+  const sketchMap = new Map<string, string>();
+  const ids = new Set<string>();
+  collectShapeIds(shape, ids);
+  ids.forEach((entry) => idMap.set(entry, entry === shape.id ? id : createLocalId(`${entry}-copy`)));
+  collectSketchIds(shape, sketchMap);
+  // A copy is its own part: not a pattern member, and not a laser part Update from model remakes.
+  const { patternFeature: _dropped, laserLink: _unlinked, ...copy } = remapShapeTree(shape, idMap, sketchMap);
+  return { ...copy, importedMesh: shape.importedMesh ? { ...shape.importedMesh } : shape.importedMesh };
 }
 
 function copyTextWithSelectionFallback(value: string) {

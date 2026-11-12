@@ -126,7 +126,9 @@ function consumeStdout() {
 
 function attachChild(proc) {
   child = proc;
-  proc.stdout.on("data", pushStdout);
+  // Only this process's output: the rest of a timed-out kernel's reply would otherwise land in the
+  // cleared buffers, read as a bad frame size, and stop the kernel that replaced it.
+  proc.stdout.on("data", (chunk) => { if (child === proc) pushStdout(chunk); });
   proc.on("exit", () => {
     if (child === proc) stopKernel();
   });

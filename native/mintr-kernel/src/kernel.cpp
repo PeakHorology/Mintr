@@ -107,7 +107,9 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
       nlohmann::json normals = nlohmann::json::array();
       nlohmann::json indices = nlohmann::json::array();
       const double angular = job.value("angularDeflection", 0.32);
-      if (!kernelTessellateIndexed(result, positions, normals, indices, 0.12, angular)) {
+      KernelMeshOptions meshOptions;
+      meshOptions.shownTriangles = job.value("shownTriangles", 0.0);
+      if (!kernelTessellateIndexed(result, positions, normals, indices, 0.12, angular, meshOptions)) {
         return kernelFail("native tessellation failed", true);
       }
       nlohmann::json displayEdges = nlohmann::json::array();
@@ -116,15 +118,25 @@ nlohmann::json handleKernelJob(const nlohmann::json& job) {
       } catch (...) {
         displayEdges = nlohmann::json::array();
       }
-      return {
+      nlohmann::json reply = {
         { "ok", true },
         { "positions", positions },
         { "normals", normals },
         { "indices", indices },
-        { "brepStep", kernelExportStep(kernelRecenterToLocalMeshFrame(result), false) },
+        // Carries the engine's own copy, so grouping onto this Group later starts from the
+        // exact solid and not from STEP read back (see kernelStoreStep).
+        { "brepStep", kernelStoreStep(kernelRecenterToLocalMeshFrame(result)) },
         { "quality", "exact" },
         { "displayEdges", displayEdges },
       };
+      // The solid's own bounds. The mesh sits a hair inside them on curves; placing the Group
+      // by the mesh shifted the solid a little each time it was grouped again, until a fuse
+      // of touching round faces failed.
+      double xmin, ymin, zmin, xmax, ymax, zmax;
+      if (kernelBounds(result, xmin, ymin, zmin, xmax, ymax, zmax)) {
+        reply["bounds"] = { xmin, ymin, zmin, xmax, ymax, zmax };
+      }
+      return reply;
     }
     if (type == "exportStep") {
       std::vector<TopoDS_Shape> solids;

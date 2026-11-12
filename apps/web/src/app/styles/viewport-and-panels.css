@@ -447,7 +447,8 @@
   right: var(--chrome-right);
   bottom: 0;
   left: auto;
-  z-index: calc(var(--z-viewport-ui) + 2);
+  /* Above everything drawn over the 3D view (size labels, handles, the ruler), so none of it shows through the panel. */
+  z-index: calc(var(--z-viewport-ui) + 7);
   display: flex;
   align-items: stretch;
   width: auto;
@@ -608,18 +609,33 @@
   border-bottom: 1px solid var(--peak-border);
 }
 
-.shape-inspector-header strong {
+/* Name and CAD badge share a row; the badge drops under a long name instead of squeezing it. */
+.shape-inspector-title {
+  display: flex;
   flex: 1;
+  flex-wrap: wrap;
+  align-items: flex-start;
   min-width: 0;
-  padding: 4px 10px 0 13px;
+}
+
+.shape-inspector-title .cad-ready-badge {
+  margin-left: 8px;
+}
+
+.shape-inspector-header strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px 0 8px;
   overflow: visible;
   color: var(--peak-text);
   font-size: var(--text-xl);
   font-weight: 800;
   line-height: 1.25;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Wrap between words; only a single word wider than the whole line is split. */
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: auto;
 }
 
 .cad-ready-badge {
@@ -646,32 +662,6 @@
 
 .cad-ready-badge--pending {
   border-color: var(--status-pending-border);
-  background: var(--status-pending-bg);
-  color: var(--status-pending-text);
-}
-
-.csg-feature-quality {
-  margin-left: 6px;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
-  font-size: var(--text-2xs);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  opacity: 0.9;
-}
-
-.csg-feature-quality--exact {
-  background: var(--status-exact-bg);
-  color: var(--status-exact-text);
-}
-
-.csg-feature-quality--faceted {
-  background: var(--status-mesh-bg);
-  color: var(--status-mesh-text);
-}
-
-.csg-feature-quality--pending {
   background: var(--status-pending-bg);
   color: var(--status-pending-text);
 }
@@ -966,6 +956,13 @@
   color: var(--accent-text);
 }
 
+.shape-size-world {
+  margin: 2px 0 6px;
+  color: var(--peak-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+
 .proportion-row {
   display: flex;
   flex-wrap: wrap;
@@ -1020,6 +1017,24 @@
 .property-list {
   display: grid;
   gap: 17px;
+}
+
+/* A title over a group of settings, for parts with many (Toolbox Label). */
+.property-section-heading {
+  margin: 6px 0 -6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--control-border);
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.property-list > .property-section-heading:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .range-property {
@@ -1181,6 +1196,30 @@
 
 .select-property .range-property-hint {
   grid-column: 1 / -1;
+}
+
+.text-property textarea {
+  width: 100%;
+  padding: 8px 12px;
+  color: var(--ink-soft);
+  font: 600 var(--text-md)/1.45 var(--font-ui);
+  letter-spacing: 0;
+  background-color: var(--tile-hover);
+  border: 1px solid var(--control-border-strong);
+  border-radius: 12px;
+  outline: 0;
+  resize: vertical;
+  box-shadow: inset 0 1px 1px rgba(25, 45, 65, 0.04);
+}
+
+.text-property textarea:focus {
+  border-color: #74bdf0;
+  box-shadow: var(--focus-ring-soft);
+}
+
+.text-property textarea:disabled {
+  cursor: default;
+  opacity: 0.52;
 }
 
 .text-property input,
@@ -3080,7 +3119,7 @@
   max-width: none;
 }
 
-.workspace-sage-owl {
+.workspace-sage-mark {
   display: grid;
   place-items: center;
   color: var(--modal-text);
@@ -3235,6 +3274,53 @@
   color: var(--ink-muted);
   font-size: var(--text-xs);
   line-height: 1.4;
+}
+
+/* Where a sent part came from, and Update from model. */
+.laser-source-row {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  border-top: 1px solid var(--control-border);
+}
+
+.laser-source-row strong {
+  color: var(--ink-strong);
+  font-weight: 750;
+}
+
+.laser-source-row button {
+  height: 30px;
+  color: var(--ink-strong);
+  font-size: var(--text-xs);
+  font-weight: 750;
+  border: 1px solid var(--control-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--tile-hover);
+  cursor: pointer;
+}
+
+.laser-source-row button:hover:not(:disabled) {
+  background: var(--wash);
+}
+
+.laser-source-row button:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.laser-source-row.changed button {
+  color: #fff;
+  border-color: #c8553d;
+  background: #c8553d;
+}
+
+.laser-source-row.changed button:hover:not(:disabled) {
+  background: color-mix(in srgb, #c8553d 86%, #000);
 }
 
 .shape-inspector .smooth-card {

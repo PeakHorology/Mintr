@@ -32,11 +32,13 @@ export type ShapeRepeatAction = {
 /** When there is no prior transform to repeat, duplicate stays in place. */
 export const DEFAULT_SHAPE_REPEAT_DELTA: ShapeRepeatDelta = {};
 
-const POSITION_LIMIT = 110;
-const MIN_ELEVATION = 0;
-const MAX_ELEVATION = 180;
+// Sanity limits only: the workplane and beds can be any size, so a repeated move or resize must
+// not be pulled back to a small box.
+const POSITION_LIMIT = 10000;
+const MIN_ELEVATION = -10000;
+const MAX_ELEVATION = 10000;
 const MIN_DIMENSION = 0.01;
-const MAX_DIMENSION = 220;
+const MAX_DIMENSION = 10000;
 
 function readNumeric(shape: WorkplaneShape, key: (typeof REPEAT_NUMERIC_KEYS)[number]) {
   const value = shape[key];
