@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type MutableRefObject, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpFromLine, ChevronLeft, ChevronRight, Eye, EyeOff, History, Pencil, Power, Search, Trash2, X } from "lucide-react";
-import { PartKindGlyph, PartsTreeEmptyGlyph, StepKindGlyph, ToolbarHideSelectedIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
-import { designTreeAncestors, designTreeGroupLabel, designTreeRows, treeDropFor, type DesignTreeRow, type TreeDrop } from "@/lib/designTree";
+import { ArrowUpFromLine, ChevronLeft, ChevronRight, Combine, Copy, Eye, EyeOff, History, Pencil, Power, Search, Trash2, X } from "lucide-react";
+import { ExtraStepGlyph, PartKindGlyph, PartsTreeEmptyGlyph, StepKindGlyph, ToolbarHideSelectedIcon, ToolbarLockShapeIcon, ToolbarUnlockShapeIcon } from "@/components/icons";
+import { designTreeAncestors, designTreeGroupLabel, designTreePartKind, designTreeRows, extraStepKey, partExtraStepLabel, treeDropFor, type DesignTreeExtraRow, type DesignTreeRow, type PartExtraStep, type TreeDrop } from "@/lib/designTree";
 import { partFeatureLabel, partFeatureShortLabel } from "@/lib/partFeatures";
 import { listedShapeAssets, searchShapeAssets, shapeSectionsFor, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { beginShapeAssetDrag, endShapeAssetDrag, applyTransparentDragImage } from "@/lib/shapeAssetDrag";
@@ -37,6 +37,8 @@ const SHAPE_DESCRIPTIONS: Record<string, string> = {
   heart: TOOL_DESCRIPTIONS.heart,
   paraboloid: TOOL_DESCRIPTIONS.paraboloid,
   "qr-code": TOOL_DESCRIPTIONS.qrCode,
+  "toolbox-label": TOOL_DESCRIPTIONS.namePlate,
+  "picture-keychain": TOOL_DESCRIPTIONS.pictureKeychain,
   "screw-hole": TOOL_DESCRIPTIONS.screwHole,
   "nut-pocket": TOOL_DESCRIPTIONS.nutPocket,
 };
@@ -130,6 +132,13 @@ function ShapeToolButton({
 
 export type PartsTreeShapePatch = { name?: string; hidden?: boolean; locked?: boolean };
 
+/**
+ * What can be done to a texture, pattern or split step from the tree: open it in its tool, turn
+ * a texture off or on, remove a texture or a pattern's copies, make a pattern's copies separate
+ * parts, or join a split's pieces back into the part they were cut from.
+ */
+export type ExtraStepAction = "edit" | "toggle" | "remove" | "separate" | "join";
+
 /** A step the tree is showing the part up to: the steps after it are shown greyed. */
 export type ShownStep = { bodyId: string; stepId: string };
 
@@ -145,6 +154,7 @@ const TREE_DRAG_TYPE = "application/x-mintr-tree-row";
  * steps are keyed under the top-level part they belong to.
  */
 function rowKey(row: DesignTreeRow): string {
+  if (row.kind === "extra") return extraStepKey(row.bodyId, row.extra);
   if (row.kind === "step") return `step:${row.bodyId}:${row.step.id}`;
   return row.depth === 0 ? row.shape.id : `${row.bodyId}/${row.parentId ?? ""}/${row.shape.id}`;
 }
@@ -258,6 +268,8 @@ function PartsTree({
   onReorderStep,
   onShowUpToStep,
   onMovePart,
+  extraStepLabel,
+  onExtraStep,
   turnOffBlocked,
 }: {
   shapes: WorkplaneShape[];
@@ -277,6 +289,8 @@ function PartsTree({
   onReorderStep?: (bodyId: string, stepId: string, toIndex: number) => void;
   onShowUpToStep?: (bodyId: string, stepId: string | null) => void;
   onMovePart?: (drop: TreeDrop) => void;
+  extraStepLabel: (extra: PartExtraStep) => string;
+  onExtraStep?: (bodyId: string, kind: PartExtraStep["kind"], action: ExtraStepAction) => void;
   turnOffBlocked: boolean;
 }) {
   const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -317,9 +331,18 @@ function PartsTree({
     row?.scrollIntoView({ block: "nearest" });
   }, [focusId, rows]);
 
+  // A step stays picked only while its part is the one selected: picking something else, or
+  // nothing, in the view lets go of it, so the part's own row lights up again next time.
+  useEffect(() => {
+    if (!activeStepId) return;
+    const row = rows.find((entry) => (entry.kind === "step" && entry.step.id === activeStepId) || (entry.kind === "extra" && rowKey(entry) === activeStepId));
+    const bodyId = row && row.kind !== "part" ? row.bodyId : null;
+    if (!bodyId || selectedIds.length !== 1 || selectedIds[0] !== bodyId) setActiveStepId(null);
+  }, [selectedIds.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // A step that is gone (undo, removed) is no longer the active one.
   useEffect(() => {
-    if (activeStepId && !rows.some((row) => row.kind === "step" && row.step.id === activeStepId)) setActiveStepId(null);
+    if (activeStepId && !rows.some((row) => (row.kind === "step" && row.step.id === activeStepId) || (row.kind === "extra" && rowKey(row) === activeStepId))) setActiveStepId(null);
   }, [activeStepId, rows]);
 
   const toggleCollapsed = (id: string) => {
@@ -378,7 +401,36 @@ function PartsTree({
 
   const blockedTitle = turnOffBlocked ? "Finish the fillet or chamfer first" : undefined;
 
+  const extraItemsFor = (row: DesignTreeExtraRow): TreeMenuItem[] => {
+    const { extra } = row;
+    const locked = Boolean(row.shape.locked);
+    const disabled = turnOffBlocked || locked || !onExtraStep;
+    const title = locked ? `“${row.shape.name}” is locked` : blockedTitle;
+    const act = (action: ExtraStepAction) => () => onExtraStep?.(row.bodyId, extra.kind, action);
+    const glyph = <ExtraStepGlyph kind={extra.kind} pattern={extra.kind === "pattern" ? extra.pattern.kind : undefined} />;
+    if (extra.kind === "texture") {
+      return [
+        { label: "Edit the texture", icon: glyph, onSelect: act("edit"), disabled, title: title ?? "Open it in Texture with its settings" },
+        { label: extra.off ? "Turn the texture back on" : "Turn the texture off", icon: <Power />, onSelect: act("toggle"), disabled, title: title ?? (extra.off ? undefined : "Keep its settings, but show and print the part smooth") },
+        { label: "Remove the texture", icon: <Trash2 />, onSelect: act("remove"), disabled, title },
+      ];
+    }
+    if (extra.kind === "pattern") {
+      return [
+        { label: "Edit the pattern", icon: glyph, onSelect: act("edit"), disabled, title: title ?? "Open it in its tool to change the count or spacing" },
+        { label: "Make the copies separate parts", icon: <Copy />, onSelect: act("separate"), disabled, title: title ?? "Keep every copy, no longer linked to this part" },
+        { label: "Remove the copies", icon: <Trash2 />, onSelect: act("remove"), disabled, title: title ?? "Delete the copies and keep only this part" },
+      ];
+    }
+    const cannotJoin = extra.canJoin ? undefined : "The first piece of this split was deleted, so the part it was cut from is gone";
+    return [
+      { label: "Cut somewhere else", icon: glyph, onSelect: act("edit"), disabled: disabled || !extra.canJoin, title: title ?? cannotJoin ?? "Join the pieces back and open Split with the same cut" },
+      { label: "Join the pieces back", icon: <Combine />, onSelect: act("join"), disabled: disabled || !extra.canJoin, title: title ?? cannotJoin ?? "Put back the part as it was before the cut" },
+    ];
+  };
+
   const menuItemsFor = (row: DesignTreeRow): TreeMenuItem[] => {
+    if (row.kind === "extra") return extraItemsFor(row);
     if (row.kind === "step") {
       const { step } = row;
       const label = stepLabel(step);
@@ -461,7 +513,9 @@ function PartsTree({
   };
 
   const menuRow = menu ? rowsByKey.get(menu.key) ?? null : null;
-  const menuLabel = menuRow ? (menuRow.kind === "step" ? stepLabel(menuRow.step) : menuRow.shape.name || "Untitled") : "";
+  const menuLabel = menuRow
+    ? menuRow.kind === "step" ? stepLabel(menuRow.step) : menuRow.kind === "extra" ? extraStepLabel(menuRow.extra) : menuRow.shape.name || "Untitled"
+    : "";
 
   if (rows.length === 0) {
     return (
@@ -479,6 +533,20 @@ function PartsTree({
       role="tree"
       aria-label="Parts in this design"
       ref={listRef}
+      // A click on the empty space below the rows, or Escape, lets go of the selection.
+      onClick={(event) => {
+        if (event.target !== event.currentTarget || renaming) return;
+        if (selectedIds.length === 0 && !activeStepId) return;
+        setActiveStepId(null);
+        onSelectShape(null);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || renaming || menu || event.defaultPrevented) return;
+        if (selectedIds.length === 0 && !activeStepId) return;
+        event.preventDefault();
+        setActiveStepId(null);
+        onSelectShape(null);
+      }}
       onDragOver={(event) => {
         if (!dragKey) return;
         // Empty space below the rows: a part inside a group comes out to the top level.
@@ -534,6 +602,88 @@ function PartsTree({
             finishDrop(result.drop);
           },
         };
+
+        if (row.kind === "extra") {
+          const { extra } = row;
+          const label = extraStepLabel(extra);
+          const name = row.shape.name || "Untitled";
+          const selected = activeStepId === key && selectedIds.length === 1 && selectedIds[0] === row.bodyId;
+          const blocked = turnOffBlocked || Boolean(row.shape.locked) || !onExtraStep;
+          const off = extra.kind === "texture" && extra.off;
+          const canOpen = extra.kind !== "split" || extra.canJoin;
+          const open = () => {
+            if (!blocked && canOpen) onExtraStep?.(row.bodyId, extra.kind, "edit");
+          };
+          const hint = extra.kind === "split"
+            ? (extra.canJoin ? "double-click to cut somewhere else" : "the first piece was deleted, so it can no longer be joined back")
+            : "double-click to edit";
+          return (
+            <div
+              key={key}
+              role="treeitem"
+              aria-level={row.depth + 1}
+              aria-selected={selected}
+              className={`parts-tree-row parts-tree-step parts-tree-extra${selected ? " selected" : ""}${off ? " is-off" : ""}`}
+              style={{ "--tree-depth": row.depth } as CSSProperties}
+              data-tree-extra={extra.kind}
+              onContextMenu={(event) => openMenu(event, key)}
+              {...dragProps}
+            >
+              <span className="parts-tree-toggle" aria-hidden="true" />
+              <button
+                type="button"
+                className="parts-tree-name"
+                aria-pressed={selected}
+                aria-label={`${label} on ${name}`}
+                title={`${label} · ${hint}`}
+                onClick={() => {
+                  setActiveStepId(key);
+                  onSelectShape(row.bodyId, "replace");
+                }}
+                onDoubleClick={open}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    open();
+                  }
+                }}
+              >
+                <span className="parts-tree-glyph parts-tree-glyph-step">
+                  <ExtraStepGlyph kind={extra.kind} pattern={extra.kind === "pattern" ? extra.pattern.kind : undefined} />
+                </span>
+                <span className="parts-tree-label">{label}</span>
+                {off ? <span className="parts-tree-badge parts-tree-badge-off">Off</span> : null}
+              </button>
+              <div className="parts-tree-actions">
+                {onExtraStep && canOpen ? (
+                  <button
+                    type="button"
+                    className="parts-tree-action parts-tree-off"
+                    aria-label={extra.kind === "split" ? `Join ${name} back` : `Edit ${label}`}
+                    disabled={blocked}
+                    title={blockedTitle ?? (extra.kind === "split" ? "Join the pieces back into the part they were cut from" : "Open this step in its tool")}
+                    onClick={() => onExtraStep(row.bodyId, extra.kind, extra.kind === "split" ? "join" : "edit")}
+                  >
+                    {extra.kind === "split" ? "Join" : "Edit"}
+                  </button>
+                ) : null}
+                {onExtraStep && extra.kind === "texture" ? (
+                  <button
+                    type="button"
+                    className="parts-tree-action parts-tree-off"
+                    aria-label={off ? `Turn ${label} back on` : `Turn ${label} off`}
+                    aria-pressed={off}
+                    disabled={blocked}
+                    title={blockedTitle ?? (off ? "Put the texture back on" : "Show and print the part smooth for now")}
+                    onClick={() => onExtraStep(row.bodyId, "texture", "toggle")}
+                  >
+                    {off ? "On" : "Off"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          );
+        }
 
         if (row.kind === "step") {
           const { step } = row;
@@ -633,6 +783,8 @@ function PartsTree({
         const bodyName = topLevel ? name : (rows.find((entry) => entry.kind === "part" && entry.shape.id === row.bodyId) as { shape: WorkplaneShape } | undefined)?.shape.name ?? "its group";
         const selected = topLevel ? selectedIds.includes(shape.id) && activeStepId === null : activeFeatureId === shape.id;
         const groupLabel = designTreeGroupLabel(row.op);
+        // Holes and threads say what they are; a top-level screw or rod is already named for it.
+        const partKind = shape.hole || !topLevel ? designTreePartKind(shape) : null;
         const canRename = Boolean(topLevel ? onUpdateShape : onRenameChild) && !shape.locked;
         const draggable = canDrag && Boolean(onMovePart) && !shape.locked;
         const beginRename = () => {
@@ -730,7 +882,7 @@ function PartsTree({
                 </span>
                 <span className="parts-tree-label">{name}</span>
                 {groupLabel ? <span className="parts-tree-kind">{groupLabel}</span> : null}
-                {shape.hole ? <span className="parts-tree-kind">Hole</span> : null}
+                {partKind ? <span className="parts-tree-kind">{partKind}</span> : null}
                 {/* Hidden and locked top-level parts keep their eye and lock buttons showing instead of a badge. */}
                 {!topLevel && shape.hidden ? <span className="parts-tree-badge">Hidden</span> : null}
                 {!topLevel && shape.locked ? <span className="parts-tree-badge">Locked</span> : null}
@@ -806,6 +958,8 @@ export function ShapeSidebar({
   activeFeatureId = null,
   pro = false,
   stepLabel,
+  extraStepLabel,
+  onExtraStep,
   shownStep = null,
   onSelectChild,
   onUpdateShape,
@@ -837,6 +991,8 @@ export function ShapeSidebar({
   pro?: boolean;
   /** The words for a step row, in the design's units. */
   stepLabel?: (step: PartFeature) => string;
+  extraStepLabel?: (extra: PartExtraStep) => string;
+  onExtraStep?: (bodyId: string, kind: PartExtraStep["kind"], action: ExtraStepAction) => void;
   /** The step the view is showing a part up to, if any. */
   shownStep?: ShownStep | null;
   /** Select a part inside a group: its top-level part, with that part picked. */
@@ -993,6 +1149,8 @@ export function ShapeSidebar({
             onReorderStep={onReorderStep}
             onShowUpToStep={onShowUpToStep}
             onMovePart={onMovePart}
+            extraStepLabel={extraStepLabel ?? ((extra) => partExtraStepLabel(extra))}
+            onExtraStep={onExtraStep}
             turnOffBlocked={turnOffBlocked}
           />
         </aside>

@@ -108,8 +108,8 @@ export type GridfinityBaseplateSpec = {
 export type ToolboxLabelMagnetSize = "6x2" | "8x3" | "10x3" | "12x3" | "custom";
 
 /**
- * A set of magnetic drawer labels: a plate, raised letters in a second colour, and magnet
- * pockets on the back. Kept on the Tie that holds the set, which is rebuilt from it.
+ * A set of name plates (shown as "Name Plate"; first made as magnetic toolbox drawer labels): a
+ * plate, raised letters in a second colour, and optional magnet pockets on the back. Kept on the Tie that holds the set, which is rebuilt from it.
  */
 export type ToolboxLabelSpec = {
   /** One label per entry; `letterHeight` overrides the set's for a long name. */
@@ -124,6 +124,7 @@ export type ToolboxLabelSpec = {
   letterSpacing: number;
   /** How far the letters stand above the plate, in mm. */
   raise: number;
+  /** A rounded rectangle, or an outline that follows the letters `padEnds` out. */
   plateShape: "rounded" | "follow";
   cornerRadius: number;
   /** Space left and right of the letters, in mm. */
@@ -135,6 +136,8 @@ export type ToolboxLabelSpec = {
   sameWidth: boolean;
   /** Round on the plate's top edge, in mm. */
   edgeRound: number;
+  /** Off makes a plain name plate with no pockets in the back. */
+  magnets: boolean;
   magnetSize: ToolboxLabelMagnetSize;
   magnetDiameter: number;
   magnetDepth: number;
@@ -160,6 +163,40 @@ export type ShapeAsset = {
   generated?: GeneratedSpec;
   /** A set of magnetic toolbox labels, built by lib/toolboxLabel.ts. */
   toolboxLabel?: boolean;
+  /** A keychain traced from a picture: dropping it opens Trace a drawing first. */
+  pictureKeychain?: boolean;
+};
+
+/**
+ * A keychain, plaque or plain drawing traced from a picture (lib/pictureKeychain.ts). The
+ * drawing is kept, not the picture, so it can be resized and rebuilt.
+ */
+export type PictureKeychainSpec = {
+  /**
+   * The traced drawing in mm, y running down, at `drawingWidth` × `drawingHeight`. Pieces are
+   * split by ";", a piece's outline and its holes by "|", points by " ", each "x,y".
+   */
+  drawing: string;
+  drawingWidth: number;
+  drawingHeight: number;
+  /** How wide it comes out, in mm; the height follows. */
+  width: number;
+  /** A plate behind the drawing that follows its outline, or the drawing on its own. */
+  backing: "follow" | "none";
+  /** Lines standing up off the plate (a second colour), or cut into it (one colour). */
+  lines: "raised" | "inset";
+  /** Where the keyring hole goes, or none for a plaque or magnet. */
+  hole: "top" | "left" | "right" | "none";
+  holeDiameter: number;
+  /** How far the plate reaches out from the drawing. */
+  pad: number;
+  thickness: number;
+  /** How high raised lines stand, or how deep inset ones go. */
+  raise: number;
+  /** Extra width added to every line, so thin strokes print. */
+  thicken: number;
+  plateColor: string;
+  lineColor: string;
 };
 
 /** The same sizes Threads offers, so a screw hole or nut pocket can match any thread. */
@@ -377,6 +414,18 @@ export type EdgeFingerprint = {
  * size, in millimetres. A step's edges and faces are measured from `origin`, so they can be
  * found again after the part moves, and scaled by `size` after it is resized.
  */
+/** How a Split piece was cut (`WorkplaneShape.splitFrom`). */
+export type SplitRecord = {
+  /** Shared by every piece of the same cut. */
+  id: string;
+  axis: "x" | "y" | "z";
+  offset: number;
+  joint: "none" | "dovetail" | "plug" | "snap" | "thread";
+  clearance: number;
+  /** The part before the cut, kept on the first piece only. */
+  source?: WorkplaneShape;
+};
+
 export type PartFeatureFrame = {
   origin: [number, number, number];
   size: [number, number, number];
@@ -716,6 +765,11 @@ export type WorkplaneShape = {
    * rebuilds this from its pieces instead, so a group never stores one.
    */
   featureBase?: WorkplaneShape;
+  /**
+   * On a piece made by Split: how it was cut. The first piece also keeps the part as it was
+   * before the cut, so the pieces can be joined back or cut again somewhere else.
+   */
+  splitFrom?: SplitRecord;
   /** Built from settings: changing them, or the part's size, rebuilds it instead of stretching it. */
   generated?: GeneratedSpec;
   /**
@@ -727,6 +781,8 @@ export type WorkplaneShape = {
   drivenBy?: Record<string, string>;
   /** A finish on the part: the body stays exact, and the textured triangles are rebuilt from it. */
   surfaceTexture?: SurfaceTexture;
+  /** A texture turned off in the Parts tree: kept, but not applied, until it is turned back on. */
+  surfaceTextureOff?: SurfaceTexture;
   /** In a laser design, what the laser does along this part: cut through (the default), score a line, or engrave its area. */
   laserJob?: "cut" | "score" | "engrave";
   /** In a laser design, the 3D design this part was brought over from, so it can be updated after the model changes. */
@@ -786,6 +842,8 @@ export type WorkplaneShape = {
   gridfinityBuilt?: string;
   /** On the Tie holding a set of toolbox labels: the settings it is rebuilt from. */
   toolboxLabel?: ToolboxLabelSpec;
+  /** On a keychain, plaque or drawing traced from a picture: the drawing and settings it is rebuilt from. */
+  pictureKeychain?: PictureKeychainSpec;
   /** `kind: "loft"` outlines and settings. */
   loftSpec?: LoftSpec;
   /** Key of the loft the stored exact body was built from. A mismatch means a build is pending. */

@@ -70,7 +70,7 @@ describe("toolbox labels", () => {
     expect(spec.labels).toEqual([{ text: "taps & dies" }]);
     expect(spec.slant).toBe(20);
     expect(spec.magnetDiameter).toBe(6);
-    expect(normalizeToolboxLabelSpec({ labels: [] }).labels).toEqual([{ text: "SOCKETS" }]);
+    expect(normalizeToolboxLabelSpec({ labels: [] }).labels).toEqual([{ text: "LABEL" }]);
   });
 
   it("puts a magnet about every 50 mm, at least one", () => {
@@ -112,6 +112,38 @@ describe("toolbox labels", () => {
     expect(built.plateHeight).toBeCloseTo(spec.letterHeight + spec.padEnds * 2, 1);
   });
 
+  it("makes a plain name plate with Magnets off: no pockets and no magnet warning", () => {
+    const spec = { ...defaultToolboxLabelSpec(), magnets: false, thickness: 1.5 };
+    const built = buildOneToolboxLabel(runtime, spec, { text: "SOCKETS" })!;
+    expect(built.magnets).toBe(0);
+    expect(built.problem).toBeNull();
+    expect(isWatertight(built.plate)).toBe(true);
+    // A rounded plate with nothing cut out of it, less the rounded top edge.
+    const solid = built.plateWidth * built.plateHeight * spec.thickness;
+    expect(volumeOf(built.plate)).toBeGreaterThan(solid * 0.95);
+    // Files from 1.4.1 have no Magnets setting and keep their pockets.
+    expect(normalizeToolboxLabelSpec({}).magnets).toBe(true);
+  });
+
+  it("makes a plate that follows the letters, smaller than the rectangle, with its pockets in plastic", () => {
+    const rounded = buildOneToolboxLabel(runtime, defaultToolboxLabelSpec(), { text: "TAPS & DIES" })!;
+    const spec = { ...defaultToolboxLabelSpec(), plateShape: "follow" as const };
+    const built = buildOneToolboxLabel(runtime, spec, { text: "TAPS & DIES" })!;
+    expect(built.problem).toBeNull();
+    expect(built.magnets).toBeGreaterThan(0);
+    expect(isWatertight(built.plate)).toBe(true);
+    expect(isWatertight(built.letters)).toBe(true);
+    expect(volumeOf(built.plate)).toBeLessThan(volumeOf(rounded.plate));
+    // The plate reaches the padding past the letters on every side.
+    expect(built.plate.width).toBeCloseTo(built.letters.width + spec.padEnds * 2, 0);
+    expect(built.plate.depth).toBeGreaterThan(built.letters.depth);
+    // Without magnets it is still one watertight piece, with the gap under the space filled.
+    const plain = buildOneToolboxLabel(runtime, { ...spec, magnets: false }, { text: "TAPS & DIES" })!;
+    expect(isWatertight(plain.plate)).toBe(true);
+    const set = buildToolboxLabelSet(runtime, { ...spec, labels: [{ text: "SOCKETS" }, { text: "pliers" }] })!;
+    expect(set.groupedShapes).toHaveLength(2);
+  });
+
   it("keeps lowercase descenders and odd names on the plate", () => {
     const spec = { ...defaultToolboxLabelSpec(), allCaps: false };
     for (const text of ["pliers", 'TAPS & DIES', '1/4" SOCKETS', "3/8", "X", "ALLEN WRENCHES AND HEX KEYS METRIC"]) {
@@ -127,11 +159,12 @@ describe("toolbox labels", () => {
   it("makes the set as a Tie of labels, each a Tie of plate and letters, keeping its settings", () => {
     const set = buildToolboxLabelSet(runtime, null, { x: 10, z: 5 })!;
     expect(set.csg?.op).toBe("assemble");
-    expect(set.toolboxLabel?.labels[0].text).toBe("SOCKETS");
+    expect(set.toolboxLabel?.labels[0].text).toBe("LABEL");
     const [label] = set.groupedShapes!;
     expect(label.csg?.op).toBe("assemble");
-    expect(label.name).toBe("SOCKETS");
+    expect(label.name).toBe("LABEL");
     expect(label.groupedShapes?.map((part) => part.color)).toEqual([set.toolboxLabel!.plateColor, set.toolboxLabel!.letterColor]);
+    expect(set.name).toBe("Name Plate");
     expect(set.x).toBe(10);
   });
 

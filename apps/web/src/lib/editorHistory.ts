@@ -115,10 +115,12 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     features: shape.features,
     generated: shape.generated,
     toolboxLabel: shape.toolboxLabel,
+    pictureKeychain: shape.pictureKeychain,
     laserLink: shape.laserLink,
     values: shape.values,
     drivenBy: shape.drivenBy,
     surfaceTexture: shape.surfaceTexture,
+    surfaceTextureOff: shape.surfaceTextureOff,
     cadDisplayEdgesVersion: shape.cadDisplayEdgesVersion,
     edgeResizeMode: shape.edgeResizeMode,
     cadBrepLength: shape.cadBrep?.length ?? 0,
@@ -178,6 +180,7 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     loftBuilt: shape.loftBuilt,
     sketchRevolveAxis: shape.sketchRevolveAxis,
     featureBase: shape.featureBase ? shapeFingerprintPayload(shape.featureBase) : undefined,
+    splitFrom: shape.splitFrom ? { ...shape.splitFrom, source: shape.splitFrom.source ? shapeFingerprintPayload(shape.splitFrom.source) : undefined } : undefined,
     cadDisplayEdgesLength: shape.cadDisplayEdges?.length ?? 0,
     source3mfKey: shape.source3mfKey,
   };
@@ -216,6 +219,9 @@ export function compactHistoryShape(
   }
   if (next.featureBase) {
     next = { ...next, featureBase: compactHistoryShape(next.featureBase, vault, `${path}/featureBase/${next.featureBase.id}`) };
+  }
+  if (next.splitFrom?.source) {
+    next = { ...next, splitFrom: { ...next.splitFrom, source: compactHistoryShape(next.splitFrom.source, vault, `${path}/splitFrom/${next.splitFrom.source.id}`) } };
   }
 
   const op = next.csg?.op;
@@ -305,6 +311,9 @@ export function expandHistoryShapes(
     }
     if (next.featureBase) {
       next = { ...next, featureBase: expand(next.featureBase, `${path}/featureBase/${next.featureBase.id}`) };
+    }
+    if (next.splitFrom?.source) {
+      next = { ...next, splitFrom: { ...next.splitFrom, source: expand(next.splitFrom.source, `${path}/splitFrom/${next.splitFrom.source.id}`) } };
     }
 
     const blob = vault?.[meshVaultKey(path)];

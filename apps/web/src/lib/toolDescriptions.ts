@@ -116,6 +116,8 @@ export const TOOL_DESCRIPTIONS = {
   starShape: "Add a star. Set how many points it has and how deep they go.",
   heart: "Add a heart.",
   paraboloid: "Add a paraboloid: a smooth dome that comes to a soft point.",
+  namePlate: "Add a name plate: raised letters on a plate, in two colours. Type one label per line to make a set, laid out on your printer bed. Add magnet pockets on the back for drawer labels, or turn magnets off for a plain sign.",
+  pictureKeychain: "Turn a drawing into a keychain: pick a picture of line art or a logo, and Mintr traces it, stands it up on a plate cut round it, and adds a keyring hole. It can also be a plaque, or just the drawing.",
   qrCode: "Add a QR code. Type a link or any text and it stays scannable at any size. Leave a clear margin round it when you place it.",
   screwHole: "Add a hole for any screw Threads makes: metric, UNC, UNF, pipe or a custom size. Threaded cuts a thread for the screw to bite into; Slides through leaves room for the screw, plain, counterbored for a socket head, or countersunk for a flat head.",
   nutPocket: "Add a hexagon pocket sized to hold a nut for any screw Threads makes, metric or inch, with a little room to push it in.",

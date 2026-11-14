@@ -50,6 +50,7 @@ export function jsonSafeShape(shape: WorkplaneShape): WorkplaneShape {
       before: jsonSafeShape(entry.before),
     })),
     featureBase: shape.featureBase ? jsonSafeShape(shape.featureBase) : undefined,
+    splitFrom: shape.splitFrom ? { ...shape.splitFrom, source: shape.splitFrom.source ? jsonSafeShape(shape.splitFrom.source) : undefined } : undefined,
   });
 }
 
@@ -102,5 +103,6 @@ export function hydrateClipboardShape(shape: WorkplaneShape): WorkplaneShape {
       before: hydrateClipboardShape(entry.before),
     })),
     featureBase: shape.featureBase ? hydrateClipboardShape(shape.featureBase) : undefined,
+    splitFrom: shape.splitFrom ? { ...shape.splitFrom, source: shape.splitFrom.source ? hydrateClipboardShape(shape.splitFrom.source) : undefined } : undefined,
   }));
 }

@@ -529,6 +529,7 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
     }));
   }
   if (shape.featureBase) next.featureBase = canonicalizeShape(shape.featureBase);
+  if (shape.splitFrom?.source) next.splitFrom = { ...shape.splitFrom, source: canonicalizeShape(shape.splitFrom.source) };
   return next;
 }
 
@@ -578,6 +579,8 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.values === b.values &&
     a.drivenBy === b.drivenBy &&
     a.surfaceTexture === b.surfaceTexture &&
+    a.surfaceTextureOff === b.surfaceTextureOff &&
+    a.splitFrom === b.splitFrom &&
     a.laserJob === b.laserJob &&
     a.laserLink === b.laserLink &&
     a.edgeTreatmentHistory === b.edgeTreatmentHistory &&
@@ -598,6 +601,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.holeSpec === b.holeSpec &&
     a.gridfinityBin === b.gridfinityBin &&
     a.toolboxLabel === b.toolboxLabel &&
+    a.pictureKeychain === b.pictureKeychain &&
     a.gridfinityBaseplate === b.gridfinityBaseplate &&
     a.gridfinityBuilt === b.gridfinityBuilt &&
     a.loftSpec === b.loftSpec &&

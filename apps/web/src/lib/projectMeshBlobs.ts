@@ -156,6 +156,7 @@ export function dehydrateShape(shape: WorkplaneShape, sink: MeshBlobSink, keys: 
       ? { threadHistory: shape.threadHistory.map((entry) => ({ ...entry, before: dehydrateShape(entry.before, sink, keys) })) }
       : {}),
     ...(shape.featureBase ? { featureBase: dehydrateShape(shape.featureBase, sink, keys) } : {}),
+    ...(shape.splitFrom?.source ? { splitFrom: { ...shape.splitFrom, source: dehydrateShape(shape.splitFrom.source, sink, keys) } } : {}),
   };
 }
 
@@ -242,6 +243,7 @@ export class MeshBlobHydrator {
         ? { threadHistory: shape.threadHistory.map((entry) => ({ ...entry, before: this.shape(entry.before) })) }
         : {}),
       ...(shape.featureBase ? { featureBase: this.shape(shape.featureBase) } : {}),
+      ...(shape.splitFrom?.source ? { splitFrom: { ...shape.splitFrom, source: this.shape(shape.splitFrom.source) } } : {}),
     };
   }
 

@@ -8,8 +8,9 @@ import { canonicalizeShape, shapeDepth, shapeWidth } from "@/lib/workplaneShapes
 import type { ToolboxLabelMagnetSize, ToolboxLabelSpec, WorkplaneShape } from "@/types/sketchforge";
 
 /**
- * Magnetic labels for the drawer fronts of steel tool boxes: a plate, raised letters in a
- * second colour on top, and magnet pockets in the back. Each label is a Tie of its plate and
+ * Name plates (the "Name Plate" shape): a plate, raised letters in a second colour on top, and
+ * magnet pockets in the back if wanted, such as labels for the drawers of a steel tool chest.
+ * The code keeps its first name, toolbox label, so files saved in 1.4.1 open unchanged. Each label is a Tie of its plate and
  * its letters, so they stay two parts (two colours in a 3MF) and Ungroup takes them apart.
  * The solids are made with Manifold, which runs the same in the desktop app and the browser.
  */
@@ -18,6 +19,8 @@ export const TOOLBOX_LABEL_PLATE_COLOR = "#1d1f22";
 export const TOOLBOX_LABEL_LETTER_COLOR = "#f2f2ee";
 /** Mintr's bold, wide font: the free stand-in for tool box lettering. */
 export const TOOLBOX_LABEL_FONT = "Heavy";
+/** What a new set is called in the Parts tree. */
+export const TOOLBOX_LABEL_NAME = "Name Plate";
 /** Close to the orange of US General tool boxes, for orange labels. */
 export const TOOLBOX_LABEL_ORANGE = "#e8611a";
 
@@ -35,6 +38,8 @@ export const OPEN_POCKET_MIN_ROOF = 0.3;
 export const HIDDEN_POCKET_MIN_SKIN = 0.6;
 /** Plastic kept between a pocket and the plate's edge. */
 const POCKET_MIN_WALL = 1;
+/** How much a followed plate smooths its edge, as a share of the letter height. */
+const FOLLOW_SMOOTH = 0.45;
 /** One magnet about every this many mm along a label. */
 const MAGNET_SPACING = 50;
 /** Labels in one set: more than a few tool chests' worth. */
@@ -42,7 +47,7 @@ export const MAX_LABELS = 100;
 
 export function defaultToolboxLabelSpec(): ToolboxLabelSpec {
   return {
-    labels: [{ text: "SOCKETS" }],
+    labels: [{ text: "LABEL" }],
     allCaps: true,
     font: TOOLBOX_LABEL_FONT,
     slant: 12,
@@ -58,6 +63,7 @@ export function defaultToolboxLabelSpec(): ToolboxLabelSpec {
     sameHeight: true,
     sameWidth: false,
     edgeRound: 0.4,
+    magnets: true,
     magnetSize: "8x3",
     magnetDiameter: 8,
     magnetDepth: 3,
@@ -105,6 +111,7 @@ export function normalizeToolboxLabelSpec(input?: Partial<ToolboxLabelSpec> | nu
     sameHeight: spec.sameHeight !== false,
     sameWidth: Boolean(spec.sameWidth),
     edgeRound: clamp(spec.edgeRound, 0, 1, base.edgeRound),
+    magnets: spec.magnets !== false,
     magnetSize,
     magnetDiameter: preset ? preset.diameter : clamp(spec.magnetDiameter, 1, 100, base.magnetDiameter),
     magnetDepth: preset ? preset.depth : clamp(spec.magnetDepth, 0.5, 40, base.magnetDepth),
@@ -145,6 +152,7 @@ export function hiddenPocketPauseHeight(spec: Pick<ToolboxLabelSpec, "magnetDiam
 
 /** What stops the magnets fitting in a plate this size, in plain words, or null when they fit. */
 export function magnetFitProblem(spec: ToolboxLabelSpec, plateHeight: number, plateWidth?: number): string | null {
+  if (!spec.magnets) return null;
   const pocket = magnetPocket(spec);
   if (spec.pocket === "hidden") {
     const needed = pocket.depth + HIDDEN_POCKET_MIN_SKIN * 2;
@@ -184,6 +192,52 @@ function roundedRectangle(width: number, height: number, radius: number): Vec2[]
   return points;
 }
 
+/**
+ * A plate that follows the letters, cut like a sticker: their outline grown by `pad`, then
+ * smoothed (grown a little more and shrunk back) so the notches between letters fill in and the
+ * edge runs in clean curves around the word instead of bumping over every letter. The gaps
+ * inside letters are filled. With magnets, a bar along the middle keeps every pocket in plastic
+ * even under a space between two words; a long space without magnets gets a thinner bar so the
+ * plate stays one piece.
+ */
+function followOutline(runtime: ManifoldToplevel, letters: CrossSection, pad: number, capHeight: number, bar: { width: number; height: number } | null): CrossSection {
+  const smooth = Math.max(capHeight * FOLLOW_SMOOTH, 0.5);
+  const close = (spine: { width: number; height: number } | null) => {
+    const parts = [letters.offset(Math.max(pad, 0.5) + smooth, "Round", 2, 48)];
+    if (spine && spine.width > 0 && spine.height > 0) {
+      parts.push(new runtime.CrossSection([roundedRectangle(spine.width + smooth * 2, spine.height + smooth * 2, spine.height / 2 + smooth)], "Positive"));
+    }
+    const grown = parts.length > 1 ? runtime.CrossSection.union(parts) : parts[0];
+    if (parts.length > 1) parts.forEach((part) => part.delete());
+    const shrunk = grown.offset(-smooth, "Round", 2, 48);
+    grown.delete();
+    // Only the outer loops (counter-clockwise, positive area): the holes in O, A become plate.
+    const outers = shrunk.toPolygons().filter((loop) => signedArea(loop) > 0);
+    shrunk.delete();
+    return outers;
+  };
+  let outers = close(bar);
+  if (outers.length > 1) {
+    const ink = letters.bounds();
+    const width = Math.max(bar?.width ?? 0, ink.max[0] - ink.min[0]);
+    outers = close({ width, height: Math.max(bar?.height ?? 0, capHeight * 0.5) });
+  }
+  const pieces = outers.map((loop) => new runtime.CrossSection([loop], "Positive"));
+  const joined = runtime.CrossSection.union(pieces);
+  pieces.forEach((piece) => piece.delete());
+  return joined;
+}
+
+function signedArea(loop: Vec2[]) {
+  let area = 0;
+  for (let index = 0; index < loop.length; index += 1) {
+    const [x1, y1] = loop[index];
+    const [x2, y2] = loop[(index + 1) % loop.length];
+    area += x1 * y2 - x2 * y1;
+  }
+  return area / 2;
+}
+
 /** Slices in a rounded top edge: each well under a print layer, so the steps never show. */
 const EDGE_ROUND_SLICES = 10;
 
@@ -191,9 +245,11 @@ const EDGE_ROUND_SLICES = 10;
  * An outline pushed up `thickness`, its top edge rounded over by `round`. The round is thin
  * layers, each drawn in a little more, following a quarter circle.
  */
-function roundedTopSlab(runtime: ManifoldToplevel, outline: CrossSection, thickness: number, round: number): Manifold {
+export function roundedTopSlab(runtime: ManifoldToplevel, outline: CrossSection, thickness: number, round: number): Manifold {
   const r = Math.min(round, thickness * 0.5);
   if (r < 0.02) return outline.extrude(thickness);
+  const fast = steppedSlab(runtime, outline, thickness, r);
+  if (fast) return fast;
   const layers: Manifold[] = [outline.extrude(thickness - r)];
   for (let slice = 0; slice < EDGE_ROUND_SLICES; slice += 1) {
     const top = (r * (slice + 1)) / EDGE_ROUND_SLICES;
@@ -207,6 +263,127 @@ function roundedTopSlab(runtime: ManifoldToplevel, outline: CrossSection, thickn
   const slab = runtime.Manifold.union(layers);
   layers.forEach((layer) => layer.delete());
   return slab;
+}
+
+/**
+ * The same rounded slab built as one mesh: every loop's points moved in along their corner
+ * directions for each step of the round, the steps joined by walls, and the bottom and top
+ * filled. Unioning the stacked layers took seconds on a detailed outline; this takes
+ * milliseconds. Null when the result is not a clean solid, so the caller unions instead.
+ */
+function steppedSlab(runtime: ManifoldToplevel, outline: CrossSection, thickness: number, r: number): Manifold | null {
+  // Where outlines were joined (a keyring tab onto a plate) there are points on top of each
+  // other and zigzags a few microns across. Their directions point every way, so moved in they
+  // cross and fold the top over: a bite out of it. Smoothed out first, far below what a printer
+  // can show.
+  const simple = outline.simplify(0.01);
+  const loops = simple.toPolygons().map((loop) => {
+    const kept: Vec2[] = [];
+    for (const point of loop) {
+      const last = kept[kept.length - 1];
+      if (!last || Math.hypot(point[0] - last[0], point[1] - last[1]) > 0.02) kept.push(point);
+    }
+    while (kept.length > 3 && Math.hypot(kept[0][0] - kept[kept.length - 1][0], kept[0][1] - kept[kept.length - 1][1]) <= 0.02) kept.pop();
+    return kept;
+  }).filter((loop) => loop.length >= 3);
+  simple.delete();
+  if (loops.length === 0) return null;
+  // Each point's outward direction, scaled so a straight edge moves the full distance.
+  const directions = loops.map((loop) => loop.map((point, index) => {
+    const before = loop[(index + loop.length - 1) % loop.length];
+    const after = loop[(index + 1) % loop.length];
+    const edge = (from: Vec2, to: Vec2): Vec2 => {
+      const dx = to[0] - from[0];
+      const dy = to[1] - from[1];
+      const length = Math.hypot(dx, dy) || 1;
+      return [dy / length, -dx / length];
+    };
+    const a = edge(before, point);
+    const b = edge(point, after);
+    const sum: Vec2 = [a[0] + b[0], a[1] + b[1]];
+    const length = Math.hypot(sum[0], sum[1]);
+    if (length < 1e-9) return a;
+    const unit: Vec2 = [sum[0] / length, sum[1] / length];
+    // A miter, kept from spiking on a very sharp corner.
+    const scale = Math.min(2, 1 / Math.max(0.5, unit[0] * a[0] + unit[1] * a[1]));
+    return [unit[0] * scale, unit[1] * scale] as Vec2;
+  }));
+  const levels: Array<{ z: number; inset: number }> = [{ z: 0, inset: 0 }, { z: thickness - r, inset: 0 }];
+  for (let slice = 1; slice <= EDGE_ROUND_SLICES; slice += 1) {
+    const top = (r * slice) / EDGE_ROUND_SLICES;
+    levels.push({ z: thickness - r + top, inset: r - Math.sqrt(Math.max(0, r * r - top * top)) });
+  }
+  const perLevel = loops.reduce((sum, loop) => sum + loop.length, 0);
+  const vertices = new Float32Array(perLevel * levels.length * 3);
+  levels.forEach((level, levelIndex) => {
+    let at = levelIndex * perLevel * 3;
+    loops.forEach((loop, loopIndex) => loop.forEach((point, index) => {
+      const [nx, ny] = directions[loopIndex][index];
+      vertices[at] = point[0] - nx * level.inset;
+      vertices[at + 1] = point[1] - ny * level.inset;
+      vertices[at + 2] = level.z;
+      at += 3;
+    }));
+  });
+  const triangles: number[] = [];
+  const loopStart: number[] = [];
+  loops.reduce((start, loop) => {
+    loopStart.push(start);
+    return start + loop.length;
+  }, 0);
+  for (let levelIndex = 0; levelIndex + 1 < levels.length; levelIndex += 1) {
+    const low = levelIndex * perLevel;
+    const high = (levelIndex + 1) * perLevel;
+    loops.forEach((loop, loopIndex) => {
+      for (let index = 0; index < loop.length; index += 1) {
+        const a = loopStart[loopIndex] + index;
+        const b = loopStart[loopIndex] + ((index + 1) % loop.length);
+        triangles.push(low + a, low + b, high + b, low + a, high + b, high + a);
+      }
+    });
+  }
+  // The top is filled from its own, drawn-in outline: filling the bottom's and moving the points
+  // in folds thin triangles over, which shows as a bite out of the top.
+  const topOffset = (levels.length - 1) * perLevel;
+  const topLoops: Vec2[][] = [];
+  loops.reduce((at, loop) => {
+    topLoops.push(loop.map((_, index) => [vertices[(topOffset + at + index) * 3], vertices[(topOffset + at + index) * 3 + 1]] as Vec2));
+    return at + loop.length;
+  }, 0);
+  let bottomCap: Array<[number, number, number]>;
+  let topCap: Array<[number, number, number]>;
+  try {
+    bottomCap = runtime.triangulate(loops, -1) as Array<[number, number, number]>;
+    topCap = runtime.triangulate(topLoops, -1) as Array<[number, number, number]>;
+  } catch {
+    return null;
+  }
+  for (const [a, b, c] of bottomCap) triangles.push(a, c, b);
+  for (const [a, b, c] of topCap) triangles.push(topOffset + a, topOffset + b, topOffset + c);
+  // A top triangle still folded over means the drawn-in outline crossed itself: union instead.
+  const point = (index: number): Vec2 => [vertices[(topOffset + index) * 3], vertices[(topOffset + index) * 3 + 1]];
+  for (const [a, b, c] of topCap) {
+    const [ax, ay] = point(a);
+    const [bx, by] = point(b);
+    const [cx, cy] = point(c);
+    if ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax) < -1e-9) return null;
+  }
+  try {
+    const mesh = new runtime.Mesh({ numProp: 3, vertProperties: vertices, triVerts: new Uint32Array(triangles) });
+    const solid = new runtime.Manifold(mesh);
+    if (solid.status() !== "NoError" || solid.isEmpty() || solid.volume() <= 0) {
+      solid.delete();
+      return null;
+    }
+    // A caught self-crossing would show as a volume short of the outline's.
+    if (solid.volume() < outline.area() * (thickness - r) * 0.999) {
+      solid.delete();
+      return null;
+    }
+    return solid;
+  } catch {
+    return null;
+  }
 }
 
 /** How tall a capital is in the font's own units, from its H. */
@@ -270,7 +447,7 @@ export function letterOutline(
 }
 
 /** A Manifold solid (Z up, +Y towards the back) as a mesh part sitting where it was made. */
-function meshPart(solid: Manifold, base: { name: string; color: string }, at: { x: number; z: number }): WorkplaneShape | null {
+export function meshPart(solid: Manifold, base: { name: string; color: string }, at: { x: number; z: number }): WorkplaneShape | null {
   const mesh = solid.getMesh();
   const stride = mesh.numProp;
   const count = mesh.vertProperties.length / stride;
@@ -372,6 +549,10 @@ type MeasuredLabel = {
   plateHeight: number;
   /** Letters the font does not have, left out. */
   skipped: string[];
+  /** The letters' width, for a plate that follows them. */
+  inkWidth: number;
+  /** The capital height, which sets how much a followed plate smooths its edge. */
+  capHeight: number;
 };
 
 function measureLabel(runtime: ManifoldToplevel, spec: ToolboxLabelSpec, label: ToolboxLabelSpec["labels"][number]): MeasuredLabel | null {
@@ -393,12 +574,20 @@ function measureLabel(runtime: ManifoldToplevel, spec: ToolboxLabelSpec, label: 
   const overshoot = capHeight * 0.08;
   const past = Math.max(Math.abs(inkBottom), Math.abs(inkTop)) - capHeight / 2;
   const reach = capHeight / 2 + (past > overshoot ? past : 0);
+  const inkWidth = ink.max[0] - ink.min[0];
+  if (spec.plateShape === "follow") {
+    // The outline grows the same distance all round, so the plate is the ink plus padding.
+    const pad = Math.max(spec.padEnds, 0.5);
+    return { text, letters2d, plateWidth: inkWidth + pad * 2, plateHeight: Math.max(Math.abs(inkBottom), Math.abs(inkTop)) * 2 + pad * 2, skipped: [...skipped], inkWidth, capHeight };
+  }
   return {
     text,
     letters2d,
-    plateWidth: ink.max[0] - ink.min[0] + spec.padSides * 2,
+    plateWidth: inkWidth + spec.padSides * 2,
     plateHeight: reach * 2 + spec.padEnds * 2,
     skipped: [...skipped],
+    inkWidth,
+    capHeight,
   };
 }
 
@@ -412,13 +601,16 @@ export function buildOneToolboxLabel(runtime: ManifoldToplevel, spec: ToolboxLab
 /** A measured label built at a plate size at least as big as it needs. Frees its outline. */
 function buildMeasuredLabel(runtime: ManifoldToplevel, spec: ToolboxLabelSpec, measured: MeasuredLabel, plateWidth: number, plateHeight: number, at: { x: number; z: number }): ToolboxLabelBuild | null {
   const { text, letters2d } = measured;
-  const plateOutline = new runtime.CrossSection([roundedRectangle(plateWidth, plateHeight, spec.cornerRadius)], "Positive");
+  const pocket = magnetPocket(spec);
+  const follow = spec.plateShape === "follow";
+  const plateOutline = follow
+    ? followOutline(runtime, letters2d, spec.padEnds, measured.capHeight, spec.magnets ? { width: plateWidth, height: pocket.diameter + POCKET_MIN_WALL * 2 } : null)
+    : new runtime.CrossSection([roundedRectangle(plateWidth, plateHeight, spec.cornerRadius)], "Positive");
   let plate = roundedTopSlab(runtime, plateOutline, spec.thickness, spec.edgeRound);
   plateOutline.delete();
 
   const problem = magnetFitProblem(spec, plateHeight, plateWidth);
-  const wanted =spec.magnetCount > 0 ? spec.magnetCount : autoMagnetCount(plateWidth);
-  const pocket = magnetPocket(spec);
+  const wanted = !spec.magnets ? 0 : spec.magnetCount > 0 ? spec.magnetCount : autoMagnetCount(plateWidth);
   const radius = pocket.diameter / 2;
   // Pockets keep a wall to the plate's ends and between each other, so asking for more than
   // fit gives as many as fit instead of a slot through the plate.
@@ -608,7 +800,7 @@ export function buildToolboxLabelSetReport(
   });
   if (labels.length === 0) return null;
   const unknownLetters = [...new Set(measured.flatMap((label) => label.skipped))];
-  const set = tieOf(labels, previous.name ?? "Toolbox Label", spec.plateColor);
+  const set = tieOf(labels, previous.name ?? TOOLBOX_LABEL_NAME, spec.plateColor);
   // Where it goes: the old set's back-left corner, or centred where it was dropped.
   let x = previous.x ?? 0;
   let z = previous.z ?? 0;

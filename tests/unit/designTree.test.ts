@@ -5,11 +5,15 @@ import {
   designTreeChildren,
   designTreeGroupLabel,
   designTreeOp,
+  designTreePartKind,
   designTreeRows,
   designTreeSteps,
+  partExtraStepLabel,
   partStepsBefore,
   removePartFromTree,
   reorderPartSteps,
+  splitPieces,
+  splitSourceFor,
   stepDropIndex,
   treeDropFor,
   type DesignTreeRow,
@@ -257,5 +261,65 @@ describe("treeDropFor", () => {
     expect(treeDropFor(pick("stuck"), pick("g"))).toBeNull();
     const lockedStep = designTreeRows([{ ...steppedBox(), locked: true }]).filter((entry) => entry.kind === "step");
     expect(treeDropFor(lockedStep[0], lockedStep[1], false)).toBeNull();
+  });
+});
+
+describe("texture, pattern and split steps", () => {
+  const knurl = { pattern: "knurl" } as unknown as NonNullable<WorkplaneShape["surfaceTexture"]>;
+
+  it("lists a texture first, then a pattern, then the replayed steps, then the split the piece came from", () => {
+    const source = part("whole");
+    const piece = part("left", {
+      featureBase: part("left-base"),
+      features: [fillet("f1")],
+      surfaceTexture: knurl,
+      patternFeature: { id: "pat", kind: "linear", role: "source", sourceId: "left", linear: { countX: 3, countZ: 1, spacingX: 25, spacingZ: 25 } as never },
+      splitFrom: { id: "cut", axis: "x", offset: 0, joint: "none", clearance: 0.2, source },
+    });
+    const copy = part("copy", { patternFeature: { id: "pat", kind: "linear", role: "instance", sourceId: "left", instanceIndex: 1 } });
+    const rows = designTreeRows([piece, copy]);
+    const under = rows.filter((row) => row.bodyId === "left" && row.depth === 1);
+    expect(under.map((row) => (row.kind === "extra" ? row.extra.kind : row.kind === "step" ? row.step.id : row.shape.id))).toEqual(["texture", "pattern", "f1", "split"]);
+    const pattern = under[1];
+    expect(pattern.kind === "extra" && pattern.extra.kind === "pattern" && pattern.extra.copies).toBe(1);
+    // The copy is a plain part: no pattern row of its own.
+    expect(rows.filter((row) => row.bodyId === "copy")).toHaveLength(1);
+  });
+
+  it("shows a turned-off texture as off, and a split as joinable only while its first piece is there", () => {
+    const off = part("a", { surfaceTextureOff: knurl, splitFrom: { id: "cut", axis: "y", offset: 0, joint: "none", clearance: 0.2 } });
+    const first = part("b", { splitFrom: { id: "cut", axis: "y", offset: 0, joint: "none", clearance: 0.2, source: part("whole") } });
+    const extras = (shapes: WorkplaneShape[]) => designTreeRows(shapes).filter((row): row is Extract<DesignTreeRow, { kind: "extra" }> => row.kind === "extra" && row.bodyId === "a");
+    const [texture, split] = extras([first, off]);
+    expect(texture.extra).toMatchObject({ kind: "texture", off: true });
+    expect(split.extra).toMatchObject({ kind: "split", canJoin: true });
+    expect(extras([off])[1].extra).toMatchObject({ kind: "split", canJoin: false });
+    expect(splitSourceFor([first, off], "cut")?.id).toBe("whole");
+    expect(splitPieces([first, off, part("c")], "cut").map((shape) => shape.id)).toEqual(["b", "a"]);
+  });
+
+  it("names each extra step in plain words", () => {
+    expect(partExtraStepLabel({ kind: "texture", texture: knurl, off: false })).toBe("Knurl texture");
+    expect(partExtraStepLabel({ kind: "split", split: { id: "s", axis: "x", offset: 0, joint: "none", clearance: 0.2 }, canJoin: true })).toBe("Split left / right");
+    expect(partExtraStepLabel({ kind: "split", split: { id: "s", axis: "z", offset: -5, joint: "none", clearance: 0.2 }, canJoin: true })).toBe("Split front / back, 5 mm off centre");
+    expect(partExtraStepLabel({ kind: "split", split: { id: "s", axis: "y", offset: 0, joint: "dovetail", clearance: 0.2 }, canJoin: true })).toBe("Cut to fit, dovetail");
+  });
+
+  it("never drags an extra step, and treats dropping on one like dropping on its part", () => {
+    const piece = part("p", { surfaceTexture: knurl });
+    const group = withCsgMeta(part("g", { groupedShapes: [part("inner"), part("other")] }), "union", 1, false);
+    const rows = designTreeRows([piece, group]);
+    const extra = rows.find((row) => row.kind === "extra")!;
+    const inner = rows.find((row) => row.kind === "part" && row.shape.id === "inner")!;
+    expect(treeDropFor(extra, null)).toBeNull();
+    expect(treeDropFor(inner, extra)).toMatchObject({ kind: "out-of-group", partId: "inner" });
+  });
+
+  it("says what a hole or thread inside a group is", () => {
+    expect(designTreePartKind(part("h", { hole: true, kind: "cylinder" }))).toBe("Hole");
+    expect(designTreePartKind(part("s", { kind: "thread", hole: true, generated: { form: "screwHole", size: "M3", head: "none", threaded: true } as never }))).toBe("Threaded hole M3");
+    expect(designTreePartKind(part("n", { kind: "box", hole: true, generated: { form: "nutPocket", size: "M4" } as never }))).toBe("Nut pocket M4");
+    expect(designTreePartKind(part("t", { kind: "thread", threadSpec: { designation: "M8", majorDiameter: 8, pitch: 1.25, role: "rod" } as never }))).toBe("Thread M8");
+    expect(designTreePartKind(part("b"))).toBeNull();
   });
 });

@@ -315,6 +315,7 @@ function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
       hole: asset.hole,
       generated: asset.generated,
       toolboxLabel: asset.toolboxLabel === true || undefined,
+      pictureKeychain: asset.pictureKeychain === true || undefined,
     };
   } catch {
     return null;

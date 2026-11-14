@@ -367,6 +367,7 @@ export function ShapeInspector({
     || inspectTarget.kind === "gridfinityBaseplate";
   // A toolbox label's size comes from its letters and padding, not a stretch.
   const canScale = !inspectTarget.toolboxLabel
+    && !inspectTarget.pictureKeychain
     && inspectTarget.kind !== "thread"
     && inspectTarget.kind !== "text"
     && inspectTarget.kind !== "gear"

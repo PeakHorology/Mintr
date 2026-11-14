@@ -21,6 +21,17 @@ export type TracedLogo = {
   width: number;
   height: number;
   pieces: Array<{ outer: TracePoint[]; holes: TracePoint[][] }>;
+  /** In a print design: a keychain, a plaque, or the drawing on its own. */
+  make?: PrintMake;
+};
+
+/** What a traced drawing becomes in a print design. */
+export type PrintMake = "keychain" | "plaque" | "drawing";
+
+const MAKE_HINT: Record<PrintMake, string> = {
+  keychain: "The drawing stands up on a plate cut round it, with a keyring hole.",
+  plaque: "The drawing stands up on a plate cut round it, with no hole: a plaque, badge or magnet.",
+  drawing: "Just the drawing, as a solid part. Join it to something, or cut it into a part.",
 };
 
 /** Which pixels are the logo. */
@@ -30,6 +41,8 @@ type InkMode = "dark" | "light" | "opaque";
 const MAX_READ_SIZE = 2400;
 /** Curves become points this close to the true curve, in mm. */
 const POINT_TOLERANCE_MM = 0.04;
+/** A printer's nozzle is 0.4 mm, so a printed drawing needs far fewer points. */
+const PRINT_POINT_TOLERANCE_MM = 0.08;
 /** More pieces than this, and the picture is probably not a clean logo. */
 const BUSY_PIECES = 600;
 
@@ -62,12 +75,15 @@ async function readPicture(file: File) {
 export function TraceLogoDialog({
   sheetLabel,
   bedWidth,
+  print = false,
   onCancel,
   onMake,
 }: {
   /** "3 mm plywood", for the note. */
   sheetLabel: string;
   bedWidth: number;
+  /** A print design: makes a keychain, plaque or drawing instead of a laser part. */
+  print?: boolean;
   onCancel: () => void;
   onMake: (logo: TracedLogo) => void;
 }) {
@@ -79,7 +95,9 @@ export function TraceLogoDialog({
   const [threshold, setThreshold] = useState(0.5);
   const [smoothness, setSmoothness] = useState(1);
   const [speckle, setSpeckle] = useState(20);
-  const [widthDraft, setWidthDraft] = useState(String(Math.min(80, Math.round(bedWidth * 0.6))));
+  // A keychain is about the size of a key; a laser logo, most of a small sheet.
+  const [widthDraft, setWidthDraft] = useState(String(print ? 45 : Math.min(80, Math.round(bedWidth * 0.6))));
+  const [make, setMake] = useState<PrintMake>("keychain");
   const [job, setJob] = useState<LaserJob>("engrave");
   // The settings the trace below was made with, a moment after the last change.
   const [settled, setSettled] = useState({ mode, threshold, smoothness, speckle });
@@ -136,9 +154,9 @@ export function TraceLogoDialog({
 
   const pieces = useMemo(() => {
     if (!traced || !mmPerPixel) return [];
-    const tolerance = POINT_TOLERANCE_MM / mmPerPixel;
+    const tolerance = (print ? PRINT_POINT_TOLERANCE_MM : POINT_TOLERANCE_MM) / mmPerPixel;
     return groupIntoPieces(traced.loops.map((loop) => ({ points: flattenLoop(loop, tolerance), area: loop.area })));
-  }, [traced, mmPerPixel]);
+  }, [traced, mmPerPixel, print]);
 
   // The preview: the picture faint underneath, the traced logo drawn over it.
   useEffect(() => {
@@ -175,7 +193,7 @@ export function TraceLogoDialog({
         }
         path.closePath();
       }
-      if (job === "engrave") {
+      if (job === "engrave" || print) {
         context.fillStyle = "#2b211b";
         context.fill(path, "evenodd");
       } else {
@@ -191,14 +209,14 @@ export function TraceLogoDialog({
     return () => {
       cancelled = true;
     };
-  }, [picture, traced, job]);
+  }, [picture, traced, job, print]);
 
   const choose = async (file: File) => {
     setReadError(null);
     try {
       const { grey, url } = await readPicture(file);
       const look = lookAtPicture(grey);
-      setPicture({ name: file.name.replace(/\.[^.]+$/, "") || "Logo", grey, url, look });
+      setPicture({ name: file.name.replace(/\.[^.]+$/, "") || (print ? "Drawing" : "Logo"), grey, url, look });
       const nextMode: InkMode = look.transparentBackground ? "opaque" : look.darkBackground ? "light" : "dark";
       setMode(nextMode);
       setThreshold(look.threshold);
@@ -221,7 +239,7 @@ export function TraceLogoDialog({
     if (problem || !picture || !bounds) return;
     const toMm = (point: TracePoint) => ({ x: (point.x - bounds.minX) * mmPerPixel, y: (point.y - bounds.minY) * mmPerPixel });
     const scaled = pieces.map((piece) => ({ outer: piece.outer.map(toMm), holes: piece.holes.map((hole) => hole.map(toMm)) }));
-    onMake({ name: picture.name, job, width, height, pieces: scaled });
+    onMake({ name: picture.name, job, width, height, pieces: scaled, ...(print ? { make } : {}) });
   };
 
   const busy = pieces.length > BUSY_PIECES;
@@ -236,17 +254,25 @@ export function TraceLogoDialog({
         onSubmit={submit}
       >
         <header className="inline-value-dialog-header">
-          <strong id="trace-logo-title">Trace a logo</strong>
+          <strong id="trace-logo-title">{print ? "Trace a drawing" : "Trace a logo"}</strong>
           <button type="button" className="inline-value-dialog-close" aria-label="Close" onClick={onCancel}>
             <X size={16} strokeWidth={2.5} />
           </button>
         </header>
         <div className="inline-value-dialog-body">
-          <p className="trace-logo-fit">
-            <strong>For logos, text and simple drawings</strong> with solid shapes, like a logo on a white background.
-            It isn&apos;t made for photos: tracing keeps only dark and light, so shading turns into blotches.
-            To engrave a photo, open it in your laser program instead.
-          </p>
+          {print ? (
+            <p className="trace-logo-fit">
+              <strong>For line art, logos and simple drawings</strong>, dark on a white background: a doodle, a pet
+              drawn in pen, a scanned sketch. It isn&apos;t made for photos: tracing keeps only dark and light, so
+              shading turns into blotches.
+            </p>
+          ) : (
+            <p className="trace-logo-fit">
+              <strong>For logos, text and simple drawings</strong> with solid shapes, like a logo on a white background.
+              It isn&apos;t made for photos: tracing keeps only dark and light, so shading turns into blotches.
+              To engrave a photo, open it in your laser program instead.
+            </p>
+          )}
           <input
             ref={fileInputRef}
             className="hidden-file-input"
@@ -264,7 +290,7 @@ export function TraceLogoDialog({
             </div>
           ) : (
             <button type="button" className="trace-logo-pick" onClick={() => fileInputRef.current?.click()}>
-              <strong>Choose a logo picture</strong>
+              <strong>{print ? "Choose a picture" : "Choose a logo picture"}</strong>
               <span>PNG, JPG, WebP or BMP. An SVG logo doesn&apos;t need tracing: use Import.</span>
             </button>
           )}
@@ -276,7 +302,7 @@ export function TraceLogoDialog({
           ) : null}
           {busy ? (
             <p className="trace-logo-warning">
-              That&apos;s {pieces.length} separate pieces, which usually means a busy picture. Try more Ignore specks, or a cleaner logo.
+              That&apos;s {pieces.length} separate pieces, which usually means a busy picture. Try more Ignore specks, or a cleaner picture.
             </p>
           ) : null}
           {picture ? (
@@ -311,7 +337,7 @@ export function TraceLogoDialog({
               </label>
               <div className="box-maker-fields">
                 <label className="inline-value-dialog-field">
-                  <span>Logo width</span>
+                  <span>{print ? "Width" : "Logo width"}</span>
                   <span className="inline-value-dialog-input-wrap">
                     <input
                       type="number"
@@ -327,6 +353,24 @@ export function TraceLogoDialog({
                 </label>
                 <p className="inline-value-dialog-note trace-logo-height">{widthOk ? `${Number(height.toFixed(1))} mm tall` : ""}</p>
               </div>
+              {print ? (
+                <>
+                  <div className="box-maker-toggles">
+                    <div role="radiogroup" aria-label="What to make" className="three">
+                      {(["keychain", "plaque", "drawing"] as const).map((value) => (
+                        <button key={value} type="button" role="radio" aria-checked={make === value} className={make === value ? "active" : ""} onClick={() => setMake(value)}>
+                          {value === "keychain" ? "Keychain" : value === "plaque" ? "Plaque" : "Just the drawing"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="inline-value-dialog-note">
+                    {MAKE_HINT[make]} Change the plate, hole and line thickness after, in its settings.{" "}
+                    <button type="button" className="trace-logo-again" onClick={() => fileInputRef.current?.click()}>Use another picture</button>
+                  </p>
+                </>
+              ) : (
+              <>
               <div className="box-maker-toggles">
                 <div role="radiogroup" aria-label="What the laser does" className="three">
                   {(["engrave", "cut", "score"] as const).map((value) => (
@@ -340,6 +384,8 @@ export function TraceLogoDialog({
                 {JOB_HINT[job]} It becomes one part of {sheetLabel}.{" "}
                 <button type="button" className="trace-logo-again" onClick={() => fileInputRef.current?.click()}>Use another picture</button>
               </p>
+              </>
+              )}
             </>
           ) : null}
         </div>
@@ -348,7 +394,7 @@ export function TraceLogoDialog({
             Cancel
           </button>
           <button type="submit" className="primary" disabled={Boolean(problem)} title={problem ?? undefined}>
-            Make part
+            {print ? (make === "keychain" ? "Make keychain" : make === "plaque" ? "Make plaque" : "Make part") : "Make part"}
           </button>
         </footer>
       </form>

@@ -11,6 +11,7 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { clearManifoldRuntimeCache, getManifoldRuntime, manifoldRuntimeIfReady } from "@/lib/manifoldRuntime";
 import { buildToolboxLabelSetReport, toolboxLabelSetNotice } from "@/lib/toolboxLabel";
+import { buildPictureKeychain, defaultPictureKeychainSpec, encodeDrawing, pictureKeychainNotice } from "@/lib/pictureKeychain";
 import { simplifiedImportedShapePatch } from "@/lib/meshSimplify";
 import {
   curveSidesForShape,
@@ -175,6 +176,7 @@ import { clampCutClearance, cutShapeToFitBest, type CutJoint } from "@/lib/cutTo
 import { splitPlaneFrame, splitShapeWithPlane, type SplitAxis } from "@/lib/splitShape";
 import {
   dissolvePatternFeature,
+  removePatternFeature,
   findPatternSource,
   patternFeatureId,
   patternMemberIds,
@@ -262,7 +264,7 @@ import {
 import { fingerprintsForEdgeIds, matchRecipeEdgeIds } from "@/lib/edgeTreatmentRematch";
 import { bakedPartSize, edgeTreatmentsForSteps, failedEdgeTreatmentFeatures, hasPartSteps, hollowPartFeature, rebuildsOnResize, resizedFeatureBase, stepsReplaceSnapshots, partFeatureLabel, partFeatureShortLabel, pushPullPartFeature, stepsCanReplay, withoutEdgeTreatmentFeatures, withPartFeature, withPartStepSize } from "@/lib/partFeatures";
 import { edgesForStep, faceForStep, placeReplayedShape, replayPartFeatures, type ReplayEngine } from "@/lib/featureReplay";
-import { partStepsBefore, removePartFromTree, reorderPartSteps, type TreeDrop } from "@/lib/designTree";
+import { partExtraStepLabel, partStepsBefore, removePartFromTree, reorderPartSteps, splitPieces, splitSourceFor, type PartExtraStep, type TreeDrop } from "@/lib/designTree";
 import { densifyClosedPathUv } from "@/lib/sketchBrep";
 import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
 import { buildFaceBody, faceDraftsToBuild, joinedFaceDrafts, rememberFaceDraft, type FaceDraft } from "@/lib/faceBody";
@@ -473,7 +475,7 @@ import { GuideCoach } from "@/components/workplane/GuideCoach";
 import { GuideConfetti } from "@/components/workplane/GuideConfetti";
 import { GuideBuilderPanel, type GuideBuilderDraft } from "@/components/workplane/GuideBuilderPanel";
 import { isPeakcadProSketchTool, SketchCoach, SketchFinishToolbar, SketchRibbon, sketchCoach, type SketchCoachKey } from "@/components/workplane/SketchToolSidebar";
-import { ShapeSidebar, type ShownStep } from "@/components/workplane/ShapeSidebar";
+import { ShapeSidebar, type ExtraStepAction, type ShownStep } from "@/components/workplane/ShapeSidebar";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import type { MeshSeatMode } from "@/lib/meshSeatOrientation";
 import { displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
@@ -6319,11 +6321,20 @@ export function SketchForgeEditor({
     syncProjectShapes(next);
   }, [syncProjectShapes]);
 
+  /** Where a dropped Picture Keychain goes, while Trace a drawing is open for it. */
+  const [traceDrawingAt, setTraceDrawingAt] = useState<{ x: number; z: number; elevation: number } | null>(null);
+
   const addShape = useCallback(
     (asset: ShapeAsset, point?: { x: number; z: number; elevation?: number }) => {
       const x = point?.x ?? 0;
       const z = point?.z ?? 0;
       const place = { x, z, elevation: point?.elevation ?? 0 };
+      if (asset.pictureKeychain) {
+        // The drawing comes first; the part is made when the trace is done.
+        void getManifoldRuntime().catch(() => clearManifoldRuntimeCache());
+        setTraceDrawingAt(place);
+        return;
+      }
       if (asset.kind === "thread") {
         try {
           const nextShape = createThreadShape({
@@ -6434,6 +6445,35 @@ export function SketchForgeEditor({
             result.failureNotice,
           );
         })();
+        return;
+      }
+
+      // A picture keychain is rebuilt from its drawing and settings, in place.
+      if (previous?.pictureKeychain && cleanedPatch.pictureKeychain) {
+        const runtime = manifoldRuntimeIfReady();
+        if (!runtime) {
+          void getManifoldRuntime().catch(() => clearManifoldRuntimeCache());
+          setNotice("Still getting ready. Try that again in a moment");
+          return;
+        }
+        const { pictureKeychain: nextSpec, ...rest } = cleanedPatch;
+        const report = buildPictureKeychain(runtime, nextSpec, { ...previous, ...rest });
+        if (!report) {
+          setNotice("Nothing left of the drawing at that size");
+          return;
+        }
+        const built = report.shape;
+        if (projectInteractionActiveRef.current) {
+          // A live slider drag: no history entry per tick.
+          setShapes((current) => {
+            const next = current.map((shape) => (shape.id === id ? built : shape));
+            interactionHistoryChangedRef.current = true;
+            shapesRef.current = next;
+            return next;
+          });
+          return;
+        }
+        commitShapes(shapesRef.current.map((shape) => (shape.id === id ? built : shape)), selectedIds, pictureKeychainNotice(report) ?? `${previous.name} updated`);
         return;
       }
 
@@ -9333,6 +9373,19 @@ export function SketchForgeEditor({
           setNotice("Move the line through the object. The cut has to cross it.");
           return;
         }
+        const splitId = createLocalId("split");
+        const recorded = parts.map((part, index) => ({
+          ...part,
+          splitFrom: {
+            id: splitId,
+            axis: session.axis,
+            offset: session.offset,
+            joint: session.joint,
+            clearance: clampCutClearance(session.clearance),
+            ...(index === 0 ? { source: shape } : {}),
+          },
+        }));
+        parts.splice(0, parts.length, ...recorded);
         commitShapes(
           shapesRef.current.flatMap((entry) => entry.id === shape.id ? parts : [entry]),
           parts.map((part) => part.id),
@@ -9434,7 +9487,7 @@ export function SketchForgeEditor({
     setTextureSession(null);
     if (!shape || shape.locked) return;
     commitShapes(
-      shapesRef.current.map((entry) => entry.id === shape.id ? { ...entry, surfaceTexture: texture } : entry),
+      shapesRef.current.map((entry) => entry.id === shape.id ? { ...entry, surfaceTexture: texture, surfaceTextureOff: undefined } : entry),
       [shape.id],
       texture ? "Texture" : "Removed texture",
     );
@@ -11885,6 +11938,27 @@ export function SketchForgeEditor({
     setNotice(`Made ${logo.name}, ${Number(logo.width.toFixed(1))} × ${Number(logo.height.toFixed(1))} mm, set to ${job}.`);
   }, [clearOfOtherParts, commitShapes]);
 
+  /** Trace a drawing, in a print design: a keychain, plaque or drawing where the shape was dropped. */
+  const makeTracedDrawing = useCallback((logo: TracedLogo, at: { x: number; z: number; elevation: number }) => {
+    const runtime = manifoldRuntimeIfReady();
+    if (!runtime) {
+      void getManifoldRuntime().catch(() => clearManifoldRuntimeCache());
+      setNotice("Still getting ready. Try Make again in a moment");
+      return false;
+    }
+    const spec = defaultPictureKeychainSpec(encodeDrawing(logo.pieces), logo.width, logo.height, logo.make ?? "keychain");
+    const name = logo.make === "plaque" ? `${logo.name} plaque` : logo.make === "drawing" ? logo.name : `${logo.name} keychain`;
+    const report = buildPictureKeychain(runtime, spec, { name, x: at.x, z: at.z, elevation: at.elevation });
+    if (!report) {
+      setNotice("Could not make a part from that drawing");
+      return true;
+    }
+    const made = clearOfOtherParts([report.shape]);
+    commitShapes([...shapesRef.current, ...made], made.map((part) => part.id), `Traced ${logo.name}`);
+    setNotice(pictureKeychainNotice(report) ?? `Made ${name}, ${Number(report.shape.width.toFixed(1))} × ${Number(report.shape.depth.toFixed(1))} mm. Change the plate, hole and lines in its settings.`);
+    return true;
+  }, [clearOfOtherParts, commitShapes]);
+
   /** Trace from photo: the object's outline joins the open sketch at true size, centred on its middle. */
   const addTracedPhoto = useCallback((traced: TracedPhoto) => {
     const current = sketchProfileRef.current;
@@ -12869,6 +12943,111 @@ export function SketchForgeEditor({
       }
     })();
   }, []);
+
+  /** The words for a texture, pattern or split row in the Parts tree, in the design's units. */
+  const treeExtraStepLabel = useCallback((extra: PartExtraStep) => partExtraStepLabel(
+    extra,
+    (mm) => `${formatMeasurementNumber(millimetersToDisplay(mm, workspaceSettings), workspaceSettings.accuracy)} ${lengthDisplayUnit(workspaceSettings).label}`,
+  ), [workspaceSettings]);
+
+  /** A pattern picked in the Parts tree to edit, once its source is the part selected. */
+  const [pendingPatternOpen, setPendingPatternOpen] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pendingPatternOpen) return;
+    if (selectedShapes.length !== 1 || selectedShape?.id !== pendingPatternOpen) return;
+    setPendingPatternOpen(null);
+    if (selectedShape.patternFeature?.kind === "circular") toggleCircularPattern();
+    else if (selectedShape.patternFeature?.kind === "linear") toggleLinearPattern();
+  }, [pendingPatternOpen, selectedShape, selectedShapes.length, toggleCircularPattern, toggleLinearPattern]);
+
+  /**
+   * The Parts tree: a texture, pattern or split on a part. A texture can be edited, turned off
+   * (kept but not applied) or removed; a pattern edited, its copies made separate or removed; a
+   * split's pieces joined back into the part they were cut from, or cut again somewhere else.
+   */
+  const changeExtraStep = useCallback((bodyId: string, kind: PartExtraStep["kind"], action: ExtraStepAction) => {
+    const all = shapesRef.current;
+    const body = all.find((entry) => entry.id === bodyId);
+    if (!body) return;
+    if (body.locked) {
+      setNotice(`“${body.name}” is locked`);
+      return;
+    }
+    if (treeToolOpen) {
+      setNotice("Finish the open tool first");
+      return;
+    }
+    setStepPreview(null);
+    if (kind === "texture") {
+      const texture = body.surfaceTexture ?? body.surfaceTextureOff;
+      if (!texture) return;
+      if (action === "edit") {
+        clearEditorToolSessions();
+        setSplitSession(null);
+        selectShape(bodyId);
+        openTextureSession({ ...body, surfaceTexture: texture });
+        return;
+      }
+      const off = action === "toggle" ? Boolean(body.surfaceTexture) : false;
+      const removed = action === "remove";
+      commitShapes(
+        all.map((entry) => entry.id === bodyId
+          ? { ...entry, surfaceTexture: removed || off ? undefined : texture, surfaceTextureOff: !removed && off ? texture : undefined }
+          : entry),
+        [bodyId],
+        removed ? "Removed texture" : off ? "Turned texture off" : "Turned texture back on",
+      );
+      setNotice(removed ? "Texture removed" : off ? "Texture off. Its settings are kept; turn it back on in the Parts tab." : "Texture back on");
+      return;
+    }
+    if (kind === "pattern") {
+      const feature = body.patternFeature;
+      if (!feature) return;
+      if (action === "edit") {
+        setActiveFeatureId(null);
+        selectShape(bodyId);
+        setPendingPatternOpen(bodyId);
+        return;
+      }
+      if (action === "separate") {
+        commitShapes(dissolvePatternFeature(all, feature.id), [bodyId], "Pattern dissolved — copies are independent");
+        setNotice("The copies are separate parts now");
+        return;
+      }
+      const copies = all.filter((entry) => entry.id !== bodyId && entry.patternFeature?.id === feature.id);
+      if (copies.some((entry) => entry.locked)) {
+        setNotice("A copy in this pattern is locked. Unlock it first.");
+        return;
+      }
+      commitShapes(removePatternFeature(all, feature.id, true), [bodyId], "Removed pattern copies");
+      setNotice(`Removed ${copies.length} ${copies.length === 1 ? "copy" : "copies"}`);
+      return;
+    }
+    const split = body.splitFrom;
+    if (!split) return;
+    const source = splitSourceFor(all, split.id);
+    if (!source) {
+      setNotice("The first piece of this split was deleted, so the part it was cut from is gone.");
+      return;
+    }
+    const pieces = splitPieces(all, split.id);
+    const lockedPiece = pieces.find((entry) => entry.locked);
+    if (lockedPiece) {
+      setNotice(`“${lockedPiece.name}” is locked. Unlock it first.`);
+      return;
+    }
+    const pieceIds = new Set(pieces.map((entry) => entry.id));
+    const firstIndex = all.findIndex((entry) => pieceIds.has(entry.id));
+    const joined = all.flatMap((entry, index) => (index === firstIndex ? [source] : pieceIds.has(entry.id) ? [] : [entry]));
+    commitShapes(joined, [source.id], `Joined ${source.name} back together`);
+    if (action === "edit") {
+      clearEditorToolSessions();
+      setSplitSession({ shapeId: source.id, axis: split.axis, offset: split.offset, joint: split.joint, clearance: split.clearance, layFlat: splitLayFlatRef.current });
+      setNotice("Move the cut, then Split again");
+      return;
+    }
+    setNotice(`Joined the pieces back into ${source.name}, as it was before the cut`);
+  }, [clearEditorToolSessions, commitShapes, openTextureSession, selectShape, treeToolOpen]);
 
   /**
    * Pro, the Parts tree: move a part into a group, or out of its group to the top level. The
@@ -15179,6 +15358,8 @@ export function SketchForgeEditor({
               onReorderStep={historyBrowse !== null && historyBrowse !== historyIndex || !workspaceSettings.peakcadPro ? undefined : reorderPartStep}
               onShowUpToStep={historyBrowse !== null && historyBrowse !== historyIndex || !workspaceSettings.peakcadPro ? undefined : showUpToStep}
               onMovePart={historyBrowse !== null && historyBrowse !== historyIndex || !workspaceSettings.peakcadPro ? undefined : movePartInTree}
+              extraStepLabel={treeExtraStepLabel}
+              onExtraStep={historyBrowse !== null && historyBrowse !== historyIndex ? undefined : changeExtraStep}
               onAddShape={(shape) => {
                 addShape(shape);
                 setTopPanel(null);
@@ -15484,6 +15665,17 @@ export function SketchForgeEditor({
           onMake={(logo) => {
             setTraceLogoOpen(false);
             makeTracedLogo(logo);
+          }}
+        />
+      ) : null}
+      {traceDrawingAt ? (
+        <TraceLogoDialog
+          print
+          sheetLabel=""
+          bedWidth={220}
+          onCancel={() => setTraceDrawingAt(null)}
+          onMake={(logo) => {
+            if (makeTracedDrawing(logo, traceDrawingAt)) setTraceDrawingAt(null);
           }}
         />
       ) : null}

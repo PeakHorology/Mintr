@@ -952,6 +952,13 @@ export function PartKindGlyph({ shape, op, ...props }: IconProps & { shape: Work
 }
 
 /** The glyph for a recorded step: the tool it was made with. */
+/** The tree's glyph for a texture, pattern or split step. */
+export function ExtraStepGlyph({ kind, pattern, ...props }: IconProps & { kind: "texture" | "pattern" | "split"; pattern?: "linear" | "circular" }) {
+  if (kind === "texture") return <ToolbarTextureIcon {...props} />;
+  if (kind === "split") return <ToolbarSplitIcon {...props} />;
+  return pattern === "circular" ? <ToolbarCircularPatternIcon {...props} /> : <ToolbarLinearPatternIcon {...props} />;
+}
+
 export function StepKindGlyph({ step, ...props }: IconProps & { step: PartFeature }) {
   if (step.kind === "hollow") return <ToolbarHollowIcon {...props} />;
   if (step.kind === "pushPull") return <ToolbarPushPullIcon {...props} />;

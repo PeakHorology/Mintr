@@ -82,7 +82,8 @@ import {
   normalizeToolboxLabelSpec,
   toolboxLabelPlateSizes,
 } from "@/lib/toolboxLabel";
-import type { ToolboxLabelMagnetSize, ToolboxLabelSpec } from "@/types/sketchforge";
+import { MIN_PRINTABLE_LINE, normalizePictureKeychainSpec } from "@/lib/pictureKeychain";
+import type { PictureKeychainSpec, ToolboxLabelMagnetSize, ToolboxLabelSpec } from "@/types/sketchforge";
 import type { GeneratedSpec, ScrewHead } from "@/types/sketchforge";
 import type {
   GridfinityBaseplateSpec,
@@ -486,7 +487,10 @@ function labelColorRow(label: string, value: string, onChange: (color: string) =
   };
 }
 
-/** A toolbox label's settings. Every change rebuilds the set from them. */
+const PLATE_ROUNDED = "Rounded rectangle";
+const PLATE_FOLLOW = "Follow the letters";
+
+/** A name plate's settings (toolbox label in the code). Every change rebuilds the set from them. */
 export function toolboxLabelProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
   const spec = normalizeToolboxLabelSpec(shape.toolboxLabel);
   const apply = (patch: Partial<ToolboxLabelSpec>) => onUpdate({ toolboxLabel: normalizeToolboxLabelSpec({ ...spec, ...patch }) });
@@ -502,6 +506,8 @@ export function toolboxLabelProperties(shape: WorkplaneShape, onUpdate: ShapeIns
   const setOwnHeight = (text: string, letterHeight: number | undefined) =>
     apply({ labels: spec.labels.map((label) => (label.text === text ? { text: label.text, ...(letterHeight ? { letterHeight } : {}) } : label)) });
   const PICK = "Pick a label";
+  const follow = spec.plateShape === "follow";
+  const magnetRows = nameplateMagnetRows(spec, apply, { problem, pause, single, plateWidth });
   return [
     { type: "heading", label: "Text" },
     {
@@ -510,7 +516,7 @@ export function toolboxLabelProperties(shape: WorkplaneShape, onUpdate: ShapeIns
       value: spec.labels.map((label) => label.text).join("\n"),
       maxLength: 8000,
       multiline: true,
-      hint: "One drawer name per line. Press Enter for the next one.",
+      hint: "One label per line. Press Enter for the next one.",
       onChange: (value) => {
         // A set needs letters; an emptied box keeps the labels it had. A name keeps its own
         // letter height while it is still in the list.
@@ -553,19 +559,125 @@ export function toolboxLabelProperties(shape: WorkplaneShape, onUpdate: ShapeIns
     { label: "Raise", value: spec.raise, min: 0.2, max: 5, typedMax: 20, step: 0.1, hint: "How far the letters stand above the plate.", onChange: (raise) => apply({ raise }) },
     labelColorRow("Letter color", spec.letterColor, (letterColor) => apply({ letterColor })),
     { type: "heading", label: "Plate" },
+    {
+      type: "select",
+      label: "Plate shape",
+      value: follow ? PLATE_FOLLOW : PLATE_ROUNDED,
+      options: [PLATE_ROUNDED, PLATE_FOLLOW],
+      hint: follow ? "The plate runs round the letters, the padding out from them." : undefined,
+      // A followed plate looks right with less padding than a rectangle: the untouched default
+      // of each swaps for the other's.
+      onChange: (value) => {
+        const toFollow = value === PLATE_FOLLOW;
+        const padEnds = toFollow && spec.padEnds === 4 ? 2 : !toFollow && spec.padEnds === 2 ? 4 : spec.padEnds;
+        apply({ plateShape: toFollow ? "follow" : "rounded", padEnds });
+      },
+    },
     { label: "Plate thickness", value: spec.thickness, min: 1, max: 10, typedMax: 50, step: 0.1, onChange: (thickness) => apply({ thickness }) },
-    { label: "Padding at the sides", value: spec.padSides, min: 0, max: 30, typedMax: 200, step: 0.5, onChange: (padSides) => apply({ padSides }) },
-    { label: "Padding top and bottom", value: spec.padEnds, min: 0, max: 20, typedMax: 200, step: 0.5, onChange: (padEnds) => apply({ padEnds }) },
-    { label: "Corner radius", value: spec.cornerRadius, min: 0, max: Math.max(1, Math.min(20, plateHeight / 2)), step: 0.1, onChange: (cornerRadius) => apply({ cornerRadius }) },
+    ...(follow
+      ? [{ label: "Padding", value: spec.padEnds, min: 0.5, max: 20, typedMax: 200, step: 0.5, hint: "How far the plate reaches out from the letters.", onChange: (padEnds: number) => apply({ padEnds }) }]
+      : [
+        { label: "Padding at the sides", value: spec.padSides, min: 0, max: 30, typedMax: 200, step: 0.5, onChange: (padSides: number) => apply({ padSides }) },
+        { label: "Padding top and bottom", value: spec.padEnds, min: 0, max: 20, typedMax: 200, step: 0.5, onChange: (padEnds: number) => apply({ padEnds }) },
+        { label: "Corner radius", value: spec.cornerRadius, min: 0, max: Math.max(1, Math.min(20, plateHeight / 2)), step: 0.1, onChange: (cornerRadius: number) => apply({ cornerRadius }) },
+      ]),
     { label: "Edge round", value: spec.edgeRound, min: 0, max: 1, step: 0.05, hint: "Rounds the plate's top edge. The bottom stays square so it sits flat.", onChange: (edgeRound) => apply({ edgeRound }) },
-    ...(single
+    ...(single || follow
       ? []
       : [
-        { type: "select" as const, label: "Same height for all", value: onOff(spec.sameHeight), options: [...ON_OFF], hint: "Every plate as tall as the tallest, so they line up on the drawers.", onChange: (value: string) => apply({ sameHeight: value === "On" }) },
+        { type: "select" as const, label: "Same height for all", value: onOff(spec.sameHeight), options: [...ON_OFF], hint: "Every plate as tall as the tallest, so they line up in a row.", onChange: (value: string) => apply({ sameHeight: value === "On" }) },
         { type: "select" as const, label: "Same width for all", value: onOff(spec.sameWidth), options: [...ON_OFF], hint: "Every plate as wide as the widest, with the name centred.", onChange: (value: string) => apply({ sameWidth: value === "On" }) },
       ]),
     labelColorRow("Plate color", spec.plateColor, (plateColor) => apply({ plateColor })),
     { type: "heading", label: "Magnets" },
+    {
+      type: "select",
+      label: "Magnets",
+      value: onOff(spec.magnets),
+      options: [...ON_OFF],
+      hint: spec.magnets ? undefined : "Off makes a plain plate to glue, screw or stand up.",
+      onChange: (value) => apply({ magnets: value === "On" }),
+    },
+    ...(spec.magnets ? magnetRows : []),
+  ];
+}
+
+const HOLE_LABEL: Record<PictureKeychainSpec["hole"], string> = { top: "Top", left: "Left", right: "Right", none: "None" };
+const BACKING_FOLLOW = "Follows the drawing";
+const BACKING_NONE = "None, just the drawing";
+const LINES_RAISED = "Raised, two colours";
+const LINES_INSET = "Cut in, one colour";
+
+/** A keychain, plaque or drawing traced from a picture: its size, plate, lines and keyring hole. */
+export function pictureKeychainProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
+  const spec = normalizePictureKeychainSpec(shape.pictureKeychain ?? {});
+  const apply = (patch: Partial<PictureKeychainSpec>) => onUpdate({ pictureKeychain: normalizePictureKeychainSpec({ ...spec, ...patch }) });
+  const backed = spec.backing === "follow";
+  const drawingHeight = spec.width * (spec.drawingHeight / spec.drawingWidth);
+  return [
+    { type: "heading", label: "Drawing" },
+    { label: "Drawing width", value: spec.width, min: 5, max: 200, typedMax: 1000, step: 1, hint: `${Number(drawingHeight.toFixed(1))} mm tall. The plate and hole are added round it.`, onChange: (width) => apply({ width }) },
+    {
+      label: "Thicken lines",
+      value: spec.thicken,
+      min: 0,
+      max: 3,
+      typedMax: 5,
+      step: 0.1,
+      hint: `Adds this much to every line, so thin pen strokes print. Lines under ${MIN_PRINTABLE_LINE} mm often don't.`,
+      onChange: (thicken) => apply({ thicken }),
+    },
+    ...(backed
+      ? [
+        {
+          type: "select" as const,
+          label: "Lines",
+          value: spec.lines === "inset" ? LINES_INSET : LINES_RAISED,
+          options: [LINES_RAISED, LINES_INSET],
+          hint: spec.lines === "inset" ? "Cut into the plate, for one filament." : "Standing up off the plate. Swap filament at the top of the plate, or print them in another colour.",
+          onChange: (value: string) => apply({ lines: value === LINES_INSET ? "inset" : "raised" }),
+        },
+        { label: spec.lines === "inset" ? "Line depth" : "Raise", value: spec.raise, min: 0.2, max: spec.lines === "inset" ? Math.max(0.2, spec.thickness - 0.8) : 5, typedMax: 20, step: 0.1, onChange: (raise: number) => apply({ raise }) },
+        ...(spec.lines === "raised" ? [labelColorRow("Line color", spec.lineColor, (lineColor) => apply({ lineColor }))] : []),
+      ]
+      : [{ label: "Thickness", value: spec.thickness, min: 0.6, max: 20, typedMax: 30, step: 0.1, onChange: (thickness: number) => apply({ thickness }) }]),
+    { type: "heading", label: "Plate" },
+    {
+      type: "select",
+      label: "Plate",
+      value: backed ? BACKING_FOLLOW : BACKING_NONE,
+      options: [BACKING_FOLLOW, BACKING_NONE],
+      onChange: (value) => apply({ backing: value === BACKING_NONE ? "none" : "follow" }),
+    },
+    ...(backed
+      ? [
+        { label: "Padding", value: spec.pad, min: 0.5, max: 10, typedMax: 30, step: 0.5, hint: "How far the plate reaches out from the drawing.", onChange: (pad: number) => apply({ pad }) },
+        { label: "Plate thickness", value: spec.thickness, min: 1, max: 10, typedMax: 30, step: 0.1, onChange: (thickness: number) => apply({ thickness }) },
+        labelColorRow("Plate color", spec.plateColor, (plateColor) => apply({ plateColor })),
+        { type: "heading" as const, label: "Keyring hole" },
+        {
+          type: "select" as const,
+          label: "Hole",
+          value: HOLE_LABEL[spec.hole],
+          options: Object.values(HOLE_LABEL),
+          hint: spec.hole === "none" ? "No hole: a plaque, badge or fridge magnet." : "On a tab at the drawing's furthest point that way.",
+          onChange: (value: string) => apply({ hole: (Object.keys(HOLE_LABEL) as PictureKeychainSpec["hole"][]).find((key) => HOLE_LABEL[key] === value) ?? spec.hole }),
+        },
+        ...(spec.hole !== "none"
+          ? [{ label: "Hole size", value: spec.holeDiameter, min: 2, max: 12, typedMax: 30, step: 0.5, hint: "5 mm takes a split ring; go bigger for a lanyard clip.", onChange: (holeDiameter: number) => apply({ holeDiameter }) }]
+          : []),
+      ]
+      : []),
+  ];
+}
+
+function nameplateMagnetRows(
+  spec: ToolboxLabelSpec,
+  apply: (patch: Partial<ToolboxLabelSpec>) => void,
+  context: { problem: string | null; pause: number; single: boolean; plateWidth: number },
+): ShapePropertyConfig[] {
+  const { problem, pause, single, plateWidth } = context;
+  return [
     {
       type: "select",
       label: "Magnet size",
@@ -608,6 +720,7 @@ export function getShapeProperties(
     return threadedScrewHoleProperties(shape, shape.generated, onUpdate, printerKind);
   }
   if (shape.toolboxLabel) return toolboxLabelProperties(shape, onUpdate);
+  if (shape.pictureKeychain) return pictureKeychainProperties(shape, onUpdate);
   if (shape.generated) return generatedShapeProperties(shape, shape.generated, onUpdate, printerKind);
   if (shape.kind === "gridfinityBin") return gridfinityBinProperties(shape, onUpdate);
   if (shape.kind === "gridfinityBaseplate") return gridfinityBaseplateProperties(shape, onUpdate);

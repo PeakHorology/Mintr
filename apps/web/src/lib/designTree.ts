@@ -1,6 +1,8 @@
 import { csgTreeContainsId, inferCsgOp } from "@/lib/csgTree";
 import { stepsReplaceSnapshots } from "@/lib/partFeatures";
-import type { CsgOp, PartFeature, WorkplaneShape } from "@/types/sketchforge";
+import { patternFeatureLabel } from "@/lib/patternFeature";
+import type { CsgOp, PartFeature, PatternFeature, SplitRecord, WorkplaneShape } from "@/types/sketchforge";
+import { SURFACE_TEXTURE_LABELS, type SurfaceTexture } from "@/lib/texture/surfaceTexture";
 
 /**
  * The Parts tree: every part in the design, with its steps (fillets, walls, pulls) and the parts
@@ -39,7 +41,72 @@ export type DesignTreeStepRow = {
   count: number;
 };
 
-export type DesignTreeRow = DesignTreePartRow | DesignTreeStepRow;
+/**
+ * A step a part has that is not one of its replayed `features`: a texture on its faces, the
+ * pattern it is the source of, or the Split that made it. Each is kept in its own setting, so it
+ * has its own Edit, Off and Remove rather than a place in the replay order. A texture always
+ * comes last (it is put on the finished part), a pattern copies the finished part, and a split
+ * is where a piece began, so it comes first.
+ */
+export type PartExtraStep =
+  | { kind: "texture"; texture: SurfaceTexture; off: boolean }
+  | { kind: "pattern"; pattern: PatternFeature; copies: number }
+  | { kind: "split"; split: SplitRecord; canJoin: boolean };
+
+export type DesignTreeExtraRow = {
+  kind: "extra";
+  bodyId: string;
+  shape: WorkplaneShape;
+  depth: number;
+  extra: PartExtraStep;
+};
+
+export type DesignTreeRow = DesignTreePartRow | DesignTreeStepRow | DesignTreeExtraRow;
+
+/** The extra steps on a top-level part, newest first: texture, then pattern; the split is listed after the replayed steps. */
+export function designTreeExtraSteps(shape: WorkplaneShape, shapes: readonly WorkplaneShape[]): { newest: PartExtraStep[]; oldest: PartExtraStep[] } {
+  const newest: PartExtraStep[] = [];
+  const oldest: PartExtraStep[] = [];
+  const texture = shape.surfaceTexture ?? shape.surfaceTextureOff;
+  if (texture) newest.push({ kind: "texture", texture, off: !shape.surfaceTexture });
+  if (shape.patternFeature?.role === "source") {
+    const id = shape.patternFeature.id;
+    const copies = shapes.filter((entry) => entry.id !== shape.id && entry.patternFeature?.id === id).length;
+    newest.push({ kind: "pattern", pattern: shape.patternFeature, copies });
+  }
+  if (shape.splitFrom) {
+    oldest.push({ kind: "split", split: shape.splitFrom, canJoin: Boolean(splitSourceFor(shapes, shape.splitFrom.id)) });
+  }
+  return { newest, oldest };
+}
+
+/** The part a split was made from, kept on its first piece, or null when that piece is gone. */
+export function splitSourceFor(shapes: readonly WorkplaneShape[], splitId: string): WorkplaneShape | null {
+  return shapes.find((entry) => entry.splitFrom?.id === splitId && entry.splitFrom.source)?.splitFrom?.source ?? null;
+}
+
+/** The pieces of one split that are still in the design. */
+export function splitPieces(shapes: readonly WorkplaneShape[], splitId: string): WorkplaneShape[] {
+  return shapes.filter((entry) => entry.splitFrom?.id === splitId);
+}
+
+const JOINT_NAMES: Record<SplitRecord["joint"], string> = { none: "", dovetail: "dovetail", plug: "plug", snap: "snap", thread: "thread" };
+
+/** The words for an extra step in the tree. `formatMm` writes a length in the design's units. */
+export function partExtraStepLabel(extra: PartExtraStep, formatMm: (mm: number) => string = (mm) => `${Number(mm.toFixed(2))} mm`): string {
+  if (extra.kind === "texture") return `${SURFACE_TEXTURE_LABELS[extra.texture.pattern] ?? "Texture"} texture`;
+  if (extra.kind === "pattern") return patternFeatureLabel(extra.pattern);
+  const joint = JOINT_NAMES[extra.split.joint];
+  if (joint) return `Cut to fit, ${joint}`;
+  const sides = extra.split.axis === "x" ? "left / right" : extra.split.axis === "y" ? "top / bottom" : "front / back";
+  const off = Math.abs(extra.split.offset) > 1e-3 ? `, ${formatMm(Math.abs(extra.split.offset))} off centre` : "";
+  return `Split ${sides}${off}`;
+}
+
+/** A row's key for an extra step. */
+export function extraStepKey(bodyId: string, extra: PartExtraStep) {
+  return `extra:${bodyId}:${extra.kind}`;
+}
 
 /** How a group combines its parts, or null when the shape is not a group. */
 export function designTreeOp(shape: WorkplaneShape): CsgOp | null {
@@ -55,6 +122,23 @@ export function designTreeGroupLabel(op: CsgOp | null): string | null {
   if (op === "hull") return "Shrink wrap";
   if (op === "smooth") return "Smooth";
   return "Group";
+}
+
+/**
+ * The short word beside a hole or thread in the tree, with its screw size when it has one:
+ * "Hole M3", "Threaded hole M3", "Nut pocket M4", "Thread M8". Null for any other part.
+ */
+export function designTreePartKind(shape: WorkplaneShape): string | null {
+  const spec = shape.generated;
+  if (spec?.form === "screwHole") return `${spec.threaded ? "Threaded hole" : "Hole"} ${spec.size}`;
+  if (spec?.form === "nutPocket") return `Nut pocket ${spec.size}`;
+  if (shape.kind === "thread") {
+    const size = shape.threadSpec?.designation;
+    const role = shape.threadSpec?.role;
+    const name = role === "nut" ? "Nut" : role === "screw" ? "Screw" : shape.hole || role === "bore" ? "Threaded hole" : "Thread";
+    return size ? `${name} ${size}` : name;
+  }
+  return shape.hole ? "Hole" : null;
 }
 
 /** The parts inside a group, newest first. */
@@ -79,7 +163,8 @@ export function designTreeRows(shapes: readonly WorkplaneShape[], collapsed: Rea
   const visit = (shape: WorkplaneShape, bodyId: string, depth: number, parentId: string | null) => {
     const op = designTreeOp(shape);
     const steps = depth === 0 ? designTreeSteps(shape) : [];
-    const hasChildren = Boolean(op) || steps.length > 0;
+    const extras = depth === 0 ? designTreeExtraSteps(shape, shapes) : { newest: [], oldest: [] };
+    const hasChildren = Boolean(op) || steps.length > 0 || extras.newest.length > 0 || extras.oldest.length > 0;
     const expanded = hasChildren && !collapsed.has(shape.id);
     rows.push({
       kind: "part",
@@ -93,9 +178,11 @@ export function designTreeRows(shapes: readonly WorkplaneShape[], collapsed: Rea
       off: Boolean(shape.suppressed || shape.csg?.suppressed),
     });
     if (!expanded) return;
+    for (const extra of extras.newest) rows.push({ kind: "extra", bodyId, shape, depth: depth + 1, extra });
     for (let index = steps.length - 1; index >= 0; index -= 1) {
       rows.push({ kind: "step", bodyId, shape, depth: depth + 1, step: steps[index], index, count: steps.length });
     }
+    for (const extra of extras.oldest) rows.push({ kind: "extra", bodyId, shape, depth: depth + 1, extra });
     for (const child of designTreeChildren(shape)) visit(child, bodyId, depth + 1, shape.id);
   };
   for (const shape of [...shapes].reverse()) visit(shape, shape.id, 0, null);
@@ -194,6 +281,7 @@ export type TreeDrop =
  * dragged out to the top level. Locked parts and groups stay as they are.
  */
 export function treeDropFor(dragged: DesignTreeRow, target: DesignTreeRow | null, upperHalf = false): TreeDrop | null {
+  if (dragged.kind === "extra") return null;
   if (dragged.kind === "step") {
     if (!target || target.kind !== "step" || target.bodyId !== dragged.bodyId || target.step.id === dragged.step.id) return null;
     if (dragged.shape.locked) return null;
@@ -204,7 +292,7 @@ export function treeDropFor(dragged: DesignTreeRow, target: DesignTreeRow | null
     return { kind: "reorder-step", bodyId: dragged.bodyId, stepId: dragged.step.id, toIndex };
   }
   if (dragged.shape.locked) return null;
-  const toTopLevel = !target || (target.kind === "part" && !target.op) || target.kind === "step";
+  const toTopLevel = !target || (target.kind === "part" && !target.op) || target.kind === "step" || target.kind === "extra";
   if (toTopLevel) {
     if (dragged.depth === 0) return null;
     return { kind: "out-of-group", partId: dragged.shape.id, fromBodyId: dragged.bodyId };

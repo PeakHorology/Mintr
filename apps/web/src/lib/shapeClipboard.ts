@@ -54,6 +54,7 @@ function collectShapeIds(shape: WorkplaneShape, ids: Set<string>) {
   shape.edgeTreatmentHistory?.forEach((entry) => collectShapeIds(entry.before, ids));
   shape.threadHistory?.forEach((entry) => collectShapeIds(entry.before, ids));
   if (shape.featureBase) collectShapeIds(shape.featureBase, ids);
+  if (shape.splitFrom?.source) collectShapeIds(shape.splitFrom.source, ids);
 }
 
 function remapShapeTree(shape: WorkplaneShape, idMap: Map<string, string>, sketchMap: Map<string, string>): WorkplaneShape {
@@ -94,6 +95,7 @@ function remapShapeTree(shape: WorkplaneShape, idMap: Map<string, string>, sketc
       before: remapShapeTree(entry.before, idMap, sketchMap),
     })),
     featureBase: shape.featureBase ? remapShapeTree(shape.featureBase, idMap, sketchMap) : undefined,
+    splitFrom: shape.splitFrom ? { ...shape.splitFrom, source: shape.splitFrom.source ? remapShapeTree(shape.splitFrom.source, idMap, sketchMap) : undefined } : undefined,
   };
 }
 
@@ -141,7 +143,8 @@ export function cloneShapesForPaste(shapes: WorkplaneShape[]): WorkplaneShape[] 
   return relinkCopiedPatterns(
     cloned.map((shape) => {
       // A pasted laser part is its own part; Update from model would otherwise delete it.
-      const { laserLink: _unlinked, ...plain } = remapShapeTree(shape, idMap, sketchMap);
+      // A copy of a split piece is a part of its own, not another piece to join back.
+      const { laserLink: _unlinked, splitFrom: _unsplit, ...plain } = remapShapeTree(shape, idMap, sketchMap);
       return canonicalizeShape(plain);
     }),
     idMap,
@@ -159,6 +162,7 @@ function collectSketchIds(shape: WorkplaneShape, sketchMap: Map<string, string>)
   shape.edgeTreatmentHistory?.forEach((entry) => collectSketchIds(entry.before, sketchMap));
   shape.threadHistory?.forEach((entry) => collectSketchIds(entry.before, sketchMap));
   if (shape.featureBase) collectSketchIds(shape.featureBase, sketchMap);
+  if (shape.splitFrom?.source) collectSketchIds(shape.splitFrom.source, sketchMap);
 }
 
 /**
@@ -199,7 +203,7 @@ export function duplicateShapeWithFreshIds(shape: WorkplaneShape, id: string): W
   ids.forEach((entry) => idMap.set(entry, entry === shape.id ? id : createLocalId(`${entry}-copy`)));
   collectSketchIds(shape, sketchMap);
   // A copy is its own part: not a pattern member, and not a laser part Update from model remakes.
-  const { patternFeature: _dropped, laserLink: _unlinked, ...copy } = remapShapeTree(shape, idMap, sketchMap);
+  const { patternFeature: _dropped, laserLink: _unlinked, splitFrom: _unsplit, ...copy } = remapShapeTree(shape, idMap, sketchMap);
   return { ...copy, importedMesh: shape.importedMesh ? { ...shape.importedMesh } : shape.importedMesh };
 }
 

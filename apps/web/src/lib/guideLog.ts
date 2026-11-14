@@ -21,6 +21,7 @@ function slimGuideShape(shape: WorkplaneShape): WorkplaneShape {
     edgeTreatmentHistory: undefined,
     threadHistory: undefined,
     featureBase: undefined,
+    splitFrom: shape.splitFrom ? { ...shape.splitFrom, source: undefined } : undefined,
   };
   if (shape.imagePlate) next.imagePlate = { ...shape.imagePlate, dataUrl: "" };
   if (shape.sketchProfile?.images?.length) next.sketchProfile = { ...shape.sketchProfile, images: undefined };
