@@ -1,70 +1,28 @@
-# Mintr — Getting Started
+# Mintr: Getting Started
 
-Mintr is a **local Windows desktop** CAD app from **PeakHorologyLLC** (1.1.5). The installer and Windows apps entry are named **Mintr3d**. There is no hosted, browser-SaaS, or LAN edition. See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
+Mintr is a free CAD app for makers from **PeakHorologyLLC**, built for 3D printing and laser cutting. The current version is 1.4.1. It comes in two versions:
 
-## Use Mintr (the app)
+- **Windows desktop app.** The installer, shortcuts and Windows apps entry are named **Mintr3d**, and the program file is `Mintr.exe`. Files stay on your computer.
+- **Browser version** at [app.mintr3d.com](https://app.mintr3d.com/). It's the same app and the same geometry engine, built as WebAssembly. Designs live in the browser's storage, and Save as… downloads a copy. See [docs/WEB-VERSION.md](docs/WEB-VERSION.md).
+
+See [docs/BETA-LIMITATIONS.md](docs/BETA-LIMITATIONS.md) for known limits.
+
+## Install Mintr
+
+Download the installer from the [latest release](https://github.com/PeakHorology/Mintr/releases/latest) and run `PeakCAD-Setup-<version>.exe`. You don't need to uninstall first: Setup upgrades in place and keeps your projects and settings. Installed copies check for updates themselves (Settings → Updates).
+
+`PeakCAD-<version>-portable.exe` is a separate copy you can run side by side. It doesn't install updates.
+
+If a pinned taskbar icon looks wrong after an upgrade, unpin it and pin the Start Menu or Desktop shortcut again. Windows caches icons.
+
+## Run it from source
 
 ```powershell
-cd path\to\peakcad
 npm install
-npm run package:desktop
-```
-
-This creates files in the `dist-release/` folder:
-
-- `PeakCAD-Setup-1.1.5.exe` — Mintr3d installer (Start Menu and Desktop shortcuts are named Mintr3d; version matches `package.json`)
-- `PeakCAD-1.1.5-portable.exe` — portable build (no install needed; not an upgrader)
-
-Close any running Mintr window before packaging. Run the Setup or portable exe. The wizard, shortcuts, and Windows apps entry are named Mintr3d. The program file is Mintr.exe. Existing projects and settings stay where they are.
-
-### Upgrade an existing install
-
-You do **not** need to uninstall first. The Setup installer upgrades in place and keeps your projects and settings.
-
-1. Bump `"version"` in `package.json` (for example `1.1.0` → `1.1.2`)
-2. Close Mintr
-3. Run `npm run package:desktop`
-4. Run the new `PeakCAD-Setup-*.exe` from `dist-release/`
-5. Finish the installer — Mintr relaunches on the upgraded build
-
-If a pinned taskbar icon looks wrong after an upgrade, unpin it and pin the Start Menu/Desktop shortcut again (Windows caches icons aggressively).
-
-The portable `.exe` is a separate copy you can run side-by-side; it does not upgrade an installed Mintr.
-
-## Build from source (developers)
-
-For UI work in Cursor, you can preview the same editor on this machine only:
-
-```powershell
-cd path\to\peakcad
 npm run dev
 ```
 
-Open **http://127.0.0.1:3000** on this computer. Leave the terminal open. Press `Ctrl+C` when you are done. Nothing is served to the network as a Mintr product.
-
-## Branding
-
-- App name in the installer, shortcuts, and Windows apps list: **Mintr3d**
-- Program file: **Mintr.exe**
-- Developer: **PeakHorologyLLC**
-- Installer and Windows icon: the Mintr cube, `apps/web/public/assets/mintr/mintr-square.png`, via `npm run prepare:desktop-icon`
-- Color palette defined in `apps/web/src/app/globals.css` (`:root` variables)
-
-## How to make changes (with AI help)
-
-Describe what you want in Cursor, for example:
-
-- "Change the sidebar to forest green"
-- "Add a welcome message on the home screen"
-- "Rename Box to Cube in the shape picker"
-
-Good files to customize:
-
-| File | What it controls |
-|------|------------------|
-| `apps/web/src/app/page.tsx` | Home screen, project list |
-| `apps/web/src/app/globals.css` | Colors and styling |
-| `apps/web/src/lib/shapeCatalog.ts` | Available shapes |
+Open **http://localhost:3000** in Chrome on this computer. Press `Ctrl+C` in the terminal when you're done.
 
 ## Quality checks
 
@@ -72,7 +30,26 @@ Good files to customize:
 npm run ci
 ```
 
-Runs typecheck, unit tests, and STEP e2e (OpenCascade).
+This runs the type check, the unit tests and the STEP end-to-end tests (OpenCascade).
+
+## Releasing a new version
+
+[CLAUDE.md](CLAUDE.md) has the full checklist. In short:
+
+1. Bump `version` in `package.json` and run `npm install`. Move `UNRELEASED_NOTES` in `apps/web/src/lib/releaseNotes.ts` into a new `RELEASE_NOTES` entry.
+2. Update this file and [README.md](README.md) to the new version.
+3. Run the checks, commit, then `npm run package:desktop`. The installer, `.blockmap` and `latest.yml` land in `dist-release/`.
+4. Publish a GitHub release `v<version>` on **PeakHorology/Mintr** with those files.
+5. Update the web version with `npm run export`, then `npm run deploy:web`.
+6. Bring mintr3d.com up to date with the new features.
+
+## Branding
+
+- Name in the installer, shortcuts and Windows apps list: **Mintr3d**
+- Program file: **Mintr.exe**. Release files keep the old **PeakCAD** name, because installed copies look for it.
+- Developer: **PeakHorologyLLC**
+- Icon: the Mintr cube, `apps/web/public/assets/mintr/mintr-square.png`, made by `npm run prepare:desktop-icon`
+- Colours: `apps/web/src/app/globals.css` (`:root` variables)
 
 ## Troubleshooting
 

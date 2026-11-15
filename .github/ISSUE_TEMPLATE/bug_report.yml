@@ -1,45 +1,53 @@
-name: Bug report
-description: Report something broken or unexpected.
+name: Something isn't working
+description: Tell us what went wrong in Mintr, so we can fix it.
 title: "[Bug]: "
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to tell us. A few short answers are plenty.
   - type: textarea
     id: summary
     attributes:
-      label: Summary
-      description: What happened?
+      label: What went wrong?
+      description: In your own words. What did you see?
+      placeholder: When I fillet the top of my box, half the edges stay sharp.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Steps to reproduce
-      description: List the exact steps needed to reproduce the issue.
+      label: What were you doing just before?
+      description: The steps that lead to it, if you remember them.
       placeholder: |
-        1. Add a box
-        2. Import an STL
-        3. Group the shapes
+        1. Added a box
+        2. Clicked Fillet and picked the top edges
+        3. Set it to 3 mm and clicked Apply
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
-    validations:
-      required: true
-  - type: textarea
-    id: actual
+      label: What did you expect to happen?
+  - type: dropdown
+    id: where
     attributes:
-      label: Actual behavior
+      label: Where do you use Mintr?
+      options:
+        - The Windows app
+        - In the browser (app.mintr3d.com)
+        - Both
     validations:
       required: true
   - type: input
     id: app-version
     attributes:
-      label: Mintr version and Windows
-      placeholder: Mintr 1.0.7.5 on Windows 11
+      label: Mintr version
+      description: It's in Settings → Updates.
+      placeholder: "1.4.1"
   - type: textarea
     id: media
     attributes:
-      label: Screenshots or recordings
-      description: Add screenshots, recordings, or sample STL files if they help.
+      label: Pictures or your design file
+      description: Drag in a screenshot, a short recording, or your .mintr file. It often lets us fix it much faster.
