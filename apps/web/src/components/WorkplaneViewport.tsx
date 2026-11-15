@@ -51,12 +51,6 @@ import { WorkplaneEmptyCoach } from "@/components/workplane/WorkplaneEmptyCoach"
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { HOTKEYS_CHANGED_EVENT, isHotkeyRecordingActive, loadHotkeyBindings, matchHotkeyAction } from "@/lib/hotkeys";
 import { clipPolylineToSurface, indexMeshSurface, SURFACE_LINE_TOLERANCE, type MeshSurfaceIndex } from "@/lib/clipEdgesToMesh";
-import {
-  chooseModifierEdgeCandidate,
-  closestPointOnScreenSegment,
-  MODIFIER_EDGE_PICK_RADIUS_PX,
-  type ModifierEdgeCandidate,
-} from "@/lib/modifierEdgePick";
 import { defaultSketchPlane, sketchPlaneFromThreeVectors } from "@/lib/sketchPlane";
 import {
   applySketchCameraPose,
@@ -104,7 +98,7 @@ import {
   shapeTessellationFingerprint,
 } from "@/lib/displayTessellation";
 import { CUT_PREVIEW_TRIANGLE_SKIP, displayTriangleCount, isHeavyDisplayScene } from "@/lib/displayTriangleCount";
-import { displayToMillimeters, millimetersToDisplay } from "@/lib/measurementUnits";
+import { displayToMillimeters } from "@/lib/measurementUnits";
 import { shadeDisplayNormals } from "@/lib/meshShade";
 import { appendOverhangBoundaryLines, bedFitForShapes, normalizePrinterBed, type PrinterBed } from "@/lib/printerBed";
 import { crystalReach, isCrystalDesign, isLaserDesign, laserDesignLabel, sheetThickness } from "@/lib/laserMachine";
@@ -118,7 +112,6 @@ import { DEFAULT_SNAP_GRID, normalizeSnapGrid, normalizeWorkspaceSettings, saveG
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
 import { csgTreeContainsId, hasUsableCsgResultMesh, viewportCadDisplayEdges, viewportGroupChildren } from "@/lib/csgTree";
-import { restoreGroupedChildren } from "@/lib/editorBoolean";
 import { cleanNearZero, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
@@ -176,7 +169,6 @@ import {
   pickPlanarFaceId,
   pushPullChipWorld,
   pushPullDistanceFromDrag,
-  pushPullScreenAxis,
   type PushPullScreenAxis,
 } from "@/lib/pushPullGeometry";
 import { prefersReducedMotion } from "@/lib/chromePresence";
@@ -253,48 +245,22 @@ import type {
   WorkspaceSettings,
   XraySweep,
 } from "@/components/viewport/viewportTypes";
+import { parseDroppedShapeAsset, readSavedWorkspaceDefault, worldPoseOfPartInBody } from "@/components/viewport/droppedShapeAsset";
+import { easeOutCubic, easeOutQuint } from "@/components/viewport/easing";
+import { formatMeasure, type MeasureFormat } from "@/components/viewport/formatMeasure";
+import { findSelectedGroundFootprint, findSelectionHelper, findShapeObject } from "@/components/viewport/sceneLookup";
+import {
+  canvasPx,
+  pickModifierEdgeFromScreen,
+  pointerWorldRay,
+  projectCadPointToCanvas,
+  projectToCanvasPx,
+  pushPullDragAxis,
+} from "@/components/viewport/screenProjection";
+import { hideDragShadows, markShadowsDirty, restoreDragShadows } from "@/components/viewport/shadows";
 export type { WorkspaceSettings, ViewCubeFace, ThreeState, CaptureSceneImageOptions, ViewportPerfStats, DragState, MarqueeState, RulerPoint, RulerAttachment, RulerEdgeAttachment, RulerSegment, RulerModel, RulerOverlayState, RulerCandidate, RulerPointDragState, RotationHandleSide, RotationHandleSides, ShapeUpdatePatch, ResizeSigns, ResizeAnchorMemory, TransformDragState, TransformDragItem, SelectionFrame, DragItem, SmoothEditOverlay, SmoothPull, RankedRulerPick } from "@/components/viewport/viewportTypes";
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
 let rememberedSketchCamera: { planeKey: string; pose: SketchCameraPose } | null = null;
-
-/** A part inside `body`, at any depth, as it sits in the world; null when it is not in the body. */
-function worldPoseOfPartInBody(body: WorkplaneShape, partId: string): WorkplaneShape | null {
-  let group = body;
-  for (let depth = 0; depth < 32; depth += 1) {
-    const children = restoreGroupedChildren(group, { preserveIds: true });
-    const direct = children.find((child) => child.id === partId);
-    if (direct) return direct;
-    const next = children.find((child) => csgTreeContainsId(child, partId));
-    if (!next) return null;
-    group = next;
-  }
-  return null;
-}
-const SHAPE_KINDS = new Set<ShapeAsset["kind"]>([
-  "box",
-  "cylinder",
-  "sphere",
-  "sketch",
-  "scribble",
-  "cone",
-  "pyramid",
-  "roof",
-  "text",
-  "roundRoof",
-  "halfSphere",
-  "torus",
-  "tube",
-  "ring",
-  "wedge",
-  "polygon",
-  "icosahedron",
-  "mesh",
-  "thread",
-  "gear",
-  "gridfinityBin",
-  "gridfinityBaseplate",
-  "loft",
-]);
 const importedGeometryCache = new WeakMap<
   NonNullable<WorkplaneShape["importedMesh"]>,
   { geometry: THREE.BufferGeometry; edges: Map<number, THREE.EdgesGeometry>; welded?: THREE.BufferGeometry }
@@ -316,39 +282,6 @@ const IMPORTED_MESH_EDGE_ANGLE = 20;
 const MODEL_CREASE_COLOR = "#5a6972";
 const HOLE_EDGE_COLOR = "#7d8a94";
 const ASSET_PLACEMENT_PREVIEW_NAME = "AssetPlacementPreview";
-
-function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== "object") {
-      return null;
-    }
-    const asset = value as Partial<ShapeAsset>;
-    if (
-      typeof asset.id !== "string" ||
-      typeof asset.name !== "string" ||
-      typeof asset.src !== "string" ||
-      typeof asset.color !== "string" ||
-      !SHAPE_KINDS.has(asset.kind as ShapeAsset["kind"]) ||
-      (asset.hole !== undefined && typeof asset.hole !== "boolean")
-    ) {
-      return null;
-    }
-    return {
-      id: asset.id,
-      name: asset.name,
-      src: asset.src,
-      kind: asset.kind as ShapeAsset["kind"],
-      color: asset.color,
-      hole: asset.hole,
-      generated: asset.generated,
-      toolboxLabel: asset.toolboxLabel === true || undefined,
-      pictureKeychain: asset.pictureKeychain === true || undefined,
-    };
-  } catch {
-    return null;
-  }
-}
 
 export type WorkplaneViewportProps = {
   shapes: WorkplaneShape[];
@@ -521,57 +454,6 @@ export type WorkplaneViewportProps = {
 };
 
 export type WorkplaneRotationEditApi = { dismiss: () => void };
-
-function readSavedWorkspaceDefault(key: string | null) {
-  if (!key || typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(`${WORKSPACE_DEFAULTS_STORAGE_PREFIX}${key}`) ?? "null") as {
-      workspace?: unknown;
-      snap?: unknown;
-    } | null;
-    if (!parsed) {
-      return null;
-    }
-    return {
-      workspace: normalizeWorkspaceSettings(parsed.workspace),
-      snap: normalizeSnapGrid(parsed.snap, DEFAULT_SNAP_GRID),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Force shadow maps to regenerate so contact/WebGL shadows track live drag previews. */
-function markShadowsDirty(state: ThreeState) {
-  state.renderer.shadowMap.needsUpdate = true;
-  state.keyLight.shadow.needsUpdate = true;
-}
-
-function hideDragShadows(drag: DragState) {
-  if (drag.shadowsHidden) return;
-  const casters: THREE.Mesh[] = [];
-  drag.items.forEach((item) => {
-    item.visual?.traverse((child) => {
-      if (child instanceof THREE.Mesh && child.castShadow) {
-        child.castShadow = false;
-        casters.push(child);
-      }
-    });
-  });
-  drag.shadowCasters = casters;
-  drag.shadowsHidden = true;
-}
-
-function restoreDragShadows(state: ThreeState | null, drag: DragState) {
-  drag.shadowCasters?.forEach((mesh) => {
-    mesh.castShadow = true;
-  });
-  drag.shadowCasters = undefined;
-  drag.shadowsHidden = false;
-  if (state) markShadowsDirty(state);
-}
 
 /** Capture the current viewport as a PNG data URL. */
 function captureSceneImage(state: ThreeState, options: CaptureSceneImageOptions = {}) {
@@ -1408,102 +1290,6 @@ function pickModelRulerCandidate(
   }
 
   return null;
-}
-
-function projectCadPointToCanvas(point: THREE.Vector3, state: ThreeState, rect: DOMRect) {
-  const projected = point.clone().project(state.camera);
-  if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || projected.z < -1 || projected.z > 1) {
-    return null;
-  }
-  return {
-    x: ((projected.x + 1) / 2) * rect.width,
-    y: ((1 - projected.y) / 2) * rect.height,
-    depth: projected.z,
-  };
-}
-
-function pickModifierEdgeFromScreen(state: ThreeState, edges: CadModifierEdge[], clientX: number, clientY: number) {
-  const rect = state.renderer.domElement.getBoundingClientRect();
-  const pointerX = clientX - rect.left;
-  const pointerY = clientY - rect.top;
-  const pointA = new THREE.Vector3();
-  const pointB = new THREE.Vector3();
-  const candidates = new Map<number, ModifierEdgeCandidate>();
-  state.camera.updateMatrixWorld();
-  edges.forEach((edge) => {
-    for (let index = 0; index + 5 < edge.points.length; index += 3) {
-      pointA.set(edge.points[index], edge.points[index + 1], edge.points[index + 2]);
-      pointB.set(edge.points[index + 3], edge.points[index + 4], edge.points[index + 5]);
-      const a = projectCadPointToCanvas(pointA, state, rect);
-      const b = projectCadPointToCanvas(pointB, state, rect);
-      if (!a || !b) continue;
-      const hit = closestPointOnScreenSegment(pointerX, pointerY, a.x, a.y, b.x, b.y);
-      if (hit.distance >= MODIFIER_EDGE_PICK_RADIUS_PX) continue;
-      const existing = candidates.get(edge.id);
-      if (existing && existing.distance <= hit.distance) continue;
-      candidates.set(edge.id, {
-        id: edge.id,
-        distance: hit.distance,
-        depth: a.depth + (b.depth - a.depth) * hit.amount,
-      });
-    }
-  });
-  return chooseModifierEdgeCandidate(candidates.values());
-}
-
-function pointerWorldRay(state: ThreeState, clientX: number, clientY: number) {
-  const rect = state.renderer.domElement.getBoundingClientRect();
-  state.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  state.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  state.raycaster.setFromCamera(state.pointer, state.camera);
-  const origin = state.raycaster.ray.origin;
-  const dir = state.raycaster.ray.direction;
-  return {
-    origin: { x: origin.x, y: origin.y, z: origin.z },
-    dir: { x: dir.x, y: dir.y, z: dir.z },
-  };
-}
-
-/** Screen pixel position of a world point (CSS pixels relative to the canvas). */
-function projectToCanvasPx(state: ThreeState, point: { x: number; y: number; z: number }) {
-  const rect = state.renderer.domElement.getBoundingClientRect();
-  const projected = new THREE.Vector3(point.x, point.y, point.z).project(state.camera);
-  return {
-    x: ((projected.x + 1) / 2) * rect.width,
-    y: ((1 - projected.y) / 2) * rect.height,
-  };
-}
-
-/** World millimetres covered by one CSS pixel at the depth of `point`. */
-function mmPerPixelAt(state: ThreeState, point: { x: number; y: number; z: number }) {
-  const rect = state.renderer.domElement.getBoundingClientRect();
-  const look = new THREE.Vector3();
-  state.camera.getWorldDirection(look);
-  const toPoint = new THREE.Vector3(point.x, point.y, point.z).sub(state.camera.position);
-  const depth = Math.max(1e-3, toPoint.dot(look));
-  const viewHeight = 2 * depth * Math.tan(THREE.MathUtils.degToRad(state.camera.fov) / 2);
-  return viewHeight / Math.max(1, rect.height);
-}
-
-/** Pointer-travel mapping for a Push Pull drag on `face`, fixed at pointer-down. */
-function pushPullDragAxis(state: ThreeState, face: CadPlanarFace): PushPullScreenAxis {
-  const tipMm = 10;
-  const tip = {
-    x: face.origin.x + face.normal.x * tipMm,
-    y: face.origin.y + face.normal.y * tipMm,
-    z: face.origin.z + face.normal.z * tipMm,
-  };
-  return pushPullScreenAxis(
-    projectToCanvasPx(state, face.origin),
-    projectToCanvasPx(state, tip),
-    tipMm,
-    mmPerPixelAt(state, face.origin),
-  );
-}
-
-function canvasPx(state: ThreeState, clientX: number, clientY: number) {
-  const rect = state.renderer.domElement.getBoundingClientRect();
-  return { x: clientX - rect.left, y: clientY - rect.top };
 }
 
 function syncRulerOverlay(
@@ -8924,15 +8710,6 @@ function edgeTracePositions(polylines: number[][]) {
   return new Float32Array(segments.length >= 6 ? segments : [0, 0, 0, 0, 0, 0]);
 }
 
-/** Apple-style settle: fast start, long soft landing. */
-function easeOutQuint(t: number) {
-  return 1 - (1 - t) ** 5;
-}
-
-function easeOutCubic(t: number) {
-  return 1 - (1 - t) ** 3;
-}
-
 function setEdgeWipeProgress(wipe: EdgeWipeState, t: number) {
   // The old corners melt away first; the sheen and edge trace linger a little
   // longer so the eye lands on what changed, then everything is at rest.
@@ -10244,15 +10021,6 @@ function setSelectionHelpersVisible(state: ThreeState | null, shown: boolean) {
   state.needsRender = true;
 }
 
-type MeasureFormat = Pick<WorkplaneWorkspaceSettings, "accuracy" | "units" | "scale">;
-
-/** Formats a stored millimetre length in the workplane's display unit. */
-function formatMeasure(value: number, measure: MeasureFormat = DEFAULT_WORKSPACE) {
-  const { accuracy } = measure;
-  const zeroThreshold = 0.5 * 10 ** -accuracy;
-  return cleanNearZero(millimetersToDisplay(value, measure), zeroThreshold).toFixed(accuracy);
-}
-
 function makeDimensionMark(
   key: string,
   handleKey: string,
@@ -11409,23 +11177,6 @@ function showShapeHoverOutline(state: ThreeState, shapeId: string | null) {
   attachEdgeOverlay(object, SHAPE_HOVER_OUTLINE, shapeHoverMaterial, 4, state.camera);
   hoverOutlineRoot = object;
   state.needsRender = true;
-}
-
-function findShapeObject(state: ThreeState, id: string) {
-  return state.shapeLayer.children.find((child) => (
-    child.userData.shapeId === id
-    && child.userData.edgeWipeRole !== "out"
-    && !child.userData.previewHold
-  )) ?? null;
-}
-
-function findSelectionHelper(state: ThreeState, id: string) {
-  const helper = state.helperLayer.children.find((child) => child.userData.shapeId === id);
-  return helper instanceof THREE.Box3Helper ? helper : null;
-}
-
-function findSelectedGroundFootprint(state: ThreeState, id: string) {
-  return state.helperLayer.children.find((child) => child.name === "SelectedGroundFootprint" && child.userData.shapeId === id) ?? null;
 }
 
 function applyDragItemPreview(state: ThreeState, item: DragItem) {
