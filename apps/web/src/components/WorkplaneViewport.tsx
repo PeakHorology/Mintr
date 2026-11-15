@@ -57,18 +57,6 @@ import {
   type SketchCameraPose,
   type SketchOnModelSession,
 } from "@/lib/sketch/sketch3d";
-import {
-  barrelHighlightPositions,
-  classifySketchFaceHit,
-  collectNearbyTriangleNormals,
-  discCapHighlightPositions,
-} from "@/lib/sketchFaceClassify";
-import {
-  connectedCoplanarTriangles,
-  FACE_REGION_NORMAL_DOT,
-  FACE_REGION_PLANE_EPS,
-  type WorldTriangle,
-} from "@/lib/sketchFaceReference";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import {
   setActiveDisplayQuality,
@@ -82,7 +70,7 @@ import { isConstructionShape } from "@/lib/holeFeature";
 import type { SettingsSectionId } from "@/lib/settingGuides";
 import { DEFAULT_SNAP_GRID, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { csgTreeContainsId } from "@/lib/csgTree";
-import { cleanNearZero, conePatchForFootprint, mirrorSign, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import { cleanNearZero, conePatchForFootprint, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
 import { xrayAxisBounds, xraySpanCenter, type XrayAxis } from "@/lib/xraySection";
@@ -172,7 +160,6 @@ import type {
   RulerPointDragState,
   ShapeUpdatePatch,
   SketchFacePickOutcome,
-  SketchFaceRaycastHit,
   SmoothEditOverlay,
   SmoothPull,
   ThreeState,
@@ -288,6 +275,16 @@ import {
   viewCubeFaceFromTarget,
 } from "@/components/viewport/camera";
 import { createThreeScene } from "@/components/viewport/createThreeScene";
+import {
+  FACE_SNAP_HOVER_NAME,
+  FACE_SNAP_LOCK_NAME,
+  faceSnapNormal,
+  syncFaceSnapHighlight,
+  syncTextureHelper,
+  TEXTURE_CHOSEN_NAME,
+  TEXTURE_HOVER_NAME,
+} from "@/components/viewport/faceSnapHighlight";
+import { clearSketchFaceHighlight, raycastSketchFaceHit, syncSketchFaceHighlight } from "@/components/viewport/sketchFaceHighlight";
 export { SKETCH_EXTRUDE_PREVIEW_ID } from "@/components/viewport/shapeMotion";
 export type { WorkspaceSettings, ViewCubeFace, ThreeState, CaptureSceneImageOptions, ViewportPerfStats, DragState, MarqueeState, RulerPoint, RulerAttachment, RulerEdgeAttachment, RulerSegment, RulerModel, RulerOverlayState, RulerCandidate, RulerPointDragState, RotationHandleSide, RotationHandleSides, ShapeUpdatePatch, ResizeSigns, ResizeAnchorMemory, TransformDragState, TransformDragItem, SelectionFrame, DragItem, SmoothEditOverlay, SmoothPull, RankedRulerPick } from "@/components/viewport/viewportTypes";
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
@@ -6093,148 +6090,6 @@ function rememberSketchCamera(state: ThreeState, planeKey: string) {
   };
 }
 
-const FACE_SNAP_HOVER_NAME = "FaceSnapHover";
-const FACE_SNAP_LOCK_NAME = "FaceSnapLock";
-const TEXTURE_HOVER_NAME = "TextureHover";
-const TEXTURE_CHOSEN_NAME = "TextureChosen";
-
-/** Shows one texture guide by name, rebuilding it only when its key changes. Null clears it. */
-function syncTextureHelper(
-  state: ThreeState,
-  name: string,
-  key: string | null,
-  build: (() => THREE.Object3D | null) | null,
-) {
-  const existing = state.helperLayer.getObjectByName(name);
-  if (existing && key !== null && existing.userData.guideKey === key) return;
-  if (existing) {
-    state.helperLayer.remove(existing);
-    existing.traverse((child) => {
-      if (!(child instanceof THREE.Mesh || child instanceof THREE.Line)) return;
-      child.geometry.dispose();
-      // The picture on a ghost is shared, so only the material goes.
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      materials.forEach((material) => material.dispose());
-    });
-    state.needsRender = true;
-  }
-  if (key === null || !build) return;
-  const object = build();
-  if (!object) return;
-  object.name = name;
-  object.userData.guideKey = key;
-  state.helperLayer.add(object);
-  state.needsRender = true;
-}
-
-function clearNamedHelper(state: ThreeState, name: string) {
-  const existing = state.helperLayer.getObjectByName(name);
-  if (!existing) return;
-  state.helperLayer.remove(existing);
-  existing.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    child.geometry.dispose();
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    materials.forEach((material) => material.dispose());
-  });
-}
-
-function syncFaceSnapHighlight(
-  state: ThreeState,
-  name: string,
-  shape: WorkplaneShape | null,
-  pick: { shapeId: string; point: [number, number, number]; normal: [number, number, number] } | null,
-  opacity: number,
-) {
-  const existing = state.helperLayer.getObjectByName(name);
-  if (!shape || !pick) {
-    if (existing) {
-      clearNamedHelper(state, name);
-      state.needsRender = true;
-    }
-    return;
-  }
-  const key = `${pick.shapeId}:${pick.normal.join(",")}`;
-  if (existing?.userData.faceKey === key) return;
-  clearNamedHelper(state, name);
-  const positions = faceSnapQuadPositions(shape, pick.point, pick.normal);
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  const mesh = new THREE.Mesh(
-    geometry,
-    new THREE.MeshBasicMaterial({
-      color: "#2aa77e",
-      transparent: true,
-      opacity,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    }),
-  );
-  mesh.name = name;
-  mesh.userData.faceKey = key;
-  mesh.renderOrder = 4;
-  state.helperLayer.add(mesh);
-  state.needsRender = true;
-}
-
-function faceSnapQuadPositions(
-  shape: WorkplaneShape,
-  _point: [number, number, number],
-  normal: [number, number, number],
-): Float32Array {
-  const worldNormal = new THREE.Vector3(...normal);
-  if (worldNormal.lengthSq() < 1e-12) return new Float32Array(18);
-  worldNormal.normalize();
-  const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-    THREE.MathUtils.degToRad(shape.rotationX ?? 0),
-    THREE.MathUtils.degToRad(shape.rotation),
-    THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
-    "XYZ",
-  ));
-  const localNormal = worldNormal.clone().applyQuaternion(rotation.clone().invert());
-  localNormal.x *= mirrorSign(shape.mirrorX);
-  localNormal.y *= mirrorSign(shape.mirrorY);
-  localNormal.z *= mirrorSign(shape.mirrorZ);
-  const ax = Math.abs(localNormal.x);
-  const ay = Math.abs(localNormal.y);
-  const az = Math.abs(localNormal.z);
-  const axis = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
-  const sign = Math.sign(localNormal.getComponent(axis)) || 1;
-  const half = [shapeWidth(shape) / 2, shape.height / 2, shapeDepth(shape) / 2];
-  const span = [0, 1, 2].filter((item) => item !== axis);
-  const center = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z);
-  const scale = new THREE.Vector3(mirrorSign(shape.mirrorX), mirrorSign(shape.mirrorY), mirrorSign(shape.mirrorZ));
-  const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => {
-    const local = new THREE.Vector3();
-    local.setComponent(axis, sign * half[axis]);
-    local.setComponent(span[0], u * half[span[0]]);
-    local.setComponent(span[1], v * half[span[1]]);
-    return local.multiply(scale).applyQuaternion(rotation).add(center).addScaledVector(worldNormal, 0.35);
-  });
-  return new Float32Array([
-    ...corners[0].toArray(), ...corners[1].toArray(), ...corners[2].toArray(),
-    ...corners[0].toArray(), ...corners[2].toArray(), ...corners[3].toArray(),
-  ]);
-}
-
-function faceSnapNormal(normal: THREE.Vector3): [number, number, number] | null {
-  if (normal.lengthSq() < 1e-12) return null;
-  const unit = normal.clone().normalize();
-  const ax = Math.abs(unit.x);
-  const ay = Math.abs(unit.y);
-  const az = Math.abs(unit.z);
-  const largest = Math.max(ax, ay, az);
-  if (largest > 0.985) {
-    if (ax === largest) return [Math.sign(unit.x) || 1, 0, 0];
-    if (ay === largest) return [0, Math.sign(unit.y) || 1, 0];
-    return [0, 0, Math.sign(unit.z) || 1];
-  }
-  return [unit.x, unit.y, unit.z];
-}
-
 function shapeCutPreviewFrames(state: ThreeState, shapes: WorkplaneShape[]) {
   return shapes.reduce<Record<string, CutPreviewShapeFrame>>((frames, shape) => {
     const object = findShapeObject(state, shape.id);
@@ -7975,192 +7830,4 @@ function syncMirrorOverlay(
 
   overlayRef.current = next;
   setOverlay(next);
-}
-
-const SKETCH_FACE_HIGHLIGHT_NAME = "SketchFacePickHighlight";
-const SKETCH_FACE_OFFSET = 0.18;
-
-function raycastSketchFaceHit(
-  state: ThreeState,
-  shapes: WorkplaneShape[],
-  clientX: number,
-  clientY: number,
-): SketchFaceRaycastHit | null {
-  const rect = state.renderer.domElement.getBoundingClientRect();
-  state.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  state.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  state.raycaster.setFromCamera(state.pointer, state.camera);
-
-  const meshHit = preciseMeshHits(state, state.shapeLayer.children).find((entry) => {
-      if (!(entry.object instanceof THREE.Mesh) || !entry.face) return false;
-      let id = entry.object.userData.shapeId;
-      if (typeof id !== "string") {
-        let parent = entry.object.parent;
-        while (parent && typeof id !== "string") {
-          id = parent.userData.shapeId;
-          parent = parent.parent;
-        }
-      }
-      if (typeof id !== "string") return false;
-      entry.object.userData.shapeId = id;
-      const shape = shapes.find((item) => item.id === id);
-      return Boolean(shape && !shape.hidden && !shape.hole && !shape.locked);
-    });
-
-  if (!meshHit?.face || !(meshHit.object instanceof THREE.Mesh)) return null;
-
-  const worldNormal = meshHit.face.normal.clone();
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(meshHit.object.matrixWorld);
-  worldNormal.applyMatrix3(normalMatrix).normalize();
-  if (worldNormal.dot(state.raycaster.ray.direction) > 0) {
-    worldNormal.negate();
-  }
-  const shapeId = meshHit.object.userData.shapeId as string;
-  const shape = shapes.find((item) => item.id === shapeId);
-  if (!shape) return null;
-
-  const hitPoint = { x: meshHit.point.x, y: meshHit.point.y, z: meshHit.point.z };
-  const normal = { x: worldNormal.x, y: worldNormal.y, z: worldNormal.z };
-  const nearbyNormals = shape.importedMesh || shape.groupedShapes
-    ? collectNearbyTriangleNormals(meshHit.object, meshHit.point, 3.5)
-    : undefined;
-  const classification = classifySketchFaceHit(shape, hitPoint, normal, nearbyNormals);
-  const planeD = worldNormal.dot(meshHit.point);
-  const key = [
-    shapeId,
-    classification.kind,
-    classification.analytic?.type ?? "mesh",
-    worldNormal.x.toFixed(3),
-    worldNormal.y.toFixed(3),
-    worldNormal.z.toFixed(3),
-    planeD.toFixed(2),
-  ].join("|");
-  return { hit: meshHit, mesh: meshHit.object, worldNormal, shapeId, key, classification };
-}
-
-function collectCoplanarFaceHighlightPositions(
-  mesh: THREE.Mesh,
-  hitPointWorld: THREE.Vector3,
-  worldNormal: THREE.Vector3,
-): Float32Array | null {
-  const geometry = mesh.geometry;
-  const position = geometry.getAttribute("position");
-  if (!position) return null;
-
-  const index = geometry.getIndex();
-  const triangleCount = index ? Math.floor(index.count / 3) : Math.floor(position.count / 3);
-  if (triangleCount < 1) return null;
-
-  const localA = new THREE.Vector3();
-  const localB = new THREE.Vector3();
-  const localC = new THREE.Vector3();
-  const worldA = new THREE.Vector3();
-  const worldB = new THREE.Vector3();
-  const worldC = new THREE.Vector3();
-  const edgeB = new THREE.Vector3();
-  const edgeC = new THREE.Vector3();
-  const triNormal = new THREE.Vector3();
-  const centroid = new THREE.Vector3();
-  const offset = worldNormal.clone().multiplyScalar(SKETCH_FACE_OFFSET);
-  const unit = worldNormal.clone().normalize();
-  const candidates: WorldTriangle[] = [];
-
-  for (let t = 0; t < triangleCount; t += 1) {
-    const ia = index ? index.getX(t * 3) : t * 3;
-    const ib = index ? index.getX(t * 3 + 1) : t * 3 + 1;
-    const ic = index ? index.getX(t * 3 + 2) : t * 3 + 2;
-    localA.fromBufferAttribute(position, ia);
-    localB.fromBufferAttribute(position, ib);
-    localC.fromBufferAttribute(position, ic);
-    worldA.copy(localA).applyMatrix4(mesh.matrixWorld);
-    worldB.copy(localB).applyMatrix4(mesh.matrixWorld);
-    worldC.copy(localC).applyMatrix4(mesh.matrixWorld);
-    edgeB.copy(worldB).sub(worldA);
-    edgeC.copy(worldC).sub(worldA);
-    triNormal.copy(edgeB).cross(edgeC);
-    if (triNormal.lengthSq() < 1e-12) continue;
-    triNormal.normalize();
-    if (Math.abs(triNormal.dot(unit)) < FACE_REGION_NORMAL_DOT) continue;
-    centroid.copy(worldA).add(worldB).add(worldC).multiplyScalar(1 / 3);
-    const planeDist = Math.abs(
-      (centroid.x - hitPointWorld.x) * unit.x
-      + (centroid.y - hitPointWorld.y) * unit.y
-      + (centroid.z - hitPointWorld.z) * unit.z,
-    );
-    if (planeDist > FACE_REGION_PLANE_EPS) continue;
-    candidates.push([
-      { x: worldA.x, y: worldA.y, z: worldA.z },
-      { x: worldB.x, y: worldB.y, z: worldB.z },
-      { x: worldC.x, y: worldC.y, z: worldC.z },
-    ]);
-  }
-
-  const region = connectedCoplanarTriangles(
-    candidates,
-    { x: hitPointWorld.x, y: hitPointWorld.y, z: hitPointWorld.z },
-    { x: unit.x, y: unit.y, z: unit.z },
-  );
-  const verts: number[] = [];
-  for (const [a, b, c] of region) {
-    verts.push(
-      a.x + offset.x, a.y + offset.y, a.z + offset.z,
-      b.x + offset.x, b.y + offset.y, b.z + offset.z,
-      c.x + offset.x, c.y + offset.y, c.z + offset.z,
-    );
-  }
-
-  return verts.length >= 9 ? new Float32Array(verts) : null;
-}
-
-function clearSketchFaceHighlight(state: ThreeState | null) {
-  if (!state) return;
-  const existing = state.helperLayer.getObjectByName(SKETCH_FACE_HIGHLIGHT_NAME);
-  if (!existing) return;
-  state.helperLayer.remove(existing);
-  disposeObject(existing);
-  state.needsRender = true;
-}
-
-function syncSketchFaceHighlight(state: ThreeState, faceHit: SketchFaceRaycastHit | null, previousKey: string | null) {
-  if (!faceHit) {
-    clearSketchFaceHighlight(state);
-    return null;
-  }
-  if (previousKey === faceHit.key && state.helperLayer.getObjectByName(SKETCH_FACE_HIGHLIGHT_NAME)) {
-    return faceHit.key;
-  }
-
-  clearSketchFaceHighlight(state);
-  const analytic = faceHit.classification.analytic;
-  const positions = analytic?.type === "disc-cap"
-    ? discCapHighlightPositions(analytic.origin, analytic.normal, analytic.radius, 48, SKETCH_FACE_OFFSET)
-    : analytic?.type === "barrel"
-      ? barrelHighlightPositions(analytic.surface, 48, 12, SKETCH_FACE_OFFSET)
-      : collectCoplanarFaceHighlightPositions(faceHit.mesh, faceHit.hit.point, faceHit.worldNormal);
-  if (!positions) return null;
-
-  const blocked = faceHit.classification.kind === "curved";
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geometry.computeVertexNormals();
-  const mesh = new THREE.Mesh(
-    geometry,
-    new THREE.MeshBasicMaterial({
-      color: blocked ? "#c45c26" : "#2f9e5d",
-      transparent: true,
-      opacity: blocked ? 0.34 : 0.42,
-      depthTest: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    }),
-  );
-  mesh.name = SKETCH_FACE_HIGHLIGHT_NAME;
-  mesh.renderOrder = 40;
-  mesh.raycast = () => undefined;
-  state.helperLayer.add(mesh);
-  state.needsRender = true;
-  return faceHit.key;
 }
