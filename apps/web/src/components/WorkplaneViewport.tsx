@@ -156,8 +156,6 @@ import { textureChosenFacesMesh, textureHoverFace, texturePictureGhost } from "@
 import { pointOnStamp } from "@/lib/texture/texturedShape";
 import { normalizeSurfaceTexture } from "@/lib/texture/surfaceTexture";
 import { endShapeAssetDrag, getShapeAssetDrag } from "@/lib/shapeAssetDrag";
-import { makeShapeFromAsset } from "@/lib/shapeCatalog";
-import { createThreadShape } from "@/lib/threadShape";
 import {
   DEFAULT_LIGHT_VIEWPORT_BACKGROUND,
   resolveViewportBackground,
@@ -209,7 +207,7 @@ import type {
 } from "@/components/viewport/viewportTypes";
 import { parseDroppedShapeAsset, readSavedWorkspaceDefault, worldPoseOfPartInBody } from "@/components/viewport/droppedShapeAsset";
 import { formatMeasure, type MeasureFormat } from "@/components/viewport/formatMeasure";
-import { findSelectedGroundFootprint, findSelectionHelper, findShapeObject } from "@/components/viewport/sceneLookup";
+import { findSelectionHelper, findShapeObject } from "@/components/viewport/sceneLookup";
 import {
   canvasPx,
   pickModifierEdgeFromScreen,
@@ -228,7 +226,6 @@ import {
   syncSelectionOutline,
 } from "@/components/viewport/shapeOutlines";
 import {
-  pauseShapeSettle,
   remainingSettleLift,
   settleLiftMm,
 } from "@/components/viewport/shapeSettle";
@@ -286,11 +283,17 @@ import {
   setComplexEdgeVisibility,
   shapeGeometryFingerprint,
 } from "@/components/viewport/shapeObjects";
+import { clearAssetPlacementPreviewObject, syncAssetPlacementPreview } from "@/components/viewport/assetPlacementPreview";
+import {
+  applyDragItemPreview,
+  createSelectedGroundFootprint,
+  refreshDragPreviewObjects,
+  updateSelectedGroundFootprintPreviews,
+} from "@/components/viewport/dragPreview";
 export { SKETCH_EXTRUDE_PREVIEW_ID } from "@/components/viewport/shapeMotion";
 export type { WorkspaceSettings, ViewCubeFace, ThreeState, CaptureSceneImageOptions, ViewportPerfStats, DragState, MarqueeState, RulerPoint, RulerAttachment, RulerEdgeAttachment, RulerSegment, RulerModel, RulerOverlayState, RulerCandidate, RulerPointDragState, RotationHandleSide, RotationHandleSides, ShapeUpdatePatch, ResizeSigns, ResizeAnchorMemory, TransformDragState, TransformDragItem, SelectionFrame, DragItem, SmoothEditOverlay, SmoothPull, RankedRulerPick } from "@/components/viewport/viewportTypes";
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
 let rememberedSketchCamera: { planeKey: string; pose: SketchCameraPose } | null = null;
-const ASSET_PLACEMENT_PREVIEW_NAME = "AssetPlacementPreview";
 
 export type WorkplaneViewportProps = {
   shapes: WorkplaneShape[];
@@ -9145,275 +9148,6 @@ function syncMirrorOverlay(
 
   overlayRef.current = next;
   setOverlay(next);
-}
-
-function applyDragItemPreview(state: ThreeState, item: DragItem) {
-  if (!item.visual || !item.visual.parent) {
-    item.visual = findShapeObject(state, item.id);
-  }
-  if (!item.helper || !item.helper.parent) {
-    item.helper = findSelectionHelper(state, item.id);
-    item.helperBox = item.helper ? item.helper.box.clone() : null;
-  }
-
-  if (item.visual) {
-    if (state.edgeWipe && (state.edgeWipe.incoming === item.visual || state.edgeWipe.outgoing === item.visual)) {
-      finishEdgeWipe(state);
-    }
-    if (item.visual.userData.settling || item.visual.userData.pendingSettle || item.visual.userData.combining || item.visual.userData.rising) {
-      pauseShapeSettle(item.visual);
-    }
-    if (!item.hadPreviewSimplified) {
-      setComplexEdgeVisibility(item.visual, false);
-      item.hadPreviewSimplified = true;
-    }
-    item.visual.position.x = item.nextX;
-    item.visual.position.z = item.nextZ;
-    item.visual.updateMatrixWorld(true);
-  }
-
-  if (item.helper && item.helperBox) {
-    item.helper.box.copy(item.helperBox);
-    item.helper.box.translate(new THREE.Vector3(item.nextX - item.startX, 0, item.nextZ - item.startZ));
-    item.helper.updateMatrixWorld(true);
-  }
-}
-
-function refreshDragPreviewObjects(state: ThreeState | null, drag: DragState | null) {
-  if (!state || !drag) return;
-  drag.items.forEach((item) => applyDragItemPreview(state, item));
-  updateSelectedGroundFootprintPreviews(state, drag);
-  state.needsRender = true;
-}
-
-function updateSelectedGroundFootprintPreviews(state: ThreeState, drag: DragState) {
-  drag.items.forEach((item) => {
-    const footprint = findSelectedGroundFootprint(state, item.id);
-    if (!footprint) {
-      return;
-    }
-    footprint.position.x = item.nextX - item.startX;
-    footprint.position.z = item.nextZ - item.startZ;
-    footprint.updateMatrixWorld(true);
-  });
-}
-
-function createSelectedGroundFootprint(shape: WorkplaneShape) {
-  const frame = selectionFrameForShapes([shape], [shape.id]);
-  if (!frame) {
-    return null;
-  }
-
-  const group = new THREE.Group();
-  group.name = "SelectedGroundFootprint";
-  group.userData.shapeId = shape.id;
-  // Contact shadow on the workplane — always present so drag can slide it with the object.
-  const y = 0.05;
-  const footprint = [
-    framePoint(frame, frame.min.x, frame.min.y, frame.min.z),
-    framePoint(frame, frame.max.x, frame.min.y, frame.min.z),
-    framePoint(frame, frame.max.x, frame.min.y, frame.max.z),
-    framePoint(frame, frame.min.x, frame.min.y, frame.max.z),
-  ].map((point) => new THREE.Vector3(point.x, y, point.z));
-  const fillGeometry = new THREE.BufferGeometry();
-  fillGeometry.setAttribute(
-    "position",
-    new THREE.BufferAttribute(
-      new Float32Array([
-        footprint[0].x, footprint[0].y, footprint[0].z,
-        footprint[1].x, footprint[1].y, footprint[1].z,
-        footprint[2].x, footprint[2].y, footprint[2].z,
-        footprint[0].x, footprint[0].y, footprint[0].z,
-        footprint[2].x, footprint[2].y, footprint[2].z,
-        footprint[3].x, footprint[3].y, footprint[3].z,
-      ]),
-      3,
-    ),
-  );
-  fillGeometry.computeVertexNormals();
-  const fill = new THREE.Mesh(
-    fillGeometry,
-    new THREE.MeshBasicMaterial({
-      color: "#6d7c84",
-      transparent: true,
-      opacity: 0.28,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    }),
-  );
-  fill.renderOrder = -1;
-  group.add(fill);
-
-  const points = [...footprint, footprint[0].clone()];
-  const outline = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(points),
-    new THREE.LineBasicMaterial({ color: "#c6a15b", transparent: true, opacity: 0.92 }),
-  );
-  outline.userData.shapeId = shape.id;
-  group.add(outline);
-
-  return group;
-}
-
-function createTransformHandles(box: THREE.Box3, id: string) {
-  const group = new THREE.Group();
-  group.name = "SketchForgeTransformHandles";
-  group.userData.shapeId = id;
-
-  const handleMaterial = new THREE.MeshBasicMaterial({ color: "#e8eef1" });
-  const darkMaterial = new THREE.MeshBasicMaterial({ color: "#273849" });
-  const dashMaterial = new THREE.LineDashedMaterial({ color: "#2c3339", dashSize: 2.2, gapSize: 2.4, transparent: true, opacity: 0.72 });
-  const handleGeometry = new THREE.BoxGeometry(2.6, 2.6, 2.6);
-  const dotGeometry = new THREE.BoxGeometry(1.7, 1.7, 1.7);
-
-  const center = box.getCenter(new THREE.Vector3());
-  const topY = box.max.y + 1.4;
-  const x0 = box.min.x;
-  const x1 = box.max.x;
-  const z0 = box.min.z;
-  const z1 = box.max.z;
-  const xm = center.x;
-  const zm = center.z;
-
-  const cornerPoints = [
-    { key: "far-left", kind: "scale" as const, point: new THREE.Vector3(x0, box.min.y + 1.3, z0) },
-    { key: "far-right", kind: "scale" as const, point: new THREE.Vector3(x1, box.min.y + 1.3, z0) },
-    { key: "near-left", kind: "scale" as const, point: new THREE.Vector3(x0, box.min.y + 1.3, z1) },
-    { key: "near-right", kind: "scale" as const, point: new THREE.Vector3(x1, box.min.y + 1.3, z1) },
-    { key: "far-left", kind: "scale" as const, point: new THREE.Vector3(x0, topY, z0) },
-    { key: "far-right", kind: "scale" as const, point: new THREE.Vector3(x1, topY, z0) },
-    { key: "near-left", kind: "scale" as const, point: new THREE.Vector3(x0, topY, z1) },
-    { key: "near-right", kind: "scale" as const, point: new THREE.Vector3(x1, topY, z1) },
-    { key: "top-height", kind: "height" as const, point: new THREE.Vector3(xm, box.max.y + 7, zm) },
-  ];
-
-  cornerPoints.forEach(({ key, kind, point }) => {
-    const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-    handle.position.copy(point);
-    handle.userData.shapeId = id;
-    handle.userData.transformHandle = kind;
-    handle.userData.transformHandleKey = key;
-    handle.userData.transformPlaneY = point.y;
-    group.add(handle);
-    const outline = new THREE.LineSegments(new THREE.EdgesGeometry(handleGeometry), new THREE.LineBasicMaterial({ color: "#2d3439", transparent: true, opacity: 0.86 }));
-    outline.position.copy(point);
-    outline.userData.shapeId = id;
-    outline.userData.transformHandle = handle.userData.transformHandle;
-    outline.userData.transformHandleKey = key;
-    outline.userData.transformPlaneY = point.y;
-    group.add(outline);
-  });
-
-  [
-    { key: "far-mid", point: new THREE.Vector3(xm, topY, z0) },
-    { key: "near-mid", point: new THREE.Vector3(xm, topY, z1) },
-    { key: "left-mid", point: new THREE.Vector3(x0, topY, zm) },
-    { key: "right-mid", point: new THREE.Vector3(x1, topY, zm) },
-    { key: "far-mid", point: new THREE.Vector3(xm, box.min.y + 1.3, z0) },
-    { key: "near-mid", point: new THREE.Vector3(xm, box.min.y + 1.3, z1) },
-    { key: "left-mid", point: new THREE.Vector3(x0, box.min.y + 1.3, zm) },
-    { key: "right-mid", point: new THREE.Vector3(x1, box.min.y + 1.3, zm) },
-  ].forEach(({ key, point }) => {
-    const dot = new THREE.Mesh(dotGeometry, darkMaterial);
-    dot.position.copy(point);
-    dot.userData.shapeId = id;
-    dot.userData.transformHandle = "scale";
-    dot.userData.transformHandleKey = key;
-    dot.userData.transformPlaneY = point.y;
-    group.add(dot);
-  });
-
-  [
-    [new THREE.Vector3(xm, box.max.y + 7, zm), new THREE.Vector3(xm, box.min.y + 1.3, zm)],
-  ].forEach(([from, to]) => {
-    const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
-    const line = new THREE.Line(geometry, dashMaterial);
-    line.computeLineDistances();
-    group.add(line);
-  });
-
-  return group;
-}
-
-function clearAssetPlacementPreviewObject(state: ThreeState) {
-  const existing = state.scene.getObjectByName(ASSET_PLACEMENT_PREVIEW_NAME);
-  if (!existing) {
-    return;
-  }
-  state.scene.remove(existing);
-  disposeObject(existing);
-}
-
-/** Live 3D ghost while dragging a palette shape onto the workplane. */
-function syncAssetPlacementPreview(
-  state: ThreeState,
-  asset: ShapeAsset,
-  x: number,
-  z: number,
-  elevation: number,
-  sheetThickness?: number,
-) {
-  let preview = state.scene.getObjectByName(ASSET_PLACEMENT_PREVIEW_NAME);
-  const needsRebuild =
-    !preview
-    || preview.userData.sheetThickness !== sheetThickness
-    || preview.userData.assetKind !== asset.kind
-    || preview.userData.assetId !== asset.id
-    || preview.userData.assetColor !== asset.color
-    || preview.userData.assetHole !== Boolean(asset.hole);
-
-  if (needsRebuild) {
-    clearAssetPlacementPreviewObject(state);
-    const draft = asset.kind === "thread"
-      ? createThreadShape({
-          point: { x, z, elevation },
-          base: {
-            id: "asset-preview-thread",
-            name: asset.name,
-            color: asset.color,
-          },
-        })
-      : makeShapeFromAsset(asset, { x, z, elevation }, undefined, sheetThickness);
-    preview = createShapeObject(draft, false);
-    preview.name = ASSET_PLACEMENT_PREVIEW_NAME;
-    preview.userData.sheetThickness = sheetThickness;
-    preview.userData.assetKind = asset.kind;
-    preview.userData.assetId = asset.id;
-    preview.userData.assetColor = asset.color;
-    preview.userData.assetHole = Boolean(asset.hole);
-    preview.userData.previewHeight = draft.height;
-    preview.userData.shapeId = undefined;
-    preview.traverse((child) => {
-      child.userData.shapeId = undefined;
-      if (child instanceof THREE.LineSegments || child instanceof THREE.Line) {
-        child.visible = false;
-        return;
-      }
-      if (!(child instanceof THREE.Mesh)) {
-        return;
-      }
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      materials.forEach((material) => {
-        if (!material || Array.isArray(material)) {
-          return;
-        }
-        material.transparent = true;
-        material.opacity = Math.min(0.82, "opacity" in material && typeof material.opacity === "number" ? material.opacity : 1);
-        material.depthWrite = true;
-      });
-    });
-    state.scene.add(preview);
-  }
-  if (preview) {
-    const height = typeof preview.userData.previewHeight === "number" ? preview.userData.previewHeight : 20;
-    const lift = asset.hole ? 0 : settleLiftMm();
-    preview.position.set(x, elevation + height / 2 + lift, z);
-    preview.updateMatrixWorld(true);
-  }
-  markShadowsDirty(state);
 }
 
 const SKETCH_FACE_HIGHLIGHT_NAME = "SketchFacePickHighlight";
