@@ -13,7 +13,7 @@ export function shapeCarriesProValues(shape: WorkplaneShape): boolean {
   if (shape.values?.length) return true;
   if (shape.drivenBy && Object.keys(shape.drivenBy).length > 0) return true;
   if (shape.sketchDoc?.dimensions.some((dimension) => Boolean(dimension.expression))) return true;
-  if (shape.features?.some((feature) => Boolean((feature as { sizeFollows?: string }).sizeFollows))) return true;
+  if (shape.features?.some((feature) => Boolean(feature.sizeFollows))) return true;
   return Boolean(shape.groupedShapes?.some(shapeCarriesProValues));
 }
 

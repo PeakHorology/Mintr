@@ -22,3 +22,27 @@ it("Ungroup keeps the group's values each part's sums use", () => {
   // c uses nothing.
   expect(c.values).toBeUndefined();
 });
+
+it("a group joined again keeps its own values, and its parts keep following them", async () => {
+  const { buildGroupedShapeFromSelection, remeshCsgGroup } = await import("@/lib/editorBoolean");
+  const { bumpCsgVersion } = await import("@/lib/csgTree");
+  const built = await buildGroupedShapeFromSelection([
+    box("plate", 0, { width: 30, drivenBy: { Height: "wall * 5" } }),
+    box("cutter", 0, { width: 4, depth: 4, height: 30, hole: true, values: [{ name: "own", expression: "1" }] }),
+  ]);
+  const group = { ...built.group!, values: [{ name: "wall", expression: "2" }], drivenBy: { Length: "wall * 10" } };
+  const again = (await remeshCsgGroup(bumpCsgVersion(group)))!;
+  // The group's list and sums are the group's, not something the join makes.
+  expect(again.values).toEqual(group.values);
+  expect(again.drivenBy).toEqual(group.drivenBy);
+  const [plate, cutter] = again.groupedShapes!;
+  // The plate did not get a copy of `wall`, which would hide the group's value from then on.
+  expect(plate.values).toBeUndefined();
+  expect(plate.drivenBy).toEqual({ Height: "wall * 5" });
+  expect(cutter.values).toEqual([{ name: "own", expression: "1" }]);
+  // A group with no values comes back with none, not an empty list.
+  const plain = (await remeshCsgGroup(bumpCsgVersion(built.group!)))!;
+  expect(plain.values).toBeUndefined();
+  expect(plain.drivenBy).toBeUndefined();
+  expect("values" in plain || "drivenBy" in plain).toBe(false);
+});

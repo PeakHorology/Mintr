@@ -67,7 +67,7 @@ import {
 } from "@/lib/stepQuality";
 import { withExactSketchExtrusionSolid } from "@/lib/sketchExtrusionSolid";
 import { axisAlignedRectFromClosedPath, circleFromClosedPath, orderedSketchPaths, pointInSketchPolygon, shapeFromSketchProfile, type OrderedSketchPath } from "@/lib/sketchProfileShape";
-import { cloneAsGroupChild, groupedShape } from "@/lib/editorGroup";
+import { cloneAsGroupChild, groupedShape, keepStoredChildValues } from "@/lib/editorGroup";
 import {
   type Cuboid,
   type MeshData,
@@ -3475,7 +3475,7 @@ export async function rebuildSmoothBody(body: WorkplaneShape, worldSpec: SmoothS
     color: body.color,
     locked: body.locked,
     hidden: body.hidden,
-    groupedShapes: children.map((child) => cloneAsGroupChild(child, built.x, built.z, built.elevation ?? 0, true)),
+    groupedShapes: keepStoredChildValues(children, body.groupedShapes).map((child) => cloneAsGroupChild(child, built.x, built.z, built.elevation ?? 0, true)),
     csg: { ...(built.csg ?? { op: "smooth" }), op: "smooth", version: (body.csg?.version ?? 0) + 1 },
   };
 }
@@ -3504,7 +3504,7 @@ export function smoothPreviewBody(body: WorkplaneShape, worldChildren: Workplane
     groupedBaseWidth: preview.width,
     groupedBaseDepth: preview.depth,
     groupedBaseHeight: preview.height,
-    groupedShapes: worldChildren.map((child) => cloneAsGroupChild(child, preview.x, preview.z, preview.elevation ?? 0, true)),
+    groupedShapes: keepStoredChildValues(worldChildren, body.groupedShapes).map((child) => cloneAsGroupChild(child, preview.x, preview.z, preview.elevation ?? 0, true)),
     smooth: worldSmoothSpecToBody(preview, worldSpec),
   };
 }
@@ -3897,7 +3897,16 @@ export async function buildGroupedShapeFromSelection(groupable: WorkplaneShape[]
 }
 
 /** Re-evaluate a CSG body from world-space children; preserves body + child ids. */
-export type RemeshCsgOptions = { skipOcct?: boolean; draft?: boolean; onNotice?: (message: string) => void };
+export type RemeshCsgOptions = {
+  skipOcct?: boolean;
+  draft?: boolean;
+  onNotice?: (message: string) => void;
+  /**
+   * Join the parts some other way than the editor's own engines. Tests use it to ask the desktop
+   * engine and its WebAssembly build directly; the editor never sets it.
+   */
+  evaluate?: (operands: WorkplaneShape[], op: CsgOp) => Promise<WorkplaneShape | null>;
+};
 
 export async function remeshCsgGroupFromWorldChildren(
   body: WorkplaneShape,
@@ -3960,7 +3969,7 @@ export async function remeshCsgGroupFromWorldChildren(
   const bakedChildren = activeChildren.map(solidThreadShape);
   const skipOcct = Boolean(options?.draft) || options?.skipOcct === true;
   const evaluate = async () => {
-    let next = await evaluateCsgOpOnOperands(bakedChildren, op, {
+    let next = options?.evaluate ? await options.evaluate(bakedChildren, op) : await evaluateCsgOpOnOperands(bakedChildren, op, {
       skipOcct,
       draft: options?.draft,
       onNotice: options?.onNotice,
@@ -3990,6 +3999,10 @@ export async function remeshCsgGroupFromWorldChildren(
     // A group made into a hole stays a hole: its parts combine, then the whole cuts its parent.
     hole: body.hole,
     solidColor: body.solidColor,
+    // Mintr Pro: the group's values and sums are its own, not the join's. Without these a group
+    // lost its Values list the first time one of its parts was changed.
+    ...(body.values ? { values: body.values } : {}),
+    ...(body.drivenBy ? { drivenBy: body.drivenBy } : {}),
     // Keep recipes so the editor can re-apply fillet/chamfer after remesh.
     // Geometry (cadBrep / display edges) is invalid until re-applied.
     edgeTreatments: body.edgeTreatments,
@@ -4001,7 +4014,7 @@ export async function remeshCsgGroupFromWorldChildren(
     cadDisplayEdges: undefined,
     cadDisplayEdgesVersion: undefined,
     // Keep suppressed features in the tree even though they were not remeshed in.
-    groupedShapes: worldChildren.map((child) =>
+    groupedShapes: keepStoredChildValues(worldChildren, body.groupedShapes).map((child) =>
       cloneAsGroupChild(solidThreadShape(child), g.x, g.z, g.elevation ?? 0, true),
     ),
     // A Smooth or Shrink Wrap body stays one, even if this build had to fall back to a plain mesh.
@@ -4088,7 +4101,7 @@ export async function updateCsgLeafAndRemesh(
   }
   const remeshed = await remeshCsgGroupFromWorldChildren(body, nextChildren);
   if (!remeshed) {
-    const dirtyChildren = nextChildren.map((child) =>
+    const dirtyChildren = keepStoredChildValues(nextChildren, body.groupedShapes).map((child) =>
       cloneAsGroupChild(child, body.x, body.z, body.elevation ?? 0, true),
     );
     return {

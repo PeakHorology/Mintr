@@ -68,7 +68,7 @@ function samples(): Array<[string, WorkplaneShape]> {
     id: "group", name: "Group", kind: "mesh", color: "#d41721", width: 28, depth: 18, height: 12,
     importedMesh: { positions: cube, baseWidth: 28, baseDepth: 18, baseHeight: 12, triangleCount: 1, sourceFormat: "json" },
     groupedShapes: [box, { ...cylinder, hole: true }],
-    csg: { op: "difference", version: 1 },
+    csg: { op: "subtract", version: 1 },
   })]);
   out.push(["a sketched part", plain("sketch", {
     id: "sketched",

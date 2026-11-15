@@ -32,7 +32,7 @@ function sketchedPart(): WorkplaneShape {
     { kind: "line", id: "bc", startId: "b", endId: "c" },
     { kind: "line", id: "ca", startId: "c", endId: "a" },
   ];
-  const sized = addLinearDimension(doc, "ab", 30).doc;
+  const sized = addLinearDimension(doc, { entityId: "ab", value: 30 }).doc;
   sized.dimensions = sized.dimensions.map((dimension) => ({ ...dimension, expression: "width - wall" }));
   return sceneShape({
     id: "sketched",

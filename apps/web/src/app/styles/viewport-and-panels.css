@@ -3378,7 +3378,7 @@
 
 /* Shown in place of the Values card when a design carries Mintr Pro values and Pro is off. */
 .values-card-pro-note {
-  margin: 8px 0 0;
+  margin: 4px 24px 12px;
   color: var(--muted-strong);
   font-size: var(--text-sm);
   line-height: 1.35;

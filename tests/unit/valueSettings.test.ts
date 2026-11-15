@@ -169,7 +169,7 @@ describe("designs that carry Mintr Pro content", () => {
       { kind: "line", id: "ab", startId: "a", endId: "b" },
     ];
     expect(shapeCarriesProValues(box({ sketchDoc: doc }))).toBe(false);
-    const sized = addLinearDimension(doc, "ab", 10).doc;
+    const sized = addLinearDimension(doc, { entityId: "ab", value: 10 }).doc;
     expect(shapeCarriesProValues(box({ sketchDoc: sized }))).toBe(false);
     const summed = { ...sized, dimensions: sized.dimensions.map((dimension) => ({ ...dimension, expression: "wall * 5" })) };
     expect(shapeCarriesProValues(box({ sketchDoc: summed }))).toBe(true);

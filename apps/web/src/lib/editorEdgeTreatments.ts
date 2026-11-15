@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
 import { cloneWorkplaneShapeSnapshot, compactEdgeTreatmentHistory, edgeTreatmentAppliedFrame, restoreShapeBeforeEdgeTreatment } from "@/lib/edgeTreatmentHistory";
-import { cloneAsGroupChild } from "@/lib/editorGroup";
+import { cloneAsGroupChild, keepStoredChildValues } from "@/lib/editorGroup";
 import { evaluateCsgOpOnOperands, restoreGroupedChildren } from "@/lib/editorBoolean";
 import { containsHelicalThreadSolid, isHelicalThreadSolid, solidThreadShape } from "@/lib/threadShape";
 import { createLocalId } from "@/lib/localIds";
@@ -189,7 +189,7 @@ export function bakedEdgeTreatmentPreview(shape: WorkplaneShape, base: Workplane
   const minY = shape.elevation ?? 0;
   return canonicalizeShape({
     ...shape,
-    groupedShapes: worldChildren.map((child) => cloneAsGroupChild(child, shape.x, shape.z, minY, true)),
+    groupedShapes: keepStoredChildValues(worldChildren, base.groupedShapes).map((child) => cloneAsGroupChild(child, shape.x, shape.z, minY, true)),
     groupedBaseWidth: shapeWidth(shape),
     groupedBaseDepth: shapeDepth(shape),
     groupedBaseHeight: shape.height,

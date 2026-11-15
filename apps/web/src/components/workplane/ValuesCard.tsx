@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Plus, SlidersHorizontal, X } from "lucide-react";
 import { isValueExpression, resolveValues, valueRangeProblem, valueRenameProblem, valueSliderRange } from "@/lib/parametricValues";
 import type { ShapeValue } from "@/types/sketchforge";
@@ -47,6 +47,8 @@ export function ValuesCard({
   unitMm = 1,
   unitLabel,
   locked,
+  problems = [],
+  onSlide,
   onChange,
 }: {
   values: readonly ShapeValue[];
@@ -57,6 +59,13 @@ export function ValuesCard({
   /** The workplane unit ("mm", "in"), shown after each answer. */
   unitLabel?: string;
   locked: boolean;
+  /** What the part cannot follow right now, in plain words: a size past its range, a step that no longer fits. */
+  problems?: readonly string[];
+  /**
+   * Called while a slider is dragged, with the list as it would be. Given only for a part that
+   * redraws in a frame, so it moves with the slider; other parts wait until the slider is let go.
+   */
+  onSlide?: (next: ShapeValue[]) => void;
   /** The new list; `renamed` when a row's name changed, so sums that use it follow. */
   onChange: (next: ShapeValue[], message: string, renamed?: { from: string; to: string }) => void;
 }) {
@@ -102,11 +111,23 @@ export function ValuesCard({
                 const next = values.map((entry, entryIndex) => (entryIndex === index ? withDetails(entry, details) : entry));
                 onChange(next, `Set the range of ${value.name}`);
               }}
+              onSlide={onSlide ? (text) => onSlide(values.map((entry, entryIndex) => (entryIndex === index ? { ...entry, expression: text } : entry))) : undefined}
               onRemove={() => onChange(values.filter((_, entryIndex) => entryIndex !== index), `Removed ${value.name}`)}
             />
           ))}
         </div>
       )}
+      {/* Problems with a value's own sum sit on its row; these are what the part could not do with the values. */}
+      {(() => {
+        const onRows = new Set([...resolved.errors].map(([name, error]) => `${name}: ${error}`));
+        const rest = problems.filter((problem) => !onRows.has(problem));
+        return rest.length > 0 ? (
+          <ul className="values-card-problems" aria-label="What could not follow the values">
+            {rest.slice(0, 6).map((problem) => <li key={problem}>{problem}</li>)}
+            {rest.length > 6 ? <li>And {rest.length - 6} more.</li> : null}
+          </ul>
+        ) : null;
+      })()}
     </div>
   );
 }
@@ -121,6 +142,7 @@ function ValueRow({
   onRename,
   onExpression,
   onDetails,
+  onSlide,
   onRemove,
 }: {
   value: ShapeValue;
@@ -133,6 +155,8 @@ function ValueRow({
   onRename: (name: string) => void;
   onExpression: (expression: string) => void;
   onDetails: (details: ValueDetails) => void;
+  /** The slider moved: the number it would give, before it is let go. */
+  onSlide?: (text: string) => void;
   onRemove: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -140,6 +164,9 @@ function ValueRow({
   // A slider only for a plain number; a sum is worked out from other values.
   const slider = range && !isValueExpression(value.expression) && result !== undefined ? range : null;
   const [sliding, setSliding] = useState<number | null>(null);
+  // What the value was when the drag began: a part that moves with the slider has already taken
+  // the new number by the time the slider is let go, so the row's own value cannot tell.
+  const slideStartRef = useRef<string | null>(null);
   const [name, setName] = useState(value.name);
   const [expression, setExpression] = useState(value.expression);
   const [nameIssue, setNameIssue] = useState<string | null>(null);
@@ -181,8 +208,10 @@ function ValueRow({
   const commitSlide = () => {
     if (sliding === null) return;
     const text = formatValueNumber(sliding);
+    const start = slideStartRef.current ?? value.expression;
+    slideStartRef.current = null;
     setSliding(null);
-    if (text !== value.expression) onExpression(text);
+    if (text !== start) onExpression(text);
   };
   return (
     <div className={`values-card-row${problem ? " has-problem" : ""}`}>
@@ -236,7 +265,12 @@ function ValueRow({
           value={sliding ?? Math.min(slider.max, Math.max(slider.min, result ?? slider.min))}
           disabled={locked}
           aria-label={`${value.name} slider`}
-          onChange={(event) => setSliding(Number(event.currentTarget.value))}
+          onChange={(event) => {
+            const next = Number(event.currentTarget.value);
+            if (slideStartRef.current === null) slideStartRef.current = value.expression;
+            setSliding(next);
+            onSlide?.(formatValueNumber(next));
+          }}
           onPointerUp={commitSlide}
           onKeyUp={commitSlide}
           onBlur={commitSlide}
