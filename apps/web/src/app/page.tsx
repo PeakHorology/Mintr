@@ -9,7 +9,7 @@ import { SketchForgeEditor, type EditorLeaveGuard } from "@/components/SketchFor
 import { prepareCadRuntime } from "@/lib/cadRuntimeWarmup";
 import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { toolbarShapeAssets } from "@/lib/shapeCatalog";
-import { hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry } from "@/lib/editorHistory";
+import type { EditorHistoryEntry } from "@/lib/editorHistory";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
 import { isDesktopShell } from "@/lib/desktopHardware";
 import { createLocalId } from "@/lib/localIds";
@@ -78,7 +78,6 @@ import {
   writeNewDesktopPeakcad,
   writePeakcadText,
 } from "@/lib/peakcadFile";
-import { openProjectStoreDb, PROJECT_THUMBNAILS_STORE_NAME } from "@/lib/projectStoreOps";
 import {
   folderKeepsProjectsInside,
   hashFolderPassword,
@@ -88,7 +87,7 @@ import {
   type FolderPasswordLock,
 } from "@/lib/folderLock";
 import { decryptPeakcadText, encryptPeakcadText, isEncryptedPeakcadText } from "@/lib/peakcadFileLock";
-import { deleteStoredProject, loadStoredProject, saveStoredProject, serializeStoredProject } from "@/lib/projectStoreClient";
+import { serializeStoredProject } from "@/lib/projectStoreClient";
 import { designFontLibrary, designFontsFor, designFontsNotKeptMessage, installDesignFontsReport } from "@/lib/customFontStore";
 import { isCrystalDesign, laserDesignWorkspace, loadMachineChoice, machineHasLaser, type DesignKind, type MachineChoice } from "@/lib/laserMachine";
 import { NewDesignChooser } from "@/components/NewDesignChooser";
@@ -105,7 +104,6 @@ import {
   PROJECT_DRAG_MIME,
   PROJECT_FILE_WRITE_DELAY_MS,
   PROJECT_FOLDER_MAP_KEY,
-  PROJECT_THUMBNAIL_MAX_SIZE,
   PROJECTS_STORAGE_KEY,
   RECENT_PROJECT_COUNT,
   STATIC_EXPORT_BUILD,
@@ -123,251 +121,19 @@ import type {
   LockDialogState,
   PendingDiskWrite,
   ProjectShapeCacheEntry,
-  ProjectShapeRecord,
-  ProjectThumbnailRecord,
   StoredDashboardFolder,
   StoredDashboardProject,
   ViewMode,
 } from "@/components/home/dashboardTypes";
-
-function projectThumbnailApiUrl(projectId: string, version: number, theme: UiTheme = "light") {
-  const themeQuery = theme === "dark" ? "&theme=dark" : "";
-  return `/api/project-thumbnail?projectId=${encodeURIComponent(projectId)}&v=${version}${themeQuery}`;
-}
-
-function projectShapeCacheEntry(
-  revision: number,
-  shapes: WorkplaneShape[],
-  history?: EditorHistoryEntry[],
-  historyIndex?: number,
-): ProjectShapeCacheEntry {
-  // Keep the live scene meshes. History entries intentionally strip CSG tessellation
-  // caches for undo memory; using those as `shapes` made grouped bodies invisible.
-  const canonicalShapes = shapes.map((shape) => ({ ...shape }));
-  // Autosave path: trust already-compacted editor history instead of rehydrating
-  // (re-compacting) every mesh on each debounced save — only when the current
-  // scene fingerprint still matches the history cursor entry.
-  if (
-    Array.isArray(history)
-    && history.length > 0
-    && typeof historyIndex === "number"
-    && history.every((entry) => typeof entry?.fingerprint === "string" && Array.isArray(entry?.shapes))
-  ) {
-    const index = Math.min(Math.max(0, historyIndex), history.length - 1);
-    if (history[index]?.fingerprint === projectShapesFingerprint(canonicalShapes)) {
-      return {
-        revision,
-        shapes: canonicalShapes,
-        history,
-        historyIndex: index,
-      };
-    }
-  }
-  const hydrated = hydrateEditorHistoryState(canonicalShapes, history, historyIndex);
-  return {
-    revision,
-    shapes: canonicalShapes,
-    history: hydrated.entries,
-    historyIndex: hydrated.index,
-  };
-}
-
-function openProjectShapesDb() {
-  return openProjectStoreDb(typeof window === "undefined" ? undefined : window.indexedDB);
-}
-
-// Shape records (and their deduplicated mesh blobs) are read and written by the project-store worker.
-async function loadProjectShapes(projectId: string): Promise<ProjectShapeRecord | null> {
-  const snapshot = await loadStoredProject(projectId);
-  if (!snapshot) return null;
-  if (snapshot.missing.length > 0) {
-    console.warn(`Project ${projectId} references ${snapshot.missing.length} missing mesh blob(s)`);
-  }
-  return {
-    id: projectId,
-    revision: snapshot.revision,
-    shapes: snapshot.shapes,
-    history: snapshot.history,
-    historyIndex: snapshot.historyIndex,
-    updatedAt: snapshot.revision,
-  };
-}
-
-function saveProjectShapes(projectId: string, entry: ProjectShapeCacheEntry, options?: { fullHistory?: boolean }) {
-  return saveStoredProject(projectId, entry, options);
-}
-
-function deleteProjectShapes(projectId: string) {
-  return deleteStoredProject(projectId);
-}
-
-async function saveProjectThumbnail(
-  projectId: string,
-  dataUrl: string,
-  version: number,
-  dataUrlDark?: string | null,
-) {
-  const database = await openProjectShapesDb();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(PROJECT_THUMBNAILS_STORE_NAME, "readwrite");
-    transaction.objectStore(PROJECT_THUMBNAILS_STORE_NAME).put({
-      id: projectId,
-      dataUrl,
-      dataUrlDark: typeof dataUrlDark === "string" && dataUrlDark.length > 100 ? dataUrlDark : undefined,
-      version,
-      updatedAt: Date.now(),
-    } satisfies ProjectThumbnailRecord);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error ?? new Error("Could not save project thumbnail"));
-    };
-  });
-}
-
-// Every dashboard card reads its thumbnail on mount and again on each theme
-// toggle. Opening a fresh IndexedDB connection per card made a 60-project
-// library open visibly slower, so reads share one long-lived connection. The
-// connection yields to upgrades/deletes via `versionchange` and is reopened on
-// the next read.
-let thumbnailReadDb: Promise<IDBDatabase> | null = null;
-
-function thumbnailReadConnection() {
-  if (!thumbnailReadDb) {
-    const forget = () => {
-      if (thumbnailReadDb === opened) thumbnailReadDb = null;
-    };
-    const opened: Promise<IDBDatabase> = openProjectShapesDb().then((database) => {
-      database.onversionchange = () => {
-        database.close();
-        forget();
-      };
-      database.onclose = forget;
-      return database;
-    });
-    opened.catch(forget);
-    thumbnailReadDb = opened;
-  }
-  return thumbnailReadDb;
-}
-
-async function loadProjectThumbnail(projectId: string, theme: UiTheme = "light") {
-  const database = await thumbnailReadConnection();
-  return new Promise<string | null>((resolve, reject) => {
-    let transaction: IDBTransaction;
-    try {
-      transaction = database.transaction(PROJECT_THUMBNAILS_STORE_NAME, "readonly");
-    } catch (error) {
-      // Connection was closed underneath us; drop it so the next read reopens.
-      thumbnailReadDb = null;
-      reject(error instanceof Error ? error : new Error("Could not load project thumbnail"));
-      return;
-    }
-    const request = transaction.objectStore(PROJECT_THUMBNAILS_STORE_NAME).get(projectId);
-    request.onerror = () => reject(request.error ?? new Error("Could not load project thumbnail"));
-    request.onsuccess = () => {
-      const record = request.result as ProjectThumbnailRecord | undefined;
-      if (theme === "dark" && typeof record?.dataUrlDark === "string") {
-        resolve(record.dataUrlDark);
-        return;
-      }
-      resolve(typeof record?.dataUrl === "string" ? record.dataUrl : null);
-    };
-    transaction.onerror = () => {
-      reject(transaction.error ?? new Error("Could not load project thumbnail"));
-    };
-  });
-}
-
-async function deleteProjectThumbnail(projectId: string) {
-  const database = await openProjectShapesDb();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(PROJECT_THUMBNAILS_STORE_NAME, "readwrite");
-    transaction.objectStore(PROJECT_THUMBNAILS_STORE_NAME).delete(projectId);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error ?? new Error("Could not delete project thumbnail"));
-    };
-  });
-}
-
-async function downscaleThumbnailDataUrl(dataUrl: string, maxSize = PROJECT_THUMBNAIL_MAX_SIZE) {
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const element = new Image();
-    element.onload = () => resolve(element);
-    element.onerror = () => reject(new Error("Could not read project thumbnail"));
-    element.src = dataUrl;
-  });
-  // Match dashboard tiles (16:9): cover-crop the capture so the model keeps more pixels,
-  // then scale with high-quality smoothing (letterboxing was wasting resolution on bars).
-  const width = Math.max(1, Math.round(maxSize));
-  const height = Math.max(1, Math.round((maxSize * 9) / 16));
-  const targetAspect = width / height;
-  const sourceWidth = Math.max(1, image.width);
-  const sourceHeight = Math.max(1, image.height);
-  const sourceAspect = sourceWidth / sourceHeight;
-  let sx = 0;
-  let sy = 0;
-  let sw = sourceWidth;
-  let sh = sourceHeight;
-  if (sourceAspect > targetAspect) {
-    sw = Math.max(1, Math.round(sourceHeight * targetAspect));
-    sx = Math.max(0, Math.round((sourceWidth - sw) / 2));
-  } else if (sourceAspect < targetAspect) {
-    sh = Math.max(1, Math.round(sourceWidth / targetAspect));
-    sy = Math.max(0, Math.round((sourceHeight - sh) / 2));
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return dataUrl;
-  }
-  context.fillStyle = "#eaf8fd";
-  context.fillRect(0, 0, width, height);
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  // Step down in halves when shrinking a lot — sharper than a single big drawImage.
-  let drawSource: CanvasImageSource = image;
-  let drawSx = sx;
-  let drawSy = sy;
-  let drawSw = sw;
-  let drawSh = sh;
-  while (drawSw > width * 2 && drawSh > height * 2) {
-    const nextW = Math.max(width, Math.round(drawSw / 2));
-    const nextH = Math.max(height, Math.round(drawSh / 2));
-    const next = document.createElement("canvas");
-    next.width = nextW;
-    next.height = nextH;
-    const nextContext = next.getContext("2d");
-    if (!nextContext) {
-      break;
-    }
-    nextContext.imageSmoothingEnabled = true;
-    nextContext.imageSmoothingQuality = "high";
-    nextContext.drawImage(drawSource, drawSx, drawSy, drawSw, drawSh, 0, 0, nextW, nextH);
-    drawSource = next;
-    drawSx = 0;
-    drawSy = 0;
-    drawSw = nextW;
-    drawSh = nextH;
-  }
-  context.drawImage(drawSource, drawSx, drawSy, drawSw, drawSh, 0, 0, width, height);
-  return canvas.toDataURL("image/jpeg", 0.92);
-}
-
-function isInlineThumbnailUrl(thumbnailUrl: string | null | undefined) {
-  return typeof thumbnailUrl === "string" && thumbnailUrl.startsWith("data:");
-}
+import { deleteProjectShapes, loadProjectShapes, projectShapeCacheEntry, saveProjectShapes } from "@/components/home/projectShapeStore";
+import {
+  deleteProjectThumbnail,
+  downscaleThumbnailDataUrl,
+  isInlineThumbnailUrl,
+  loadProjectThumbnail,
+  projectThumbnailApiUrl,
+  saveProjectThumbnail,
+} from "@/components/home/projectThumbnails";
 
 function readStoredProjects() {
   const legacyShapes: Record<string, ProjectShapeCacheEntry> = {};
