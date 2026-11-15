@@ -1,4 +1,5 @@
 import { faceBlindCutDepthMm, faceHoleCutDepthMm, faceHoleOvershootMm } from "@/lib/csgTree";
+import { mirrorSideAxis, mirrorSideFromLabel } from "@/lib/mirrorCopy";
 import { alignCoordinate, alignmentBounds, alignmentLabel } from "@/lib/editorBoolean";
 import type { EditorHistoryEntry } from "@/lib/editorHistory";
 import { sameEdgeFingerprints, type EdgeTreatmentFingerprint } from "@/lib/edgeTreatmentRematch";
@@ -735,10 +736,8 @@ function sharesAlign(shapes: readonly WorkplaneShape[], action: { axis: AlignAxi
 }
 
 function mirrorAxis(label: string): AlignAxis | null {
-  if (!/^Mirrored /i.test(label.trim())) return null;
-  if (/front-back/i.test(label)) return "z";
-  if (/top-bottom/i.test(label)) return "y";
-  return "x";
+  const side = mirrorSideFromLabel(label);
+  return side ? mirrorSideAxis(side).axis : null;
 }
 
 function mirrorFlag(shape: WorkplaneShape, axis: AlignAxis) {
@@ -1139,10 +1138,10 @@ export function describeGuideStep(
       const name = alignmentLabel(align.axis, align.target);
       return { title: `Align ${name}`, body: `Select the parts, click Align, then ${name}.` };
     }
-    const mirror = mirrorAxis(step.label);
-    if (mirror) {
-      const name = mirror === "x" ? "left-right" : mirror === "z" ? "front-back" : "top-bottom";
-      return { title: `Mirror ${name}`, body: `Select the parts, click Mirror, then ${name}.` };
+    const side = mirrorSideFromLabel(step.label);
+    if (side) {
+      const where = side === "top" ? "on top" : `to the ${side}`;
+      return { title: `Mirror a copy ${where}`, body: `Select the parts, click Mirror, then the arrow on the ${side}.` };
     }
     if (rotationOnlyScene(prev, next)) return { title: step.label, body: rotationSentence(prev, next) };
     const moved = relativeMoveSentence(prev, next);
@@ -1569,13 +1568,12 @@ export function guidePrompt(input: {
       }
       return { ...base, cue: `align-${name}`, title: `Align ${name}`, body: `Click ${titled}.` };
     }
-    const mirror = mirrorAxis(step.label);
-    if (mirror) {
-      const name = mirror === "x" ? "left-right" : mirror === "z" ? "front-back" : "top-bottom";
+    const side = mirrorSideFromLabel(step.label);
+    if (side) {
       if (!input.mirrorMode) {
         return { ...base, cue: "mirror", title: step.label, body: "Select the parts, then click Mirror." };
       }
-      return { ...base, cue: `mirror-${name}`, title: step.label, body: `Click ${name}.` };
+      return { ...base, cue: `mirror-${side}`, title: step.label, body: `Click the arrow on the ${side}.` };
     }
     if (rotationOnlyScene(prev, next)) {
       return { ...base, cue: "model", title: step.label, body: rotationSentence(prev, next) };

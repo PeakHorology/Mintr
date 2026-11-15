@@ -342,8 +342,6 @@ import {
   cleanShapePatch,
   effectiveAlignmentAnchorId,
   findOverlappingHostForHole,
-  mirrorAxisLabel,
-  mirroredShapesForSelection,
   remeshCsgGroup,
   remeshCsgGroupFromWorldChildren,
   restoreGroupedChildren,
@@ -353,6 +351,7 @@ import {
   shapeThicknessInwardFromFace,
   updateCsgLeafAndRemesh,
 } from "@/lib/editorBoolean";
+import { mirrorCopyLabel, mirroredCopiesForSelection, parseMirrorSide, type MirrorSide } from "@/lib/mirrorCopy";
 export type { Cuboid, MeshData, Vec3 };
 
 import { promoteWorkplaneSketchToPrimitive } from "@/lib/sketchPrimitivePromote";
@@ -1547,7 +1546,7 @@ export function SketchForgeEditor({
   const [alignAnchorId, setAlignAnchorId] = useState<string | null>(null);
   const [alignPreview, setAlignPreview] = useState<{ axis: AlignAxis; target: AlignTarget } | null>(null);
   const [mirrorMode, setMirrorMode] = useState(false);
-  const [mirrorPreviewAxis, setMirrorPreviewAxis] = useState<AlignAxis | null>(null);
+  const [mirrorPreviewAxis, setMirrorPreviewAxis] = useState<MirrorSide | null>(null);
   const [activeMode, setActiveMode] = useState("3D Design");
   const [notice, setNoticeState] = useState("Ready");
   const openingNoticeRef = useRef(openingNotice ?? null);
@@ -2689,7 +2688,7 @@ export function SketchForgeEditor({
         return alignedShapesForSelection(shapes, selectedIds, selectedShapes, effectiveAlignAnchorId, alignPreview.axis, alignPreview.target).nextShapes;
       }
       if (mirrorMode && mirrorPreviewAxis) {
-        return mirroredShapesForSelection(shapes, selectedIds, selectedShapes, mirrorPreviewAxis).nextShapes;
+        return mirroredCopiesForSelection(shapes, selectedShapes, mirrorPreviewAxis, (source) => `${source.id}-mirror-preview`).nextShapes;
       }
       // While a pattern is being edited, its old copies make way for the preview too, or copies
       // dropped by a lower count stay drawn until Update.
@@ -7257,30 +7256,31 @@ export function SketchForgeEditor({
       if (next) {
         clearEditorToolSessions("mirror");
       }
-      setNotice(next ? "Mirror: choose an axis arrow" : "Mirror cancelled");
+      setNotice(next ? "Mirror: click an arrow. A mirrored copy appears on that side" : "Mirror cancelled");
       return next;
     });
   }, [clearEditorToolSessions, hasSelection]);
 
   const mirrorSelectionAcross = useCallback(
-    (axis: AlignAxis) => {
+    (side: MirrorSide) => {
       if (!hasSelection) {
         setNotice("Select a shape first");
         return;
       }
-      const { nextShapes, moved } = mirroredShapesForSelection(shapes, selectedIds, selectedShapes, axis);
+      const { nextShapes, copies } = mirroredCopiesForSelection(shapes, selectedShapes, side);
       setMirrorPreviewAxis(null);
-      if (moved === 0) {
+      if (copies.length === 0) {
         setNotice("Nothing to mirror");
         return;
       }
-      commitShapes(nextShapes, selectedIds, `Mirrored ${moved} shape${moved === 1 ? "" : "s"} ${mirrorAxisLabel(axis)}`);
+      // The copy is selected, so another click mirrors it again, the way a part is built up.
+      commitShapes(nextShapes, copies.map((copy) => copy.id), mirrorCopyLabel(copies.length, side));
     },
-    [commitShapes, hasSelection, selectedIds, selectedShapes, shapes],
+    [commitShapes, hasSelection, selectedShapes, shapes],
   );
 
-  const previewMirrorSelection = useCallback((axis: AlignAxis) => {
-    setMirrorPreviewAxis(axis);
+  const previewMirrorSelection = useCallback((side: MirrorSide) => {
+    setMirrorPreviewAxis(side);
   }, []);
 
   const clearMirrorPreview = useCallback(() => {
@@ -10839,12 +10839,12 @@ export function SketchForgeEditor({
       if (command.action === "mirror_objects") {
         const requested = mcpStringArray(params.ids ?? params.id);
         const chosen = requested.length ? requested : selectedIdsRef.current;
-        const axis = params.axis === "y" || params.axis === "z" ? params.axis : "x";
+        const side = parseMirrorSide(params.side) ?? (params.axis === "y" ? "top" : params.axis === "z" ? "front" : "right");
         const chosenShapes = currentShapes().filter((shape) => chosen.includes(shape.id));
-        const { nextShapes, moved } = mirroredShapesForSelection(currentShapes(), chosen, chosenShapes, axis);
-        if (moved === 0) throw new Error("Nothing to mirror");
-        commitShapes(nextShapes, chosen, `Mirrored ${moved} shape${moved === 1 ? "" : "s"}`);
-        return { moved, objects: nextShapes.filter((shape) => chosen.includes(shape.id)).map(mcpShapeSummary) };
+        const { nextShapes, copies } = mirroredCopiesForSelection(currentShapes(), chosenShapes, side);
+        if (copies.length === 0) throw new Error("Nothing to mirror");
+        commitShapes(nextShapes, copies.map((copy) => copy.id), mirrorCopyLabel(copies.length, side));
+        return { copied: copies.length, objects: copies.map(mcpShapeSummary) };
       }
 
       if (command.action === "circular_pattern") {

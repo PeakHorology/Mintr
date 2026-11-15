@@ -39,10 +39,13 @@ export function noteIsFeatured(note: string): boolean {
 }
 
 export const UNRELEASED_NOTES: string[] = [
-  "The Parts tab lists more of what was done to a part. A texture shows as a step you can edit, turn off for now, or remove. A pattern shows on the part it copies, where you can edit it, make the copies separate parts, or remove them. A piece made by Split remembers the part it was cut from: right-click it to join the pieces back, or to cut somewhere else. Holes and threads inside a group say what they are, such as Threaded hole M3.",
+  "New in Shapes: Picture Keychain. Pick a drawing or logo and Mintr turns it into a keychain, a plaque or just the drawing.",
+  "Toolbox Label is now Name Plate. Turn Magnets off for a plain sign, or pick Follow the letters for a plate shaped round the words.",
+  "Name Plates and keychains build much faster.",
+  "The Parts tab shows more of what you did, such as textures, patterns and Split. Right-click a split piece to join it back.",
   "Click empty space in the Parts tab, or press Esc, to clear the selection.",
-  "Toolbox Label is now Name Plate, with its own picture in Shapes. Turn Magnets off for a plain sign or plaque, and set Plate shape to Follow the letters for a plate that runs round the words instead of a rectangle.",
-  "New in Shapes: Picture Keychain. Pick a picture of line art, a logo or a doodle, and Mintr traces it and stands it up on a plate cut round the drawing, with a keyring hole. Make it a plaque instead, or just the drawing. Thin pen lines get a warning and a Thicken lines setting, so they print. Name Plate and keychain plates also build much faster.",
+  "Mirror now makes a mirrored copy. Click the arrow on the side where you want it, and the copy appears there, touching the original.",
+  "Fixed: Mirror's arrows could sit on top of each other, so one couldn't be clicked.",
 ];
 
 export const RELEASE_NOTES: ReleaseNotes[] = [

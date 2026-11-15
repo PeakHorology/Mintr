@@ -242,10 +242,6 @@ export function effectiveAlignmentAnchorId(selection: WorkplaneShape[], requeste
     ?? (requestedAnchorId && selection.some((shape) => shape.id === requestedAnchorId) ? requestedAnchorId : null);
 }
 
-export function mirrorAxisLabel(axis: AlignAxis) {
-  return axis === "x" ? "left-right" : axis === "z" ? "front-back" : "top-bottom";
-}
-
 export function mirrorFlagPatch(shape: WorkplaneShape, axis: AlignAxis) {
   if (axis === "x") {
     return { mirrorX: !shape.mirrorX };
@@ -282,29 +278,6 @@ export function mirroredShapePatch(shape: WorkplaneShape, axis: AlignAxis, pivot
     ...rotationPatch,
     ...mirrorFlagPatch(shape, axis),
   };
-}
-
-export function mirroredShapesForSelection(shapes: WorkplaneShape[], selectedIds: string[], selectedShapes: WorkplaneShape[], axis: AlignAxis) {
-  if (selectedShapes.length === 0) {
-    return { nextShapes: shapes, moved: 0 };
-  }
-
-  const selected = new Set(selectedIds);
-  const selectionBounds = boundsForShapes(selectedShapes);
-  const pivot = axis === "x" ? (selectionBounds.minX + selectionBounds.maxX) / 2 : axis === "z" ? (selectionBounds.minZ + selectionBounds.maxZ) / 2 : (selectionBounds.minY + selectionBounds.maxY) / 2;
-  let moved = 0;
-  const nextShapes = shapes.map((shape) => {
-    if (!selected.has(shape.id) || shape.locked) {
-      return shape;
-    }
-    moved += 1;
-    return {
-      ...shape,
-      ...mirroredShapePatch(shape, axis, pivot),
-    };
-  });
-
-  return { nextShapes, moved };
 }
 
 export function geometryFromMeshData(mesh: MeshData) {

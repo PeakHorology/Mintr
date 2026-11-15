@@ -12,6 +12,7 @@ import {
   type TransformOverlayState,
 } from "@/components/workplane/TransformOverlay";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, WorkplaneShape } from "@/types/sketchforge";
+import type { MirrorSide } from "@/lib/mirrorCopy";
 import { MIN_SHAPE_SIZE } from "@/components/viewport/viewportConstants";
 import type { RotationHandleSide, ThreeState } from "@/components/viewport/viewportTypes";
 import { formatMeasure, type MeasureFormat } from "@/components/viewport/formatMeasure";
@@ -678,11 +679,6 @@ export function syncMirrorOverlay(
       y: ((1 - projected.y) / 2) * rect.height,
     };
   };
-  const screenAngle = (from: THREE.Vector3, to: THREE.Vector3) => {
-    const a = project(from);
-    const b = project(to);
-    return THREE.MathUtils.radToDeg(Math.atan2(b.y - a.y, b.x - a.x));
-  };
   const worldMinY = Math.min(...corners.map((corner) => corner.y));
   const worldMaxY = Math.max(...corners.map((corner) => corner.y));
   const worldMinX = Math.min(...corners.map((corner) => corner.x));
@@ -690,66 +686,42 @@ export function syncMirrorOverlay(
   const worldMinZ = Math.min(...corners.map((corner) => corner.z));
   const worldMaxZ = Math.max(...corners.map((corner) => corner.z));
   const worldCenterX = (worldMinX + worldMaxX) / 2;
-  const worldCenterY = (worldMinY + worldMaxY) / 2;
   const worldCenterZ = (worldMinZ + worldMaxZ) / 2;
   const width = Math.max(MIN_SHAPE_SIZE, worldMaxX - worldMinX);
   const height = Math.max(MIN_SHAPE_SIZE, worldMaxY - worldMinY);
   const depth = Math.max(MIN_SHAPE_SIZE, worldMaxZ - worldMinZ);
-  const offset = Math.max(10, Math.max(width, height, depth) * 0.2);
-  const step = Math.max(10, Math.max(width, height, depth) * 0.28);
+  const offset = Math.max(8, Math.max(width, height, depth) * 0.18);
 
-  const xWorld = new THREE.Vector3(worldCenterX, worldMinY, worldMaxZ + offset);
-  const zWorld = new THREE.Vector3(worldMaxX + offset, worldMinY, worldCenterZ);
-  const yWorld = new THREE.Vector3(worldMinX - offset, worldCenterY, worldMaxZ + offset);
-  const xScreen = project(xWorld);
-  const zScreen = project(zWorld);
-  const yScreen = project(yWorld);
-  const xGuideA = new THREE.Vector3(worldMinX, worldMinY, worldMaxZ + offset);
-  const xGuideB = new THREE.Vector3(worldMaxX, worldMinY, worldMaxZ + offset);
-  const zGuideA = new THREE.Vector3(worldMaxX + offset, worldMinY, worldMinZ);
-  const zGuideB = new THREE.Vector3(worldMaxX + offset, worldMinY, worldMaxZ);
-  const yGuideA = new THREE.Vector3(worldMinX - offset, worldMinY, worldMaxZ + offset);
-  const yGuideB = new THREE.Vector3(worldMinX - offset, worldMaxY, worldMaxZ + offset);
-  const xA = project(xGuideA);
-  const xB = project(xGuideB);
-  const zA = project(zGuideA);
-  const zB = project(zGuideB);
-  const yA = project(yGuideA);
-  const yB = project(yGuideB);
-
-  const next = {
-    guides: [
-      { key: "x", x1: xA.x, y1: xA.y, x2: xB.x, y2: xB.y },
-      { key: "z", x1: zA.x, y1: zA.y, x2: zB.x, y2: zB.y },
-      { key: "y", x1: yA.x, y1: yA.y, x2: yB.x, y2: yB.y },
-    ],
-    handles: [
-      {
-        axis: "x" as const,
-        key: "mirror-x",
-        x: xScreen.x,
-        y: xScreen.y,
-        angle: screenAngle(xWorld.clone().add(new THREE.Vector3(-step, 0, 0)), xWorld.clone().add(new THREE.Vector3(step, 0, 0))),
-        title: "Mirror left-right",
-      },
-      {
-        axis: "z" as const,
-        key: "mirror-z",
-        x: zScreen.x,
-        y: zScreen.y,
-        angle: screenAngle(zWorld.clone().add(new THREE.Vector3(0, 0, -step)), zWorld.clone().add(new THREE.Vector3(0, 0, step))),
-        title: "Mirror front-back",
-      },
-      {
-        axis: "y" as const,
-        key: "mirror-y",
-        x: yScreen.x,
-        y: yScreen.y,
-        angle: screenAngle(yWorld.clone().add(new THREE.Vector3(0, -step, 0)), yWorld.clone().add(new THREE.Vector3(0, step, 0))),
-        title: "Mirror top-bottom",
-      },
-    ],
-  };
+  // One arrow per side, just outside that side, pointing away from the selection: the copy
+  // appears where the arrow points. An arrow that would point into or out of the screen says
+  // nothing about its side, and one that lands on another arrow can't be clicked, so both stay
+  // hidden; turning the view brings them back.
+  const sides: Array<{ side: MirrorSide; face: THREE.Vector3; out: THREE.Vector3; title: string }> = [
+    { side: "right", face: new THREE.Vector3(worldMaxX, worldMinY, worldCenterZ), out: new THREE.Vector3(1, 0, 0), title: "Mirror a copy to the right" },
+    { side: "left", face: new THREE.Vector3(worldMinX, worldMinY, worldCenterZ), out: new THREE.Vector3(-1, 0, 0), title: "Mirror a copy to the left" },
+    { side: "front", face: new THREE.Vector3(worldCenterX, worldMinY, worldMaxZ), out: new THREE.Vector3(0, 0, 1), title: "Mirror a copy to the front" },
+    { side: "back", face: new THREE.Vector3(worldCenterX, worldMinY, worldMinZ), out: new THREE.Vector3(0, 0, -1), title: "Mirror a copy to the back" },
+    { side: "top", face: new THREE.Vector3(worldCenterX, worldMaxY, worldCenterZ), out: new THREE.Vector3(0, 1, 0), title: "Mirror a copy on top" },
+  ];
+  const handles: MirrorOverlayState["handles"] = [];
+  for (const entry of sides) {
+    const anchor = entry.face.clone().addScaledVector(entry.out, offset);
+    const from = project(entry.face);
+    const at = project(anchor);
+    const dx = at.x - from.x;
+    const dy = at.y - from.y;
+    if (Math.hypot(dx, dy) < 14) continue;
+    if (handles.some((handle) => Math.hypot(handle.x - at.x, handle.y - at.y) < 40)) continue;
+    handles.push({
+      side: entry.side,
+      key: `mirror-${entry.side}`,
+      x: at.x,
+      y: at.y,
+      angle: THREE.MathUtils.radToDeg(Math.atan2(dy, dx)),
+      title: entry.title,
+    });
+  }
+  const next: MirrorOverlayState = { guides: [], handles };
 
   overlayRef.current = next;
   setOverlay(next);

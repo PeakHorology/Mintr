@@ -100,7 +100,7 @@ export const HOTKEY_ACTIONS: readonly HotkeyActionMeta[] = [
   { id: "holeMode", label: "Hole mode", description: "Set the selection to hole (geometry). H alone; Ctrl+H hides instead.", category: "Tools" },
   { id: "solidMode", label: "Solid mode", description: "Set the selection to solid mode.", category: "Tools" },
   { id: "align", label: "Align", description: "Toggle align mode (geometry). In a sketch, L is the line tool.", category: "Tools" },
-  { id: "mirror", label: "Mirror", description: "Toggle mirror mode.", category: "Tools" },
+  { id: "mirror", label: "Mirror", description: "Make a mirrored copy of the selection.", category: "Tools" },
   { id: "pattern", label: "Circular pattern", description: "Toggle circular pattern mode.", category: "Tools" },
   { id: "chamfer", label: "Chamfer", description: "Start chamfer, or edit the last chamfer on the selection.", category: "Tools" },
   { id: "fillet", label: "Fillet", description: "Start fillet, or edit the last fillet on the selection.", category: "Tools" },

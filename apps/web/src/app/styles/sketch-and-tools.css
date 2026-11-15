@@ -3339,7 +3339,7 @@ button.parts-tree-toggle:hover {
 .mirror-handle {
   position: absolute;
   display: grid;
-  width: 64px;
+  width: 48px;
   height: 32px;
   padding: 0;
   place-items: center;
@@ -3352,7 +3352,7 @@ button.parts-tree-toggle:hover {
 }
 
 .mirror-handle-icon {
-  width: 64px;
+  width: 48px;
   height: 24px;
   overflow: visible;
   filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.96)) drop-shadow(0 1px 4px rgba(13, 28, 40, 0.28));

@@ -119,12 +119,13 @@ const tools = [
     required: ["ids"],
     properties: { ...editorTargetSchema.properties, ids: { type: "array", items: { type: "string" } } },
   }),
-  tool("peakcad_mirror_objects", "Mirror objects across their own center on x, y, or z.", {
+  tool("peakcad_mirror_objects", "Add a mirrored copy of the objects on one side: right (+x), left (-x), front (+z), back (-z) or top (+y). The mirror plane is that side of the objects, so the copy touches them. The originals are unchanged and the copies are selected.", {
     ...editorTargetSchema,
     properties: {
       ...editorTargetSchema.properties,
       ids: { type: "array", items: { type: "string" } },
-      axis: { type: "string", enum: ["x", "y", "z"] },
+      side: { type: "string", enum: ["right", "left", "front", "back", "top"] },
+      axis: { type: "string", enum: ["x", "y", "z"], description: "Older form: x is right, z is front, y is top. Use side instead." },
     },
   }),
   tool("peakcad_circular_pattern", "Copy objects around a center. Count includes the original.", {

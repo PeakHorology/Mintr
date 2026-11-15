@@ -17,7 +17,7 @@ export const TOOL_DESCRIPTIONS = {
   shrinkWrap: "Wrap the selected shapes in one tight skin, like plastic shrunk around them (a convex hull). Holes still cut it. Stays editable.",
   loftSketches: "Join two or more flat outlines stacked at different heights into one smooth solid. Works with sketches, boxes, cylinders, and polygons.",
   align: "Align selected shapes to each other along an axis.",
-  mirror: "Mirror selected shapes across a chosen plane.",
+  mirror: "Makes a mirrored copy of the selection on the side you pick.",
   pattern: "Copy the selection around a center on the workplane. Click to place the center. Count includes the original.",
   linearPattern: "Copy the selection along Width, Length, and/or Height. Hold spacing negative to go the other way. Applied patterns stay editable.",
   placementRuler: "Select a shape, then enter how far to move it in the X, Y, and Z fields. X/Y are on the workplane, Z is up.",

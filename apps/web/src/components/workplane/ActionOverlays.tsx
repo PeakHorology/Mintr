@@ -3,6 +3,7 @@
 import type { CSSProperties } from "react";
 import { PeakTipButton } from "@/components/workplane/ToolNameTooltip";
 import { alignmentLabel } from "@/lib/editorBoolean";
+import type { MirrorSide } from "@/lib/mirrorCopy";
 import type { AlignAxis, AlignHandleStatus, AlignTarget } from "@/types/sketchforge";
 
 export type AlignOverlayState = {
@@ -12,7 +13,7 @@ export type AlignOverlayState = {
 
 export type MirrorOverlayState = {
   guides: Array<{ key: string; x1: number; y1: number; x2: number; y2: number }>;
-  handles: Array<{ axis: AlignAxis; key: string; x: number; y: number; angle: number; title: string }>;
+  handles: Array<{ side: MirrorSide; key: string; x: number; y: number; angle: number; title: string }>;
 };
 
 export function AlignOverlay({
@@ -71,8 +72,8 @@ export function MirrorOverlay({
   onPreviewClear,
 }: {
   overlay: MirrorOverlayState;
-  onMirror: (axis: AlignAxis) => void;
-  onPreview: (axis: AlignAxis) => void;
+  onMirror: (side: MirrorSide) => void;
+  onPreview: (side: MirrorSide) => void;
   onPreviewClear: () => void;
 }) {
   return (
@@ -86,23 +87,22 @@ export function MirrorOverlay({
         <PeakTipButton
           key={handle.key}
           label={handle.title}
-          data-lesson-target={handle.axis === "x" ? "mirror-left-right" : handle.axis === "z" ? "mirror-front-back" : "mirror-top-bottom"}
-          className={`mirror-handle axis-${handle.axis}`}
+          data-lesson-target={`mirror-${handle.side}`}
+          className={`mirror-handle side-${handle.side}`}
           style={{ left: handle.x, top: handle.y, "--mirror-angle": `${handle.angle}deg` } as CSSProperties}
-          onPointerEnter={() => onPreview(handle.axis)}
+          onPointerEnter={() => onPreview(handle.side)}
           onPointerLeave={onPreviewClear}
-          onFocus={() => onPreview(handle.axis)}
+          onFocus={() => onPreview(handle.side)}
           onBlur={onPreviewClear}
           onClick={(event) => {
             event.stopPropagation();
             onPreviewClear();
-            onMirror(handle.axis);
+            onMirror(handle.side);
           }}
         >
-          <svg className="mirror-handle-icon" viewBox="0 0 64 24" aria-hidden="true">
-            <path d="M11 12h42" />
-            <path d="m19 4-8 8 8 8" />
-            <path d="m45 4 8 8-8 8" />
+          <svg className="mirror-handle-icon" viewBox="0 0 48 24" aria-hidden="true">
+            <path d="M8 12h30" />
+            <path d="m30 4 8 8-8 8" />
           </svg>
         </PeakTipButton>
       ))}
