@@ -349,3 +349,50 @@ describe("editor history snapshots", () => {
     expect(historyStepLabel(editorHistoryEntry([box()], []), 0)).toBe("Start");
   });
 });
+
+describe("Mintr Pro values in the undo fingerprint", () => {
+  const print = (shape: WorkplaneShape) => projectShapesFingerprint([shape]);
+
+  it("reads no values, an empty list and a missing field as the same design", () => {
+    const plain = print(box());
+    expect(print(box({ values: undefined, drivenBy: undefined }))).toBe(plain);
+    expect(print(box({ values: [] }))).toBe(plain);
+    expect(print(box({ drivenBy: {} }))).toBe(plain);
+    expect(print(box({ values: [], drivenBy: {} }))).toBe(plain);
+    // Inside a group too.
+    const group = (child: WorkplaneShape) => box({ id: "g", groupedShapes: [child] });
+    expect(print(group(box({ values: [], drivenBy: {} })))).toBe(print(group(box())));
+  });
+
+  it("adds no undo step when the last value is removed and nothing else changed", () => {
+    const start = editorHistoryEntry([box()], []);
+    for (const emptied of [box({ values: [] }), box({ drivenBy: {} }), box({ values: undefined, drivenBy: undefined })]) {
+      const next = appendEditorHistorySnapshot([start], 0, editorHistoryEntry([emptied], []));
+      expect(next.changed).toBe(false);
+      expect(next.entries).toHaveLength(1);
+    }
+  });
+
+  it("is the same every time for the same values", () => {
+    const shape = () => box({ values: [{ name: "wall", expression: "2" }], drivenBy: { Width: "wall * 10" } });
+    expect(print(shape())).toBe(print(shape()));
+    expect(print(JSON.parse(JSON.stringify(shape())) as WorkplaneShape)).toBe(print(shape()));
+  });
+
+  it("still sees a real change: a value, its sum, its range, or a setting's sum", () => {
+    const base = box({ values: [{ name: "wall", expression: "2" }], drivenBy: { Width: "wall * 10" } });
+    const changes: WorkplaneShape[] = [
+      box({ values: [{ name: "wall", expression: "3" }], drivenBy: { Width: "wall * 10" } }),
+      box({ values: [{ name: "side", expression: "2" }], drivenBy: { Width: "wall * 10" } }),
+      box({ values: [{ name: "wall", expression: "2", min: 1, max: 4 }], drivenBy: { Width: "wall * 10" } }),
+      box({ values: [{ name: "wall", expression: "2" }], drivenBy: { Width: "wall * 12" } }),
+      box({ values: [{ name: "wall", expression: "2" }], drivenBy: { Height: "wall * 10" } }),
+      box({ values: [{ name: "wall", expression: "2" }] }),
+      box({ drivenBy: { Width: "wall * 10" } }),
+    ];
+    for (const changed of changes) {
+      expect(print(changed)).not.toBe(print(base));
+      expect(appendEditorHistorySnapshot([editorHistoryEntry([base], [])], 0, editorHistoryEntry([changed], [])).changed).toBe(true);
+    }
+  });
+});

@@ -116,8 +116,9 @@ function shapeFingerprintPayload(shape: WorkplaneShape): unknown {
     generated: shape.generated,
     toolboxLabel: shape.toolboxLabel,
     laserLink: shape.laserLink,
-    values: shape.values,
-    drivenBy: shape.drivenBy,
+    // An empty list is the same as none: clearing the last value must not look like a change.
+    values: shape.values?.length ? shape.values : undefined,
+    drivenBy: shape.drivenBy && Object.keys(shape.drivenBy).length ? shape.drivenBy : undefined,
     surfaceTexture: shape.surfaceTexture,
     cadDisplayEdgesVersion: shape.cadDisplayEdgesVersion,
     edgeResizeMode: shape.edgeResizeMode,
