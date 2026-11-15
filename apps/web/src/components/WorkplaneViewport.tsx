@@ -110,8 +110,8 @@ import { cleanNearZero, conePatchForFootprint, coneUnitBaseScale, coneUnitTopSca
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
-import { xrayAxisBounds, xrayClipping, xraySpanCenter, type XrayAxis } from "@/lib/xraySection";
-import { clearSectionCaps, measureSectionAt, rebuildSectionCaps, sectionCapPlane, updateSectionCaps } from "@/lib/xrayCaps";
+import { xrayAxisBounds, xraySpanCenter, type XrayAxis } from "@/lib/xraySection";
+import { clearSectionCaps, measureSectionAt, updateSectionCaps } from "@/lib/xrayCaps";
 import {
   cameraFacingTiltAxis,
   clamp,
@@ -185,7 +185,6 @@ import {
   resolveViewportBackground,
   resolveWorkplaneBaseColor,
   UI_THEME_CHANGED_EVENT,
-  type UiTheme,
 } from "@/lib/uiTheme";
 import {
   CAMERA_HOME,
@@ -206,7 +205,6 @@ import {
   WORKSPACE_DEFAULTS_STORAGE_PREFIX,
 } from "@/components/viewport/viewportConstants";
 import type {
-  CaptureSceneImageOptions,
   CutPreviewShapeFrame,
   DragItem,
   DragState,
@@ -230,10 +228,8 @@ import type {
   TransformDragState,
   ViewCubeFace,
   WorkspaceSettings,
-  XraySweep,
 } from "@/components/viewport/viewportTypes";
 import { parseDroppedShapeAsset, readSavedWorkspaceDefault, worldPoseOfPartInBody } from "@/components/viewport/droppedShapeAsset";
-import { easeOutCubic } from "@/components/viewport/easing";
 import { formatMeasure, type MeasureFormat } from "@/components/viewport/formatMeasure";
 import { findSelectedGroundFootprint, findSelectionHelper, findShapeObject } from "@/components/viewport/sceneLookup";
 import {
@@ -245,7 +241,7 @@ import {
   pushPullDragAxis,
 } from "@/components/viewport/screenProjection";
 import { hideDragShadows, markShadowsDirty, restoreDragShadows } from "@/components/viewport/shadows";
-import { geometryTriangleCount, heldInHoleOrGhost, objectIsShown, preciseMeshHits, surfaceHits } from "@/components/viewport/meshPick";
+import { geometryTriangleCount, objectIsShown, preciseMeshHits, surfaceHits } from "@/components/viewport/meshPick";
 import {
   CAD_DISPLAY_EDGE_NAME,
   disposeChildren,
@@ -304,6 +300,8 @@ import {
   shapeScreenBounds,
   wheelCenterTowardCamera,
 } from "@/components/viewport/selectionFrame";
+import { captureSceneImage, captureSceneImagesForThemes } from "@/components/viewport/sceneCapture";
+import { applyXrayClipping, stopXraySweep, xraySectionMeasure } from "@/components/viewport/xrayScene";
 export { SKETCH_EXTRUDE_PREVIEW_ID } from "@/components/viewport/shapeMotion";
 export type { WorkspaceSettings, ViewCubeFace, ThreeState, CaptureSceneImageOptions, ViewportPerfStats, DragState, MarqueeState, RulerPoint, RulerAttachment, RulerEdgeAttachment, RulerSegment, RulerModel, RulerOverlayState, RulerCandidate, RulerPointDragState, RotationHandleSide, RotationHandleSides, ShapeUpdatePatch, ResizeSigns, ResizeAnchorMemory, TransformDragState, TransformDragItem, SelectionFrame, DragItem, SmoothEditOverlay, SmoothPull, RankedRulerPick } from "@/components/viewport/viewportTypes";
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
@@ -501,78 +499,6 @@ export type WorkplaneViewportProps = {
 };
 
 export type WorkplaneRotationEditApi = { dismiss: () => void };
-
-/** Capture the current viewport as a PNG data URL. */
-function captureSceneImage(state: ThreeState, options: CaptureSceneImageOptions = {}) {
-  const hideOverlays = options.hideOverlays !== false;
-  const overlayLayers = [state.workplaneLayer, state.helperLayer, state.modifierLayer, state.xrayLayer, state.printLayer];
-  const previousVisibility = overlayLayers.map((layer) => layer.visible);
-  const previousXray = { ...state.xray };
-  if (hideOverlays) {
-    for (const layer of overlayLayers) {
-      layer.visible = false;
-    }
-  }
-  try {
-    if (hideOverlays && previousXray.enabled) {
-      applyXrayClipping(state, { enabled: false }, { immediate: true });
-    }
-    state.camera.updateMatrixWorld();
-    state.renderer.render(state.scene, state.camera);
-    return state.renderer.domElement.toDataURL("image/png");
-  } finally {
-    if (hideOverlays && previousXray.enabled) {
-      applyXrayClipping(state, previousXray, { immediate: true });
-    }
-    if (hideOverlays) {
-      overlayLayers.forEach((layer, index) => {
-        layer.visible = previousVisibility[index] ?? true;
-      });
-    }
-    state.needsRender = true;
-  }
-}
-
-function applyCaptureThemeLook(state: ThreeState, storedBackground: string, theme: UiTheme) {
-  state.scene.background = new THREE.Color(resolveViewportBackground(storedBackground, theme));
-  const base = state.workplaneLayer.getObjectByName("WorkplaneBase");
-  if (base instanceof THREE.Mesh && base.material instanceof THREE.MeshStandardMaterial) {
-    base.material.color.set(resolveWorkplaneBaseColor(theme));
-  }
-}
-
-/** Capture the same framing once for light and once for dark dashboard tiles. */
-function captureSceneImagesForThemes(
-  state: ThreeState,
-  storedBackground: string,
-  options: CaptureSceneImageOptions = {},
-) {
-  const previousBackground = state.scene.background;
-  const base = state.workplaneLayer.getObjectByName("WorkplaneBase");
-  const previousBaseColor =
-    base instanceof THREE.Mesh && base.material instanceof THREE.MeshStandardMaterial
-      ? base.material.color.clone()
-      : null;
-  try {
-    applyCaptureThemeLook(state, storedBackground, "light");
-    const light = captureSceneImage(state, options);
-    applyCaptureThemeLook(state, storedBackground, "dark");
-    const dark = captureSceneImage(state, options);
-    return { light, dark };
-  } finally {
-    if (previousBackground) {
-      state.scene.background = previousBackground;
-    }
-    if (
-      previousBaseColor
-      && base instanceof THREE.Mesh
-      && base.material instanceof THREE.MeshStandardMaterial
-    ) {
-      base.material.color.copy(previousBaseColor);
-    }
-    state.needsRender = true;
-  }
-}
 
 
 function rulerAttachmentWorld(state: ThreeState, attachment: RulerAttachment) {
@@ -8007,263 +7933,6 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   }
 }
 
-function applyMaterialClipping(material: THREE.Material | THREE.Material[], planes: THREE.Plane[], enableDoubleSide: boolean) {
-  const materials = Array.isArray(material) ? material : [material];
-  for (const mat of materials) {
-    if (!mat) {
-      continue;
-    }
-    mat.clippingPlanes = planes;
-    mat.clipShadows = planes.length > 0;
-    if ("side" in mat) {
-      const meshMat = mat as THREE.MeshStandardMaterial;
-      if (enableDoubleSide) {
-        if (meshMat.userData._xrayPrevSide === undefined) {
-          meshMat.userData._xrayPrevSide = meshMat.side;
-        }
-        meshMat.side = THREE.DoubleSide;
-      } else if (meshMat.userData._xrayPrevSide !== undefined) {
-        meshMat.side = meshMat.userData._xrayPrevSide;
-        delete meshMat.userData._xrayPrevSide;
-      }
-    }
-    mat.needsUpdate = true;
-  }
-}
-
-function placeXrayPlane(object: THREE.Object3D, axis: XrayAxis, position: number) {
-  object.position.set(0, 0, 0);
-  object.rotation.set(0, 0, 0);
-  if (axis === "x") {
-    object.rotation.y = Math.PI / 2;
-    object.position.x = position;
-    return;
-  }
-  if (axis === "z") {
-    object.position.z = position;
-    return;
-  }
-  object.rotation.x = -Math.PI / 2;
-  object.position.y = position;
-}
-
-const XRAY_SWEEP_IN_MS = 720;
-const XRAY_SWEEP_OUT_MS = 460;
-const XRAY_PLANE_FILL_OPACITY = 0.1;
-const XRAY_PLANE_OUTLINE_OPACITY = 0.72;
-/** How much brighter the plane fill is at the start of the cut than at rest. */
-const XRAY_PLANE_GLINT = 1.2;
-
-/** Soft start, fast middle, long landing: a blade set against the part, then drawn through. */
-function xraySweepEase(t: number) {
-  const s = t * t * (3 - 2 * t);
-  return 1 - (1 - s) ** 4;
-}
-
-function xraySweepPosition(sweep: XraySweep) {
-  const eased = sweep.kind === "in" ? xraySweepEase(sweep.progress) : easeOutCubic(sweep.progress);
-  return sweep.from + (sweep.to - sweep.from) * eased;
-}
-
-/** Where the plane rests when the model is uncut: just past the far edge on the hidden side. */
-function xrayRestEdge(state: ThreeState) {
-  const { bounds, keepLow } = state.xray;
-  const span = Math.max(8, bounds.max - bounds.min);
-  const pad = Math.max(2, span * 0.08);
-  return keepLow ? bounds.max + pad : bounds.min - pad;
-}
-
-function xrayVisualPosition(state: ThreeState) {
-  return state.xraySweep ? xraySweepPosition(state.xraySweep) : state.xray.position;
-}
-
-/** Is the clip on screen, including the moments it is gliding out? */
-function xrayCutActive(state: ThreeState) {
-  return state.xray.enabled || state.xraySweep?.kind === "out";
-}
-
-function xrayHelperReveal(state: ThreeState) {
-  const sweep = state.xraySweep;
-  if (!sweep) return { reveal: 1, glint: 0 };
-  if (sweep.kind === "out") return { reveal: 1 - easeOutCubic(sweep.progress), glint: 0 };
-  return {
-    reveal: easeOutCubic(Math.min(1, sweep.progress / 0.25)),
-    // The plane is brightest while it is cutting and settles to its resting tint.
-    glint: 1 - easeOutCubic(sweep.progress),
-  };
-}
-
-function placeXrayHelper(state: ThreeState) {
-  const { axis } = state.xray;
-  const position = xrayVisualPosition(state);
-  const { reveal, glint } = xrayHelperReveal(state);
-  for (const child of state.xrayLayer.children) {
-    placeXrayPlane(child, axis, position);
-    if (!(child instanceof THREE.Mesh || child instanceof THREE.LineSegments)) continue;
-    const material = child.material as THREE.Material & { opacity: number };
-    const base = typeof child.userData.baseOpacity === "number" ? child.userData.baseOpacity : material.opacity;
-    material.opacity = child.name === "XrayPlaneFill" ? base * reveal * (1 + XRAY_PLANE_GLINT * glint) : base * reveal;
-  }
-}
-
-function syncXrayHelper(state: ThreeState) {
-  disposeChildren(state.xrayLayer);
-  const { showPlane, planeSize } = state.xray;
-  if (!xrayCutActive(state) || !showPlane) {
-    return;
-  }
-
-  const size = Math.max(planeSize, 80);
-  const geometry = new THREE.PlaneGeometry(size, size);
-  const fill = new THREE.Mesh(
-    geometry,
-    new THREE.MeshBasicMaterial({
-      color: "#17b7e5",
-      transparent: true,
-      opacity: XRAY_PLANE_FILL_OPACITY,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  fill.name = "XrayPlaneFill";
-  fill.userData.baseOpacity = XRAY_PLANE_FILL_OPACITY;
-  fill.renderOrder = 980;
-
-  const outline = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geometry),
-    new THREE.LineBasicMaterial({
-      color: "#079bc6",
-      transparent: true,
-      opacity: XRAY_PLANE_OUTLINE_OPACITY,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  outline.name = "XrayPlaneOutline";
-  outline.userData.baseOpacity = XRAY_PLANE_OUTLINE_OPACITY;
-  outline.renderOrder = 981;
-
-  state.xrayLayer.add(fill, outline);
-  placeXrayHelper(state);
-}
-
-/** Per-frame part of the sweep: the shared plane and the helper, no material walk. */
-function xraySweepFrame(state: ThreeState) {
-  const clip = xrayClipping(state.xray.axis, xrayVisualPosition(state), state.xray.keepLow);
-  state.clippingPlane.normal.set(clip.normal[0], clip.normal[1], clip.normal[2]);
-  state.clippingPlane.constant = clip.constant;
-  placeXrayHelper(state);
-  // Shadows are clipped too; without this the hidden half keeps casting one while the plane moves.
-  markShadowsDirty(state);
-  state.needsRender = true;
-}
-
-/** Walk every material so it holds (or drops) the shared clipping plane, then rebuild the helper. */
-function syncXrayCut(state: ThreeState) {
-  const active = xrayCutActive(state);
-  const clip = xrayClipping(state.xray.axis, xrayVisualPosition(state), state.xray.keepLow);
-  state.clippingPlane.normal.set(clip.normal[0], clip.normal[1], clip.normal[2]);
-  state.clippingPlane.constant = clip.constant;
-  const planes = active ? [state.clippingPlane] : [];
-
-  const applyToLayer = (layer: THREE.Group) => {
-    layer.traverse((object) => {
-      if (!(object instanceof THREE.Mesh || object instanceof THREE.LineSegments || object instanceof THREE.Line)) {
-        return;
-      }
-      applyMaterialClipping(object.material, planes, active && object instanceof THREE.Mesh);
-    });
-  };
-
-  applyToLayer(state.shapeLayer);
-  applyToLayer(state.helperLayer);
-  applyToLayer(state.modifierLayer);
-  applyToLayer(state.printLayer);
-  syncXrayHelper(state);
-  rebuildSectionCaps(state.sectionCapLayer, state.shapeLayer, active ? state.clippingPlane : null, state.xray.planeSize, state.renderer.getPixelRatio());
-  markShadowsDirty(state);
-  state.needsRender = true;
-}
-
-function stopXraySweep(state: ThreeState) {
-  if (!state.xraySweep) return;
-  cancelAnimationFrame(state.xraySweep.handle);
-  state.xraySweep = null;
-}
-
-function startXraySweep(state: ThreeState, kind: XraySweep["kind"], from: number, to: number) {
-  stopXraySweep(state);
-  const sweep: XraySweep = {
-    kind,
-    from,
-    to,
-    started: performance.now(),
-    duration: kind === "in" ? XRAY_SWEEP_IN_MS : XRAY_SWEEP_OUT_MS,
-    handle: 0,
-    progress: 0,
-  };
-  state.xraySweep = sweep;
-  const tick = (now: number) => {
-    if (state.xraySweep !== sweep) return;
-    sweep.progress = Math.min(1, (now - sweep.started) / sweep.duration);
-    if (sweep.progress < 1) {
-      xraySweepFrame(state);
-      sweep.handle = requestAnimationFrame(tick);
-      return;
-    }
-    state.xraySweep = null;
-    // Lands exactly on the target; for an exit this is also where the clip is released.
-    syncXrayCut(state);
-  };
-  sweep.handle = requestAnimationFrame(tick);
-}
-
-function applyXrayClipping(
-  state: ThreeState | null,
-  next?: Partial<ThreeState["xray"]>,
-  options?: { immediate?: boolean },
-) {
-  if (!state) {
-    return;
-  }
-
-  const previous = state.xray;
-  const visualBefore = xrayVisualPosition(state);
-  state.xray = { ...previous, ...next };
-  const { enabled } = state.xray;
-  state.needsRender = true;
-  // New meshes are created without clipping planes. While the cut stays off,
-  // walking every material on each rebuild only repeats that empty assignment.
-  if (!enabled && !previous.enabled && !state.xraySweep) {
-    return;
-  }
-
-  const motion = !options?.immediate && !prefersReducedMotion();
-  const sameCut = previous.axis === state.xray.axis && previous.keepLow === state.xray.keepLow;
-  if (enabled && !previous.enabled) {
-    if (motion) {
-      const from = state.xraySweep && sameCut ? visualBefore : xrayRestEdge(state);
-      startXraySweep(state, "in", from, state.xray.position);
-    } else {
-      stopXraySweep(state);
-    }
-  } else if (!enabled && previous.enabled) {
-    if (motion) startXraySweep(state, "out", visualBefore, xrayRestEdge(state));
-    else stopXraySweep(state);
-  } else if (enabled && !sameCut) {
-    // A new axis or side is a fresh cut: glide in from that edge too.
-    if (motion) startXraySweep(state, "in", xrayRestEdge(state), state.xray.position);
-    else stopXraySweep(state);
-  } else if (options?.immediate) {
-    stopXraySweep(state);
-  } else if (state.xraySweep?.kind === "in" && previous.position !== state.xray.position) {
-    // The slider moved while the plane was still gliding in: steer to the new spot.
-    state.xraySweep.to = state.xray.position;
-  }
-  syncXrayCut(state);
-}
-
 const MODIFIER_EDGE_IDLE = new THREE.Color("#17b7e5");
 const MODIFIER_EDGE_HOVER = new THREE.Color("#2aa77e");
 const MODIFIER_EDGE_SELECTED = new THREE.Color("#ff8a1d");
@@ -8765,23 +8434,6 @@ function smoothPointsInBox(state: ThreeState, overlay: SmoothEditOverlay, box: {
     if (facing < 0) picked.push(v);
   }
   return picked;
-}
-
-/** The wall or gap on the X-ray cut under a screen point, unless a part in front hides the cut there. */
-function xraySectionMeasure(state: ThreeState, clientX: number, clientY: number) {
-  const layer = state.sectionCapLayer;
-  const plane = sectionCapPlane(layer);
-  if (!plane || state.xraySweep) return measureSectionAt(layer, null);
-  pointerWorldRay(state, clientX, clientY);
-  const ray = state.raycaster.ray;
-  const onPlane = ray.intersectPlane(plane, new THREE.Vector3());
-  if (!onPlane) return measureSectionAt(layer, null);
-  const reach = onPlane.distanceTo(ray.origin) - 1e-3;
-  // Only what is left after the cut can hide it; the cut-away half is not drawn.
-  const hidden = surfaceHits(state).some(
-    (hit) => hit.distance < reach && plane.distanceToPoint(hit.point) > 1e-3 && !heldInHoleOrGhost(hit.object),
-  );
-  return measureSectionAt(layer, hidden ? null : onPlane);
 }
 
 function pickSmoothPoint(state: ThreeState, overlay: SmoothEditOverlay, clientX: number, clientY: number) {
