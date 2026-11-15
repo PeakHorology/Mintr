@@ -86,7 +86,6 @@ import {
   classifySketchFaceHit,
   collectNearbyTriangleNormals,
   discCapHighlightPositions,
-  type SketchFaceClassification,
 } from "@/lib/sketchFaceClassify";
 import {
   connectedCoplanarTriangles,
@@ -115,18 +114,17 @@ import { LASER_JOB_COLOR } from "@/lib/laser/cutFile";
 import type { SettingsSectionId } from "@/lib/settingGuides";
 import { runPrintOverlayInWorker } from "@/lib/printOverlayClient";
 import type { PrintOverlayMarks } from "@/lib/printOverlayCollect";
-import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
+import { DEFAULT_SNAP_GRID, normalizeSnapGrid, normalizeWorkspaceSettings, saveGlobalWorkspaceDefaults, workplaneSettingsFingerprint, workspaceHydrationSyncDecision } from "@/lib/workplaneSettings";
 import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { drawnAssemblyHalfExtents } from "@/lib/editorGroup";
 import { csgTreeContainsId, hasUsableCsgResultMesh, viewportCadDisplayEdges, viewportGroupChildren } from "@/lib/csgTree";
 import { restoreGroupedChildren } from "@/lib/editorBoolean";
-import { cleanNearZero, cleanRotationDegrees, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, fallbackSolidColor, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import { cleanNearZero, conePatchForFootprint, coneUnitBaseScale, coneUnitTopScale, groupedChildrenDisplayScale, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, roofPatchForFootprint, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import { sphereTessellation } from "@/lib/sphereTessellation";
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
-import { xrayAxisBounds, xrayClipping, xraySpanCenter, type XrayAxis, type XraySpan } from "@/lib/xraySection";
+import { xrayAxisBounds, xrayClipping, xraySpanCenter, type XrayAxis } from "@/lib/xraySection";
 import { clearSectionCaps, measureSectionAt, rebuildSectionCaps, sectionCapPlane, updateSectionCaps } from "@/lib/xrayCaps";
-import type { SketchForgeMcpViewFace } from "@/lib/sketchforgeMcpProtocol";
 import {
   cameraFacingTiltAxis,
   clamp,
@@ -206,18 +204,58 @@ import {
   UI_THEME_CHANGED_EVENT,
   type UiTheme,
 } from "@/lib/uiTheme";
-
-const WORKPLANE_WIDTH = 200;
-const WORKPLANE_DEPTH = 140;
-const MIN_GRID_BLOCK_SIZE = 1;
-const MAX_GRID_BLOCK_SIZE = 200;
-const WORKSPACE_DEFAULTS_STORAGE_PREFIX = "sketchForge.workspaceDefault.";
-const DEFAULT_WORKSPACE = DEFAULT_WORKPLANE_WORKSPACE;
-const CAMERA_HOME = new THREE.Vector3(118, 96, 118);
-const CAMERA_TARGET = new THREE.Vector3(0, 0, 0);
+import {
+  CAMERA_HOME,
+  CAMERA_MAX_TARGET_Y,
+  CAMERA_MIN_TARGET_Y,
+  CAMERA_OVERLAY_SETTLE_FRAMES,
+  CAMERA_OVERLAY_TRAIL_EPS,
+  CAMERA_TARGET,
+  CUT_PREVIEW_PADDING,
+  DEFAULT_WORKSPACE,
+  MAX_ELEVATION,
+  MAX_GRID_BLOCK_SIZE,
+  MIN_ELEVATION,
+  MIN_GRID_BLOCK_SIZE,
+  MIN_SHAPE_SIZE,
+  WORKPLANE_DEPTH,
+  WORKPLANE_WIDTH,
+  WORKSPACE_DEFAULTS_STORAGE_PREFIX,
+} from "@/components/viewport/viewportConstants";
+import type {
+  CaptureSceneImageOptions,
+  CutPreviewShapeFrame,
+  DragItem,
+  DragState,
+  EdgeWipeState,
+  MarqueeState,
+  RankedRulerPick,
+  ResizeAnchorMemory,
+  ResizeSigns,
+  RotationHandleSide,
+  RotationHandleSides,
+  RulerAttachment,
+  RulerCandidate,
+  RulerEdgeAttachment,
+  RulerModel,
+  RulerOverlayState,
+  RulerPoint,
+  RulerPointDragState,
+  SelectionFrame,
+  ShapeUpdatePatch,
+  SketchFacePickOutcome,
+  SketchFaceRaycastHit,
+  SmoothEditOverlay,
+  SmoothPull,
+  ThreeState,
+  TransformDragState,
+  ViewCubeFace,
+  WorkspaceSettings,
+  XraySweep,
+} from "@/components/viewport/viewportTypes";
+export type { WorkspaceSettings, ViewCubeFace, ThreeState, CaptureSceneImageOptions, ViewportPerfStats, DragState, MarqueeState, RulerPoint, RulerAttachment, RulerEdgeAttachment, RulerSegment, RulerModel, RulerOverlayState, RulerCandidate, RulerPointDragState, RotationHandleSide, RotationHandleSides, ShapeUpdatePatch, ResizeSigns, ResizeAnchorMemory, TransformDragState, TransformDragItem, SelectionFrame, DragItem, SmoothEditOverlay, SmoothPull, RankedRulerPick } from "@/components/viewport/viewportTypes";
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
 let rememberedSketchCamera: { planeKey: string; pose: SketchCameraPose } | null = null;
-const MIN_SHAPE_SIZE = 0.01;
 
 /** A part inside `body`, at any depth, as it sits in the world; null when it is not in the body. */
 function worldPoseOfPartInBody(body: WorkplaneShape, partId: string): WorkplaneShape | null {
@@ -232,16 +270,6 @@ function worldPoseOfPartInBody(body: WorkplaneShape, partId: string): WorkplaneS
   }
   return null;
 }
-const CUT_PREVIEW_PADDING = 0.01;
-const MIN_ELEVATION = -180;
-const MAX_ELEVATION = 220;
-const CAMERA_MIN_TARGET_Y = -70;
-const CAMERA_MAX_TARGET_Y = 120;
-/** Quiet frames required before measurement overlays return after a camera move.
- * One still frame is enough: a later update that does not move the camera is ignored. */
-const CAMERA_OVERLAY_SETTLE_FRAMES = 1;
-/** Pose change below this is a trailing damping tick, not a new pan. distance² / quaternion epsilon. */
-const CAMERA_OVERLAY_TRAIL_EPS = 1e-4;
 const SHAPE_KINDS = new Set<ShapeAsset["kind"]>([
   "box",
   "cylinder",
@@ -494,9 +522,6 @@ export type WorkplaneViewportProps = {
 
 export type WorkplaneRotationEditApi = { dismiss: () => void };
 
-export type WorkspaceSettings = WorkplaneWorkspaceSettings;
-export type ViewCubeFace = "top" | "bottom" | "front" | "back" | "right" | "left";
-
 function readSavedWorkspaceDefault(key: string | null) {
   if (!key || typeof window === "undefined") {
     return null;
@@ -517,103 +542,6 @@ function readSavedWorkspaceDefault(key: string | null) {
     return null;
   }
 }
-
-type EdgeWipeState = {
-  handle: number;
-  /** The body before the edge treatment; dissolves away over the new one. */
-  outgoing: THREE.Object3D;
-  incoming: THREE.Object3D;
-  /** The treated edges, drawn in mint and faded out. */
-  trace: THREE.LineSegments;
-  /** Outgoing materials with the settings to restore if the fade is cut short. */
-  dissolving: Array<{
-    material: THREE.Material & { opacity: number };
-    opacity: number;
-    transparent: boolean;
-    depthWrite: boolean;
-    polygonOffsetFactor: number;
-    polygonOffsetUnits: number;
-  }>;
-  /** Incoming materials that carry the brief mint sheen. */
-  sheen: Array<{ material: THREE.MeshStandardMaterial; emissive: THREE.Color; intensity: number }>;
-  started: number;
-  duration: number;
-};
-
-export type ThreeState = {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
-  keyLight: THREE.DirectionalLight;
-  workplaneLayer: THREE.Group;
-  shapeLayer: THREE.Group;
-  helperLayer: THREE.Group;
-  modifierLayer: THREE.Group;
-  xrayLayer: THREE.Group;
-  /** X-ray's filled, hatched cut faces. */
-  sectionCapLayer: THREE.Group;
-  printLayer: THREE.Group;
-  printShapes: WorkplaneShape[];
-  showPrinterBed: boolean;
-  showOverhangStripes: boolean;
-  showThinWalls: boolean;
-  showSmallHoles: boolean;
-  showTrappedResin: boolean;
-  /** A laser design: parts show their job, cut, score or engrave, on top. */
-  laserDesign: boolean;
-  printerAngle: number;
-  nozzleMm: number;
-  overhangKey: string;
-  thinWallKey: string;
-  smallHoleKey: string;
-  trappedResinKey: string;
-  clippingPlane: THREE.Plane;
-  edgeWipe: EdgeWipeState | null;
-  /** Sharp meshes held while a fillet/chamfer preview is on screen, keyed by shape id. */
-  previewHold: Map<string, THREE.Object3D>;
-  modifierPreviewActive: boolean;
-  /** Bumps whenever the solids are rebuilt, so preview edge lines recut against the new mesh. */
-  shapeRevision: number;
-  modifierEdgeSource?: CadModifierEdge[];
-  modifierEdgeSelectedIds?: number[];
-  modifierEdgeHoverId?: number | null;
-  xray: {
-    enabled: boolean;
-    axis: XrayAxis;
-    position: number;
-    keepLow: boolean;
-    showPlane: boolean;
-    planeSize: number;
-    /** Model extent along the cut axis; the section plane glides in from just past it. */
-    bounds: XraySpan;
-  };
-  xraySweep: XraySweep | null;
-  raycaster: THREE.Raycaster;
-  pointer: THREE.Vector2;
-  dragPlane: THREE.Plane;
-  animationId: number;
-  needsRender: boolean;
-  cameraTween: {
-    handle: number;
-    started: number;
-    duration: number;
-    from: SketchCameraPose;
-    to: SketchCameraPose;
-  } | null;
-  wasCameraMoving: boolean;
-  cameraStillFrames: number;
-  /** True after measurements were projected from a camera that had finished moving. */
-  cameraOverlayHold: boolean;
-  cameraHoldPosition: THREE.Vector3;
-  cameraHoldTarget: THREE.Vector3;
-  cameraHoldQuaternion: THREE.Quaternion;
-  lastOverlaySync: number;
-  lastViewCubeSync: number;
-  rotationHandleSides: RotationHandleSides | null;
-  disposeInteractionListeners: () => void;
-  resize: () => void;
-};
 
 /** Force shadow maps to regenerate so contact/WebGL shadows track live drag previews. */
 function markShadowsDirty(state: ThreeState) {
@@ -644,11 +572,6 @@ function restoreDragShadows(state: ThreeState | null, drag: DragState) {
   drag.shadowsHidden = false;
   if (state) markShadowsDirty(state);
 }
-
-export type CaptureSceneImageOptions = {
-  /** When true (default), hide workplane/helpers for model-only captures (MCP / automation). */
-  hideOverlays?: boolean;
-};
 
 /** Capture the current viewport as a PNG data URL. */
 function captureSceneImage(state: ThreeState, options: CaptureSceneImageOptions = {}) {
@@ -721,215 +644,6 @@ function captureSceneImagesForThemes(
     state.needsRender = true;
   }
 }
-
-export type ViewportPerfStats = {
-  fps: number;
-  frameMs: number;
-  maxFrameMs: number;
-  drawCalls: number;
-  triangles: number;
-  points: number;
-  lines: number;
-  shapeCount: number;
-};
-
-declare global {
-  interface Window {
-    sketchforgePerf?: {
-      get: () => ViewportPerfStats;
-    };
-    sketchforgeCaptureCanvas?: (options?: CaptureSceneImageOptions) => string;
-    sketchforgeCaptureView?: (face?: SketchForgeMcpViewFace) => Promise<string> | string;
-    sketchforgeCaptureProjectThumbnails?: (options?: CaptureSceneImageOptions) => { light: string; dark: string } | null;
-  }
-}
-
-export type DragState = {
-  primaryId: string;
-  offsetX: number;
-  offsetZ: number;
-  planeY: number;
-  pointerId: number;
-  primaryStartX: number;
-  primaryStartZ: number;
-  items: DragItem[];
-  shadowsHidden?: boolean;
-  shadowCasters?: THREE.Mesh[];
-};
-
-export type MarqueeState = {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-  additive: boolean;
-  hasMoved: boolean;
-};
-
-export type RulerPoint = {
-  id: string;
-  x: number;
-  y: number;
-  z: number;
-  attachment?: RulerAttachment;
-};
-
-export type RulerAttachment = {
-  shapeId: string;
-  normalized: [number, number, number];
-  kind?: "vertex" | "edge" | "surface";
-  topologyKey?: string;
-  /** World-space unit normal of the picked face. */
-  normal?: [number, number, number];
-  circle?: CircleFit;
-};
-
-export type RulerEdgeAttachment = {
-  key: string;
-  shapeId: string;
-  normalizedPoints: Array<[number, number, number]>;
-  topologyKey?: string;
-  circle?: CircleFit;
-};
-
-export type RulerSegment = {
-  id: string;
-  startId: string;
-  endId: string;
-  edge?: RulerEdgeAttachment;
-};
-
-export type RulerModel = {
-  points: RulerPoint[];
-  segments: RulerSegment[];
-  startPointId: string | null;
-  hover: RulerCandidate | null;
-};
-
-export type RulerOverlayState = {
-  points: Array<RulerPoint & { screenX: number; screenY: number; alignKind?: MeasureAlignKind | null }>;
-  segments: Array<RulerSegment & {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-    screenPoints?: string;
-    labelX: number;
-    labelY: number;
-    label: string;
-    alignKind?: MeasureAlignKind | null;
-    ticks?: Array<{ x1: number; y1: number; x2: number; y2: number }>;
-  }>;
-  hover: {
-    screenX: number;
-    screenY: number;
-    edgeScreenPoints?: string;
-    alignKind?: MeasureAlignKind | null;
-    preview?: {
-      x1: number;
-      y1: number;
-      x2: number;
-      y2: number;
-      ticks?: Array<{ x1: number; y1: number; x2: number; y2: number }>;
-      label: string;
-      labelX: number;
-      labelY: number;
-    };
-  } | null;
-};
-
-export type RulerCandidate = {
-  x: number;
-  y: number;
-  z: number;
-  pointId?: string;
-  attachment?: RulerAttachment;
-  edge?: RulerEdgeAttachment;
-  alignHint?: MeasureAlignKind;
-};
-
-export type RulerPointDragState = {
-  pointId: string;
-  pointerId: number;
-};
-
-export type RotationHandleSide = "near" | "right" | "far" | "left";
-export type RotationHandleSides = Record<RotationAxis, RotationHandleSide>;
-export type ShapeUpdatePatch = Partial<WorkplaneShape> & { bakeTransform?: boolean; repeatDeltaBefore?: WorkplaneShape };
-export type ResizeSigns = { x: number; z: number };
-export type ResizeAnchorMemory = {
-  shapeId: string;
-  handleKey: string;
-  signs: ResizeSigns;
-  pressedY: "top" | "bottom" | null;
-};
-export type TransformDragState = {
-  id: string;
-  ids: string[];
-  kind: TransformHandleKind;
-  handleKey: string;
-  rotationAxis: RotationAxis;
-  pointerId: number;
-  startShape: WorkplaneShape;
-  items: TransformDragItem[];
-  selectionFrame: SelectionFrame;
-  startScreenAngle: number;
-  startClientX: number;
-  startClientY: number;
-  startScreenY: number;
-  startWorldY: number;
-  handleWorldOffset: number;
-  screenYPerWorldUnit: number;
-  scalePlaneY: number;
-  scalePlane?: THREE.Plane;
-  scaleSigns?: ResizeSigns;
-  scaleAnchorPoint?: THREE.Vector3;
-  scaleStartPoint?: THREE.Vector3;
-  rotationAxisVector?: THREE.Vector3;
-  rotationPivot?: THREE.Vector3;
-  rotationPlaneCenter?: THREE.Vector3;
-  rotationStartVector?: THREE.Vector3;
-  rotationScreenCenter?: { x: number; y: number };
-  rotationScreenSign?: number;
-  rotationStartQuaternion?: THREE.Quaternion;
-  wheelCenter?: RotationWheelView;
-  hasMoved?: boolean;
-};
-
-export type TransformDragItem = {
-  id: string;
-  startShape: WorkplaneShape;
-  startCenter: THREE.Vector3;
-  startQuaternion: THREE.Quaternion;
-};
-
-export type SelectionFrame = {
-  ids: string[];
-  center: THREE.Vector3;
-  quaternion: THREE.Quaternion;
-  xAxis: THREE.Vector3;
-  yAxis: THREE.Vector3;
-  zAxis: THREE.Vector3;
-  width: number;
-  height: number;
-  depth: number;
-  min: THREE.Vector3;
-  max: THREE.Vector3;
-  singleShape: WorkplaneShape | null;
-};
-
-export type DragItem = {
-  id: string;
-  startX: number;
-  startZ: number;
-  nextX: number;
-  nextZ: number;
-  visual: THREE.Object3D | null;
-  helper: THREE.Box3Helper | null;
-  helperBox: THREE.Box3 | null;
-  hadPreviewSimplified: boolean;
-};
 
 
 function rulerAttachmentWorld(state: ThreeState, attachment: RulerAttachment) {
@@ -1350,13 +1064,6 @@ function rulerWorldIsOccluded(state: ThreeState, targets: THREE.Object3D[], worl
   const slack = Math.max(0.75, rulerWorldPerPixel(state, world, rect) * 4);
   return firstDistance + slack < rulerPointAlongRay(state, world);
 }
-
-export type RankedRulerPick = {
-  screenDist: number;
-  rayDist: number;
-  rayT: number;
-  candidate: RulerCandidate;
-};
 
 const RULER_VERTEX_PX = 10;
 const RULER_EDGE_PX = 12;
@@ -8648,11 +8355,6 @@ function forEachPrintBodyMesh(root: THREE.Object3D, use: (mesh: THREE.Mesh) => v
   });
 }
 
-type CutPreviewShapeFrame = {
-  shape: WorkplaneShape;
-  worldBounds: THREE.Box3;
-};
-
 function shapeCutPreviewFrames(state: ThreeState, shapes: WorkplaneShape[]) {
   return shapes.reduce<Record<string, CutPreviewShapeFrame>>((frames, shape) => {
     const object = findShapeObject(state, shape.id);
@@ -9652,25 +9354,6 @@ function placeXrayPlane(object: THREE.Object3D, axis: XrayAxis, position: number
   object.position.y = position;
 }
 
-/**
- * X-ray entry and exit. The section plane is not switched on in place: it
- * starts just outside the model on the side that will be hidden and glides in
- * to the chosen position, so the part is seen being cut open; on the way out it
- * glides back past the edge and the clip is released once the model is whole.
- * Only the shared plane constant and the helper move per frame; materials are
- * re-walked at the transitions.
- */
-type XraySweep = {
-  kind: "in" | "out";
-  from: number;
-  to: number;
-  started: number;
-  duration: number;
-  handle: number;
-  /** Raw 0..1 time. */
-  progress: number;
-};
-
 const XRAY_SWEEP_IN_MS = 720;
 const XRAY_SWEEP_OUT_MS = 460;
 const XRAY_PLANE_FILL_OPACITY = 0.1;
@@ -10225,30 +9908,6 @@ function rebuildPushPullFaces(
   state.modifierLayer.userData.pushPullFaceLines = lines;
   state.needsRender = true;
 }
-
-/** Edit points on a Smooth body: dots on the smooth surface, joined by the net's edges. */
-export type SmoothEditOverlay = {
-  points: Float32Array;
-  edges: Uint32Array;
-  /** Edges that are sharp, drawn darker. */
-  sharpEdges: Uint32Array;
-  /** Which way the surface faces at each point. */
-  normals: Float32Array;
-  selected: ReadonlySet<number>;
-  /** Mirror twins of the selected points. */
-  twins: ReadonlySet<number>;
-  /** Points on a face kept flat (1): drawn grey, and they cannot be picked. */
-  locked: Uint8Array;
-  /** The first points were already there one detail down; they are drawn larger. */
-  coarseCount: number;
-  /** A click picks a face of the part to keep flat, instead of a point. */
-  pickingFace: boolean;
-  /** Drags pull straight in and out of the surface; otherwise Ctrl does. */
-  dragInOut: boolean;
-};
-
-/** How far a Smooth drag has gone: a move in world mm, or a number for straight out of the surface (negative is in). */
-export type SmoothPull = [number, number, number] | number;
 
 const SMOOTH_DOT_COLOR = new THREE.Color("#ffffff");
 const SMOOTH_DOT_SELECTED = new THREE.Color("#0098c7");
@@ -13151,19 +12810,6 @@ function disposeChildren(group: THREE.Group) {
 
 const SKETCH_FACE_HIGHLIGHT_NAME = "SketchFacePickHighlight";
 const SKETCH_FACE_OFFSET = 0.18;
-
-type SketchFacePickOutcome =
-  | { ok: true; plane: SketchPlane }
-  | { ok: false; reason: string };
-
-type SketchFaceRaycastHit = {
-  hit: THREE.Intersection;
-  mesh: THREE.Mesh;
-  worldNormal: THREE.Vector3;
-  shapeId: string;
-  key: string;
-  classification: SketchFaceClassification;
-};
 
 function raycastSketchFaceHit(
   state: ThreeState,
