@@ -1,0 +1,519 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`basic shapes > box keeps its shape 1`] = `
+{
+  "area": 2200,
+  "max": [
+    10,
+    10,
+    15,
+  ],
+  "min": [
+    -10,
+    0,
+    -15,
+  ],
+  "quality": "exact",
+  "volume": 6000,
+}
+`;
+
+exports[`basic shapes > cone keeps its shape 1`] = `
+{
+  "area": 1016.4,
+  "max": [
+    10,
+    20,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 2093.6,
+}
+`;
+
+exports[`basic shapes > cylinder keeps its shape 1`] = `
+{
+  "area": 2512.8,
+  "max": [
+    10,
+    30,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 9421,
+}
+`;
+
+exports[`basic shapes > half sphere keeps its shape 1`] = `
+{
+  "area": 941.3,
+  "max": [
+    10,
+    10,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 2089,
+}
+`;
+
+exports[`basic shapes > moved and turned box keeps its shape 1`] = `
+{
+  "area": 700,
+  "max": [
+    41.16,
+    9,
+    -2.67,
+  ],
+  "min": [
+    18.84,
+    4,
+    -21.33,
+  ],
+  "quality": "exact",
+  "volume": 1000,
+}
+`;
+
+exports[`basic shapes > polygon keeps its shape 1`] = `
+{
+  "area": 1119.6,
+  "max": [
+    8.66,
+    10,
+    10,
+  ],
+  "min": [
+    -8.66,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 2598.1,
+}
+`;
+
+exports[`basic shapes > pyramid keeps its shape 1`] = `
+{
+  "area": 1121.1,
+  "max": [
+    10,
+    15,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 2000,
+}
+`;
+
+exports[`basic shapes > round roof keeps its shape 1`] = `
+{
+  "area": 1342.5,
+  "max": [
+    10,
+    10,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 3141.5,
+}
+`;
+
+exports[`basic shapes > sphere keeps its shape 1`] = `
+{
+  "area": 1255.5,
+  "max": [
+    10,
+    20,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 4181.3,
+}
+`;
+
+exports[`basic shapes > torus keeps its shape 1`] = `
+{
+  "area": 1420.1,
+  "max": [
+    15,
+    6,
+    15,
+  ],
+  "min": [
+    -15,
+    0,
+    -15,
+  ],
+  "quality": "exact",
+  "volume": 2125.4,
+}
+`;
+
+exports[`basic shapes > tube keeps its shape 1`] = `
+{
+  "area": 1357.1,
+  "max": [
+    10,
+    10,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 1130.8,
+}
+`;
+
+exports[`basic shapes > wedge keeps its shape 1`] = `
+{
+  "area": 1247.2,
+  "max": [
+    10,
+    10,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 2000,
+}
+`;
+
+exports[`designs built on the browser engine > a block with a hole through it 1`] = `
+{
+  "area": 2350.8,
+  "max": [
+    15,
+    10,
+    10,
+  ],
+  "min": [
+    -15,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 5497.4,
+}
+`;
+
+exports[`designs built on the browser engine > a box and a cylinder joined 1`] = `
+{
+  "area": 2158.6,
+  "max": [
+    16,
+    20,
+    10,
+  ],
+  "min": [
+    -10,
+    0,
+    -10,
+  ],
+  "quality": "exact",
+  "volume": 5696.3,
+}
+`;
+
+exports[`designs built on the browser engine > a filleted, hollowed cup 1`] = `
+{
+  "area": 5921.9,
+  "max": [
+    15,
+    20,
+    15,
+  ],
+  "min": [
+    -15,
+    0,
+    -15,
+  ],
+  "quality": "exact",
+  "volume": 5690.8,
+}
+`;
+
+exports[`designs built on the browser engine > a group inside a group 1`] = `
+{
+  "area": 5680,
+  "max": [
+    20,
+    20,
+    20,
+  ],
+  "min": [
+    -20,
+    0,
+    -20,
+  ],
+  "quality": "exact",
+  "volume": 8600,
+}
+`;
+
+exports[`designs built on the browser engine > a plate with four mounting holes 1`] = `
+{
+  "area": 2870.3,
+  "max": [
+    20,
+    3,
+    15,
+  ],
+  "min": [
+    -20,
+    0,
+    -15,
+  ],
+  "quality": "exact",
+  "volume": 3449.2,
+}
+`;
+
+exports[`designs built on the browser engine > the Tinkercad design tinkercad-all-shapes 1`] = `
+[
+  {
+    "area": 1255.5,
+    "max": [
+      55,
+      20,
+      57,
+    ],
+    "min": [
+      35,
+      0,
+      37,
+    ],
+    "name": "Sphere",
+    "quality": "exact",
+    "volume": 4181.3,
+  },
+  {
+    "area": 1016.4,
+    "max": [
+      0.07,
+      23.21,
+      51,
+    ],
+    "min": [
+      -21.14,
+      2,
+      31,
+    ],
+    "name": "Cone",
+    "quality": "exact",
+    "volume": 2093.6,
+  },
+  {
+    "area": 1342.5,
+    "max": [
+      -26,
+      10,
+      26,
+    ],
+    "min": [
+      -46,
+      0,
+      6,
+    ],
+    "name": "Round Roof",
+    "quality": "exact",
+    "volume": 3141.5,
+  },
+  {
+    "area": 1765.7,
+    "max": [
+      -61,
+      20,
+      32,
+    ],
+    "min": [
+      -81,
+      0,
+      12,
+    ],
+    "name": "Wedge",
+    "quality": "exact",
+    "volume": 4000,
+  },
+  {
+    "area": 3276.4,
+    "max": [
+      -5.34,
+      20,
+      3,
+    ],
+    "min": [
+      -38,
+      0,
+      -24,
+    ],
+    "name": "Polygon",
+    "quality": "exact",
+    "volume": 13227.4,
+  },
+  {
+    "area": 739.6,
+    "max": [
+      36,
+      5,
+      70,
+    ],
+    "min": [
+      16,
+      0,
+      50,
+    ],
+    "name": "Torus",
+    "quality": "exact",
+    "volume": 922.5,
+  },
+  {
+    "area": 1374.3,
+    "max": [
+      39,
+      10,
+      33,
+    ],
+    "min": [
+      19,
+      0,
+      13,
+    ],
+    "name": "Tube",
+    "quality": "exact",
+    "volume": 1374.2,
+  },
+  {
+    "area": 2871.2,
+    "max": [
+      19,
+      20,
+      3,
+    ],
+    "min": [
+      -1,
+      0,
+      -17,
+    ],
+    "name": "Group",
+    "quality": "faceted",
+    "volume": 6429.4,
+  },
+  {
+    "area": 2988.9,
+    "max": [
+      -42,
+      20,
+      65,
+    ],
+    "min": [
+      -82,
+      0,
+      44,
+    ],
+    "name": "Tie",
+    "quality": "exact",
+    "volume": 6666.7,
+  },
+]
+`;
+
+exports[`designs built on the browser engine > the Tinkercad design tinkercad-basket-8-quadrant 1`] = `
+[
+  {
+    "area": 22472.7,
+    "max": [
+      43,
+      10,
+      34,
+    ],
+    "min": [
+      -21,
+      0,
+      -30,
+    ],
+    "name": "Group",
+    "quality": "faceted",
+    "volume": 11355,
+  },
+]
+`;
+
+exports[`designs built on the browser engine > the Tinkercad design tinkercad-basket-cage 1`] = `
+[
+  {
+    "area": 20217.3,
+    "max": [
+      26,
+      59,
+      56,
+    ],
+    "min": [
+      -48,
+      0,
+      -18,
+    ],
+    "name": "Group",
+    "quality": "exact",
+    "volume": 30182.7,
+  },
+]
+`;
+
+exports[`designs built on the browser engine > the Tinkercad design tinkercad-working-plate 1`] = `
+[
+  {
+    "area": 77217.5,
+    "max": [
+      57,
+      8,
+      109,
+    ],
+    "min": [
+      -93,
+      0,
+      -111,
+    ],
+    "name": "Group",
+    "quality": "faceted",
+    "volume": 218590.5,
+  },
+]
+`;
