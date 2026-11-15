@@ -5,7 +5,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from "react-dom";
 import * as THREE from "three";
 import { Brush, Evaluator, HOLLOW_INTERSECTION } from "three-bvh-csg";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { meshForShape } from "@/lib/editorShapeMesh";
 import { gearPatchForFootprint } from "@/lib/gearProfile";
 import { AlignOverlay, CircularPatternOverlay, MirrorOverlay, type AlignOverlayState, type CircularPatternOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
@@ -42,11 +41,9 @@ import { HOTKEYS_CHANGED_EVENT, isHotkeyRecordingActive, loadHotkeyBindings, mat
 import { clipPolylineToSurface, indexMeshSurface, SURFACE_LINE_TOLERANCE, type MeshSurfaceIndex } from "@/lib/clipEdgesToMesh";
 import { defaultSketchPlane, sketchPlaneFromThreeVectors } from "@/lib/sketchPlane";
 import {
-  applySketchCameraPose,
   captureSketchCameraPose,
   clearSketchOnModel,
   emptySketch3DPointer,
-  interpolateSketchCameraPose,
   sketch3DLineKey,
   sketch3DMeasureLabel,
   sketch3DSizeCallouts,
@@ -54,11 +51,7 @@ import {
   sketch3DPointerDown,
   sketch3DPointerMove,
   sketch3DPointerUp,
-  sketchCameraEase,
-  sketchCameraNearlyFramed,
-  sketchCameraTweenMs,
   sketchExtrudePreviewPose,
-  sketchFramingPose,
   syncSketchOnModel,
   type Sketch3DPointerState,
   type SketchCameraPose,
@@ -93,7 +86,7 @@ import { cleanNearZero, conePatchForFootprint, mirrorSign, resizedShapeSize, sha
 import { roofAnglesFromProfile } from "@/lib/roofGeometry";
 import { computeViewNudgeAxes, type ViewNudgeAxes } from "@/lib/viewNudge";
 import { xrayAxisBounds, xraySpanCenter, type XrayAxis } from "@/lib/xraySection";
-import { clearSectionCaps, measureSectionAt, updateSectionCaps } from "@/lib/xrayCaps";
+import { clearSectionCaps, measureSectionAt } from "@/lib/xrayCaps";
 import {
   cameraFacingTiltAxis,
   clamp,
@@ -111,7 +104,6 @@ import {
   rulerShapeDimensions,
   screenAngle,
   shapesInteractionFingerprint,
-  shouldPreserveDrawingBufferForLocalAutomation,
   snapPositionValue,
   snapStep,
   snapValue,
@@ -144,7 +136,6 @@ import {
   type PushPullScreenAxis,
 } from "@/lib/pushPullGeometry";
 import { prefersReducedMotion } from "@/lib/chromePresence";
-import { hardwareProfile, resolvePixelRatio } from "@/lib/desktopHardware";
 import {
   onSurfaceTextureReady,
 } from "@/lib/texture/texturedShape";
@@ -154,24 +145,14 @@ import { pointOnStamp } from "@/lib/texture/texturedShape";
 import { normalizeSurfaceTexture } from "@/lib/texture/surfaceTexture";
 import { endShapeAssetDrag, getShapeAssetDrag } from "@/lib/shapeAssetDrag";
 import {
-  DEFAULT_LIGHT_VIEWPORT_BACKGROUND,
-  resolveViewportBackground,
   UI_THEME_CHANGED_EVENT,
 } from "@/lib/uiTheme";
 import {
-  CAMERA_HOME,
-  CAMERA_MAX_TARGET_Y,
-  CAMERA_MIN_TARGET_Y,
   CAMERA_OVERLAY_SETTLE_FRAMES,
-  CAMERA_OVERLAY_TRAIL_EPS,
-  CAMERA_TARGET,
   CUT_PREVIEW_PADDING,
-  DEFAULT_WORKSPACE,
   MAX_ELEVATION,
   MIN_ELEVATION,
   MIN_SHAPE_SIZE,
-  WORKPLANE_DEPTH,
-  WORKPLANE_WIDTH,
   WORKSPACE_DEFAULTS_STORAGE_PREFIX,
 } from "@/components/viewport/viewportConstants";
 import type {
@@ -286,6 +267,27 @@ import {
 } from "@/components/viewport/dragPreview";
 import { rebuildPrintOverlays } from "@/components/viewport/printOverlays";
 import { rebuildWorkplane, setCrystalWarning } from "@/components/viewport/workplaneScene";
+import {
+  applyRememberedSketchCamera,
+  cameraHoldPoseMoved,
+  cancelSketchCameraTween,
+  constrainCamera,
+  glideCameraHome,
+  glideCameraToViewFace,
+  orbitCameraByPointerDelta,
+  PART_SETTLE_MS,
+  rememberCameraHoldPose,
+  resetCamera,
+  setCameraToViewFace,
+  settledPartPose,
+  sketch3dHost,
+  startCameraTween,
+  startSketchCameraTween,
+  stopCameraCoast,
+  syncViewCube,
+  viewCubeFaceFromTarget,
+} from "@/components/viewport/camera";
+import { createThreeScene } from "@/components/viewport/createThreeScene";
 export { SKETCH_EXTRUDE_PREVIEW_ID } from "@/components/viewport/shapeMotion";
 export type { WorkspaceSettings, ViewCubeFace, ThreeState, CaptureSceneImageOptions, ViewportPerfStats, DragState, MarqueeState, RulerPoint, RulerAttachment, RulerEdgeAttachment, RulerSegment, RulerModel, RulerOverlayState, RulerCandidate, RulerPointDragState, RotationHandleSide, RotationHandleSides, ShapeUpdatePatch, ResizeSigns, ResizeAnchorMemory, TransformDragState, TransformDragItem, SelectionFrame, DragItem, SmoothEditOverlay, SmoothPull, RankedRulerPick } from "@/components/viewport/viewportTypes";
 /** Last 3D sketch camera, kept when Flat sketch unmounts the viewport so return restores it. */
@@ -6083,478 +6085,12 @@ export function WorkplaneViewport({
   );
 }
 
-function resolveHostSize(host: HTMLElement) {
-  return {
-    width: Math.max(1, Math.floor(host.clientWidth)),
-    height: Math.max(1, Math.floor(host.clientHeight)),
-    isValid: host.clientWidth >= 2 && host.clientHeight >= 2,
-  };
-}
-
-function createThreeScene(host: HTMLDivElement): ThreeState {
-  // Stencil is for X-ray's filled cut faces; three.js leaves it off unless asked.
-  const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: "high-performance", preserveDrawingBuffer: shouldPreserveDrawingBufferForLocalAutomation() });
-  renderer.setPixelRatio(resolvePixelRatio(window.devicePixelRatio || 1));
-  renderer.shadowMap.autoUpdate = false;
-  renderer.domElement.addEventListener("webglcontextlost", (event) => {
-    event.preventDefault();
-  });
-  const initialSize = resolveHostSize(host);
-  // Keep CSS (width/height: 100%) in charge of layout; only sync the drawing buffer.
-  // updateStyle=true can lock the canvas to a 0-height first paint and leave the
-  // workplane stranded as a thin strip until a window resize happens.
-  renderer.setSize(initialSize.width, initialSize.height, false);
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.localClippingEnabled = true;
-  renderer.shadowMap.enabled = DEFAULT_WORKSPACE.showShadows;
-  renderer.shadowMap.type = hardwareProfile().highEnd ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
-  host.appendChild(renderer.domElement);
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(resolveViewportBackground(DEFAULT_LIGHT_VIEWPORT_BACKGROUND));
-
-  const camera = new THREE.PerspectiveCamera(38, initialSize.width / initialSize.height, 0.1, 6000);
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  // Higher than 0.08 so the glide dies in fewer frames. controls.update() then
-  // reports still sooner, and the measurement fade-in is not waiting on a long coast.
-  controls.dampingFactor = 0.22;
-  controls.rotateSpeed = 0.58;
-  controls.zoomSpeed = 0.72;
-  controls.panSpeed = 0.65;
-  controls.screenSpacePanning = true;
-  controls.zoomToCursor = true;
-  controls.mouseButtons = {
-    LEFT: null,
-    MIDDLE: THREE.MOUSE.PAN,
-    RIGHT: THREE.MOUSE.ROTATE,
-  };
-  controls.minDistance = 18;
-  controls.maxDistance = 4200;
-  controls.minPolarAngle = 0.06;
-  controls.maxPolarAngle = Math.PI - 0.06;
-  controls.target.copy(CAMERA_TARGET);
-
-  const ambient = new THREE.HemisphereLight("#ffffff", "#d6edf5", 2.1);
-  scene.add(ambient);
-
-  const key = new THREE.DirectionalLight("#ffffff", 3.1);
-  key.position.set(70, 130, 75);
-  key.castShadow = true;
-  // The light does not follow the camera. Rebuilding the shadow map on every orbit
-  // or drag frame redraws the whole assembly. Update it only when geometry moves.
-  key.shadow.autoUpdate = false;
-  key.shadow.camera.left = -130;
-  key.shadow.camera.right = 130;
-  key.shadow.camera.top = 130;
-  key.shadow.camera.bottom = -130;
-  key.shadow.camera.near = 1;
-  key.shadow.camera.far = 400;
-  key.shadow.mapSize.set(hardwareProfile().shadowMapSize, hardwareProfile().shadowMapSize);
-  key.shadow.bias = -0.00008;
-  key.shadow.normalBias = 0.045;
-  key.shadow.camera.updateProjectionMatrix();
-  scene.add(key);
-
-  const fill = new THREE.DirectionalLight("#c8f4ff", 1.2);
-  fill.position.set(-95, 45, -60);
-  scene.add(fill);
-
-  const workplaneLayer = new THREE.Group();
-  workplaneLayer.name = "Workplane";
-  const shapeLayer = new THREE.Group();
-  shapeLayer.name = "Shapes";
-  const helperLayer = new THREE.Group();
-  helperLayer.name = "SelectionHelpers";
-  const modifierLayer = new THREE.Group();
-  modifierLayer.name = "EdgeModifier";
-  const xrayLayer = new THREE.Group();
-  xrayLayer.name = "XrayCuttingPlane";
-  const sectionCapLayer = new THREE.Group();
-  sectionCapLayer.name = "XraySectionCaps";
-  const printLayer = new THREE.Group();
-  printLayer.name = "Printer";
-  printLayer.renderOrder = 6;
-  scene.add(workplaneLayer, shapeLayer, printLayer, helperLayer, modifierLayer, xrayLayer, sectionCapLayer);
-  // Cut faces follow their parts as they move, every frame, after the scene's matrices are worked out.
-  scene.onBeforeRender = (renderer, _scene, camera) => updateSectionCaps(sectionCapLayer, camera, renderer);
-
-  const raycaster = new THREE.Raycaster();
-  raycaster.params.Line = { threshold: 1.15 };
-  const pointer = new THREE.Vector2();
-  const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-  const clippingPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 40);
-
-  let hadValidSize = initialSize.isValid;
-  const resize = () => {
-    const next = resolveHostSize(host);
-    // Ignore collapsed hosts (display:none / zero layout). Shrinking the buffer
-    // to 1×1 here left the workplane blank when the editor was shown again.
-    if (!next.isValid) {
-      return;
-    }
-    renderer.setPixelRatio(resolvePixelRatio(window.devicePixelRatio || 1));
-    renderer.setSize(next.width, next.height, false);
-    camera.aspect = next.width / next.height;
-    camera.updateProjectionMatrix();
-    // Resizing wipes the canvas. Draw again right away, before the browser paints, or the
-    // workplane shows blank for a frame (a flicker whenever a panel or bar comes and goes).
-    try {
-      renderer.render(scene, camera);
-    } catch {
-      // The render loop reports failures; this is only the instant redraw.
-    }
-    // First time the host gets a real layout, snap home so a zero-size init
-    // cannot leave the camera/frustum looking past an invisible workplane.
-    if (!hadValidSize) {
-      resetCamera(state);
-      hadValidSize = true;
-    }
-    state.needsRender = true;
-  };
-
-  const state = {
-    renderer,
-    scene,
-    camera,
-    controls,
-    keyLight: key,
-    workplaneLayer,
-    shapeLayer,
-    helperLayer,
-    modifierLayer,
-    xrayLayer,
-    sectionCapLayer,
-    printLayer,
-    printShapes: [],
-    showPrinterBed: true,
-    showOverhangStripes: false,
-    showThinWalls: false,
-    showSmallHoles: false,
-    showTrappedResin: false,
-    laserDesign: false,
-    printerAngle: 45,
-    nozzleMm: 0.4,
-    overhangKey: "",
-    thinWallKey: "",
-    smallHoleKey: "",
-    trappedResinKey: "",
-    clippingPlane,
-    edgeWipe: null,
-    previewHold: new Map<string, THREE.Object3D>(),
-    modifierPreviewActive: false,
-    shapeRevision: 0,
-    xray: {
-      enabled: false,
-      axis: "y" as const,
-      position: 40,
-      keepLow: true,
-      showPlane: false,
-      planeSize: Math.max(WORKPLANE_WIDTH, WORKPLANE_DEPTH) * 1.15,
-      bounds: { min: -4, max: 24 },
-    },
-    xraySweep: null,
-    raycaster,
-    pointer,
-    dragPlane,
-    animationId: 0,
-    needsRender: true,
-    cameraTween: null,
-    wasCameraMoving: false,
-    cameraStillFrames: 0,
-    cameraOverlayHold: false,
-    cameraHoldPosition: new THREE.Vector3(),
-    cameraHoldTarget: new THREE.Vector3(),
-    cameraHoldQuaternion: new THREE.Quaternion(),
-    lastOverlaySync: 0,
-    lastViewCubeSync: 0,
-    rotationHandleSides: null,
-    disposeInteractionListeners: () => {},
-    resize,
-  };
-  const requestRender = () => {
-    state.needsRender = true;
-  };
-  const configureSketchForgeMouseButtons = (event: PointerEvent) => {
-    controls.mouseButtons.LEFT = event.button === 0 && (event.ctrlKey || event.metaKey) ? THREE.MOUSE.PAN : null;
-    controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
-    controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
-  };
-  const resetSketchForgeMouseButtons = () => {
-    controls.mouseButtons.LEFT = null;
-    controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
-    controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
-  };
-  const preventContextMenu = (event: MouseEvent) => {
-    event.preventDefault();
-  };
-  // The canvas never takes focus, so a rename, a size label or the W×L field stayed focused
-  // after a click in the view: the typed value was dropped and Delete/arrows went into the box.
-  // Let go of the field first so it commits like it would on Tab.
-  const releaseTextField = () => {
-    const active = document.activeElement;
-    if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement)) return;
-    if (active.closest("[data-keep-focus-on-view]")) return;
-    active.blur();
-  };
-  controls.addEventListener("change", requestRender);
-  renderer.domElement.addEventListener("pointerdown", releaseTextField, { capture: true });
-  renderer.domElement.addEventListener("pointerdown", configureSketchForgeMouseButtons, { capture: true });
-  renderer.domElement.addEventListener("pointerup", resetSketchForgeMouseButtons);
-  renderer.domElement.addEventListener("pointercancel", resetSketchForgeMouseButtons);
-  renderer.domElement.addEventListener("contextmenu", preventContextMenu);
-  renderer.domElement.addEventListener("wheel", requestRender, { passive: true });
-  renderer.domElement.addEventListener("pointerdown", requestRender);
-  state.disposeInteractionListeners = () => {
-    controls.removeEventListener("change", requestRender);
-    renderer.domElement.removeEventListener("pointerdown", releaseTextField, { capture: true });
-    renderer.domElement.removeEventListener("pointerdown", configureSketchForgeMouseButtons, { capture: true });
-    renderer.domElement.removeEventListener("pointerup", resetSketchForgeMouseButtons);
-    renderer.domElement.removeEventListener("pointercancel", resetSketchForgeMouseButtons);
-    renderer.domElement.removeEventListener("contextmenu", preventContextMenu);
-    renderer.domElement.removeEventListener("wheel", requestRender);
-    renderer.domElement.removeEventListener("pointerdown", requestRender);
-  };
-  rebuildWorkplane(state, DEFAULT_WORKSPACE);
-  return state;
-}
-
-function sketch3dHost(state: ThreeState) {
-  return {
-    scene: state.scene,
-    camera: state.camera,
-    domElement: state.renderer.domElement,
-    controls: state.controls,
-  };
-}
-
 function rememberSketchCamera(state: ThreeState, planeKey: string) {
   if (!planeKey) return;
   rememberedSketchCamera = {
     planeKey,
     pose: captureSketchCameraPose(sketch3dHost(state)),
   };
-}
-
-function applyRememberedSketchCamera(state: ThreeState, pose: SketchCameraPose) {
-  cancelSketchCameraTween(state);
-  applySketchCameraPose(sketch3dHost(state), pose);
-  stopCameraCoast(state.controls);
-  state.controls.enabled = true;
-  state.controls.enableDamping = true;
-  state.controls.update();
-  state.needsRender = true;
-}
-
-function restoreOrbitCameraUp(state: ThreeState) {
-  const up = state.camera.up;
-  if (up.x === 0 && up.y === 1 && up.z === 0) return;
-  state.camera.up.set(0, 1, 0);
-  state.camera.lookAt(state.controls.target);
-  state.camera.updateProjectionMatrix();
-  state.needsRender = true;
-}
-
-function cancelSketchCameraTween(state: ThreeState) {
-  const tween = state.cameraTween;
-  if (tween?.handle) cancelAnimationFrame(tween.handle);
-  const hadTween = Boolean(tween);
-  state.cameraTween = null;
-  restoreOrbitCameraUp(state);
-  if (!hadTween) return;
-  state.controls.enabled = true;
-  state.controls.enableDamping = true;
-}
-
-function startSketchCameraTween(state: ThreeState, session: SketchOnModelSession) {
-  startCameraTween(state, sketchFramingPose(session));
-}
-
-/**
- * Glide the camera to `to`, orbiting around the target rather than sliding through the model.
- * Used for sketch framing, Home, and view-cube clicks; reduced motion jumps straight there.
- */
-function startCameraTween(state: ThreeState, to: SketchCameraPose, durationMs?: number) {
-  const host = sketch3dHost(state);
-  const from = captureSketchCameraPose(host);
-  cancelSketchCameraTween(state);
-  if (prefersReducedMotion() || sketchCameraNearlyFramed(from, to)) {
-    applySketchCameraPose(host, to);
-    state.needsRender = true;
-    return;
-  }
-  state.controls.enabled = false;
-  state.controls.enableDamping = false;
-  stopCameraCoast(state.controls);
-  state.wasCameraMoving = true;
-  state.cameraStillFrames = 0;
-  state.cameraOverlayHold = false;
-  const tween = {
-    handle: 0,
-    started: performance.now(),
-    duration: durationMs ?? sketchCameraTweenMs(from, to),
-    from,
-    to,
-  };
-  state.cameraTween = tween;
-  const tick = (now: number) => {
-    if (state.cameraTween !== tween) return;
-    const t = Math.min(1, (now - tween.started) / tween.duration);
-    applySketchCameraPose(host, interpolateSketchCameraPose(tween.from, tween.to, sketchCameraEase(t)));
-    state.needsRender = true;
-    if (t < 1) {
-      tween.handle = requestAnimationFrame(tick);
-      return;
-    }
-    applySketchCameraPose(host, tween.to);
-    cancelSketchCameraTween(state);
-  };
-  tween.handle = requestAnimationFrame(tick);
-  state.needsRender = true;
-}
-
-const PART_SETTLE_MS = 900;
-
-/** A step back and a touch higher than now, around the same point: the new part comes into view. */
-function settledPartPose(state: ThreeState): SketchCameraPose {
-  const target = state.controls.target;
-  const offset = state.camera.position.clone().sub(target);
-  offset.multiplyScalar(1.14);
-  offset.y += offset.length() * 0.04;
-  return {
-    target: { x: target.x, y: target.y, z: target.z },
-    position: { x: target.x + offset.x, y: target.y + offset.y, z: target.z + offset.z },
-    up: { x: 0, y: 1, z: 0 },
-  };
-}
-
-function resetCamera(state: ThreeState) {
-  cancelSketchCameraTween(state);
-  state.controls.enabled = true;
-  state.camera.up.set(0, 1, 0);
-  state.camera.position.copy(CAMERA_HOME);
-  state.controls.target.copy(CAMERA_TARGET);
-  state.camera.lookAt(CAMERA_TARGET);
-  state.camera.updateProjectionMatrix();
-  state.controls.update();
-  state.needsRender = true;
-}
-
-/**
- * Home, as a glide: the starting angle, around the parts on the plane and far enough back to
- * show all of them. A fixed pose cropped anything much over 100 mm. Never closer than the
- * starting view, so a small part still sits on its workplane.
- */
-function glideCameraHome(state: ThreeState) {
-  const offset = CAMERA_HOME.clone().sub(CAMERA_TARGET);
-  const baseDistance = offset.length();
-  offset.normalize();
-  const bounds = new THREE.Box3();
-  for (const child of state.shapeLayer.children) {
-    if (!child.visible || !child.userData.shapeId || child.userData.edgeWipeRole === "out" || child.userData.previewHold) continue;
-    bounds.expandByObject(child);
-  }
-  let target = CAMERA_TARGET.clone();
-  let distance = baseDistance;
-  if (!bounds.isEmpty()) {
-    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
-    const camera = state.camera as THREE.PerspectiveCamera;
-    const verticalFov = THREE.MathUtils.degToRad(camera.fov);
-    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
-    const fit = (sphere.radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * 1.05;
-    if (fit > baseDistance) {
-      target = sphere.center;
-      distance = fit;
-    }
-  }
-  startCameraTween(state, {
-    target: { x: target.x, y: target.y, z: target.z },
-    position: { x: target.x + offset.x * distance, y: target.y + offset.y * distance, z: target.z + offset.z * distance },
-    up: { x: 0, y: 1, z: 0 },
-  });
-}
-
-/** A view-cube face, as a glide: the same pose as setCameraToViewFace. */
-function glideCameraToViewFace(state: ThreeState, face: ViewCubeFace) {
-  const target = state.controls.target;
-  const distance = clamp(state.camera.position.clone().sub(target).length(), 22, 4200);
-  const direction = VIEW_FACE_DIRECTIONS[face];
-  startCameraTween(state, {
-    target: { x: target.x, y: target.y, z: target.z },
-    position: { x: target.x + direction.x * distance, y: target.y + direction.y * distance, z: target.z + direction.z * distance },
-    up: { x: 0, y: 1, z: 0 },
-  });
-}
-
-const VIEW_FACE_DIRECTIONS: Record<ViewCubeFace, { x: number; y: number; z: number }> = {
-  top: { x: 0, y: 1, z: 0 },
-  bottom: { x: 0, y: -1, z: 0 },
-  front: { x: 0, y: 0, z: 1 },
-  back: { x: 0, y: 0, z: -1 },
-  right: { x: 1, y: 0, z: 0 },
-  left: { x: -1, y: 0, z: 0 },
-};
-
-function viewCubeFaceFromTarget(target: EventTarget | null): ViewCubeFace | null {
-  const element = target instanceof Element ? target.closest("[data-view-cube-face]") : null;
-  const face = element?.getAttribute("data-view-cube-face");
-  if (face === "top" || face === "bottom" || face === "front" || face === "back" || face === "right" || face === "left") {
-    return face;
-  }
-  return null;
-}
-
-function setCameraToViewFace(state: ThreeState, face: ViewCubeFace) {
-  cancelSketchCameraTween(state);
-  const offset = state.camera.position.clone().sub(state.controls.target);
-  const distance = clamp(offset.length(), 22, 4200);
-  const directionByFace: Record<ViewCubeFace, THREE.Vector3> = {
-    top: new THREE.Vector3(0, 1, 0),
-    bottom: new THREE.Vector3(0, -1, 0),
-    front: new THREE.Vector3(0, 0, 1),
-    back: new THREE.Vector3(0, 0, -1),
-    right: new THREE.Vector3(1, 0, 0),
-    left: new THREE.Vector3(-1, 0, 0),
-  };
-  const direction = directionByFace[face].clone().normalize();
-
-  state.camera.up.set(0, 1, 0);
-  state.camera.position.copy(state.controls.target).add(direction.multiplyScalar(distance));
-  state.camera.lookAt(state.controls.target);
-  state.camera.updateProjectionMatrix();
-  state.controls.update();
-  state.needsRender = true;
-}
-
-const VIEW_CUBE_ORBIT_RADIANS_PER_PX = 0.0075;
-
-function orbitCameraByPointerDelta(state: ThreeState, deltaX: number, deltaY: number) {
-  cancelSketchCameraTween(state);
-  const offset = state.camera.position.clone().sub(state.controls.target);
-  const spherical = new THREE.Spherical().setFromVector3(offset);
-  spherical.theta -= deltaX * VIEW_CUBE_ORBIT_RADIANS_PER_PX;
-  spherical.phi = clamp(
-    spherical.phi - deltaY * VIEW_CUBE_ORBIT_RADIANS_PER_PX,
-    0.08,
-    Math.PI - 0.08,
-  );
-  spherical.makeSafe();
-  offset.setFromSpherical(spherical);
-  state.camera.up.set(0, 1, 0);
-  state.camera.position.copy(state.controls.target).add(offset);
-  state.camera.lookAt(state.controls.target);
-  state.camera.updateProjectionMatrix();
-  state.controls.update();
-  state.needsRender = true;
-}
-
-function stopCameraCoast(controls: OrbitControls) {
-  const coast = controls as OrbitControls & {
-    _sphericalDelta?: { set: (x: number, y: number, z: number) => void };
-    _panOffset?: { set: (x: number, y: number, z: number) => void };
-  };
-  coast._sphericalDelta?.set(0, 0, 0);
-  coast._panOffset?.set(0, 0, 0);
 }
 
 const FACE_SNAP_HOVER_NAME = "FaceSnapHover";
@@ -6697,47 +6233,6 @@ function faceSnapNormal(normal: THREE.Vector3): [number, number, number] | null 
     return [0, 0, Math.sign(unit.z) || 1];
   }
   return [unit.x, unit.y, unit.z];
-}
-
-function rememberCameraHoldPose(state: ThreeState) {
-  state.cameraHoldPosition.copy(state.camera.position);
-  state.cameraHoldTarget.copy(state.controls.target);
-  state.cameraHoldQuaternion.copy(state.camera.quaternion);
-}
-
-function cameraHoldPoseMoved(state: ThreeState) {
-  const rotationDelta = 8 * (1 - Math.abs(state.cameraHoldQuaternion.dot(state.camera.quaternion)));
-  return (
-    state.camera.position.distanceToSquared(state.cameraHoldPosition) > CAMERA_OVERLAY_TRAIL_EPS ||
-    state.controls.target.distanceToSquared(state.cameraHoldTarget) > CAMERA_OVERLAY_TRAIL_EPS ||
-    rotationDelta > CAMERA_OVERLAY_TRAIL_EPS
-  );
-}
-
-function constrainCamera(state: ThreeState, workspace: WorkspaceSettings) {
-  const target = state.controls.target;
-  const previousTarget = target.clone();
-  target.x = clamp(target.x, -workspace.width / 2, workspace.width / 2);
-  target.y = clamp(target.y, CAMERA_MIN_TARGET_Y, CAMERA_MAX_TARGET_Y);
-  target.z = clamp(target.z, -workspace.depth / 2, workspace.depth / 2);
-
-  const targetShift = target.clone().sub(previousTarget);
-  if (targetShift.lengthSq() > 0) {
-    state.camera.position.add(targetShift);
-    state.camera.updateProjectionMatrix();
-  }
-}
-
-function syncViewCube(state: ThreeState, cube: HTMLDivElement | null) {
-  if (!cube) {
-    return;
-  }
-
-  const offset = state.camera.position.clone().sub(state.controls.target);
-  const horizontalDistance = Math.max(0.001, Math.hypot(offset.x, offset.z));
-  const pitch = THREE.MathUtils.radToDeg(Math.atan2(offset.y, horizontalDistance));
-  const yaw = THREE.MathUtils.radToDeg(Math.atan2(offset.x, offset.z));
-  cube.style.transform = `rotateX(${-pitch}deg) rotateY(${-yaw}deg)`;
 }
 
 function shapeCutPreviewFrames(state: ThreeState, shapes: WorkplaneShape[]) {
