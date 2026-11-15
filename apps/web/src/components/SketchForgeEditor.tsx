@@ -248,6 +248,7 @@ import { resolveSketchRevolveAxis, shapeFromSketchRevolve, type SketchRevolveAxi
 import { shapeFromSketchSweep } from "@/lib/sketchSweep";
 import { splitPiecesCutSideDown } from "@/lib/splitLayFlat";
 import { keepPartAfterSketchFinish, rebuildSketchedShape } from "@/lib/sketchRebuild";
+import { PRO_SKETCH_RULES_NOTE, sketchRulesMovedDrawing } from "@/lib/proContent";
 import { buildGeneratedShape } from "@/lib/generatedShapes";
 import { withExactGeneratedShape } from "@/lib/generatedExact";
 import { findGroupedPart, planValues, withPlannedChildPatches, worldGroupedPart } from "@/components/workplane/valueDrivenPatches";
@@ -1671,6 +1672,8 @@ export function SketchForgeEditor({
   const [sketchSolveStatus, setSketchSolveStatus] = useState<SketchDefinitionStatus>("empty");
   const [sketchDof, setSketchDof] = useState(0);
   const [sketchConflicts, setSketchConflicts] = useState<string[]>([]);
+  /** The sketch whose Mintr Pro rules resisted a drag while Pro is off: it gets one quiet line saying so. */
+  const [sketchProNoteFor, setSketchProNoteFor] = useState<string | null>(null);
   const [sketchHistory, setSketchHistory] = useState<SketchProfile[]>([emptySketchProfile()]);
   const [sketchHistoryIndex, setSketchHistoryIndex] = useState(0);
   const sketchHistoryRef = useRef(sketchHistory);
@@ -3670,6 +3673,7 @@ export function SketchForgeEditor({
       const baseDoc = docOverride ?? mergeProfileIntoDoc(sketchDoc, snapshot);
       // Points the user just put somewhere stay there; the rules move the rest.
       const solved = solveSketchDoc(baseDoc, undefined, { holdPointIds });
+      if (!workspaceSettingsRef.current.peakcadPro && sketchRulesMovedDrawing(baseDoc, solved.doc)) setSketchProNoteFor(baseDoc.id);
       setSketchDoc(solved.doc);
       setSketchSolveStatus(solved.status);
       setSketchDof(solved.dof);
@@ -14389,6 +14393,7 @@ export function SketchForgeEditor({
               constraintConflicts={sketchConflicts}
               solveStatus={workspaceSettings.peakcadPro ? sketchSolveStatus : "empty"}
               solveDof={workspaceSettings.peakcadPro ? sketchDof : 0}
+              proRulesNote={!workspaceSettings.peakcadPro && sketchProNoteFor === sketchDoc.id ? PRO_SKETCH_RULES_NOTE : null}
               sweepMarkIds={sweepMarkIds}
               onPlanePoint={addSketchPlanePoint}
               onDrawCircle={addSketchCircle}

@@ -105,4 +105,27 @@ describe("sage guides", () => {
     expect(sageHitById("setting:snapgrid")?.section).toBe("measurement");
     expect(sageHitById("nope")).toBeNull();
   });
+
+  it("explains Mintr Pro values, sums and sliders", () => {
+    expect(lookupSageGuide("values")?.title).toBe("Values");
+    // The Add value button reads as "value" once "add" is dropped: it must not be taken for a shape.
+    expect(lookupSageGuide("Add value")?.title).toBe("Values");
+    expect(lookupSageGuide("make this a value")?.steps.join(" ")).toMatch(/ƒ/);
+    expect(lookupSageGuide("sum")?.what).toMatch(/wall \* 2/);
+    expect(lookupSageGuide("value slider")?.steps.join(" ")).toMatch(/let go/i);
+    for (const key of ["values", "make this a value", "sum", "value slider"]) {
+      const guide = lookupSageGuide(key)!;
+      expect(guide.what, key).toMatch(/Mintr Pro/);
+      // Sage is a brontosaurus with no gender, and Pro is free.
+      const copy = [guide.title, guide.what, ...guide.steps].join(" ");
+      expect(copy, key).not.toMatch(/\b(he|she|his|her|him)\b/i);
+      expect(copy, key).not.toMatch(/\b(paid|upgrade|buy|price|premium|subscri\w*)\b/i);
+    }
+  });
+
+  it("keeps the answers people already get", () => {
+    expect(searchSageGuides("round the edges")[0]?.guide.title).toBe("Fillet");
+    expect(searchSageGuides("dimension")[0]?.guide.title).toBe("Dimension");
+    expect(searchSageGuides("slider").some((hit) => hit.guide.title === "Value slider")).toBe(true);
+  });
 });

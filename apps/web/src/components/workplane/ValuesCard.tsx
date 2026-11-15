@@ -63,7 +63,7 @@ export function ValuesCard({
   const resolved = resolveValues(values, outerScope, unitMm);
   return (
     <div className="property-card values-card" aria-label="Values">
-      <div className="values-card-header">
+      <div className="values-card-header" data-sage-key="values">
         <strong>Values</strong>
         <button
           type="button"
@@ -213,6 +213,7 @@ function ValueRow({
       <button
         type="button"
         className={`values-card-range${detailsOpen ? " is-open" : ""}`}
+        data-sage-key="value slider"
         disabled={locked}
         aria-label={`Range and note for ${value.name}`}
         aria-expanded={detailsOpen}
@@ -228,6 +229,7 @@ function ValueRow({
         <input
           type="range"
           className="values-card-slider"
+          data-sage-key="value slider"
           min={slider.min}
           max={slider.max}
           step={slider.step}

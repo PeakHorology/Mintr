@@ -6,7 +6,7 @@ import {
 } from "@/components/workplane/shapeProperties";
 import { bumpCsgVersion } from "@/lib/csgTree";
 import { cleanShapePatch, restoreGroupedChildren } from "@/lib/editorBoolean";
-import { evaluateValueExpression, resolveValues } from "@/lib/parametricValues";
+import { evaluateValueExpression, resolveValues, valueNameProblem } from "@/lib/parametricValues";
 import { setDrivingDimensionValue } from "@/lib/sketch";
 import type { SketchDoc } from "@/lib/sketch/types";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
@@ -187,4 +187,69 @@ export function worldGroupedPart(group: WorkplaneShape, id: string): WorkplaneSh
     if (child.groupedShapes?.length && findGroupedPart(child, id)) return worldGroupedPart(child, id);
   }
   return null;
+}
+
+/** A part's sums without the ones for `labels`, or undefined when none are left. */
+export function drivenByWithout(drivenBy: WorkplaneShape["drivenBy"], labels: readonly string[]): Record<string, string> | undefined {
+  const rest = Object.fromEntries(Object.entries(drivenBy ?? {}).filter(([label]) => !labels.includes(label)));
+  return Object.keys(rest).length ? rest : undefined;
+}
+
+/**
+ * What a plain number set for `labels` adds to its change: the sums those settings followed are
+ * let go, so the number stays. Empty when none of them follows a sum, which is every part made
+ * without Mintr Pro. This runs with Pro on or off.
+ */
+export function releaseDrivenPatch(shape: Pick<WorkplaneShape, "drivenBy">, labels: readonly string[]): Partial<WorkplaneShape> {
+  const drivenBy = shape.drivenBy;
+  if (!drivenBy || !labels.some((label) => label in drivenBy)) return {};
+  return { drivenBy: drivenByWithout(drivenBy, labels) };
+}
+
+/** The part with a plain number set for `label`, through the inspector's own setting, and its sum for that label let go. */
+export function withTypedSetting(target: WorkplaneShape, label: string, value: number): WorkplaneShape {
+  let recorded: Partial<WorkplaneShape> = {};
+  rangeProperties(target, (patch) => {
+    recorded = patch;
+  }).find((property) => property.label === label)?.onChange(value);
+  return canonicalizeShape({ ...target, ...cleanShapePatch(recorded), drivenBy: drivenByWithout(target.drivenBy, [label]) });
+}
+
+/** A top-level part with the part `id` (itself, or one grouped inside it at any depth) changed. */
+export function withChangedPart(body: WorkplaneShape, id: string, change: (part: WorkplaneShape) => WorkplaneShape): WorkplaneShape {
+  if (body.id === id) return change(body);
+  if (!body.groupedShapes?.length || !findGroupedPart(body, id)) return body;
+  return { ...body, groupedShapes: body.groupedShapes.map((child) => withChangedPart(child, id, change)) };
+}
+
+function everyValueName(shape: WorkplaneShape, into = new Set<string>()): Set<string> {
+  for (const value of shape.values ?? []) into.add(value.name);
+  for (const child of shape.groupedShapes ?? []) everyValueName(child, into);
+  return into;
+}
+
+/** A value name made from a setting's label ("Top radius" becomes top_radius), not yet taken. */
+export function valueNameForLabel(label: string, taken: ReadonlySet<string>): string {
+  let stem = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "size";
+  if (/^[0-9]/.test(stem)) stem = `size_${stem}`;
+  if (valueNameProblem(stem)) stem = `${stem}_size`;
+  for (let index = 1; ; index += 1) {
+    const name = index === 1 ? stem : `${stem}${index}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
+/**
+ * "Make this a value": the setting's number becomes a named value on the top-level part, and the
+ * setting follows it. Nothing changes size. `unitMm` is millimeters per workplane unit. Null when
+ * the part has no such setting.
+ */
+export function makeValueFromSetting(body: WorkplaneShape, targetId: string, label: string, unitMm = 1): { body: WorkplaneShape; name: string } | null {
+  const target = body.id === targetId ? body : findGroupedPart(body, targetId);
+  const property = target ? rangeProperties(target, () => {}).find((entry) => entry.label === label) : undefined;
+  if (!target || !property || !Number.isFinite(property.value)) return null;
+  const shown = drivenLabelIsLength(label) && unitMm !== 1 ? property.value / unitMm : property.value;
+  const name = valueNameForLabel(label, everyValueName(body));
+  const withValue: WorkplaneShape = { ...body, values: [...(body.values ?? []), { name, expression: String(Number(shown.toFixed(6))) }] };
+  return { body: withChangedPart(withValue, targetId, (part) => ({ ...part, drivenBy: { ...part.drivenBy, [label]: name } })), name };
 }
