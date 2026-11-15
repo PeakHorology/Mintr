@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createLocalId } from "@/lib/localIds";
+import { diceGeometry, diceNaturalSize, parseDiceSides } from "@/lib/diceShape";
 import { encodeQr, qrSolid } from "@/lib/qrCode";
 import {
   regularPolygonSketchGeometry,
@@ -424,6 +425,8 @@ function buildGeometry(spec: GeneratedSpec, size: GeneratedSize, previous: Parti
     const geometry = qrGeometry(spec.text, size.width, size.height);
     return geometry ? meshFields(geometry, size) : null;
   }
+  // Every face is flat, so the mesh is already the exact shape.
+  if (spec.form === "dice") return meshFields(diceGeometry(parseDiceSides(spec.sides), size.width, size.depth, size.height), size);
   const profile = latheProfile(spec, size.width, size.height);
   if (profile) return meshFields(latheGeometry(profile, size.width, size.depth, 96), size);
   const outline = outlineFor(spec, size.width, size.depth);
@@ -490,6 +493,8 @@ export function defaultGeneratedSize(spec: GeneratedSpec): GeneratedSize {
       return { width: 30, depth: 30, height: 5 };
     case "paraboloid":
       return { width: 20, depth: 20, height: 20 };
+    case "dice":
+      return diceNaturalSize(parseDiceSides(spec.sides), 20);
     case "screwHole":
       return { width: 0, depth: 0, height: 15 };
     case "nutPocket":

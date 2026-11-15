@@ -745,6 +745,58 @@ exports[`the inspector's rows without Mintr Pro > stays the same for shapes list
 ]
 `;
 
+exports[`the inspector's rows without Mintr Pro > stays the same for shapes list: Dice 1`] = `
+[
+  {
+    "hint": "6 makes a cube and 20 the classic game die. It stays the same size when you change the sides.",
+    "label": "Sides",
+    "options": [
+      "4",
+      "6",
+      "8",
+      "10",
+      "12",
+      "20",
+    ],
+    "type": "select",
+    "value": "20",
+  },
+  {
+    "centerDetent": undefined,
+    "hint": undefined,
+    "label": "Length",
+    "max": 160,
+    "min": 0.5,
+    "step": undefined,
+    "type": "range",
+    "typedMax": 300,
+    "value": 17.321,
+  },
+  {
+    "centerDetent": undefined,
+    "hint": undefined,
+    "label": "Width",
+    "max": 160,
+    "min": 0.5,
+    "step": undefined,
+    "type": "range",
+    "typedMax": 300,
+    "value": 20,
+  },
+  {
+    "centerDetent": undefined,
+    "hint": undefined,
+    "label": "Height",
+    "max": 100,
+    "min": 0.1,
+    "step": undefined,
+    "type": "range",
+    "typedMax": 300,
+    "value": 16.18,
+  },
+]
+`;
+
 exports[`the inspector's rows without Mintr Pro > stays the same for shapes list: Gear 1`] = `
 [
   {
@@ -2315,55 +2367,6 @@ exports[`the inspector's rows without Mintr Pro > stays the same for shapes list
     "type": "range",
     "typedMax": undefined,
     "value": 20,
-  },
-]
-`;
-
-exports[`the inspector's rows without Mintr Pro > stays the same for shapes list: Toolbox Label 1`] = `
-[
-  {
-    "centerDetent": undefined,
-    "hint": "Rounds the four corners. The top and bottom edges stay square.",
-    "label": "Corner radius",
-    "max": 8,
-    "min": 0,
-    "step": 0.1,
-    "type": "range",
-    "typedMax": undefined,
-    "value": 3,
-  },
-  {
-    "centerDetent": undefined,
-    "hint": undefined,
-    "label": "Length",
-    "max": 160,
-    "min": 0.5,
-    "step": undefined,
-    "type": "range",
-    "typedMax": 300,
-    "value": 16,
-  },
-  {
-    "centerDetent": undefined,
-    "hint": undefined,
-    "label": "Width",
-    "max": 160,
-    "min": 0.5,
-    "step": undefined,
-    "type": "range",
-    "typedMax": 300,
-    "value": 70,
-  },
-  {
-    "centerDetent": undefined,
-    "hint": undefined,
-    "label": "Height",
-    "max": 100,
-    "min": 0.1,
-    "step": undefined,
-    "type": "range",
-    "typedMax": 300,
-    "value": 3.5,
   },
 ]
 `;

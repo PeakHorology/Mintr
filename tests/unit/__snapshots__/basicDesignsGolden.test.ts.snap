@@ -421,10 +421,42 @@ exports[`designs built on the browser engine > the Tinkercad design tinkercad-al
     "volume": 1374.2,
   },
   {
-    "area": 2871.2,
+    "area": 4748.2,
+    "max": [
+      74.81,
+      10,
+      -31,
+    ],
+    "min": [
+      5.19,
+      0,
+      -51,
+    ],
+    "name": "Text",
+    "quality": "unsupported",
+    "volume": 6126.7,
+  },
+  {
+    "area": 1622,
+    "max": [
+      73.51,
+      20,
+      8.05,
+    ],
+    "min": [
+      54.49,
+      0,
+      -10.05,
+    ],
+    "name": "Star",
+    "quality": "faceted",
+    "volume": 2938.9,
+  },
+  {
+    "area": 4088.2,
     "max": [
       19,
-      20,
+      40,
       3,
     ],
     "min": [
@@ -434,7 +466,7 @@ exports[`designs built on the browser engine > the Tinkercad design tinkercad-al
     ],
     "name": "Group",
     "quality": "faceted",
-    "volume": 6429.4,
+    "volume": 9565.9,
   },
   {
     "area": 2988.9,

@@ -62,10 +62,10 @@ describe("Tinkercad import", () => {
   it("leaves out shapes it cannot make yet and says which", () => {
     const { shapes, skipped } = tinkercadToShapes({
       v: 1,
-      root: { children: [{ dataType: "preset", params: { id: "heart" }, tags: { label: "Heart" } }] },
+      root: { children: [{ dataType: "preset", params: { id: "voxelRobot" }, tags: { label: "Robot" } }] },
     });
     expect(shapes).toEqual([]);
-    expect(skipped).toEqual(["Heart"]);
+    expect(skipped).toEqual(["Robot"]);
   });
 
   it("reads the design from the address and from pasted text", () => {
@@ -161,8 +161,8 @@ describe("Tinkercad shapes", () => {
   const byName = (name: string) => shapes.find((shape) => shape.name === name)!;
 
   it("brings every shape Mintr has over and lists the rest", () => {
-    expect(skipped.sort()).toEqual(["Paraboloid", "Star", "Text"]);
-    expect(shapes.map((shape) => shape.kind)).toEqual(["sphere", "cone", "roundRoof", "wedge", "polygon", "torus", "tube", "mesh", "mesh"]);
+    expect(skipped).toEqual([]);
+    expect(shapes.map((shape) => shape.generated?.form ?? shape.kind)).toEqual(["sphere", "cone", "roundRoof", "wedge", "polygon", "torus", "tube", "text", "star", "mesh", "mesh"]);
   });
 
   it("keeps sizes, settings and holes", () => {
@@ -174,6 +174,19 @@ describe("Tinkercad shapes", () => {
     expect(byName("Round Roof")).toMatchObject({ width: 20, depth: 20, height: 10 });
   });
 
+  it("brings text, stars and paraboloids over as Mintr's own, ready to change", () => {
+    expect(byName("Text")).toMatchObject({ kind: "text", text: "TEXT", height: 10, depth: 20, elevation: 0 });
+    expect(byName("Text").width).toBeGreaterThan(40);
+    const star = byName("Star");
+    expect(star.generated).toEqual({ form: "star", points: 5, inner: 0.5 });
+    expect(star).toMatchObject({ height: 20, elevation: 0 });
+    expect(star.width).toBeCloseTo(19.021, 2);
+    expect(star.depth).toBeCloseTo(18.09, 2);
+    const [outer] = shapes.filter((shape) => shape.kind === "mesh" && !shape.generated);
+    const paraboloid = restoreGroupedChildren(outer).find((child) => child.name === "Paraboloid")!;
+    expect(paraboloid).toMatchObject({ width: 20, depth: 20, height: 20 });
+  });
+
   it("keeps a tipped shape tipped", () => {
     const cone = byName("Cone");
     expect(cone).toMatchObject({ topRadius: 0, baseRadius: 10, width: 20, height: 20 });
@@ -182,11 +195,11 @@ describe("Tinkercad shapes", () => {
   });
 
   it("keeps groups inside groups, and a bundle as a Tie", () => {
-    const [outer, bundle] = shapes.filter((shape) => shape.kind === "mesh");
+    const [outer, bundle] = shapes.filter((shape) => shape.kind === "mesh" && !shape.generated);
     expect(outer.csg?.op).toBe("union");
     const inner = outer.groupedShapes!.find((child) => child.groupedShapes?.length);
     expect(inner?.csg?.op).toBe("subtract");
-    expect(outer.groupedShapes!.some((child) => child.name === "Paraboloid")).toBe(false);
+    expect(outer.groupedShapes!.find((child) => child.name === "Paraboloid")?.generated).toEqual({ form: "paraboloid" });
     expect(bundle).toMatchObject({ name: "Tie" });
     expect(bundle.csg?.op).toBe("assemble");
     expect(restoreGroupedChildren(bundle).map((child) => child.kind)).toEqual(["roof", "pyramid"]);

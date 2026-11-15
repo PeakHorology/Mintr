@@ -11,6 +11,7 @@ import helvetikerRegularFontJson from "three/examples/fonts/helvetiker_regular.t
 import optimerBoldFontJson from "three/examples/fonts/optimer_bold.typeface.json";
 import optimerRegularFontJson from "three/examples/fonts/optimer_regular.typeface.json";
 import heavyFontJson from "./fonts/heavy.typeface.json";
+import { normalizeTypefaceWinding } from "./fontOutlineWinding";
 import {
   BUILT_IN_TEXT_FONTS,
   CUSTOM_FONTS_EVENT,
@@ -125,7 +126,8 @@ function customFont(fontName: string): Font | null {
   const entry = readCustomFonts().find((font) => font.name === fontName) ?? readCarriedDesignFont(fontName);
   if (!entry) return null;
   try {
-    const font = parseFont(JSON.parse(entry.typeface));
+    // Fonts added before this fix were kept as read, so their letters are turned here, not on import.
+    const font = parseFont(normalizeTypefaceWinding(JSON.parse(entry.typeface) as { glyphs?: unknown }));
     customFontCache.set(fontName, font);
     return font;
   } catch {

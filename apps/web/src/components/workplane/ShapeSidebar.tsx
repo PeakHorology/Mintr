@@ -36,6 +36,7 @@ const SHAPE_DESCRIPTIONS: Record<string, string> = {
   star: TOOL_DESCRIPTIONS.starShape,
   heart: TOOL_DESCRIPTIONS.heart,
   paraboloid: TOOL_DESCRIPTIONS.paraboloid,
+  dice: TOOL_DESCRIPTIONS.dice,
   "qr-code": TOOL_DESCRIPTIONS.qrCode,
   "toolbox-label": TOOL_DESCRIPTIONS.namePlate,
   "picture-keychain": TOOL_DESCRIPTIONS.pictureKeychain,

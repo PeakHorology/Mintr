@@ -1,10 +1,13 @@
 import * as THREE from "three";
 import { withCsgMeta } from "@/lib/csgTree";
 import { cloneAsGroupChild } from "@/lib/editorGroup";
-import { boundsForShapes } from "@/lib/editorShapeMesh";
+import { diceSizeForRadius } from "@/lib/diceShape";
+import { boundsForShapes, matchedTextWidth } from "@/lib/editorShapeMesh";
 import { isDesktopShell } from "@/lib/desktopHardware";
+import { buildGeneratedShape } from "@/lib/generatedShapes";
 import { sceneShape } from "@/lib/shapeCatalog";
-import type { ShapeKind, WorkplaneShape } from "@/types/sketchforge";
+import { DEFAULT_TEXT_FONT } from "@/lib/textFonts";
+import type { GeneratedSpec, ShapeKind, WorkplaneShape } from "@/types/sketchforge";
 
 /**
  * Tinkercad designs brought over by the "Send to Mintr" bookmark.
@@ -46,7 +49,17 @@ type PresetMapping = {
   depthOffset?: number;
   /** Settings of the kind, given how much the matrix stretched the preset on X, Y and Z. */
   extra?: (scale: [number, number, number]) => Partial<WorkplaneShape>;
+  /** A shape Mintr builds from settings (star, heart, paraboloid, dice), built at the final size. */
+  generated?: GeneratedSpec;
 };
+
+/** A star's outline, tip toward the back, as wide and deep as its points reach. */
+function starFootprint(points: number, radius: number) {
+  const tips = Array.from({ length: points }, (_, step) => Math.PI / 2 + (step * 2 * Math.PI) / points);
+  const xs = tips.map((angle) => Math.cos(angle) * radius);
+  const zs = tips.map((angle) => Math.sin(angle) * radius);
+  return { width: Math.max(...xs) - Math.min(...xs), depth: Math.max(...zs) - Math.min(...zs) };
+}
 
 const num = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 
@@ -105,6 +118,32 @@ function mapPreset(params: Record<string, unknown>): PresetMapping | null {
       const diameter = (num(params.radius, 7.5) + tube) * 2;
       // Mintr's torus radius is the tube's: half its height.
       return { kind: "torus", size: [diameter, tube * 2, diameter], extra: ([, sy]) => ({ radius: tube * sy }) };
+    }
+    case "paraboloid": {
+      const diameter = num(params.radius, 10) * 2;
+      return { kind: "mesh", size: [diameter, num(params.height, 20), diameter], generated: { form: "paraboloid" } };
+    }
+    case "extrudeStar":
+    case "star": {
+      const points = Math.min(16, Math.max(3, Math.round(num(params.points ?? params.sides ?? params.segments, 5))));
+      const radius = num(params.radius ?? params.outerRadius, 10);
+      const inner = Math.min(0.9, Math.max(0.1, num(params.innerRadius, radius / 2) / Math.max(radius, 1e-6)));
+      const { width, depth } = starFootprint(points, radius);
+      return { kind: "mesh", size: [width, num(params.height, 20), depth], generated: { form: "star", points, inner } };
+    }
+    case "heart":
+    case "extrudeHeart":
+      return { kind: "mesh", size: [20, num(params.height, 20), 20], generated: { form: "heart" } };
+    case "icosahedron": {
+      const { width, depth, height } = diceSizeForRadius(20, num(params.radius, 10));
+      return { kind: "mesh", size: [width, height, depth], generated: { form: "dice", sides: 20 } };
+    }
+    case "text": {
+      const text = typeof params.text === "string" && params.text.trim() ? params.text : "TEXT";
+      // Tinkercad's letters stand 20 mm tall, front to back; the line is as long as they need.
+      const letters = 20;
+      const width = matchedTextWidth({ text, font: DEFAULT_TEXT_FONT }, letters);
+      return { kind: "text", size: [width, num(params.height, 10), letters], extra: () => ({ text, font: DEFAULT_TEXT_FONT }) };
     }
     case "tube2": {
       const diameter = num(params.radius, 10) * 2;
@@ -175,6 +214,24 @@ function leafShape(node: TinkercadNode, world: THREE.Matrix4, preset: PresetMapp
   const center = new THREE.Vector3(0, preset.size[1] / 2, preset.depthOffset ?? 0).applyMatrix4(mintr);
   const color = colorHex(node.tags);
   const hole = isHole(node);
+  const placed = {
+    name: nodeLabel(node, preset.generated?.form ?? preset.kind),
+    color,
+    ...(hole ? { hole: true, solidColor: color } : {}),
+    x: tidy(center.x),
+    z: tidy(center.z),
+    elevation: tidy(center.y - height / 2),
+    rotationX: tidy(euler.x * DEGREES),
+    rotation: tidy(euler.y * DEGREES),
+    rotationZ: tidy(euler.z * DEGREES),
+    ...(mirrored ? { mirrorX: true } : {}),
+    hidden: isHidden(node),
+  };
+  if (preset.generated) {
+    // Built at its final size, so a stretched star is a true star of that size, not a squashed mesh.
+    const built = buildGeneratedShape(preset.generated, { width: tidy(width), depth: tidy(depth), height: tidy(height) }, placed);
+    if (built) return { ...built, ...placed };
+  }
   return sceneShape({
     name: nodeLabel(node, preset.kind),
     kind: preset.kind,

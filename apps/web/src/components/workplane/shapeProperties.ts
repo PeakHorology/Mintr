@@ -57,6 +57,7 @@ import { withGridfinityBaseplateSpec, withGridfinityBinSpec } from "@/lib/gridfi
 import { loftHasSteps, loftPatch, maxLoftWall, withLoftSettings, withLoftStarter } from "@/lib/loftShape";
 import { parseDimensionEntry } from "@/lib/dimensionEntry";
 import { uniformScalePatch } from "@/lib/uniformScale";
+import { DICE_SIDES, diceNaturalSize, parseDiceSides } from "@/lib/diceShape";
 import { clampPlateRadius, MIN_QR_MM, nutPocketHeight, qrSquareSize, screwDimensions, screwHoleDepthMin } from "@/lib/generatedShapes";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
 import { inferCsgOp, isEvaluatedCsgBody } from "@/lib/csgTree";
@@ -439,6 +440,22 @@ export function generatedShapeProperties(
           ...(Math.abs(shape.height - nutPocketHeight(spec)) < 0.01 ? { height: nutPocketHeight(next) } : {}),
         }), "Sized to take the nut with a little room."),
         heightRow("Depth", 0.2),
+      ];
+    case "dice":
+      return [
+        {
+          type: "select",
+          label: "Sides",
+          value: String(parseDiceSides(spec.sides)),
+          options: DICE_SIDES.map(String),
+          hint: "6 makes a cube and 20 the classic game die. It stays the same size when you change the sides.",
+          // A new number of sides takes that die's own proportions, as big as before.
+          onChange: (label) => {
+            const sides = parseDiceSides(label);
+            onUpdate({ generated: { ...spec, sides }, ...diceNaturalSize(sides, Math.max(width, depth, shape.height)) });
+          },
+        },
+        ...sizeRows,
       ];
     case "qr": {
       const square = qrSquareSize(spec, width);

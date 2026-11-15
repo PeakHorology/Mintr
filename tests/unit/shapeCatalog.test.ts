@@ -44,7 +44,7 @@ describe("shape catalog", () => {
 
     expect(SHAPE_SECTIONS[0]).toBe("Basic");
     expect(bySection("Basic")).toEqual(["Box", "Cylinder", "Sphere", "Cone", "Pyramid", "Wedge", "Triangle", "Polygon"]);
-    expect(bySection("Rounded")).toEqual(["Ring", "Torus", "Half Sphere", "Round Roof", "Paraboloid", "Loft"]);
+    expect(bySection("Rounded")).toEqual(["Ring", "Torus", "Half Sphere", "Round Roof", "Paraboloid", "Dice", "Loft"]);
     expect(bySection("Flat")).toEqual(["Rounded Plate", "Slot", "Star", "Heart"]);
     expect(bySection("Screws and nuts")).toEqual(["Threads", "Threaded Hole", "Nut Pocket"]);
     for (const section of SHAPE_SECTIONS) {

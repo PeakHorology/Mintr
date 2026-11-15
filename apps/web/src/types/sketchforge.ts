@@ -219,6 +219,8 @@ export type GeneratedSpec =
   | { form: "star"; points: number; inner: number }
   | { form: "heart" }
   | { form: "paraboloid" }
+  /** A die resting on a face: 4, 6, 8, 10, 12 or 20 sides (lib/diceShape.ts). */
+  | { form: "dice"; sides: number }
   /** `threaded`: a tapped hole the screw bites into, as Threads makes. Otherwise it slides through. */
   | { form: "screwHole"; size: ScrewThreadSize; head: ScrewHead; threaded?: boolean; diameter?: number; pitch?: number }
   | { form: "nutPocket"; size: ScrewThreadSize; diameter?: number }

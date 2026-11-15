@@ -122,6 +122,7 @@ const CUE_NAME: Record<string, string> = {
   star: "Star",
   heart: "Heart",
   paraboloid: "Paraboloid",
+  dice: "Dice",
   screwHole: "Screw hole",
   nutPocket: "Nut pocket",
   qr: "QR code",

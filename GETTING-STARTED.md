@@ -1,6 +1,6 @@
 # Mintr: Getting Started
 
-Mintr is a free CAD app for makers from **PeakHorologyLLC**, built for 3D printing and laser cutting. The current version is 1.4.1. It comes in two versions:
+Mintr is a free CAD app for makers from **PeakHorologyLLC**, built for 3D printing and laser cutting. The current version is 1.4.2. It comes in two versions:
 
 - **Windows desktop app.** The installer, shortcuts and Windows apps entry are named **Mintr3d**, and the program file is `Mintr.exe`. Files stay on your computer.
 - **Browser version** at [app.mintr3d.com](https://app.mintr3d.com/). It's the same app and the same geometry engine, built as WebAssembly. Designs live in the browser's storage, and Save as… downloads a copy. See [docs/WEB-VERSION.md](docs/WEB-VERSION.md).

@@ -159,7 +159,7 @@ describe("generated shapes", () => {
 
   it("the menu makes every generated shape, at sheet thickness in a laser design", () => {
     const generated = toolbarShapeAssets.filter((asset) => asset.generated);
-    expect(generated.map((asset) => asset.id).sort()).toEqual(["heart", "nut-pocket", "paraboloid", "plate", "qr-code", "screw-hole", "slot", "star"]);
+    expect(generated.map((asset) => asset.id).sort()).toEqual(["dice", "heart", "nut-pocket", "paraboloid", "plate", "qr-code", "screw-hole", "slot", "star"]);
     for (const asset of generated) {
       const shape = makeShapeFromAsset(asset, { x: 5, z: 6 }, "standard", 3);
       expect(shape.generated).toEqual(asset.generated);
