@@ -250,9 +250,12 @@ import { resolveSketchRevolveAxis, shapeFromSketchRevolve, type SketchRevolveAxi
 import { shapeFromSketchSweep } from "@/lib/sketchSweep";
 import { splitPiecesCutSideDown } from "@/lib/splitLayFlat";
 import { keepPartAfterSketchFinish, rebuildSketchedShape } from "@/lib/sketchRebuild";
+import { PRO_SKETCH_RULES_NOTE, sketchRulesMovedDrawing } from "@/lib/proContent";
+import { editorRebuildEngine, replayStepsOnPart } from "@/lib/parametricRebuild";
+import { createValuesController, delegatingValuesHost, type ValuesHost } from "@/lib/valuesController";
 import { buildGeneratedShape } from "@/lib/generatedShapes";
 import { withExactGeneratedShape } from "@/lib/generatedExact";
-import { findGroupedPart, planValues, withPlannedChildPatches, worldGroupedPart } from "@/components/workplane/valueDrivenPatches";
+import { withTypedStepSize } from "@/components/workplane/valueDrivenPatches";
 import { planSketchSweep, resolveSketchSweep, sweepChainHit, sweepSpec, type SweepChain } from "@/lib/sketch/sweepPlan";
 import {
   buildStepExportPreflight,
@@ -1672,6 +1675,10 @@ export function SketchForgeEditor({
   const [sketchSolveStatus, setSketchSolveStatus] = useState<SketchDefinitionStatus>("empty");
   const [sketchDof, setSketchDof] = useState(0);
   const [sketchConflicts, setSketchConflicts] = useState<string[]>([]);
+  /** The sketch whose Mintr Pro rules resisted a drag while Pro is off: it gets one quiet line saying so. */
+  const [sketchProNoteFor, setSketchProNoteFor] = useState<string | null>(null);
+  /** Mintr Pro: what the last value change could not do, for the Values card of that part. */
+  const [valuesReport, setValuesReport] = useState<{ bodyId: string; problems: string[] } | null>(null);
   const [sketchHistory, setSketchHistory] = useState<SketchProfile[]>([emptySketchProfile()]);
   const [sketchHistoryIndex, setSketchHistoryIndex] = useState(0);
   const sketchHistoryRef = useRef(sketchHistory);
@@ -3671,6 +3678,7 @@ export function SketchForgeEditor({
       const baseDoc = docOverride ?? mergeProfileIntoDoc(sketchDoc, snapshot);
       // Points the user just put somewhere stay there; the rules move the rest.
       const solved = solveSketchDoc(baseDoc, undefined, { holdPointIds });
+      if (!workspaceSettingsRef.current.peakcadPro && sketchRulesMovedDrawing(baseDoc, solved.doc)) setSketchProNoteFor(baseDoc.id);
       setSketchDoc(solved.doc);
       setSketchSolveStatus(solved.status);
       setSketchDof(solved.dof);
@@ -6761,89 +6769,12 @@ export function SketchForgeEditor({
 
   /**
    * Mintr Pro: put back a top-level part whose values (or the settings that follow them) changed,
-   * with every setting and sketch size the values now give, as one undo step.
+   * with every setting, sketch size and step the values now give, as one undo step. The work is
+   * in lib/valuesController.ts and lib/parametricRebuild.ts.
    */
-  const applyValues = useCallback(async (nextBody: WorkplaneShape, message: string) => {
-    const plan = planValues(nextBody, lengthDisplayUnit(workspaceSettingsRef.current).millimetersPerUnit);
-    if (plan.errors.length > 0) setNotice(plan.errors[0]);
-    const startFingerprint = projectShapesFingerprint(shapesRef.current);
-    const sceneMoved = () => projectShapesFingerprint(shapesRef.current) !== startFingerprint;
-    const keepValues = (shape: WorkplaneShape, from: WorkplaneShape): WorkplaneShape => ({ ...shape, values: from.values, drivenBy: from.drivenBy });
-
-    if (plan.body.sketchDoc) {
-      const rebuild = await rebuildSketchedShape({ ...nextBody, ...cleanShapePatch(plan.body.patch) }, plan.body.sketchDoc, { exact: true });
-      if (!rebuild.ok) {
-        setNotice(rebuild.message);
-        return;
-      }
-      if (sceneMoved()) {
-        setNotice("The design changed while Mintr worked that out. Change the value again.");
-        return;
-      }
-      const rebuilt = keepValues(rebuild.shape, nextBody);
-      commitShapes(shapesRef.current.map((entry) => (entry.id === rebuilt.id ? rebuilt : entry)), rebuilt.id, message);
-      if (hasPartSteps(rebuilt)) await reapplyEdgeTreatmentsRef.current(rebuilt);
-      return;
-    }
-
-    const current = shapesRef.current.find((entry) => entry.id === nextBody.id);
-    if (!current) return;
-    if (plan.children.size === 0 && nextBody.groupedShapes === current.groupedShapes) {
-      // The same path as a typed size, so resizes, threads and a part's steps follow too.
-      const changed: Record<string, unknown> = {};
-      for (const key of new Set([...Object.keys(current), ...Object.keys(nextBody)])) {
-        const field = key as keyof WorkplaneShape;
-        if (field !== "id" && nextBody[field] !== current[field]) changed[key] = nextBody[field];
-      }
-      updateShape(nextBody.id, { ...(changed as Partial<WorkplaneShape>), ...plan.body.patch });
-      setNotice(message);
-      return;
-    }
-
-    let body: WorkplaneShape = bumpCsgVersion({
-      ...nextBody,
-      ...cleanShapePatch(plan.body.patch),
-      groupedShapes: withPlannedChildPatches(nextBody, plan.children),
-    });
-    const sketchChildren = [...plan.children].filter(([, change]) => change.sketchDoc);
-    if (sketchChildren.length) {
-      // A sketched part inside rebuilds from its sketch, in the plate's frame, then joins the group again.
-      for (const [childId, change] of sketchChildren) {
-        const world = worldGroupedPart(body, childId);
-        if (!world || !change.sketchDoc) continue;
-        const rebuild = await rebuildSketchedShape(world, change.sketchDoc, { exact: true });
-        if (!rebuild.ok) {
-          setNotice(rebuild.message);
-          return;
-        }
-        const raw = findGroupedPart(body, childId);
-        const updated = await updateCsgLeafAndRemesh(body, childId, raw ? keepValues(rebuild.shape, raw) : rebuild.shape);
-        body = updated.body;
-      }
-      if (sceneMoved()) {
-        setNotice("The design changed while Mintr worked that out. Change the value again.");
-        return;
-      }
-      commitShapes(shapesRef.current.map((entry) => (entry.id === body.id ? body : entry)), body.id, message);
-      if (hasPartSteps(body)) await reapplyEdgeTreatmentsRef.current(body);
-      return;
-    }
-
-    if ((body.csg?.op ?? inferCsgOp(body)) === "assemble") {
-      const clean = markCsgClean({
-        ...body,
-        importedMesh: undefined,
-        csg: { op: "assemble", version: (body.csg?.version ?? 0) + 1, suppressed: body.csg?.suppressed },
-      });
-      commitShapes(shapesRef.current.map((entry) => (entry.id === clean.id ? clean : entry)), clean.id, message);
-      return;
-    }
-    const next = shapesRef.current.map((entry) => (entry.id === body.id ? body : entry));
-    shapesRef.current = next;
-    setShapes(next);
-    pendingFeatureRemeshRef.current = { bodyId: body.id, message };
-    await flushPendingFeatureRemesh();
-  }, [commitShapes, flushPendingFeatureRemesh, setNotice, updateShape]);
+  const valuesHostRef = useRef<ValuesHost | null>(null);
+  const valuesController = useMemo(() => createValuesController(delegatingValuesHost(valuesHostRef)), []);
+  const applyValues = useCallback((nextBody: WorkplaneShape, message: string) => valuesController.apply(nextBody, message), [valuesController]);
 
 
   const deleteSelected = useCallback(() => {
@@ -8888,7 +8819,7 @@ export function SketchForgeEditor({
     invalidateCadModifierSession();
     const sourceFingerprint = projectShapesFingerprint([live]);
     try {
-      const result = await replayPartFeatures(start, features, editorReplayEngine());
+      const result = await replayStepsOnPart(live, features, start, editorReplayEngine(), { resized: options?.resized });
       const current = shapesRef.current.find((shape) => shape.id === shapeId);
       if (!current || projectShapesFingerprint([current]) !== sourceFingerprint) {
         if (!options?.resized) setNotice("The part changed while it was rebuilding. Try again.");
@@ -8903,17 +8834,7 @@ export function SketchForgeEditor({
           return false;
         }
       }
-      // A resized part is rebuilt at its new size, so it is not stretched to it afterwards.
-      const placed = placeReplayedShape(result.shape, options?.resized ? { ...live, cadBrepFrame: undefined } : live, result.lastApplied);
-      const rebuilt = canonicalizeShape({
-        ...placed,
-        features: result.features.length ? result.features : undefined,
-        featureBase: result.features.length && !live.groupedShapes?.length ? start : undefined,
-        edgeTreatments: edgeTreatmentsForSteps(result.features, live),
-        edgeTreatmentHistory: undefined,
-        edgeResizeMode: live.edgeResizeMode,
-        csg: live.csg ? { ...live.csg, dirty: false } : live.csg,
-      });
+      const rebuilt = result.rebuilt;
       const nextShapes = shapesRef.current.map((shape) => (shape.id === shapeId ? rebuilt : shape));
       if (options?.resized) {
         const index = historyIndexRef.current;
@@ -8950,6 +8871,26 @@ export function SketchForgeEditor({
       cadApplyBusyRef.current = false;
       invalidateCadModifierSession();
     }
+  };
+
+  valuesHostRef.current = {
+    shapes: () => shapesRef.current,
+    showShapes: (next) => {
+      shapesRef.current = next;
+      setShapes(next);
+    },
+    commitShapes: (next, selectedId, message) => commitShapes(next, selectedId, message),
+    updateShape,
+    notice: setNotice,
+    unitMm: () => lengthDisplayUnit(workspaceSettingsRef.current).millimetersPerUnit,
+    engine: () => editorRebuildEngine(editorReplayEngine, setNotice),
+    toolBusy: () => cadApplyBusyRef.current,
+    holdSession: (held) => {
+      cadApplyBusyRef.current = held;
+      invalidateCadModifierSession();
+    },
+    reapplyLegacyEdgeSteps: (body) => reapplyEdgeTreatmentsRef.current(body),
+    report: (bodyId, problems) => setValuesReport(problems.length ? { bodyId, problems } : null),
   };
 
   useEffect(() => {
@@ -14568,6 +14509,7 @@ export function SketchForgeEditor({
               constraintConflicts={sketchConflicts}
               solveStatus={workspaceSettings.peakcadPro ? sketchSolveStatus : "empty"}
               solveDof={workspaceSettings.peakcadPro ? sketchDof : 0}
+              proRulesNote={!workspaceSettings.peakcadPro && sketchProNoteFor === sketchDoc.id ? PRO_SKETCH_RULES_NOTE : null}
               sweepMarkIds={sweepMarkIds}
               onPlanePoint={addSketchPlanePoint}
               onDrawCircle={addSketchCircle}
@@ -14840,6 +14782,8 @@ export function SketchForgeEditor({
           onInteractionActiveChange={updateProjectInteractionActive}
           onEditSketch={shapeHasEditableSketch(selectedShape) ? beginEditSelectedSketch : undefined}
           onApplyValues={workspaceSettings.peakcadPro ? (body, message) => { void applyValues(body, message); } : undefined}
+          onPreviewValues={workspaceSettings.peakcadPro ? (body) => { valuesController.preview(body); } : undefined}
+          valueRebuildProblems={valuesReport && valuesReport.bodyId === selectedShape?.id ? valuesReport.problems : undefined}
           onEditSketchDimension={workspaceSettings.peakcadPro && resolveEditableSketchShape(
             activeFeatureId && selectedShape?.groupedShapes
               ? selectedShape.groupedShapes.find((child) => child.id === activeFeatureId) ?? selectedShape
@@ -14882,7 +14826,7 @@ export function SketchForgeEditor({
             const step = selectedShape.features?.find((feature) => feature.id === featureId);
             if (!step) return;
             const changed = withPartStepSize(step, valueMm);
-            void changePartSteps(selectedShape.id, (features) => features.map((feature) => (feature.id === featureId ? changed : feature)), `Changed ${partFeatureLabel(changed)}`);
+            void changePartSteps(selectedShape.id, (features) => withTypedStepSize(features, featureId, valueMm), `Changed ${partFeatureLabel(changed)}`);
           } : undefined}
           onOpenPartStep={selectedShape && stepsReplaceSnapshots(selectedShape) && !treeToolOpen ? (featureId) => openPartStep(selectedShape.id, featureId) : undefined}
           onTogglePartStep={(featureId) => {

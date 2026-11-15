@@ -3350,8 +3350,51 @@
   cursor: help;
 }
 
+/* Mintr Pro: the quiet ƒ on a size box that turns its number into a named value. */
+.range-value-make {
+  padding: 0 2px;
+  color: var(--muted-strong);
+  background: none;
+  border: 0;
+  font: italic 800 var(--text-sm)/1 var(--font-ui);
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.range-value-make:hover:not(:disabled),
+.range-value-make:focus-visible {
+  color: var(--mintr);
+  opacity: 1;
+}
+
+.range-value-make:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
 .range-property-problem {
   color: var(--danger-text);
+}
+
+/* Shown in place of the Values card when a design carries Mintr Pro values and Pro is off. */
+.values-card-pro-note {
+  margin: 4px 24px 12px;
+  color: var(--muted-strong);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.values-card-problems {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.values-card-problems li + li {
+  margin-top: 3px;
 }
 
 .values-card {

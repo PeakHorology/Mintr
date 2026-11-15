@@ -323,6 +323,10 @@ export type WorkplaneViewportProps = {
   onEditSketchDimension?: (dimensionId: string, value: number) => void;
   /** Mintr Pro: a top-level part changed in its values or what follows them. */
   onApplyValues?: (nextBody: WorkplaneShape, message: string) => void;
+  /** Mintr Pro: show a part with a value changed while its slider is dragged. */
+  onPreviewValues?: (nextBody: WorkplaneShape) => void;
+  /** Mintr Pro: what the last value change on the selected part could not do. */
+  valueRebuildProblems?: readonly string[];
   canSeparateParts?: boolean;
   onSeparateParts?: () => void;
   onMakeMatchingThread?: () => void;
@@ -485,6 +489,8 @@ export function WorkplaneViewport({
   onEditSketch,
   onEditSketchDimension,
   onApplyValues,
+  onPreviewValues,
+  valueRebuildProblems,
   canSeparateParts = false,
   onSeparateParts,
   onMakeMatchingThread,
@@ -5092,6 +5098,8 @@ export function WorkplaneViewport({
             onEditSketch={onEditSketch}
             onEditSketchDimension={onEditSketchDimension}
             onApplyValues={onApplyValues}
+            onPreviewValues={onPreviewValues}
+            valueRebuildProblems={valueRebuildProblems}
             canSeparateParts={canSeparateParts}
             onSeparateParts={onSeparateParts}
             onMakeMatchingThread={onMakeMatchingThread}

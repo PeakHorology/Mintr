@@ -17,6 +17,23 @@ export function cloneAsGroupChild(shape: WorkplaneShape, centerX: number, center
 }
 
 /**
+ * Parts on their way back into the group they came from keep the values they are stored with.
+ * Taking a group's parts out to world space hands each one a copy of the group's values it uses
+ * (so Ungroup leaves nothing dangling). Put back with those copies, a part would stop following
+ * the group's values the first time the group was rebuilt. Parts without values are untouched.
+ */
+export function keepStoredChildValues(worldChildren: WorkplaneShape[], stored: readonly WorkplaneShape[] | undefined): WorkplaneShape[] {
+  if (!stored?.some((child) => child.values?.length) && !worldChildren.some((child) => child.values?.length)) return worldChildren;
+  const byId = new Map((stored ?? []).map((child) => [child.id, child]));
+  return worldChildren.map((child) => {
+    const original = byId.get(child.id);
+    if (!original || original.values === child.values) return child;
+    const { values: _copied, ...rest } = child;
+    return original.values ? { ...rest, values: original.values } : rest;
+  });
+}
+
+/**
  * Half-size of a hole assembly around the group center.
  * Child x/z are centered. Elevation is measured up from the bottom, so it must
  * not be treated as a center offset — that doubled the height readout.

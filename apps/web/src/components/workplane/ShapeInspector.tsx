@@ -15,7 +15,7 @@ import { useChromePresence } from "@/lib/chromePresence";
 import { TOOL_DESCRIPTIONS } from "@/lib/toolDescriptions";
 import { meshAabb } from "@/lib/editorShapeMesh";
 import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, formatVolumeWithMilliliters, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
-import { partFeatureLabel, partStepSize } from "@/lib/partFeatures";
+import { partFeatureLabel, partFeatureShortLabel, partStepSize } from "@/lib/partFeatures";
 import {
   clampRoofRidgeX,
   MAX_ROOF_ANGLE,
@@ -64,10 +64,14 @@ import {
 import { withGridfinityBaseplateSpec, withGridfinityBinSpec } from "@/lib/gridfinityShape";
 import { loftHasSteps, loftPatch, maxLoftWall, withLoftSettings, withLoftStarter } from "@/lib/loftShape";
 import { parseDimensionEntry, parseDimensionEntryWithUnit } from "@/lib/dimensionEntry";
-import { evaluateValueExpression, isValueExpression, renameValueInShape, resolveValues } from "@/lib/parametricValues";
+import { evaluateValueExpression, isValueExpression, renameValueInShape } from "@/lib/parametricValues";
 import { ValuesCard } from "@/components/workplane/ValuesCard";
+import { drivenLabelIsLength, groupHoldingPart, makeValueFromSetting, releaseDrivenPatch, valueScopeForPart, withChangedPart, withTypedSetting } from "@/components/workplane/valueDrivenPatches";
+import { OFFSET_LABELS, proRangeProperties, type PartContext } from "@/components/workplane/proProperties";
 import { cleanShapePatch } from "@/lib/editorBoolean";
+import { valueProblems, valuesChangeIsInstant } from "@/lib/parametricRebuild";
 import { canonicalizeShape } from "@/lib/workplaneShapes";
+import { PRO_VALUES_NOTE, shapeCarriesProValues } from "@/lib/proContent";
 import { uniformScalePatch } from "@/lib/uniformScale";
 import { fallbackSolidColor, MAX_SHAPE_SIDES, resizedShapeSize, shapeDepth, shapeWidth, coneBaseRadius, coneIsFreeRange, conePatchForFootprint, conePatchForRadii, conePatchForStandardMode, coneTopRadius, coneVisibleProfile } from "@/lib/workplaneShapes";
 import { findShapeInTree } from "@/lib/csgTree";
@@ -240,7 +244,7 @@ function isFootprintSize(property: ShapePropertyConfig): property is RangeProper
 }
 
 function propertyUsesLengthUnit(label: string) {
-  return /length|width|height|radius|bevel|thickness|clearance|module|backlash|rim|hole|padding|raise|spacing|fit across|fit deep|edge round|diameter/i.test(label);
+  return drivenLabelIsLength(label);
 }
 
 function propertyUsesDegreeUnit(label: string) {
@@ -264,6 +268,8 @@ export function ShapeInspector({
   onEditSketch,
   onEditSketchDimension,
   onApplyValues,
+  onPreviewValues,
+  valueRebuildProblems,
   canSeparateParts = false,
   onSeparateParts,
   onMakeMatchingThread,
@@ -297,6 +303,10 @@ export function ShapeInspector({
   onEditSketchDimension?: (dimensionId: string, value: number) => void;
   /** Mintr Pro: the top-level part, changed in its values or in what follows them. */
   onApplyValues?: (nextBody: WorkplaneShape, message: string) => void;
+  /** Mintr Pro: show the part with a value changed while its slider is dragged, without an undo step. */
+  onPreviewValues?: (nextBody: WorkplaneShape) => void;
+  /** Mintr Pro: what the last value change on this part could not do. */
+  valueRebuildProblems?: readonly string[];
   canSeparateParts?: boolean;
   onSeparateParts?: () => void;
   /** Add the tapped hole of the same thread size, on the same axis. */
@@ -392,30 +402,46 @@ export function ShapeInspector({
   const properties = withNameProperty(inspectTarget, updateInspectTarget, getShapeProperties(inspectTarget, updateInspectTarget, sceneShapes ?? [], workspace.printerKind));
   // Mintr Pro values: the part's own, and the ones a part inside a group can use.
   const unitMm = lengthDisplayUnit(workspace).millimetersPerUnit;
-  const bodyValues = resolveValues(shape.values, undefined, unitMm);
-  const targetScope = feature ? resolveValues(feature.values, bodyValues.scope, unitMm).scope : bodyValues.scope;
-  const drivableLabels = new Set(properties.filter((property): property is RangePropertyConfig => !("type" in property) || property.type === "range").map((property) => property.label));
+  // A part inside nested groups can use the values of every group around it.
+  const targetScope = onApplyValues ? valueScopeForPart(shape, inspectTarget.id, unitMm) : new Map<string, number>();
   /** The top-level part with the inspected part (itself, or a part inside it) changed. */
   const applyToTarget = (change: (target: WorkplaneShape) => WorkplaneShape, message: string) => {
     if (!onApplyValues) return;
-    const nextBody = feature
-      ? { ...shape, groupedShapes: (shape.groupedShapes ?? []).map((child) => (child.id === feature.id ? change(child) : child)) }
-      : change(shape);
-    onApplyValues(nextBody, message);
+    // The inspected part may sit inside a nested group, at any depth.
+    onApplyValues(withChangedPart(shape, inspectTarget.id, change), message);
   };
+  // Mintr Pro only: a pattern's copies and spacing, and a part's place in its group. These are
+  // never built with Pro off, and they rebuild the whole part, so they go through its values.
+  const partContext: PartContext = { siblings: feature ? groupHoldingPart(shape, inspectTarget.id)?.groupedShapes : undefined };
+  const proRows = onApplyValues
+    ? proRangeProperties(
+        inspectTarget,
+        (patch) => applyToTarget((target) => canonicalizeShape({ ...target, ...cleanShapePatch(patch) }), `Edited ${inspectTarget.name || inspectTarget.kind}`),
+        partContext,
+      )
+    : [];
+  const patternRows = proRows.filter((row) => !(OFFSET_LABELS as readonly string[]).includes(row.label));
+  const placeRows = proRows.filter((row) => (OFFSET_LABELS as readonly string[]).includes(row.label));
+  const drivableLabels = new Set([...properties, ...proRows].filter((property): property is RangePropertyConfig => !("type" in property) || property.type === "range").map((property) => property.label));
   const followSum = (label: string, text: string) => {
     applyToTarget((target) => ({ ...target, drivenBy: { ...target.drivenBy, [label]: text } }), `${label} = ${text}`);
   };
   const stopFollowingSum = (label: string, value: number) => {
-    applyToTarget((target) => {
-      let recorded: Partial<WorkplaneShape> = {};
-      getShapeProperties(target, (patch) => {
-        recorded = patch;
-      }).find((property): property is RangePropertyConfig => property.label === label && (!("type" in property) || property.type === "range"))?.onChange(value);
-      const { [label]: _released, ...rest } = target.drivenBy ?? {};
-      return canonicalizeShape({ ...target, ...cleanShapePatch(recorded), drivenBy: Object.keys(rest).length ? rest : undefined });
-    }, `${label} set to a number`);
+    applyToTarget((target) => withTypedSetting(target, label, value, partContext), `${label} set to a number`);
   };
+  const makeValue = (label: string) => {
+    if (!onApplyValues) return;
+    const made = makeValueFromSetting(shape, inspectTarget.id, label, unitMm);
+    if (made) onApplyValues(made.body, `${label} is now the value ${made.name}`);
+  };
+  /**
+   * Without Mintr Pro a size that follows a sum is shown as its number. Setting a number for it
+   * lets the sum go, so the number stays when Pro is turned on again. A part made without Pro
+   * has no sums, so this changes nothing for it.
+   */
+  const releasingUpdate = (labels: readonly string[]): ShapeInspectorUpdate => (patch, options) =>
+    updateInspectTarget({ ...patch, ...releaseDrivenPatch(inspectTarget, labels) }, options);
+  const SIZE_LABELS = ["Length", "Width", "Height"] as const;
   const sizeProperties = properties.filter(isFootprintSize);
   const detailProperties = properties.filter((property) => !isFootprintSize(property));
   const sketchFeature = resolveEditableSketchShape(
@@ -483,7 +509,15 @@ export function ShapeInspector({
       return <SelectProperty key={property.label} {...property} disabled={locked} />;
     }
     const sizeLabel = property.label === "Length" || property.label === "Width" || property.label === "Height";
-    const { onChange: propertyOnChange, ...propertyRest } = property;
+    const { onChange: plainOnChange, ...propertyRest } = property;
+    const sumWithoutPro = !onApplyValues && inspectTarget.drivenBy?.[property.label] !== undefined;
+    const propertyOnChange = sumWithoutPro
+      ? (next: number) => {
+          const releasing = getShapeProperties(inspectTarget, releasingUpdate([property.label]), sceneShapes ?? [], workspace.printerKind)
+            .find((entry): entry is RangePropertyConfig => entry.label === property.label && (!("type" in entry) || entry.type === "range"));
+          (releasing?.onChange ?? plainOnChange)(next);
+        }
+      : plainOnChange;
     const onChange = keepProportions && !coupledKind && sizeLabel
       ? (next: number) => {
           const current = property.label === "Length"
@@ -495,7 +529,7 @@ export function ShapeInspector({
           const patch = uniformScalePatch(inspectTarget, next / current);
           if (!patch) return;
           const axis = property.label === "Length" ? "depth" : property.label === "Width" ? "width" : "height";
-          updateInspectTarget(patch, { resizeAxis: axis });
+          (onApplyValues ? updateInspectTarget : releasingUpdate(SIZE_LABELS))(patch, { resizeAxis: axis });
         }
       : propertyOnChange;
     const drivable = Boolean(onApplyValues) && drivableLabels.has(property.label);
@@ -513,6 +547,7 @@ export function ShapeInspector({
         expressionProblem={evaluated && !evaluated.ok ? evaluated.error : null}
         onExpression={drivable ? (text) => followSum(property.label, text) : undefined}
         onReleaseExpression={drivable ? (value) => stopFollowingSum(property.label, value) : undefined}
+        onMakeValue={drivable && !expression && !locked ? () => makeValue(property.label) : undefined}
       />
     );
   };
@@ -583,12 +618,27 @@ export function ShapeInspector({
                 const unit = lengthDisplayUnit(workspace).label;
                 const editing = stepDraft?.id === step.id;
                 const commitDraft = () => {
-                  const typed = Number(stepDraft?.value);
+                  const text = (stepDraft?.value ?? "").trim();
                   setStepDraft(null);
+                  // Mintr Pro: a sum makes the step's size follow the part's values.
+                  if (onApplyValues && isValueExpression(text)) {
+                    if (text !== step.sizeFollows) {
+                      onApplyValues(
+                        { ...shape, features: (shape.features ?? []).map((entry) => (entry.id === step.id ? { ...entry, sizeFollows: text } : entry)) },
+                        `${partFeatureShortLabel(step)} = ${text}`,
+                      );
+                    }
+                    return;
+                  }
+                  if (text === "" || text === step.sizeFollows) return;
+                  const typed = Number(text);
                   if (!Number.isFinite(typed)) return;
                   const mm = displayToMillimeters(typed, workspace);
-                  if (Math.abs(mm - size) > 1e-6) onEditPartStep?.(step.id, mm);
+                  if (Math.abs(mm - size) > 1e-6 || step.sizeFollows) onEditPartStep?.(step.id, mm);
                 };
+                const followsNote = onApplyValues && step.sizeFollows
+                  ? <span className="range-value-driven" data-sage-key="sum" title={`Follows ${step.sizeFollows}`} aria-label={`Follows ${step.sizeFollows}`}> ƒ</span>
+                  : null;
                 const label = partFeatureLabel(step, (mm) => `${formatMeasurementNumber(millimetersToDisplay(mm, workspace), workspace.accuracy)} ${unit}`);
                 return (
                   <div
@@ -600,10 +650,11 @@ export function ShapeInspector({
                     {editing ? (
                       <input
                         className="csg-feature-input"
-                        type="number"
-                        step="any"
+                        type={onApplyValues ? "text" : "number"}
+                        step={onApplyValues ? undefined : "any"}
+                        spellCheck={false}
                         autoFocus
-                        aria-label={`New size for ${label}`}
+                        aria-label={onApplyValues ? `New size or sum for ${label}` : `New size for ${label}`}
                         value={stepDraft.value}
                         onChange={(event) => setStepDraft({ id: step.id, value: event.target.value })}
                         onKeyDown={(event) => {
@@ -620,11 +671,13 @@ export function ShapeInspector({
                         onClick={() => onOpenPartStep(step.id)}
                       >
                         {label}
+                        {followsNote}
                         {step.failed ? <span className="csg-feature-note"> · skipped</span> : null}
                       </button>
                     ) : (
                       <span className="csg-feature-name">
                         {label}
+                        {followsNote}
                         {step.failed ? <span className="csg-feature-note"> · skipped</span> : null}
                       </span>
                     )}
@@ -632,8 +685,8 @@ export function ShapeInspector({
                       <button
                         type="button"
                         disabled={blocked || editing}
-                        title="Change the size of this step"
-                        onClick={() => setStepDraft({ id: step.id, value: formatMeasurementNumber(millimetersToDisplay(size, workspace), workspace.accuracy) })}
+                        title={onApplyValues ? "Change the size of this step, or type a sum for it to follow" : "Change the size of this step"}
+                        onClick={() => setStepDraft({ id: step.id, value: (onApplyValues && step.sizeFollows) || formatMeasurementNumber(millimetersToDisplay(size, workspace), workspace.accuracy) })}
                       >
                         Edit
                       </button>
@@ -939,11 +992,15 @@ export function ShapeInspector({
           unitMm={unitMm}
           values={shape.values ?? []}
           locked={Boolean(shape.locked)}
+          problems={[...new Set([...valueProblems(shape, unitMm), ...(valueRebuildProblems ?? [])])]}
+          onSlide={onPreviewValues && valuesChangeIsInstant(shape) ? (next) => onPreviewValues({ ...shape, values: next }) : undefined}
           onChange={(next, message, renamed) => {
             const withList = { ...shape, values: next.length ? next : undefined };
             onApplyValues(renamed ? renameValueInShape(withList, renamed.from, renamed.to) : withList, message);
           }}
         />
+      ) : shapeCarriesProValues(shape) ? (
+        <p className="values-card-pro-note">{PRO_VALUES_NOTE}</p>
       ) : null}
 
       {smoothControls && shape.smooth && !feature ? (
@@ -1087,6 +1144,10 @@ export function ShapeInspector({
         {propertiesOpen ? (
           <div className="property-list" id={`properties-${shape.id}`}>
             {detailProperties.map(renderProperty)}
+            {patternRows.length > 0 ? <h4 className="property-section-heading">Pattern</h4> : null}
+            {patternRows.map(renderProperty)}
+            {placeRows.length > 0 ? <h4 className="property-section-heading">Place in group</h4> : null}
+            {placeRows.map(renderProperty)}
           </div>
         ) : null}
       </div>
@@ -1220,6 +1281,7 @@ function RangeProperty({
   expressionProblem,
   onExpression,
   onReleaseExpression,
+  onMakeValue,
 }: RangePropertyConfig & {
   workspace: WorkplaneWorkspaceSettings;
   disabled?: boolean;
@@ -1231,6 +1293,8 @@ function RangeProperty({
   onExpression?: (text: string) => void;
   /** A plain number typed over a sum: the setting stops following it. */
   onReleaseExpression?: (value: number) => void;
+  /** Mintr Pro: turn this setting's number into a named value it follows. */
+  onMakeValue?: () => void;
 }) {
   const allowsAboveSliderMax = label === "Length" || label === "Width" || label === "Height";
   const typedCeiling = typedMax ?? (allowsAboveSliderMax ? TYPED_DIMENSION_MAX_MM : max);
@@ -1335,7 +1399,24 @@ function RangeProperty({
             }}
           />
           {unit ? <span className="range-value-unit">{unit}</span> : null}
-          {expression ? <span className="range-value-driven" title={`Follows ${expression}`} aria-label={`Follows ${expression}`}>ƒ</span> : null}
+          {expression ? (
+            <span className="range-value-driven" data-sage-key="sum" title={`Follows ${expression}`} aria-label={`Follows ${expression}`}>ƒ</span>
+          ) : onMakeValue ? (
+            <button
+              type="button"
+              className="range-value-make"
+              data-sage-key="make this a value"
+              title="Make this a value"
+              aria-label={`Make ${label} a value`}
+              disabled={disabled}
+              onClick={(event) => {
+                event.preventDefault();
+                onMakeValue();
+              }}
+            >
+              ƒ
+            </button>
+          ) : null}
         </span>
       </span>
       <div className={`range-control${centerDetent ? " has-center-index" : ""}`}>

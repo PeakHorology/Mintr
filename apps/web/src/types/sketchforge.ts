@@ -452,6 +452,8 @@ export type PartFeature =
       failed?: string;
       /** Where the part's bounding box bottom centre was right after the step, in world space. */
       appliedAt?: [number, number, number];
+      /** Mintr Pro: the sum this step's size follows (`wall / 2`), worked out from the part's values. */
+      sizeFollows?: string;
     }
   | {
       id: string;
@@ -465,6 +467,8 @@ export type PartFeature =
       failed?: string;
       /** Where the part's bounding box bottom centre was right after the step, in world space. */
       appliedAt?: [number, number, number];
+      /** Mintr Pro: the sum this step's size follows (`wall / 2`), worked out from the part's values. */
+      sizeFollows?: string;
     }
   | {
       id: string;
@@ -476,6 +480,8 @@ export type PartFeature =
       failed?: string;
       /** Where the part's bounding box bottom centre was right after the step, in world space. */
       appliedAt?: [number, number, number];
+      /** Mintr Pro: the sum this step's size follows (`wall / 2`), worked out from the part's values. */
+      sizeFollows?: string;
     };
 
 export type EdgeTreatmentFeature = {

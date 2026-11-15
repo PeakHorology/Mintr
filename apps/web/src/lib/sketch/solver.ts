@@ -390,8 +390,12 @@ function projectSymmetricPair(
   return applyExact(a, ax, az) + applyExact(b, bx.x, bx.z);
 }
 
-/** The old one-rule-at-a-time solve: each rule snaps in turn until they all settle. */
-function solveStepwise(input: SketchDoc, iterations: number): SketchDoc {
+/**
+ * The old one-rule-at-a-time solve: each rule snaps in turn until they all settle. Kept as the
+ * fallback for a sketch the simultaneous solve cannot settle, and exported so tests can hold the
+ * two solvers to the same answer.
+ */
+export function solveSketchStepwise(input: SketchDoc, iterations: number): SketchDoc {
   const doc = cloneSketchDoc(input);
   const points = getPoints(doc);
   for (const c of doc.constraints) {
@@ -447,6 +451,34 @@ function definitionOf(doc: SketchDoc, solved: SimultaneousSolve): { status: Sket
   return { status: solved.dof === 0 ? "fully-defined" : "under-defined", dof: solved.dof, conflicts: [] };
 }
 
+/** True when nothing in the sketch asks the solver to move anything: no rule that is on, no driving size. */
+export function sketchHasNoRules(doc: SketchDoc): boolean {
+  return !doc.constraints.some((constraint) => !constraint.suppressed) && !doc.dimensions.some((dimension) => dimension.driving);
+}
+
+/**
+ * A sketch with no rules and no driving sizes is returned exactly as it was drawn, without being
+ * solved: the same points and curves, object for object. Every sketch drawn without Mintr Pro is
+ * like this, so the solver cannot nudge one. Null when the sketch has rules to solve.
+ */
+function ruleFreeSketch(input: SketchDoc): SketchSolveResult | null {
+  if (!sketchHasNoRules(input)) return null;
+  let dof = 0;
+  let drawn = false;
+  for (const entity of input.entities) {
+    if (entity.kind === "point") {
+      drawn = true;
+      if (!entity.fixed) dof += 2;
+    } else if (entity.kind === "circle") {
+      drawn = true;
+      if (!entity.fixed) dof += 1;
+    }
+  }
+  const doc: SketchDoc = { ...input, entities: [...input.entities], constraints: [...input.constraints], dimensions: [...input.dimensions] };
+  const status: SketchDefinitionStatus = !drawn ? "empty" : dof === 0 ? "fully-defined" : "under-defined";
+  return { doc, status, dof, conflicts: [], profiles: closedProfilesFromDoc(doc) };
+}
+
 export type SolveSketchOptions = Pick<SimultaneousSolveOptions, "holdPointIds">;
 
 /**
@@ -455,11 +487,13 @@ export type SolveSketchOptions = Pick<SimultaneousSolveOptions, "holdPointIds">;
  * and every rule holds.
  */
 export function solveSketchDoc(input: SketchDoc, iterations = 40, options: SolveSketchOptions = {}): SketchSolveResult {
+  const free = ruleFreeSketch(input);
+  if (free) return free;
   let solved = solveSimultaneously(input, { holdPointIds: options.holdPointIds, iterations: Math.max(iterations, 60) });
   let doc = withSolvedGeometry(input, solved);
   if (solved.unsatisfied.length) {
     // A sketch the simultaneous solve could not settle gets the old step-by-step pass too, and keeps whichever lands closer.
-    const stepwise = solveStepwise(input, iterations);
+    const stepwise = solveSketchStepwise(input, iterations);
     const check = solveSimultaneously(stepwise, { iterations: 0 });
     if (check.worst < solved.worst) {
       solved = check;

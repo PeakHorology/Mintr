@@ -89,6 +89,8 @@ type SketchWorkspaceProps = {
   constraintConflicts?: string[];
   solveStatus?: SketchDefinitionStatus;
   solveDof?: number;
+  /** One quiet line for a sketch that carries Mintr Pro rules while Pro is off. */
+  proRulesNote?: string | null;
   /** Outline and path chosen for Sweep, drawn in mint. */
   sweepMarkIds?: string[];
   onPlanePoint: (point: { x: number; z: number }, handles?: { handleIn: { x: number; z: number }; handleOut: { x: number; z: number } }) => void;
@@ -769,6 +771,7 @@ export function SketchWorkspace({
   constraintConflicts = [],
   solveStatus = "empty",
   solveDof = 0,
+  proRulesNote = null,
   sweepMarkIds = [],
   onPlanePoint,
   onDrawCircle,
@@ -1727,6 +1730,9 @@ export function SketchWorkspace({
             <span className="sketch-solve-conflicts">{constraintConflicts.length} conflict{constraintConflicts.length === 1 ? "" : "s"}</span>
           ) : null}
         </div>
+      ) : null}
+      {proRulesNote && solveStatus === "empty" ? (
+        <div className="sketch-solve-strip sketch-pro-rules-note" aria-live="polite">{proRulesNote}</div>
       ) : null}
       {planeBanner ? <div className="sketch-plane-banner">{planeBanner}</div> : null}
       <div className="camera-controls sketch-camera-controls" aria-label="Sketch view controls">
