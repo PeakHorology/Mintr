@@ -11,7 +11,7 @@ import { ShapeModeMark } from "@/components/workplane/ShapeModeMark";
 import { toolbarShapeAssets } from "@/lib/shapeCatalog";
 import { hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry } from "@/lib/editorHistory";
 import { DOWNLOAD_FOLDER_STORAGE_KEY } from "@/lib/downloadFile";
-import { hardwareProfile, isDesktopShell } from "@/lib/desktopHardware";
+import { isDesktopShell } from "@/lib/desktopHardware";
 import { createLocalId } from "@/lib/localIds";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { StartupThemeTabs } from "@/components/workplane/StartupThemeTabs";
@@ -95,136 +95,44 @@ import { NewDesignChooser } from "@/components/NewDesignChooser";
 import { SageHomePanel } from "@/components/SageHomePanel";
 import { GuideAuthorBadge } from "@/components/GuideAuthorBadge";
 import { readTinkercadClipboard, readTinkercadHash, TINKERCAD_HASH_KEY, tinkercadSkippedNotice, tinkercadToShapes, type TinkercadPayload } from "@/lib/tinkercadImport";
-
-type AppView = "dashboard" | "editor";
-type ViewMode = "grid" | "list";
-
-type DashboardProject = {
-  id: string;
-  name: string;
-  createdAt: number;
-  updatedAt: number;
-  shapes: number;
-  accent: "cyan" | "green" | "gold" | "red";
-  thumbnailUrl?: string | null;
-  thumbnailUrlDark?: string | null;
-  thumbnailVersion?: number;
-  revision?: number;
-  workspace?: WorkplaneWorkspaceSettings;
-  snapGrid?: GridSize;
-  folderId?: string | null;
-  filePath?: string | null;
-  savedFileName?: string | null;
-};
-
-type DashboardFolder = {
-  id: string;
-  name: string;
-  createdAt: number;
-  updatedAt: number;
-  heroProjectId: string | null;
-  passwordLock?: FolderPasswordLock | null;
-};
-
-type FolderAccessRequest = {
-  folderId: string;
-  projectId?: string;
-  opened?: { document: PeakcadDocument; path: string | null };
-};
-
-type LockDialogState = {
-  mode: "create" | "unlock" | "change" | "remove";
-  folderId: string;
-  projectId?: string;
-  opened?: FolderAccessRequest["opened"];
-};
-
-type StoredDashboardProject = Partial<DashboardProject> & {
-  designShapes?: unknown;
-};
-
-type StoredDashboardFolder = Partial<DashboardFolder>;
-
-type ProjectShapeCacheEntry = {
-  revision: number;
-  shapes: WorkplaneShape[];
-  history: EditorHistoryEntry[];
-  historyIndex: number;
-};
-
-type ProjectShapeRecord = {
-  id: string;
-  revision: number;
-  shapes: WorkplaneShape[];
-  history?: EditorHistoryEntry[];
-  historyIndex?: number;
-  updatedAt: number;
-};
-
-const PROJECTS_STORAGE_KEY = "sketchForge.projects";
-const FOLDERS_STORAGE_KEY = "sketchForge.folders";
-const PROJECT_FOLDER_MAP_KEY = "sketchForge.projectFolderMap";
-const DASHBOARD_ORDER_KEY = "sketchForge.dashboardOrder";
-const PROJECT_DRAG_MIME = "application/x-peakcad-project-id";
-const ARRANGE_DRAG_MIME = "application/x-peakcad-arrange";
-const PROJECT_THUMBNAIL_MAX_SIZE = hardwareProfile().thumbnailSize;
-const PROJECT_ACCENTS: DashboardProject["accent"][] = ["cyan", "green", "gold", "red"];
-const STATIC_EXPORT_BUILD = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
-const WEB_STORAGE_NOTE_KEY = "mintr.webStorageNoteShown";
-const RECENT_PROJECT_COUNT = 4;
-const FOLDER_PUSH_MS = 260;
-const EDITOR_FADE_MS = 160;
-
-type DashboardOrder = {
-  folders: string[];
-  projects: string[];
-  byFolder: Record<string, string[]>;
-};
-
-type ArrangeDragPayload = {
-  id: string;
-  kind: "project" | "folder";
-};
-
-type ProjectThumbnailRecord = {
-  id: string;
-  dataUrl: string;
-  dataUrlDark?: string;
-  version: number;
-  updatedAt: number;
-};
+import {
+  ARRANGE_DRAG_MIME,
+  DASHBOARD_ORDER_KEY,
+  EDITOR_FADE_MS,
+  FOLDER_PUSH_MS,
+  FOLDERS_STORAGE_KEY,
+  PROJECT_ACCENTS,
+  PROJECT_DRAG_MIME,
+  PROJECT_FILE_WRITE_DELAY_MS,
+  PROJECT_FOLDER_MAP_KEY,
+  PROJECT_THUMBNAIL_MAX_SIZE,
+  PROJECTS_STORAGE_KEY,
+  RECENT_PROJECT_COUNT,
+  STATIC_EXPORT_BUILD,
+  WEB_STORAGE_NOTE_KEY,
+} from "@/components/home/dashboardConstants";
+import { formatUpdated, nextDesignName, nextFolderName } from "@/components/home/dashboardNames";
+import type {
+  AppView,
+  ArrangeDragPayload,
+  DashboardFolder,
+  DashboardOrder,
+  DashboardProject,
+  DesktopUpdateOffer,
+  FolderAccessRequest,
+  LockDialogState,
+  PendingDiskWrite,
+  ProjectShapeCacheEntry,
+  ProjectShapeRecord,
+  ProjectThumbnailRecord,
+  StoredDashboardFolder,
+  StoredDashboardProject,
+  ViewMode,
+} from "@/components/home/dashboardTypes";
 
 function projectThumbnailApiUrl(projectId: string, version: number, theme: UiTheme = "light") {
   const themeQuery = theme === "dark" ? "&theme=dark" : "";
   return `/api/project-thumbnail?projectId=${encodeURIComponent(projectId)}&v=${version}${themeQuery}`;
-}
-
-function formatUpdated(timestamp: number) {
-  const age = Date.now() - timestamp;
-  if (age < 60_000) return "Just now";
-  if (age < 3_600_000) return `${Math.max(1, Math.round(age / 60_000))} min ago`;
-  if (age < 86_400_000) return "Today";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(timestamp));
-}
-
-function formatLibraryDate(timestamp = Date.now()) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(timestamp));
-}
-
-function uniqueLibraryName(base: string, existing: string[]) {
-  const names = new Set(existing.map((name) => name.toLowerCase()));
-  if (!names.has(base.toLowerCase())) return base;
-  let suffix = 2;
-  while (names.has(`${base} (${suffix})`.toLowerCase())) suffix += 1;
-  return `${base} (${suffix})`;
-}
-
-function nextDesignName(projects: Array<{ name: string }>) {
-  return uniqueLibraryName(`Design · ${formatLibraryDate()}`, projects.map((project) => project.name));
-}
-
-function nextFolderName(folders: Array<{ name: string }>) {
-  return uniqueLibraryName(`Folder · ${formatLibraryDate()}`, folders.map((folder) => folder.name));
 }
 
 function projectShapeCacheEntry(
@@ -893,17 +801,6 @@ async function serializeProjectForDisk(project: DashboardProject, entry: Project
   const text = await serializeStoredProject(project.id, peakcadProjectMeta(project, entry.shapes.length), projectDesignFonts(entry)).catch(() => null);
   return text ?? serializePeakcadDocument(buildDocumentForProject(project, entry));
 }
-
-/** How long the .mintr file waits after the last edit before it is rewritten. */
-const PROJECT_FILE_WRITE_DELAY_MS = 4000;
-
-type PendingDiskWrite = {
-  revision: number;
-  entry: ProjectShapeCacheEntry;
-  /** False when the store save failed, so the file is built from this entry instead. */
-  stored: boolean;
-  timer: ReturnType<typeof setTimeout> | null;
-};
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -3119,14 +3016,6 @@ function writeDismissedUpdateVersion(version: string) {
     // Storage full or blocked: the offer simply shows again next launch.
   }
 }
-
-type DesktopUpdateOffer = {
-  version: string;
-  current: string;
-  notes: string[];
-  portable: boolean;
-  canInstall: boolean;
-};
 
 function FolderGlyph({ locked }: { locked?: boolean; opened?: boolean }) {
   return (
